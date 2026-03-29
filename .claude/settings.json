@@ -1,0 +1,152 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "deny": [
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm *)",
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(tree *)",
+      "Bash(tree)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(wc *)",
+      "Bash(tar *)",
+      "Bash(base64 *)",
+      "Bash(sha256sum *)",
+      "Bash(diff *)",
+      "Bash(du *)",
+      "Bash(stat *)",
+      "Bash(pwsh *)",
+      "Bash(pwsh)"
+    ],
+    "allow": [
+      "Bash(uv *)",
+      "Bash(python *)",
+      "Bash(python)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git remote*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push*)",
+      "Bash(git checkout*)",
+      "Bash(git merge*)",
+      "Bash(git stash*)",
+      "Bash(git init*)",
+      "Bash(semgrep *)",
+      "Bash(chmod *)",
+      "Bash(bash .claude/hooks/*)"
+    ]
+  },
+  "worktree": {
+    "symlinkDirectories": [
+      ".venv",
+      ".tox",
+      ".mypy_cache",
+      ".ruff_cache",
+      ".pytest_cache",
+      "__pycache__",
+      ".hypothesis"
+    ],
+    "sparsePaths": [
+      "src",
+      "tests",
+      "benchmarks",
+      "docs",
+      ".claude",
+      ".sprint"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash .claude/hooks/statusline.sh"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/sprint-health.sh",
+            "timeout": 15,
+            "statusMessage": "Checking sprint status..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/sprint-gate.sh",
+            "timeout": 20,
+            "statusMessage": "Checking sprint housekeeping..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/sprint-state-save.sh",
+            "timeout": 15,
+            "statusMessage": "Saving sprint state..."
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-compact-reminder.sh",
+            "timeout": 10,
+            "statusMessage": "Refreshing CLAUDE.md directives..."
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/verify-after-agent.sh",
+            "timeout": 120,
+            "statusMessage": "Verifying agent results (ruff + mypy + pytest + semgrep)..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/sprint-housekeeping-reminder.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
