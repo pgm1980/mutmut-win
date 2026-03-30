@@ -283,6 +283,66 @@ def operator_match(node: cst.Match) -> Iterable[cst.CSTNode]:
             yield node.with_changes(cases=[*node.cases[:i], *node.cases[i + 1 :]])
 
 
+# ---------------------------------------------------------------------------
+# Regex mutations (unique to mutmut-win — no other Python tool has this)
+# ---------------------------------------------------------------------------
+
+#: ``re`` module functions whose first argument is a regex pattern.
+_RE_PATTERN_FUNCTIONS: set[str] = {
+    "compile",
+    "match",
+    "search",
+    "findall",
+    "finditer",
+    "sub",
+    "split",
+    "fullmatch",
+    "subn",
+}
+
+
+def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
+    """Mutate regex patterns in ``re.*()`` calls.
+
+    Recognises calls like ``re.compile(r"\\d+")``, ``re.match(r"^foo", text)``,
+    etc. and mutates the pattern string (first argument).
+    """
+    from mutmut_win.regex_mutation import mutate_regex_pattern
+
+    # Check: is this re.<func>(...)?
+    if not isinstance(node.func, cst.Attribute):
+        return
+    if not isinstance(node.func.value, cst.Name) or node.func.value.value != "re":
+        return
+    if node.func.attr.value not in _RE_PATTERN_FUNCTIONS:
+        return
+
+    # The first positional argument should be a string literal (the pattern).
+    if not node.args:
+        return
+    first_arg = node.args[0]
+    if not isinstance(first_arg.value, cst.SimpleString):
+        return
+
+    # Extract the raw pattern string (strip quotes and r-prefix).
+    raw = first_arg.value.value
+    # Determine prefix (r, b, etc.) and quote style
+    quote_char = raw[-1]  # ' or "
+    prefix_end = raw.index(quote_char)
+    prefix = raw[:prefix_end]
+    # Skip f-strings and byte strings
+    if "f" in prefix.lower() or "b" in prefix.lower():
+        return
+    inner = raw[prefix_end + 1 : -1]  # pattern without quotes
+
+    mutations = mutate_regex_pattern(inner)
+    for mutated_pattern in mutations:
+        new_value = f"{prefix}{quote_char}{mutated_pattern}{quote_char}"
+        new_string = first_arg.value.with_changes(value=new_value)
+        new_arg = first_arg.with_changes(value=new_string)
+        yield node.with_changes(args=[new_arg, *node.args[1:]])
+
+
 # Operators that should be called on specific node types
 mutation_operators: OPERATORS_TYPE = [
     (cst.BaseNumber, operator_number),
@@ -300,6 +360,7 @@ mutation_operators: OPERATORS_TYPE = [
     (cst.CSTNode, operator_keywords),
     (cst.CSTNode, operator_swap_op),
     (cst.Match, operator_match),
+    (cst.Call, operator_regex),
 ]
 
 
