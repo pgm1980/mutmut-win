@@ -46,7 +46,14 @@ mlruns/
 
 # Mutation testing
 .mutmut-cache/
+mutants/
+_tmp_mutmut/
 html/
+
+# Linter/tool caches
+.import_linter_cache/
+.benchmarks/
+.hypothesis/
 
 # uv
 .python-version
