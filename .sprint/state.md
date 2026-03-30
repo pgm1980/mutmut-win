@@ -1,7 +1,7 @@
 ---
-current_sprint: "11"
-sprint_goal: "In-Process Stats + Trampoline Tracking (_state.py, pytest.main() run_stats, StatsCollector plugin)"
-branch: "feature/sprint-11-12-planning"
+current_sprint: "14"
+sprint_goal: "Regex-Mutationen — Alleinstellungsmerkmal (kein Python-Tool hat das)"
+branch: "feature/55-regex-mutations"
 started_at: "2026-03-30"
 housekeeping_done: false
 memory_updated: false

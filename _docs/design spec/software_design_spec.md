@@ -115,6 +115,20 @@
 | FR-13.3 | Das System MUSS Graceful Degradation bieten wenn Job Object nicht erstellt werden kann (Warning statt Crash) | Must | v0.5 |
 | FR-13.4 | Das System MUSS bei normalem Shutdown den Job Handle sauber schließen | Must | v0.5 |
 
+### FR-14: Erweiterte Mutationsoperatoren (v1.0.0)
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-14.1 | Das System MUSS Regex-Pattern in `re.*()` Aufrufen mutieren können (Quantifier, Character-Classes, Anchors) | Must | v1.0 |
+| FR-14.2 | Das System MUSS mathematische Funktionen mutieren können (ceil↔floor, min↔max, abs→x, round→x, sum→0) | Must | v1.0 |
+| FR-14.3 | Das System MUSS non-literal Return Values durch `None` ersetzen können | Must | v1.0 |
+| FR-14.4 | Das System MUSS Conditional Expressions (`x if c else y`) zu `x` oder `y` vereinfachen können | Must | v1.0 |
+| FR-14.5 | Das System MUSS Void-Funktionsaufrufe und raise-Statements durch `pass` ersetzen können | Must | v1.0 |
+| FR-14.6 | Das System MUSS Collection-Operationen neutralisieren können (sorted→identity, Comprehension-Filter entfernen) | Must | v1.0 |
+| FR-14.7 | Das System MUSS `x or default` zu `x` oder `default` vereinfachen können (nur in Zuweisungskontexten) | Should | v1.0 |
+| FR-14.8 | Das System MUSS generierte Regex-Mutationen via `re.compile()` auf Validität prüfen | Must | v1.0 |
+| FR-14.9 | Das System SOLL eine Exclusion-Liste für Statement Removal führen (print, logger, warnings) | Should | v1.0 |
+
 ---
 
 ## 2. Non-Functional Requirements (NFRs)

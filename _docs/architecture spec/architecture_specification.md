@@ -617,6 +617,49 @@ Graceful Degradation: Falls `CreateJobObjectW()` fehlschlägt (restriktive Siche
 
 ---
 
+### ADR-018: Erweiterte Mutationsoperatoren — 7 neue Operatoren für v1.0.0
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+mutmut 3.5.0 hat 15 Mutationsoperatoren. Stryker.NET hat 19, cargo-mutants erweitert kontinuierlich. Sequential-Thinking-Analyse (15 Steps je Kandidat) identifizierte 7 neue Operatoren die für Python-Mutation-Testing wertvoll sind.
+
+#### Entscheidung
+
+7 neue Operatoren werden in v1.0.0 implementiert (gesamt ~460 LOC):
+
+| # | Operator | Score | LOC | Modul |
+|---|----------|-------|-----|-------|
+| 1 | Regex-Mutationen | 27/30 | ~200 | `regex_mutation.py` (neu) + `node_mutation.py` |
+| 2 | Math-Methoden (ceil↔floor, min↔max, abs→x) | 26/30 | ~60 | `node_mutation.py` |
+| 3 | Return Value Replacement (return expr → return None) | 25/30 | ~20 | `node_mutation.py` |
+| 4 | Conditional Expression (x if c else y → x / y) | 25/30 | ~10 | `node_mutation.py` |
+| 5 | Statement Removal (void calls + raise → pass) | 23/30 | ~80 | `node_mutation.py` |
+| 6 | Collection-Methoden (sorted→identity, comprehension-filter) | 23/30 | ~60 | `node_mutation.py` |
+| 7 | or-Default (x or default → x / default) | 21/30 | ~30 | `node_mutation.py` |
+
+Alle Operatoren nutzen die bestehende `mutation_operators`-Architektur in `node_mutation.py`. Nur Regex benötigt ein zusätzliches Modul (`regex_mutation.py`).
+
+#### Konsequenzen
+
+- **Wird einfacher:** Umfassendere Testqualitätsmessung, mutmut-win auf Stryker.NET-Niveau
+- **Wird schwieriger:** +40-80% mehr Mutanten → längere Laufzeiten
+- **Muss revisited werden:** Operator-Filter-Konfiguration (opt-in/opt-out) in v1.1
+
+#### Action Items
+
+- [ ] Sprint 14: Regex-Mutationen (Alleinstellungsmerkmal — kein Python-Tool hat das)
+- [ ] Sprint 15: Math-Methoden
+- [ ] Sprint 16: Return Value Replacement
+- [ ] Sprint 17: Conditional Expression
+- [ ] Sprint 18: Statement Removal
+- [ ] Sprint 19: Collection-Methoden
+- [ ] Sprint 20: or-Default
+
+---
+
 ## 3. Komponentenstruktur
 
 ### 3.1 Schichtenübersicht

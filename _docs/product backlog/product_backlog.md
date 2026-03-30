@@ -319,6 +319,34 @@
 
 ---
 
+### Epic 13: Erweiterte Mutationsoperatoren (Sprint 14-20)
+
+**Beschreibung:** 7 neue Mutationsoperatoren inspiriert von Stryker.NET und cargo-mutants. Bringt mutmut-win auf Stryker-Niveau mit Regex-Mutation als Alleinstellungsmerkmal.
+**Sprint:** 14-20 (je 1 Operator pro Sprint)
+**Release:** v1.0.0
+
+| Issue | Typ | Titel | Sprint | Priorität | SP | Status |
+|-------|-----|-------|--------|-----------|-----|--------|
+| #55 | Story | Regex-Mutationen (Quantifier, CharClass, Anchors) | 14 | Must | 8 | Open |
+| #56 | Story | Math-Methoden (ceil↔floor, min↔max, abs→x, sum→0) | 15 | Must | 3 | Open |
+| #57 | Story | Return Value Replacement (return expr → return None) | 16 | Must | 2 | Open |
+| #58 | Story | Conditional Expression (x if c else y → x / y) | 17 | Must | 2 | Open |
+| #59 | Story | Statement Removal (void calls + raise → pass) | 18 | Must | 5 | Open |
+| #60 | Story | Collection-Methoden (sorted→identity, filter entfernen) | 19 | Must | 3 | Open |
+| #61 | Story | or-Default (x or default → x / default) | 20 | Should | 2 | Open |
+
+**Acceptance Criteria:**
+- [ ] Alle 7 Operatoren in `mutation_operators` registriert
+- [ ] Regex-Mutator in separatem Modul `regex_mutation.py`
+- [ ] Statement Removal mit Exclusion-Liste (print, logger, warnings)
+- [ ] or-Default nur in Zuweisungskontexten
+- [ ] Alle generierten Regex via `re.compile()` auf Validität geprüft
+- [ ] Unit Tests + hypothesis Property-Tests für jeden Operator
+- [ ] mutmut-win run auf eigenem Code (Dogfooding) nach jedem Sprint
+- [ ] Mutation Score des neuen Operators gemessen
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -337,6 +365,7 @@
 | Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Open |
 | Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Open |
 | Hardening v0.5.0 | v0.5.0 | Epic 12 | #51–#54 | Open |
+| Advanced Operators v1.0.0 | v1.0.0 | Epic 13 | #55–#61 | Open |
 
 ---
 
@@ -356,6 +385,13 @@
 | Sprint 11 | 24 | | | In-Process Stats + Trampoline Tracking |
 | Sprint 12 | 34 | | | Feature Completeness + E2E Validation |
 | Sprint 13 | 13 | | | Hardening: Job Object Orphan Protection |
+| Sprint 14 | 8 | | | Regex-Mutationen (Alleinstellungsmerkmal) |
+| Sprint 15 | 3 | | | Math-Methoden (ceil↔floor, min↔max) |
+| Sprint 16 | 2 | | | Return Value Replacement |
+| Sprint 17 | 2 | | | Conditional Expression |
+| Sprint 18 | 5 | | | Statement Removal |
+| Sprint 19 | 3 | | | Collection-Methoden |
+| Sprint 20 | 2 | | | or-Default |
 
 ---
 
