@@ -13,10 +13,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mutmut_win.constants import EXIT_CODE_TIMEOUT, status_by_exit_code
+from mutmut_win.constants import EXIT_CODE_TIMEOUT, EXIT_CODE_TYPE_CHECK, status_by_exit_code
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
 from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError
 from mutmut_win.models import MutationRunResult, MutationTask, SourceFileMutationData
+from mutmut_win.stats import MutmutStats, collect_or_load_stats
+from mutmut_win.test_mapping import tests_for_mutant_names
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -102,6 +104,17 @@ class MutationOrchestrator:
             )
 
         # ------------------------------------------------------------------
+        # Step 1b: Apply type-checker filter (if configured).
+        # ------------------------------------------------------------------
+        type_checked_names: set[str] = set()
+        if self._config.type_check_command:
+            all_tasks, type_checked_names = _filter_with_type_checker(
+                all_tasks,
+                source_data_by_file,
+                self._config.type_check_command,
+            )
+
+        # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
         print("Running clean test suite…")
@@ -111,10 +124,10 @@ class MutationOrchestrator:
             raise CleanTestFailedError(msg)
 
         # ------------------------------------------------------------------
-        # Step 3: Collect per-test timing stats.
+        # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
         print("Collecting test timing statistics…")
-        stats = self._runner.run_stats()
+        mutmut_stats: MutmutStats = collect_or_load_stats(self._runner)
 
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
@@ -131,16 +144,21 @@ class MutationOrchestrator:
             raise ForcedFailError(msg)
 
         # ------------------------------------------------------------------
-        # Step 5: Compute timeouts and build final task list.
+        # Step 5: Assign specific tests and compute timeouts.
         # ------------------------------------------------------------------
+        all_tasks = _assign_tests_to_tasks(all_tasks, mutmut_stats)
         multiplier = self._config.timeout_multiplier
-        tasks_with_timeouts = _apply_timeouts(all_tasks, stats, multiplier)
+        tasks_with_timeouts = _apply_timeouts(all_tasks, mutmut_stats.duration_by_test, multiplier)
 
         # ------------------------------------------------------------------
         # Step 6 + 7: Run mutation tests via the pool executor.
         # ------------------------------------------------------------------
         create_db(self._db_path)
-        summary = MutationRunResult(total_mutants=len(tasks_with_timeouts))
+        # Total includes the type-checker-caught mutants (already counted).
+        summary = MutationRunResult(
+            total_mutants=len(tasks_with_timeouts) + len(type_checked_names),
+            killed=len(type_checked_names),
+        )
         completed = 0
         total = len(tasks_with_timeouts)
 
@@ -332,6 +350,120 @@ def _apply_timeouts(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})
         )
     return updated
+
+
+def _assign_tests_to_tasks(
+    tasks: list[MutationTask],
+    stats: MutmutStats,
+) -> list[MutationTask]:
+    """Return a copy of *tasks* with the ``tests`` field populated from *stats*.
+
+    Uses :func:`~mutmut_win.test_mapping.tests_for_mutant_names` to look up
+    which test node IDs exercise each mutant.  Tasks with no matching tests
+    keep an empty list.
+
+    Args:
+        tasks: Mutation tasks whose ``tests`` fields should be filled.
+        stats: Stats data containing ``tests_by_mangled_function_name``.
+
+    Returns:
+        New list of ``MutationTask`` instances with ``tests`` populated.
+    """
+    result: list[MutationTask] = []
+    for task in tasks:
+        assigned = tests_for_mutant_names(
+            [task.mutant_name],
+            stats.tests_by_mangled_function_name,
+        )
+        result.append(task.model_copy(update={"tests": sorted(assigned)}))
+    return result
+
+
+def _filter_with_type_checker(
+    tasks: list[MutationTask],
+    source_data_by_file: dict[str, SourceFileMutationData],
+    type_check_command: list[str],
+) -> tuple[list[MutationTask], set[str]]:
+    """Run the type checker against the mutants directory and mark caught mutants.
+
+    Runs *type_check_command* inside the ``mutants/`` directory.  Any error
+    reported by the type checker is used to derive a mutant name; matching
+    tasks are removed from the pending list and recorded with exit code 37
+    (``caught by type check``) in *source_data_by_file*.
+
+    The error-to-mutant mapping uses a file-path heuristic: when the type
+    checker reports an error in a file under ``mutants/``, all pending tasks
+    whose ``mutant_name`` matches the same module path are considered caught.
+    This is a conservative approximation — the full CST-based line-number
+    matching from the reference implementation requires ``MutatedMethodsCollector``
+    which is a future extension.
+
+    Args:
+        tasks: All pending mutation tasks.
+        source_data_by_file: Mapping of file path to ``SourceFileMutationData``
+            updated in-place for caught mutants.
+        type_check_command: The type checker command to run (e.g.
+            ``["mypy", "--output=json", "."]``).
+
+    Returns:
+        A tuple of ``(remaining_tasks, caught_mutant_names)`` where
+        ``caught_mutant_names`` is the set of mutant names removed from the
+        task list.
+    """
+    import os
+
+    from mutmut_win.type_checking import run_type_checker
+
+    caught: set[str] = set()
+
+    mutants_dir = Path("mutants")
+    if not mutants_dir.exists():
+        return tasks, caught
+
+    orig_cwd = Path.cwd()
+    try:
+        os.chdir(mutants_dir)
+        errors = run_type_checker(type_check_command)
+    finally:
+        os.chdir(orig_cwd)
+
+    if not errors:
+        return tasks, caught
+
+    # Collect the set of erroneous file paths (relative to mutants/).
+    erroneous_modules: set[str] = set()
+    for error in errors:
+        error_path = Path(error.file_path)
+        try:
+            rel = error_path.relative_to(mutants_dir.resolve())
+        except ValueError:
+            # Try relative to absolute mutants_dir.
+            try:
+                rel = error_path.relative_to(mutants_dir.absolute())
+            except ValueError:
+                continue
+        # Convert path to dotted module name prefix (without .py suffix).
+        module_prefix = str(rel).replace("\\", "/").replace("/", ".").removesuffix(".py")
+        erroneous_modules.add(module_prefix)
+
+    # Match each pending task against erroneous module prefixes.
+    for task in tasks:
+        for module_prefix in erroneous_modules:
+            if task.mutant_name.startswith(module_prefix):
+                caught.add(task.mutant_name)
+                break
+
+    # Remove caught mutants from tasks and update source_data_by_file.
+    remaining = [t for t in tasks if t.mutant_name not in caught]
+    for mutant_name in caught:
+        _update_source_data(
+            mutant_name,
+            EXIT_CODE_TYPE_CHECK,
+            None,
+            source_data_by_file,
+        )
+
+    return remaining, caught
 
 
 def _update_summary_and_persist(

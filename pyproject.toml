@@ -109,6 +109,7 @@ markers = [
     "integration: integration tests",
 ]
 testpaths = ["tests"]
+python_functions = ["test_*"]
 
 [tool.importlinter]
 root_packages = ["mutmut_win"]
