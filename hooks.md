@@ -24,10 +24,10 @@
 
 | # | Hook | Finding | Severity |
 |---|------|---------|----------|
-| H-01 | sprint-gate.sh | Sucht Sprint Backlog mit `find . -maxdepth 4` statt in `_docs/sprint backlogs/` | HIGH |
-| H-02 | sprint-gate.sh | Sprint Backlogs wurden in Sprint 1-13 NIE erstellt — Hook hat das nie bemängelt | HIGH |
-| H-03 | sprint-health.sh | Feuert NICHT automatisch bei SessionStart (nur manuell via bash) | CRITICAL |
-| H-04 | alle Hooks | Unklar ob Hooks in Claude Desktop überhaupt getriggert werden | CRITICAL |
+| H-01 | sprint-gate.sh | Sucht Sprint Backlog mit `find . -maxdepth 4` statt in `_docs/sprint backlogs/` — **FIX PENDING** | HIGH |
+| H-02 | sprint-gate.sh | Sprint Backlogs Sprint 1-13 nie erstellt — weil H-04 (Matcher-Bug) den Hook nie feuern ließ | HIGH (Folge von H-04) |
+| H-03 | sprint-health.sh | ~~Feuert nicht~~ **GEFIXT**: Hook feuert korrekt! Output erscheint als `<system-reminder>` am Session-Start, nicht als Chat-Nachricht. War die ganze Zeit aktiv. | RESOLVED |
+| H-04 | PostToolUse | **ROOT CAUSE GEFUNDEN**: Matcher `Bash(git commit*)` matcht NICHT wenn Befehl mit `cd ...&&` beginnt. Fix: `Bash(*git commit*)`. Settings.json wird nur bei Session-Start geladen → Neustart nötig für neuen Matcher. | FIXED (needs restart) |
 | H-05 | copy_also_copy | `tests/` Default kopiert .venv-Symlinks → WinError 1920 | HIGH |
 | H-06 | Dogfooding | ~~Worker ModuleNotFoundError~~ GEFIXT (multiprocessing.Pool→sequential). Verbleibendes Problem: Dogfooding (mutmut-win auf sich selbst) ist ein Sonderfall — Trampoline wirkt nur auf Ziel-Projekt-Code, nicht auf mutmut-win's eigenen Code. Normaler Use Case funktioniert. | WONTFIX (by design) |
 | H-07 | CLI | 10 neue CLI-Flags (3 Tiers): --paths-to-mutate, --min-score, --output json, --since-commit (USP!), --tests-dir, --no-progress, --debug, --dry-run, --timeout-multiplier, --do-not-mutate. ~165 LOC. | HIGH |

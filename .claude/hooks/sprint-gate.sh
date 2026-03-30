@@ -50,9 +50,14 @@ if command -v gh &>/dev/null; then
 fi
 
 # Live check 3: Sprint backlog exists?
-BACKLOG_EXISTS=$(find . -maxdepth 4 \( -name "*sprint_backlog*${SPRINT}*" -o -name "*sprint*${SPRINT}*backlog*" \) 2>/dev/null | head -1 || true)
+# Search in the canonical location: _docs/sprint backlogs/sprint_<N>_backlog.md
+BACKLOG_DIR="_docs/sprint backlogs"
+BACKLOG_EXISTS=""
+if [[ -d "$BACKLOG_DIR" ]]; then
+  BACKLOG_EXISTS=$(find "$BACKLOG_DIR" -maxdepth 1 -name "*${SPRINT}*" 2>/dev/null | head -1 || true)
+fi
 if [[ -z "$BACKLOG_EXISTS" ]]; then
-  BLOCKERS="$BLOCKERS\n  - [ ] No sprint backlog document found for Sprint $SPRINT"
+  BLOCKERS="$BLOCKERS\n  - [ ] No sprint backlog document found for Sprint $SPRINT in '$BACKLOG_DIR/'"
 fi
 
 # Live check 4: Last semgrep scan?
