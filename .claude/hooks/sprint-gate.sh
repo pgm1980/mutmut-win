@@ -10,6 +10,9 @@
 
 set -uo pipefail
 
+# Diagnostic: write marker so we can verify the hook fired.
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sprint-gate fired" >> .sprint/.hook-fire-log
+
 STATE_FILE=".sprint/state.md"
 
 # No sprint state → nothing to gate
