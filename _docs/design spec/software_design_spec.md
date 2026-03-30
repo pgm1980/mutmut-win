@@ -79,6 +79,33 @@
 | FR-07.1 | Das System SOLL Mutanten optional gegen einen Type-Checker prüfen können | Should | v0.1 |
 | FR-07.2 | Das System SOLL Mutanten die den Type-Check nicht bestehen als "caught by type check" markieren | Should | v0.1 |
 
+### FR-08: File Setup Pipeline
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-08.1 | Das System MUSS Quelldateien nach mutants/ kopieren | Must | v0.2 |
+| FR-08.2 | Das System MUSS mutierte Dateien mit Trampolines auf Disk schreiben | Must | v0.2 |
+| FR-08.3 | Das System MUSS sys.path für mutants/-Import einrichten | Must | v0.2 |
+| FR-08.4 | Das System MUSS qualifizierte Mutant-Namen konstruieren | Must | v0.2 |
+| FR-08.5 | Das System MUSS also_copy-Dateien kopieren | Must | v0.2 |
+
+### FR-09: Test-Mapping + Stats
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-09.1 | Das System MUSS Mutanten auf relevante Tests mappen | Must | v0.2 |
+| FR-09.2 | Das System MUSS Stats cachen (mutants/mutmut-stats.json) | Must | v0.2 |
+| FR-09.3 | Das System MUSS inkrementelle Stats-Collection unterstützen | Should | v0.2 |
+| FR-09.4 | Das System MUSS Type-Checker-Filter im Orchestrator verdrahten | Should | v0.2 |
+
+### FR-10: Mutant-Inspektion + CLI
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-10.1 | Das System MUSS `show` mit echtem Diff implementieren | Must | v0.2 |
+| FR-10.2 | Das System MUSS `apply` mit CST-basiertem Ersetzen implementieren | Must | v0.2 |
+| FR-10.3 | Das System MUSS Live-Fortschrittsanzeige bieten | Should | v0.2 |
+
 ---
 
 ## 2. Non-Functional Requirements (NFRs)
@@ -228,6 +255,123 @@ def worker_main(
     ...
 ```
 
+### 3.5 FileSetup Interface
+
+**Typ:** Module-Level Functions (Domain Layer)
+**Verantwortung:** Manages mutants/ directory lifecycle.
+
+```python
+def walk_source_files(paths_to_mutate: list[str]) -> Iterator[Path]:
+    """Yield all Python source files under paths_to_mutate."""
+    ...
+
+def walk_all_files(paths_to_mutate: list[str]) -> Iterator[Path]:
+    """Yield all files (source + non-Python) under paths_to_mutate."""
+    ...
+
+def copy_src_dir(src: Path, dest: Path) -> None:
+    """Copy source tree to mutants/ preserving structure."""
+    ...
+
+def copy_also_copy_files(also_copy: list[str], mutants_dir: Path) -> None:
+    """Copy additional files listed in also_copy config."""
+    ...
+
+def setup_source_paths(mutants_dir: Path) -> list[str]:
+    """Prepend mutants/ to sys.path, return original sys.path for restore."""
+    ...
+
+def write_all_mutants_to_file(
+    source_file: Path,
+    mutants_dir: Path,
+    source_mutation_data: SourceFileMutationData,
+) -> None:
+    """Write trampolined mutant file to mutants/ directory."""
+    ...
+
+def create_mutants_for_file(
+    source_file: Path,
+    config: MutmutConfig,
+) -> SourceFileMutationData:
+    """Generate all mutants for a single source file."""
+    ...
+```
+
+### 3.6 TestMapping Interface
+
+**Typ:** Module-Level Functions (Domain Layer)
+**Verantwortung:** Maps mutants to relevant test functions.
+
+```python
+def mangled_name_from_mutant_name(mutant_name: str) -> str:
+    """Convert mutant_name to mangled function name used in trampoline."""
+    ...
+
+def orig_function_and_class_names_from_key(key: str) -> tuple[str, str | None]:
+    """Extract original function name and optional class name from mutant key."""
+    ...
+
+def tests_for_mutant_names(
+    mutant_names: list[str],
+    stats: MutmutStats,
+) -> dict[str, list[str]]:
+    """Return mapping of mutant_name -> list[test_id] for targeted test runs."""
+    ...
+```
+
+### 3.7 Stats Interface
+
+**Typ:** Module-Level Functions (Application Layer)
+**Verantwortung:** Caches test timing data in mutants/mutmut-stats.json.
+
+```python
+def load_stats(mutants_dir: Path) -> MutmutStats | None:
+    """Load stats from mutants/mutmut-stats.json, return None if missing."""
+    ...
+
+def save_stats(stats: MutmutStats, mutants_dir: Path) -> None:
+    """Persist stats to mutants/mutmut-stats.json with encoding='utf-8'."""
+    ...
+
+def collect_or_load_stats(
+    config: MutmutConfig,
+    mutants_dir: Path,
+    runner: PytestRunner,
+) -> MutmutStats:
+    """Load stats if up-to-date (hash match), else collect fresh and save."""
+    ...
+```
+
+### 3.8 MutantDiff Interface
+
+**Typ:** Module-Level Functions (Application Layer)
+**Verantwortung:** Diff generation and source application for mutants.
+
+```python
+def find_mutant(
+    mutant_name: str,
+    mutants_dir: Path,
+) -> MutantLocation:
+    """Locate a mutant's trampolined file and function offset."""
+    ...
+
+def read_mutants_module(mutant_file: Path) -> str:
+    """Read trampolined mutant file with encoding='utf-8'."""
+    ...
+
+def read_orig_module(source_file: Path) -> str:
+    """Read original source file with encoding='utf-8'."""
+    ...
+
+def get_diff_for_mutant(mutant_name: str, mutants_dir: Path) -> str:
+    """Return unified diff string between original and mutated source."""
+    ...
+
+def apply_mutant(mutant_name: str, mutants_dir: Path) -> None:
+    """Write CST-based mutated source back to original source file."""
+    ...
+```
+
 ---
 
 ## 4. Datenmodelle
@@ -295,6 +439,24 @@ def worker_main(
 | filename | str | Quelldatei-Pfad |
 | mutants | dict[str, str] | Mutant-Name → mutierter Code |
 | hash | str | Hash der Originaldatei |
+
+### 4.6 MutmutStats
+
+| Feld | Typ | Beschreibung |
+|------|-----|-------------|
+| test_times | dict[str, float] | test_id → Laufzeit in Sekunden |
+| file_hashes | dict[str, str] | Quelldatei-Pfad → SHA256-Hash |
+| collected_at | datetime | Zeitstempel der Erhebung |
+
+### 4.7 MutantLocation
+
+| Feld | Typ | Beschreibung |
+|------|-----|-------------|
+| mutant_name | str | Mutant-Identifier |
+| source_file | Path | Originale Quelldatei |
+| mutant_file | Path | Trampolined Datei in mutants/ |
+| function_name | str | Mutierte Funktion |
+| class_name | str \| None | Umgebende Klasse (optional) |
 
 ---
 
@@ -413,3 +575,4 @@ MutmutWinError (base)
 | Version | Datum | Autor | Änderung |
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiale Version |
+| 0.2.0 | 2026-03-30 | Claude Code Agent | FR-08–10: File Setup Pipeline, Test Mapping + Stats, Mutant Inspektion + CLI; Interface-Specs 3.5–3.8; Data Models 4.6–4.7 |

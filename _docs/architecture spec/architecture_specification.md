@@ -473,6 +473,89 @@ Distribution als PyPI-Package `mutmut-win`. Entry-Point: `mutmut-win` CLI-Befehl
 
 ---
 
+### ADR-012: File Setup Pipeline — mutants/ Directory Management
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+mutmut's trampoline mechanism requires source files to be copied to a `mutants/` directory, where the mutated (trampolined) versions replace the originals. sys.path must be manipulated so pytest imports from `mutants/` instead of the original source. This pipeline was missing in the initial port.
+
+#### Entscheidung
+
+New module `file_setup.py` handles all file operations: walking source files, copying to mutants/, writing mutated code, setting up sys.path. Ported 1:1 from mutmut's __main__.py with encoding='utf-8' added to all open() calls.
+
+#### Konsequenzen
+
+- **Wird einfacher:** Orchestrator bleibt schlank — Dateisystem-Logik ist isoliert in file_setup.py
+- **Wird schwieriger:** sys.path-Manipulation muss Thread-sicher rückgängig gemacht werden
+- **Muss revisited werden:** Bei mutmut-Versionswechseln mit geänderten mutants/-Layouts
+
+#### Action Items
+
+- [ ] `file_setup.py` implementieren (Domain Layer)
+- [ ] Orchestrator-Integration: `_generate_mutants` delegiert an file_setup
+- [ ] Unit-Tests mit temporären Verzeichnissen (tmp_path fixture)
+
+---
+
+### ADR-013: Test Mapping + Stats Caching
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+mutmut mappt Mutanten auf relevante Tests und cached Test-Laufzeiten in einer JSON-Datei. Ohne dieses Mapping laufen alle Tests für jeden Mutanten, was die Laufzeit dramatisch erhöht.
+
+#### Entscheidung
+
+Neues Modul `test_mapping.py` implementiert die Mutant-zu-Test-Zuordnung via mangled names. Neues Modul `stats.py` implementiert Load/Save/CollectOrLoad für `mutants/mutmut-stats.json`. Inkrementelles Caching: Stats werden nur neu gesammelt wenn Quelldateien sich geändert haben (Hash-Vergleich).
+
+#### Konsequenzen
+
+- **Wird einfacher:** Zielgerichtete Test-Ausführung pro Mutant (deutlich schneller)
+- **Wird schwieriger:** Mangled-Name-Logik ist komplex und muss 1:1 mit mutmut übereinstimmen
+- **Muss revisited werden:** Bei Änderungen an mutmut's Name-Mangling-Strategie
+
+#### Action Items
+
+- [ ] `test_mapping.py` implementieren (Domain Layer)
+- [ ] `stats.py` implementieren (Application Layer)
+- [ ] Orchestrator-Integration: Test-Assignment und Stats-Caching verdrahten
+- [ ] Type-Checker-Filter in Orchestrator verdrahten
+
+---
+
+### ADR-014: Mutant Inspection + CLI — show/apply
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+Die CLI-Commands `show` und `apply` sind als Stubs implementiert. `show` muss echte Diffs zwischen Original und mutiertem Code anzeigen. `apply` muss CST-basiert den mutierten Code in die Quelldatei schreiben.
+
+#### Entscheidung
+
+Neues Modul `mutant_diff.py` implementiert `find_mutant`, `read_mutants_module`, `read_orig_module`, `get_diff_for_mutant` (unified diff) und `apply_mutant` (CST-basierter Source-Ersatz). Live-Fortschrittsanzeige via `print_stats`.
+
+#### Konsequenzen
+
+- **Wird einfacher:** CLI-Commands sind vollständig und benutzbar
+- **Wird schwieriger:** apply muss atomisch sein (kein halbes Schreiben)
+- **Muss revisited werden:** Bei Encoding-Problemen mit Nicht-ASCII-Code
+
+#### Action Items
+
+- [ ] `mutant_diff.py` implementieren (Application Layer)
+- [ ] `show`-Command: echten Diff anzeigen
+- [ ] `apply`-Command: CST-basierten Ersatz implementieren
+- [ ] E2E-Validierungstest auf simple_lib
+
+---
+
 ## 3. Komponentenstruktur
 
 ### 3.1 Schichtenübersicht
@@ -481,11 +564,13 @@ Distribution als PyPI-Package `mutmut-win`. Entry-Point: `mutmut-win` CLI-Befehl
 ┌─────────────────────────────────────────────┐
 │          CLI Layer (Presentation)            │  ← cli.py, browser.py
 ├─────────────────────────────────────────────┤
-│          Application Layer (Service)        │  ← orchestrator.py, runner.py
+│          Application Layer (Service)        │  ← orchestrator.py, runner.py,
+│                                             │     stats.py, mutant_diff.py
 ├─────────────────────────────────────────────┤
 │          Domain Layer (Core)                │  ← config, models, constants,
 │                                             │     mutation, node_mutation,
-│                                             │     trampoline
+│                                             │     trampoline, file_setup,
+│                                             │     test_mapping
 ├─────────────────────────────────────────────┤
 │          Infrastructure Layer               │  ← process/, code_coverage,
 │                                             │     type_checking
@@ -501,13 +586,13 @@ Distribution als PyPI-Package `mutmut-win`. Entry-Point: `mutmut-win` CLI-Befehl
 ### 3.3 Application Layer
 
 **Verantwortung:** Orchestrierung des Mutation-Testing-Ablaufs
-**Enthält:** `orchestrator.py` (MutationOrchestrator), `runner.py` (PytestRunner)
+**Enthält:** `orchestrator.py` (MutationOrchestrator), `runner.py` (PytestRunner), `stats.py` (Stats Load/Save/CollectOrLoad), `mutant_diff.py` (Diff + Apply)
 **Abhängigkeiten:** Domain Layer, Infrastructure Layer (via Interfaces)
 
 ### 3.4 Domain Layer
 
 **Verantwortung:** Geschäftslogik, Modelle, Mutation Engine
-**Enthält:** `config.py`, `models.py`, `constants.py`, `mutation.py`, `node_mutation.py`, `trampoline.py`
+**Enthält:** `config.py`, `models.py`, `constants.py`, `mutation.py`, `node_mutation.py`, `trampoline.py`, `file_setup.py` (mutants/ Directory Management), `test_mapping.py` (Mutant→Test Mapping)
 **Abhängigkeiten:** Keine (eigenständig)
 
 ### 3.5 Infrastructure Layer
@@ -629,3 +714,4 @@ uv publish
 | Version | Datum | Autor | Änderung |
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiale Version |
+| 0.2.0 | 2026-03-30 | Claude Code Agent | ADR-012–014: File Setup Pipeline, Test Mapping + Stats, Mutant Inspection + CLI; neue Module in Komponentenstruktur |

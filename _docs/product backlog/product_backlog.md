@@ -11,6 +11,7 @@
 | Release | Codename | Sprints | Status | Highlights |
 |---------|----------|---------|--------|------------|
 | v0.1.0 | MVP | Sprint 1–6 | Planned | Windows-native Mutation Testing |
+| v0.2.0 | Pipeline | Sprint 8–10 | Planned | File Setup Pipeline, Test Mapping, CLI show/apply, E2E-Validierung |
 
 ---
 
@@ -170,6 +171,79 @@
 
 ---
 
+### Epic 7: File Setup Pipeline
+
+**Beschreibung:** Port der File-Setup-Pipeline aus mutmut's __main__.py — kopiert Quelldateien nach mutants/, schreibt mutierte Trampoline-Dateien, richtet sys.path ein
+**Sprint:** 8
+**Release:** v0.2.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #24 | Story | Als Entwickler will ich walk_source_files + walk_all_files, damit Quelldateien navigierbar sind | Must | 3 | Open |
+| #25 | Story | Als Entwickler will ich copy_src_dir + copy_also_copy_files, damit mutants/ befüllt wird | Must | 5 | Open |
+| #26 | Story | Als Entwickler will ich setup_source_paths (sys.path-Manipulation), damit pytest aus mutants/ importiert | Must | 5 | Open |
+| #27 | Story | Als Entwickler will ich write_all_mutants_to_file + create_mutants_for_file, damit mutierte Dateien auf Disk geschrieben werden | Must | 8 | Open |
+| #28 | Task | Orchestrator-Integration: _generate_mutants delegiert an file_setup | Must | 3 | Open |
+
+**Acceptance Criteria:**
+- [ ] `file_setup.py` im Domain Layer implementiert
+- [ ] Quelldateien werden korrekt nach mutants/ kopiert (Pfad-Struktur erhalten)
+- [ ] sys.path wird für mutants/-Import eingerichtet und nach dem Lauf wiederhergestellt
+- [ ] Mutierte Trampoline-Dateien werden korrekt auf Disk geschrieben
+- [ ] also_copy-Dateien werden kopiert
+- [ ] Unit-Tests mit tmp_path-Fixture, hypothesis für Pfad-Invarianten
+
+---
+
+### Epic 8: Test Mapping + Stats Caching
+
+**Beschreibung:** Mutant-zu-Test-Mapping via mangled names und inkrementelles Stats-Caching in mutants/mutmut-stats.json
+**Sprint:** 9
+**Release:** v0.2.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #29 | Story | Als Entwickler will ich mangled_name_from_mutant_name + orig_function_and_class_names_from_key, damit Mutant-Namen decodiert werden | Must | 5 | Open |
+| #30 | Story | Als Entwickler will ich tests_for_mutant_names, damit nur relevante Tests pro Mutant ausgeführt werden | Must | 8 | Open |
+| #31 | Story | Als Entwickler will ich Stats load/save/collect_or_load, damit Test-Laufzeiten gecacht werden | Must | 5 | Open |
+| #32 | Task | Type-Checker-Filter in Orchestrator verdrahten | Should | 3 | Open |
+| #33 | Task | Orchestrator-Integration: Test-Assignment und Stats-Caching aktivieren | Must | 3 | Open |
+
+**Acceptance Criteria:**
+- [ ] `test_mapping.py` im Domain Layer implementiert
+- [ ] `stats.py` im Application Layer implementiert
+- [ ] Stats werden in mutants/mutmut-stats.json mit encoding='utf-8' gespeichert
+- [ ] Inkrementelles Caching via Hash-Vergleich funktioniert
+- [ ] Mutanten laufen nur gegen relevante Tests (deutliche Laufzeit-Reduktion)
+- [ ] Type-Checker-Filter im Orchestrator aktiv
+- [ ] hypothesis Property-Tests für Name-Mangling-Roundtrips
+
+---
+
+### Epic 9: CLI show/apply + E2E-Validierung
+
+**Beschreibung:** Vollständige Implementierung der `show`- und `apply`-Commands sowie End-to-End-Validierung der gesamten Pipeline
+**Sprint:** 10
+**Release:** v0.2.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #34 | Story | Als Entwickler will ich find_mutant + read_mutants_module + read_orig_module, damit Mutant-Dateien gelesen werden können | Must | 3 | Open |
+| #35 | Story | Als User will ich get_diff_for_mutant (unified diff), damit ich sehe was ein Mutant verändert | Must | 5 | Open |
+| #36 | Story | Als User will ich apply_mutant (CST-basierter Source-Ersatz), damit ich einen Mutanten in den Quellcode schreiben kann | Must | 5 | Open |
+| #37 | Story | Als User will ich Live-Fortschrittsanzeige (print_stats), damit ich den Lauf-Fortschritt sehe | Should | 3 | Open |
+| #38 | Task | End-to-End-Validierungstest (volle Pipeline auf simple_lib) | Must | 5 | Open |
+
+**Acceptance Criteria:**
+- [ ] `mutant_diff.py` im Application Layer implementiert
+- [ ] `mutmut-win show <NAME>` zeigt echten unified diff
+- [ ] `mutmut-win apply <NAME>` schreibt CST-basierten mutierten Code in Quelldatei
+- [ ] Live-Fortschrittsanzeige während des Laufs aktiv
+- [ ] E2E-Validierungstest auf simple_lib läuft durch (Clean → Mutants → Results)
+- [ ] Alle Sprints 8–10 DoD-Kriterien erfüllt
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -185,6 +259,7 @@
 | Milestone | Release | Epics | Issues | Status |
 |-----------|---------|-------|--------|--------|
 | MVP | v0.1.0 | Epic 1–6 | #1–#23 | Open |
+| Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Open |
 
 ---
 
@@ -198,6 +273,9 @@
 | Sprint 4 | 19 | | | Orchestrator |
 | Sprint 5 | 15 | | | CLI + TUI |
 | Sprint 6 | 16 | | | E2E + Integration |
+| Sprint 8 | 24 | | | File Setup Pipeline |
+| Sprint 9 | 24 | | | Test Mapping + Stats |
+| Sprint 10 | 21 | | | CLI show/apply + E2E Validation |
 
 ---
 
@@ -206,3 +284,4 @@
 | Version | Datum | Autor | Änderung |
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiales Backlog |
+| 0.2.0 | 2026-03-30 | Claude Code Agent | Epic 7–9 (Sprints 8–10): File Setup Pipeline, Test Mapping + Stats, CLI show/apply + E2E; Release v0.2.0; Issues #24–#38 |
