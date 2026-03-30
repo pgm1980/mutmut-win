@@ -55,6 +55,10 @@ mutmut-win = "mutmut_win.cli:cli"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+exclude = [
+    # Reference fixture projects copied from mutmut 3.5.0 — not subject to our lint rules.
+    "tests/e2e_projects",
+]
 
 [tool.ruff.lint]
 select = [
