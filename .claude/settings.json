@@ -95,10 +95,11 @@
     ],
     "PostToolUse": [
       {
-        "if": "Bash(git commit*)",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(git commit*)",
             "command": "bash .claude/hooks/sprint-gate.sh",
             "timeout": 20,
             "statusMessage": "Checking sprint housekeeping..."
