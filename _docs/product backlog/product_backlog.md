@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 0.1.0
+**Version:** 0.6.0
 **Datum:** 2026-03-30
 **Status:** Active
 
@@ -10,9 +10,12 @@
 
 | Release | Codename | Sprints | Status | Highlights |
 |---------|----------|---------|--------|------------|
-| v0.1.0 | MVP | Sprint 1–6 | Planned | Windows-native Mutation Testing |
-| v0.2.0 | Pipeline | Sprint 8–10 | Planned | File Setup Pipeline, Test Mapping, CLI show/apply, E2E-Validierung |
-| v0.3.0 | Performance | Sprint 11–12 | Planned | In-Process Stats, Trampoline Tracking, Feature Completeness |
+| v0.1.0 | MVP | Sprint 1–6 | Done | Windows-native Mutation Testing |
+| v0.2.0 | Pipeline | Sprint 8–10 | Done | File Setup Pipeline, Test Mapping, CLI show/apply, E2E-Validierung |
+| v0.3.0 | Performance | Sprint 11–12 | Done | In-Process Stats, Trampoline Tracking, Feature Completeness |
+| v0.5.0 | Hardening | Sprint 13 | Done | Windows Job Object Orphan Protection |
+| v0.6.0 | Stress-Test | — | Done | Synthetic 1127-mutant stress test, line-buffered stdout, progress counter fix |
+| v1.0.0 | Advanced Operators | Sprint 14–20 | Planned | 7 neue Mutationsoperatoren (Regex, Math, Return, Conditional, Statement, Collection, or-Default) |
 
 ---
 
@@ -30,7 +33,8 @@
 - [ ] **Dependency Audit**: `uv run pip-audit` — 0 Advisories
 - [ ] **Architecture**: `uv run lint-imports` — 0 Verletzungen
 - [ ] **Property Tests**: hypothesis-basierte Roundtrip/Invarianten-Tests vorhanden
-- [ ] **Mutation Testing**: `uv run mutmut run` — Score ≥ 80% auf neuem Code
+- [ ] **Mutation Testing**: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80% auf neuem Code
+- [ ] **E2E-Validierung**: `uv run mutmut-win run` auf simple_lib Testprojekt — erfolgreich
 
 ### Prozess-Gates
 

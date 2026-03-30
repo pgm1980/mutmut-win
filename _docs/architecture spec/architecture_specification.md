@@ -1,6 +1,6 @@
 # Architecture Specification — mutmut-win
 
-**Version:** 0.1.0
+**Version:** 0.6.0
 **Datum:** 2026-03-30
 **Status:** Approved
 
@@ -927,3 +927,5 @@ Port aller verbleibenden mutmut-Funktionen für vollständige Feature-Parität:
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiale Version |
 | 0.2.0 | 2026-03-30 | Claude Code Agent | ADR-012–014: File Setup Pipeline, Test Mapping + Stats, Mutant Inspection + CLI; neue Module in Komponentenstruktur |
 | 0.3.0 | 2026-03-30 | Claude Code Agent | ADR-015–016: In-Process Stats Collection via pytest.main(), Remaining Completeness Gaps |
+| 0.5.0 | 2026-03-30 | Claude Code Agent | ADR-017: Windows Job Object Orphan Protection (ctypes) |
+| 0.6.0 | 2026-03-30 | Claude Code Agent | ADR-018: 7 neue Mutationsoperatoren für v1.0.0 |

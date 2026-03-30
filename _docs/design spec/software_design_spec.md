@@ -1,6 +1,6 @@
 # Software Design Specification — mutmut-win
 
-**Version:** 0.1.0
+**Version:** 0.6.0
 **Datum:** 2026-03-30
 **Status:** Approved
 **Referenz:** [Architecture Specification](../architecture%20spec/architecture_specification.md)
@@ -599,3 +599,6 @@ MutmutWinError (base)
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiale Version |
 | 0.2.0 | 2026-03-30 | Claude Code Agent | FR-08–10: File Setup Pipeline, Test Mapping + Stats, Mutant Inspektion + CLI; Interface-Specs 3.5–3.8; Data Models 4.6–4.7 |
+| 0.3.0 | 2026-03-30 | Claude Code Agent | FR-11–12: In-Process Stats Collection, Feature Completeness |
+| 0.5.0 | 2026-03-30 | Claude Code Agent | FR-13: Orphan-Prozess-Schutz (Windows Job Objects) |
+| 0.6.0 | 2026-03-30 | Claude Code Agent | FR-14: 7 neue Mutationsoperatoren für v1.0.0 |
