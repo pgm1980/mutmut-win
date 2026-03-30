@@ -18,6 +18,8 @@
 | Sprint 8 Commit (file_setup) | 8 | ✅ Ja | ✅ Ja (housekeeping_done=false) | ✅ 4 Blocker: MEMORY.md, 32 Issues, Backlog, Semgrep | Korrekt — Gate warnt vor Housekeeping |
 | Sprint 9 Commit (test_mapping) | 9 | ✅ Ja | ✅ Ja | ✅ 4 Blocker identisch | Gate feuert konsistent bei jedem Commit |
 | Sprint 10 Commit (mutant_diff) | 10 | ✅ Ja | ✅ Ja | ✅ 4 Blocker identisch | Gate konsistent über alle 3 Sprints |
+| Sprint 11 Commit (in-process stats) | 11 | ✅ Ja | ✅ Ja | ✅ Blocker erkannt | Konsistent |
+| Sprint 12 Commit (completeness) | 12 | ✅ Ja | ✅ Ja | ✅ Blocker erkannt | Konsistent über alle Sprints |
 
 ## SubagentStop Hook (`verify-after-agent.sh`)
 

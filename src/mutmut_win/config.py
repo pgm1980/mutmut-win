@@ -21,6 +21,54 @@ def _default_max_children() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def guess_paths_to_mutate() -> list[str]:
+    """Guess source paths to mutate based on common project layouts.
+
+    Mirrors the heuristic from mutmut 3.5.0: checks for ``lib/``, ``src/``,
+    a directory named after the current working directory (with common
+    transformations applied), and finally a top-level ``.py`` file with the
+    same stem.
+
+    Returns:
+        A list containing the single best-guess path.
+
+    Raises:
+        FileNotFoundError: If no suitable source directory or file can be found.
+    """
+    this_dir = Path.cwd().name
+    candidates = [
+        "lib",
+        "src",
+        this_dir,
+        this_dir.replace("-", "_"),
+        this_dir.replace(" ", "_"),
+        this_dir.replace("-", ""),
+        this_dir.replace(" ", ""),
+    ]
+    for candidate in candidates:
+        if Path(candidate).is_dir():
+            return [candidate]
+
+    py_file = this_dir + ".py"
+    if Path(py_file).is_file():
+        return [py_file]
+
+    msg = (
+        "Could not figure out where the code to mutate is. "
+        "Please specify it by adding paths_to_mutate in pyproject.toml "
+        "under [tool.mutmut]."
+    )
+    raise FileNotFoundError(msg)
+
+
+def _guess_paths_safe() -> list[str]:
+    """Return guessed source paths, falling back to ``['src/']`` on failure."""
+    try:
+        return guess_paths_to_mutate()
+    except FileNotFoundError:
+        return ["src/"]
+
+
 class MutmutConfig(BaseModel):
     """Configuration for a mutmut-win mutation testing run.
 
@@ -29,7 +77,7 @@ class MutmutConfig(BaseModel):
     """
 
     paths_to_mutate: list[str] = Field(
-        default_factory=lambda: ["src/"],
+        default_factory=lambda: _guess_paths_safe(),
         description="Paths to source files to mutate",
     )
     tests_dir: list[str] = Field(
