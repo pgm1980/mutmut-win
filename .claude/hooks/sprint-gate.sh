@@ -7,13 +7,13 @@
 #   "matcher": "Bash"           — matches tool NAME (required for PostToolUse)
 #   "if": "Bash(*git commit*)"  — matches command CONTENT (permission rule syntax)
 #
+# OUTPUT: Normal stdout → Claude AI context (system-reminder)
+#         JSON systemMessage → visible to user in chat
+#
 # IMPORTANT: The leading * in Bash(*git commit*) is required because
 # commands typically start with "cd /path && git commit..." not "git commit...".
 
 set -uo pipefail
-
-# Diagnostic marker (temporary — remove after verification)
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sprint-gate FIRED" >> .sprint/.hook-fire-log
 
 STATE_FILE=".sprint/state.md"
 
@@ -26,12 +26,11 @@ fi
 DONE=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE" | grep '^housekeeping_done:' | sed 's/housekeeping_done: *//' | tr -d '"')
 
 # If housekeeping is already done (or state.md has no frontmatter → DONE is empty), no gate needed.
-# We explicitly check for "false" — any other value (including empty) means "not blocking".
 if [[ "$DONE" == "true" ]] || [[ -z "$DONE" ]]; then
   exit 0
 fi
 
-# Housekeeping is incomplete — run live checks on every commit
+# Housekeeping is incomplete — run live checks
 BLOCKERS=""
 
 # Parse sprint info
@@ -56,7 +55,6 @@ if command -v gh &>/dev/null; then
 fi
 
 # Live check 3: Sprint backlog exists?
-# Search in the canonical location: _docs/sprint backlogs/sprint_<N>_backlog.md
 BACKLOG_DIR="_docs/sprint backlogs"
 BACKLOG_EXISTS=""
 if [[ -d "$BACKLOG_DIR" ]]; then
@@ -73,6 +71,7 @@ if [[ -z "$LAST_SEMGREP" ]]; then
 fi
 
 if [[ -n "$BLOCKERS" ]]; then
+  # Normal stdout → Claude AI sees this as context/system-reminder
   echo "SPRINT GATE: Housekeeping incomplete for Sprint $SPRINT!"
   echo ""
   echo "STOP — Complete these items BEFORE starting the next sprint:"
@@ -83,6 +82,10 @@ if [[ -n "$BLOCKERS" ]]; then
   echo "  Set housekeeping_done: true"
   echo ""
   echo "Only THEN proceed with the next sprint."
+
+  # JSON systemMessage → visible to user in Claude Desktop chat
+  BLOCKER_SHORT=$(echo -e "$BLOCKERS" | tr '\n' ' ' | sed 's/  */ /g')
+  echo "{\"systemMessage\": \"⚠️ Sprint $SPRINT Gate: Housekeeping incomplete —$BLOCKER_SHORT\"}"
 fi
 
 # Always exit 0 — warn, never block

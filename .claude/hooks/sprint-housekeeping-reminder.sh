@@ -1,19 +1,21 @@
 #!/bin/bash
 
-# Sprint Housekeeping Reminder — Stop Hook (runs alongside ralph-stop-hook)
+# Sprint Housekeeping Reminder — Stop Hook
 # Warns about incomplete housekeeping when session ends.
+#
+# OUTPUT: Normal stdout → Claude AI context
+#         JSON systemMessage → visible to user in chat
 
 set -uo pipefail
-# NOTE: -e deliberately omitted — git/parse commands may fail in edge cases
 
 STATE_FILE=".sprint/state.md"
 
 # No sprint state → check basic hygiene only
 if [[ ! -f "$STATE_FILE" ]]; then
-  # Still check for uncommitted changes
   CHANGES=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$CHANGES" -gt 0 ]]; then
-    echo "WARNING: $CHANGES uncommitted files. Consider committing before ending session."
+    echo "WARNING: $CHANGES uncommitted files."
+    echo "{\"systemMessage\": \"⚠️ $CHANGES uncommitted files — consider committing before ending session.\"}"
   fi
   exit 0
 fi
@@ -24,11 +26,13 @@ SPRINT=$(echo "$FRONTMATTER" | grep '^current_sprint:' | sed 's/current_sprint: 
 DONE=$(echo "$FRONTMATTER" | grep '^housekeeping_done:' | sed 's/housekeeping_done: *//' | tr -d '"')
 
 WARNINGS=""
+USER_MSG=""
 
 # Uncommitted changes
 CHANGES=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$CHANGES" -gt 0 ]]; then
   WARNINGS="$WARNINGS\n  - $CHANGES uncommitted files!"
+  USER_MSG="$USER_MSG $CHANGES uncommitted files."
 fi
 
 # Housekeeping incomplete
@@ -42,11 +46,16 @@ if [[ "$DONE" == "false" ]]; then
   [[ "$MEM" == "false" ]] && WARNINGS="$WARNINGS\n    - [ ] MEMORY.md"
   [[ "$ISS" == "false" ]] && WARNINGS="$WARNINGS\n    - [ ] GitHub Issues"
   [[ "$SBL" == "false" ]] && WARNINGS="$WARNINGS\n    - [ ] Sprint Backlog"
+  USER_MSG="$USER_MSG Sprint $SPRINT HK incomplete."
 fi
 
 if [[ -n "$WARNINGS" ]]; then
+  # Normal stdout → Claude AI context
   echo "SESSION END — Open items:"
   echo -e "$WARNINGS"
+
+  # JSON systemMessage → visible to user in chat
+  echo "{\"systemMessage\": \"🛑 Session End:$USER_MSG\"}"
 fi
 
 # Never block exit
