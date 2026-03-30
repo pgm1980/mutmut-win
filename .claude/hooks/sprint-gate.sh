@@ -1,32 +1,21 @@
 #!/bin/bash
 
-# Sprint Gate — PostToolUse Hook (Matcher: Bash — all Bash calls)
-# Checks if a new git commit happened since last check. If yes, runs
-# housekeeping validation. If no new commit, exits in <1ms.
+# Sprint Gate — PostToolUse Hook
+# Filter: "if": "Bash(git commit*)" — fires ONLY on git commit calls.
 #
-# NOTE: Regex matchers like Bash\(.*git commit.*\) do NOT work in Claude
-# Desktop (tested 2026-03-30). Only simple tool-name matchers work.
-# Commit detection is handled inside the script via .last-gate-commit.
+# NOTE: Use "if" (not "matcher") for command-content filtering.
+# "matcher" only matches tool NAME (e.g. "Bash"), not arguments.
+# "if" uses permission rule syntax: Bash(git commit*) matches
+# any Bash call containing "git commit" with any arguments.
 
 set -uo pipefail
 
 STATE_FILE=".sprint/state.md"
 
-# Quick exit: no sprint state → nothing to gate
+# No sprint state → nothing to gate
 if [[ ! -f "$STATE_FILE" ]]; then
   exit 0
 fi
-
-# Quick exit: no new commit since last check → skip expensive checks.
-LAST_COMMIT=$(git log -1 --format=%H 2>/dev/null || echo "none")
-GATE_MARKER=".sprint/.last-gate-commit"
-if [[ -f "$GATE_MARKER" ]]; then
-  PREV_COMMIT=$(cat "$GATE_MARKER" 2>/dev/null || echo "")
-  if [[ "$LAST_COMMIT" == "$PREV_COMMIT" ]]; then
-    exit 0
-  fi
-fi
-echo "$LAST_COMMIT" > "$GATE_MARKER"
 
 # Parse housekeeping_done
 DONE=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE" | grep '^housekeeping_done:' | sed 's/housekeeping_done: *//' | tr -d '"')

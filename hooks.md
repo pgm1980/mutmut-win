@@ -27,7 +27,7 @@
 | H-01 | sprint-gate.sh | Sucht Sprint Backlog mit `find . -maxdepth 4` statt in `_docs/sprint backlogs/` — **FIX PENDING** | HIGH |
 | H-02 | sprint-gate.sh | Sprint Backlogs Sprint 1-13 nie erstellt — weil H-04 (Matcher-Bug) den Hook nie feuern ließ | HIGH (Folge von H-04) |
 | H-03 | sprint-health.sh | ~~Feuert nicht~~ **GEFIXT**: Hook feuert korrekt! Output erscheint als `<system-reminder>` am Session-Start, nicht als Chat-Nachricht. War die ganze Zeit aktiv. | RESOLVED |
-| H-04 | PostToolUse | **ROOT CAUSE**: Matcher ist REGEX, nicht Glob. `Bash(*git commit*)` = ungültiger Regex. Fix: Matcher `Bash` (Catch-All) + Commit-basierte Filterung im Skript via `.sprint/.last-gate-commit` Marker. **VERIFIZIERT: Gate-Marker wird geschrieben.** | FIXED + VERIFIED |
+| H-04 | PostToolUse | **ROOT CAUSE**: `matcher` filtert nur Tool-NAME (z.B. "Bash"), NICHT Befehlsinhalt. Für Befehlsinhalt: `"if"` statt `"matcher"` verwenden. `"if"` nutzt Permission Rule Syntax: `Bash(git commit*)`. **Fix: `"if": "Bash(git commit*)"` — muss nach Restart verifiziert werden.** | FIXED (needs restart) |
 | H-05 | copy_also_copy | `tests/` Default kopiert .venv-Symlinks → WinError 1920 | HIGH |
 | H-06 | Dogfooding | ~~Worker ModuleNotFoundError~~ GEFIXT (multiprocessing.Pool→sequential). Verbleibendes Problem: Dogfooding (mutmut-win auf sich selbst) ist ein Sonderfall — Trampoline wirkt nur auf Ziel-Projekt-Code, nicht auf mutmut-win's eigenen Code. Normaler Use Case funktioniert. | WONTFIX (by design) |
 | H-07 | CLI | 10 neue CLI-Flags (3 Tiers): --paths-to-mutate, --min-score, --output json, --since-commit (USP!), --tests-dir, --no-progress, --debug, --dry-run, --timeout-multiplier, --do-not-mutate. ~165 LOC. | HIGH |
