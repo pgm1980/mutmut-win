@@ -30,7 +30,7 @@
 | H-04 | alle Hooks | Unklar ob Hooks in Claude Desktop überhaupt getriggert werden | CRITICAL |
 | H-05 | copy_also_copy | `tests/` Default kopiert .venv-Symlinks → WinError 1920 | HIGH |
 | H-06 | Dogfooding | mutmut-win auf eigenem Code: Worker ModuleNotFoundError (editable install + spawn) | HIGH |
-| H-07 | CLI | Original hat KEIN `--paths-to-mutate` Flag — alles über pyproject.toml. CLI ist fast vollständig. Einziger Diff: `print-time-estimates` heißt bei uns `time-estimates`, `--all` in results ist Flag statt Boolean. Severity herabgestuft. | LOW |
+| H-07 | CLI | 10 neue CLI-Flags (3 Tiers): --paths-to-mutate, --min-score, --output json, --since-commit (USP!), --tests-dir, --no-progress, --debug, --dry-run, --timeout-multiplier, --do-not-mutate. ~165 LOC. | HIGH |
 
 ---
 
