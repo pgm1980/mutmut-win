@@ -28,6 +28,9 @@
 | H-02 | sprint-gate.sh | Sprint Backlogs wurden in Sprint 1-13 NIE erstellt — Hook hat das nie bemängelt | HIGH |
 | H-03 | sprint-health.sh | Feuert NICHT automatisch bei SessionStart (nur manuell via bash) | CRITICAL |
 | H-04 | alle Hooks | Unklar ob Hooks in Claude Desktop überhaupt getriggert werden | CRITICAL |
+| H-05 | copy_also_copy | `tests/` Default kopiert .venv-Symlinks → WinError 1920 | HIGH |
+| H-06 | Dogfooding | mutmut-win auf eigenem Code: Worker ModuleNotFoundError (editable install + spawn) | HIGH |
+| H-07 | CLI | `--paths-to-mutate` fehlt als CLI-Flag (nur in pyproject.toml Config) | MEDIUM |
 
 ---
 

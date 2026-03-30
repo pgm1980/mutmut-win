@@ -106,9 +106,17 @@ def copy_src_dir(config: MutmutConfig) -> None:
 def copy_also_copy_files(config: MutmutConfig) -> None:
     """Copy config.also_copy files/directories into the mutants/ directory.
 
+    Skips ``.venv``, ``__pycache__``, and other cache directories to avoid
+    copying virtual environments (which contain symlinks that fail on Windows).
+
     Args:
         config: Active ``MutmutConfig`` instance.
     """
+    skip_dirs = {".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+
+    def _ignore_venvs(directory: str, files: list[str]) -> list[str]:
+        return [f for f in files if f in skip_dirs]
+
     for path_str in config.also_copy:
         print("     also copying", path_str)
         path = Path(path_str)
@@ -118,7 +126,7 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         if path.is_file():
             shutil.copy2(path, destination)
         else:
-            shutil.copytree(path, destination, dirs_exist_ok=True)
+            shutil.copytree(path, destination, dirs_exist_ok=True, ignore=_ignore_venvs)
 
 
 # ---------------------------------------------------------------------------
