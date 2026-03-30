@@ -12,6 +12,7 @@
 |---------|----------|---------|--------|------------|
 | v0.1.0 | MVP | Sprint 1–6 | Planned | Windows-native Mutation Testing |
 | v0.2.0 | Pipeline | Sprint 8–10 | Planned | File Setup Pipeline, Test Mapping, CLI show/apply, E2E-Validierung |
+| v0.3.0 | Performance | Sprint 11–12 | Planned | In-Process Stats, Trampoline Tracking, Feature Completeness |
 
 ---
 
@@ -244,6 +245,57 @@
 
 ---
 
+### Epic 10: In-Process Stats + Trampoline Tracking
+
+**Beschreibung:** Implementierung der Two-Phase Execution mit in-process pytest.main() für Stats und korrektem Trampoline-Hit-Tracking via _state globals — kritisch für korrekte Test-Zuordnung pro Mutant
+**Sprint:** 11
+**Release:** v0.3.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #39 | Story | Als Entwickler will ich _state.py module mit shared globals für Trampoline-Tracking | Must | 3 | Open |
+| #40 | Story | Als Entwickler will ich record_trampoline_hit + MutmutProgrammaticFailException re-exports in __main__.py | Must | 3 | Open |
+| #41 | Story | Als Entwickler will ich PytestRunner.run_stats() Rewrite mit pytest.main() + StatsCollector Plugin | Must | 8 | Open |
+| #42 | Story | Als Entwickler will ich stats.py Update — collect_or_load_stats nutzt _state globals nach run_stats() | Must | 5 | Open |
+| #43 | Task | Orchestrator — reale Test-Zuordnung aus Stats-Daten verdrahten | Must | 5 | Open |
+
+**Acceptance Criteria:**
+- [ ] `_state.py` im Domain Layer mit `tests_by_mangled_function_name`, `current_test_name`, `reset_state()`, `record_trampoline_hit()`
+- [ ] `__main__.py` re-exportiert `record_trampoline_hit` und `MutmutProgrammaticFailException`
+- [ ] `PytestRunner.run_stats()` verwendet `pytest.main()` in-process mit `StatsCollector`-Plugin
+- [ ] Stats-Daten enthalten korrekte Test-Zuordnung via mangled names
+- [ ] Orchestrator weist nur relevante Tests pro Mutant zu (deutliche Laufzeit-Reduktion)
+- [ ] hypothesis Property-Tests für `record_trampoline_hit` State-Invarianten
+
+---
+
+### Epic 11: Feature Completeness + E2E Validation
+
+**Beschreibung:** Port aller verbleibenden mutmut-Funktionen für 100% Feature-Parität und vollständige E2E-Validierung auf Referenzprojekten
+**Sprint:** 12
+**Release:** v0.3.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #44 | Story | Als User will ich guess_paths_to_mutate() in config.py, damit paths_to_mutate automatisch ermittelt wird | Must | 3 | Open |
+| #45 | Story | Als Entwickler will ich ListAllTestsResult + inkrementelle Stats, damit Stats-Updates effizient sind | Should | 5 | Open |
+| #46 | Story | Als User will ich CLI-Commands tests-for-mutant und time-estimates, damit ich Test-Zuordnung und Zeitschätzungen abrufen kann | Should | 5 | Open |
+| #47 | Story | Als User will ich CI/CD-Stats-Export (save_cicd_stats + CLI), damit ich Mutation-Testing in CI/CD integrieren kann | Should | 5 | Open |
+| #48 | Story | Als Entwickler will ich Type-Checker-Helpers vollständig (MutatedMethodsCollector, MutatedMethodLocation, FailedTypeCheckMutant, group_by_path) | Must | 5 | Open |
+| #49 | Task | Full E2E Validation — mutmut-win run auf simple_lib + my_lib, Ergebnisvergleich mit mutmut-Referenz | Must | 8 | Open |
+| #50 | Task | exceptions.py — MutmutProgrammaticFailException, BadTestExecutionCommandsException, InvalidGeneratedSyntaxException | Must | 3 | Open |
+
+**Acceptance Criteria:**
+- [ ] `guess_paths_to_mutate()` ermittelt src/-Verzeichnisse automatisch wenn `paths_to_mutate` nicht konfiguriert
+- [ ] `ListAllTestsResult` in `stats.py` implementiert, inkrementelle Updates möglich
+- [ ] `tests-for-mutant` und `time-estimates` CLI-Commands funktionieren
+- [ ] `save_cicd_stats` + CLI-Command `export-cicd-stats` implementiert
+- [ ] Alle Type-Checker-Helpers in `type_checking.py` vollständig portiert
+- [ ] E2E-Validierung: mutmut-win-Ergebnisse stimmen mit mutmut-Referenz überein (simple_lib + my_lib)
+- [ ] `exceptions.py` enthält alle fehlenden Exception-Klassen
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -260,6 +312,7 @@
 |-----------|---------|-------|--------|--------|
 | MVP | v0.1.0 | Epic 1–6 | #1–#23 | Open |
 | Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Open |
+| Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Open |
 
 ---
 
@@ -276,6 +329,8 @@
 | Sprint 8 | 24 | | | File Setup Pipeline |
 | Sprint 9 | 24 | | | Test Mapping + Stats |
 | Sprint 10 | 21 | | | CLI show/apply + E2E Validation |
+| Sprint 11 | 24 | | | In-Process Stats + Trampoline Tracking |
+| Sprint 12 | 34 | | | Feature Completeness + E2E Validation |
 
 ---
 
@@ -285,3 +340,4 @@
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiales Backlog |
 | 0.2.0 | 2026-03-30 | Claude Code Agent | Epic 7–9 (Sprints 8–10): File Setup Pipeline, Test Mapping + Stats, CLI show/apply + E2E; Release v0.2.0; Issues #24–#38 |
+| 0.3.0 | 2026-03-30 | Claude Code Agent | Epic 10–11 (Sprints 11–12): In-Process Stats + Trampoline Tracking, Feature Completeness + E2E Validation; Release v0.3.0; Issues #39–#50 |
