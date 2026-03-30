@@ -81,6 +81,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash .claude/hooks/hook-diagnostic.sh SessionStart",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash .claude/hooks/sprint-health.sh",
             "timeout": 15,
             "statusMessage": "Checking sprint status..."
@@ -92,6 +97,11 @@
       {
         "matcher": "Bash(git commit*)",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/hook-diagnostic.sh PostToolUse-git-commit",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "bash .claude/hooks/sprint-gate.sh",
