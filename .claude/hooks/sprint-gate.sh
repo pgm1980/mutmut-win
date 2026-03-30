@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Sprint Gate — PostToolUse Hook (Matcher: Bash — fires on ALL Bash calls)
-# Quickly exits for non-commit calls. Runs full checks only after git commits.
-# Works in both interactive AND autonomous mode (no user prompt needed).
+# Sprint Gate — PostToolUse Hook
+# Matcher: Bash\(.*git commit.*\) — fires only on git commit calls.
+# Checks if housekeeping is incomplete and warns Claude.
 #
-# NOTE: The matcher is "Bash" (not "Bash(*git commit*)") because Claude Desktop
-# interprets matchers as REGEX, and "Bash(*git commit*)" is invalid regex
-# (* without preceding char). The script handles the filtering internally.
+# NOTE: Claude Desktop interprets matchers as REGEX (not glob).
+# Bash\(.*git commit.*\) correctly matches "Bash(cd ... && git commit ...)"
 
 set -uo pipefail
 # NOTE: -e deliberately omitted — pipeline failures in live checks (gh, find, git)
@@ -14,24 +13,10 @@ set -uo pipefail
 
 STATE_FILE=".sprint/state.md"
 
-# Quick exit: no sprint state → nothing to gate
+# No sprint state → nothing to gate
 if [[ ! -f "$STATE_FILE" ]]; then
   exit 0
 fi
-
-# Quick exit: check if a new commit happened since our last check.
-# This avoids running expensive checks on every Bash call (ruff, pytest, etc.)
-LAST_COMMIT=$(git log -1 --format=%H 2>/dev/null || echo "none")
-GATE_MARKER=".sprint/.last-gate-commit"
-if [[ -f "$GATE_MARKER" ]]; then
-  PREV_COMMIT=$(cat "$GATE_MARKER" 2>/dev/null || echo "")
-  if [[ "$LAST_COMMIT" == "$PREV_COMMIT" ]]; then
-    # No new commit since last check — skip
-    exit 0
-  fi
-fi
-# Record current commit so we don't re-check
-echo "$LAST_COMMIT" > "$GATE_MARKER"
 
 # Parse housekeeping_done
 DONE=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE" | grep '^housekeeping_done:' | sed 's/housekeeping_done: *//' | tr -d '"')
