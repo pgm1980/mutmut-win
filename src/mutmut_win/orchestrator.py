@@ -178,51 +178,64 @@ class MutationOrchestrator:
     ) -> tuple[list[MutationTask], dict[str, SourceFileMutationData]]:
         """Walk source directories and generate mutants for all eligible files.
 
-        When ``config.mutate_only_covered_lines`` is enabled, coverage data is
-        collected first and only lines executed by the test suite are mutated.
+        Steps:
+
+        1. Copy source files to ``mutants/`` staging directory.
+        2. Copy ``also_copy`` files/directories into ``mutants/``.
+        3. Fix ``sys.path`` so test processes import the mutated code.
+        4. Optionally gather coverage data (``mutate_only_covered_lines``).
+        5. For each source file call ``create_mutants_for_file`` to generate
+           mutated output and build the ``MutationTask`` list.
 
         Returns:
             A tuple of (flat task list, mapping of file path to SourceFileMutationData).
         """
-        from mutmut_win.mutation import mutate_file_contents
+        from mutmut_win.file_setup import (
+            copy_also_copy_files,
+            copy_src_dir,
+            create_mutants_for_file,
+            get_mutant_name,
+            setup_source_paths,
+            walk_source_files,
+        )
 
-        # Collect all eligible source files first (needed for coverage).
-        source_files_by_glob: list[tuple[str, Path]] = []
-        for path_glob in self._config.paths_to_mutate:
-            base = Path(path_glob)
-            if base.is_file():
-                candidates = [base]
-            else:
-                candidates = sorted(base.rglob("*.py")) if base.is_dir() else []
-            for src_file in candidates:
-                rel_path = str(src_file)
-                if not self._config.should_ignore_for_mutation(rel_path):
-                    source_files_by_glob.append((rel_path, src_file))
+        # Step 1-3: Prepare the mutants/ directory and sys.path.
+        copy_src_dir(self._config)
+        copy_also_copy_files(self._config)
+        setup_source_paths()
 
-        # Optionally gather coverage data to filter mutations.
-        covered_lines: dict[str, set[int]] | None = None
+        # Collect all eligible source files (needed before coverage run).
+        source_files: list[tuple[str, Path]] = []
+        for src_file in walk_source_files(self._config):
+            rel_path = str(src_file)
+            if not self._config.should_ignore_for_mutation(rel_path):
+                source_files.append((rel_path, src_file))
+
+        # Step 4: Optionally gather coverage to restrict which lines are mutated.
+        covered_lines_map: dict[str, set[int]] | None = None
         if self._config.mutate_only_covered_lines:
-            covered_lines = self._gather_coverage(
-                [rel for rel, _ in source_files_by_glob],
+            covered_lines_map = self._gather_coverage(
+                [rel for rel, _ in source_files],
             )
 
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}
 
-        for rel_path, src_file in source_files_by_glob:
+        # Step 5: Generate per-file mutants.
+        for rel_path, src_file in source_files:
+            output_path = Path("mutants") / src_file
+
+            # Determine per-file covered lines (None = no filter).
+            file_covered: set[int] | None = None
+            if covered_lines_map is not None:
+                from mutmut_win.code_coverage import get_covered_lines_for_file
+
+                file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
+
             try:
-                code = src_file.read_text(encoding="utf-8")
-
-                # Determine per-file covered lines (None = no filter).
-                file_covered: set[int] | None = None
-                if covered_lines is not None:
-                    from mutmut_win.code_coverage import get_covered_lines_for_file
-
-                    file_covered = get_covered_lines_for_file(rel_path, covered_lines)
-
-                _mutated_code, mutant_names = mutate_file_contents(
-                    rel_path,
-                    code,
+                mutant_names, _warns = create_mutants_for_file(
+                    src_file,
+                    output_path,
                     file_covered,
                 )
             except Exception as exc:  # broad catch: log and continue with remaining files
@@ -232,18 +245,21 @@ class MutationOrchestrator:
             if not mutant_names:
                 continue
 
+            # Build fully qualified names via get_mutant_name.
+            qualified_names = [get_mutant_name(src_file, name) for name in mutant_names]
+
             sfd = SourceFileMutationData(path=rel_path)
             sfd.load()
             source_data[rel_path] = sfd
 
             all_tasks.extend(
                 MutationTask(
-                    mutant_name=name,
+                    mutant_name=qname,
                     tests=[],
                     estimated_time=0.0,
                     timeout_seconds=_FALLBACK_TIMEOUT,
                 )
-                for name in mutant_names
+                for qname in qualified_names
             )
 
         return all_tasks, source_data
