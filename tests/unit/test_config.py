@@ -28,7 +28,7 @@ class TestMutmutConfig:
         assert config.do_not_mutate == []
         assert config.also_copy == []
         assert config.max_children >= 1
-        assert config.timeout_multiplier == 10.0
+        assert config.timeout_multiplier == 30.0
         assert config.debug is False
 
     def test_string_coerced_to_list(self) -> None:

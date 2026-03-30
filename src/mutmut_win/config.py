@@ -99,9 +99,9 @@ class MutmutConfig(BaseModel):
         description="Number of worker processes",
     )
     timeout_multiplier: float = Field(
-        default=10.0,
+        default=30.0,
         gt=0.0,
-        description="Multiplier for timeout calculation",
+        description="Multiplier for timeout calculation (mutmut default: 30x)",
     )
     max_stack_depth: int = Field(
         default=-1,
@@ -223,7 +223,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "do_not_mutate": _get("do_not_mutate", []),
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
-        "timeout_multiplier": _get("timeout_multiplier", 10.0),
+        "timeout_multiplier": _get("timeout_multiplier", 30.0),
         "max_stack_depth": _get("max_stack_depth", -1),
         "debug": _get("debug", False),
         "mutate_only_covered_lines": _get("mutate_only_covered_lines", False),
