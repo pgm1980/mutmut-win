@@ -119,7 +119,7 @@ name = "Layer architecture"
 type = "layers"
 layers = [
     "mutmut_win.cli | mutmut_win.browser",
-    "mutmut_win.orchestrator | mutmut_win.runner",
+    "mutmut_win.orchestrator | mutmut_win.runner | mutmut_win.mutant_diff",
     "mutmut_win.config | mutmut_win.models | mutmut_win.constants | mutmut_win.mutation | mutmut_win.node_mutation | mutmut_win.trampoline",
     "mutmut_win.process",
 ]
