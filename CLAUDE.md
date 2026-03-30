@@ -49,6 +49,8 @@ PROJEKT-STANDARDS (NICHT VERHANDELBAR):
 - Pydantic-Models für alle Datenstrukturen — keine rohen Dicts
 - Alle neuen Module: Package-Struktur muss der src/-Verzeichnisstruktur entsprechen
 - `uv run` für ALLE Ausführungen (nicht `python` direkt)
+- mutmut-win Mutation Testing auf JEDEN neuen/geänderten Code (`uv run mutmut-win run --paths-to-mutate <geänderte Module>`)
+- Mutation Score ≥ 80% auf neuem Code — surviving Mutants dokumentieren wenn unter 80%
 ```
 
 #### Verifikation nach Subagent-Rückkehr
@@ -60,6 +62,7 @@ Auch wenn Subagenten MCP-Zugriff haben, MUSS die Hauptsession nach jeder Subagen
 - [ ] Alle Tests grün? (`uv run pytest` selbst ausführen)
 - [ ] Serena `get_symbols_overview` auf neue Dateien — Strukturcheck
 - [ ] Bei Security-relevantem Code: Semgrep-Scan selbst bestätigen
+- [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80%?
 
 **Vertrauen, aber verifizieren.** Subagent-Aussagen "Build sauber, Tests grün" sind Hinweise, keine Beweise.
 
