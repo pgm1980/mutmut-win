@@ -430,7 +430,7 @@ def operator_conditional_expression(node: cst.IfExp) -> Iterable[cst.BaseExpress
 
     Tests whether both branches of a ternary expression are actually needed.
     """
-    yield node.body    # always true-branch
+    yield node.body  # always true-branch
     yield node.orelse  # always false-branch
 
 
@@ -541,7 +541,7 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     """
     if not isinstance(node.operator, cst.Or):
         return
-    yield node.left   # remove fallback
+    yield node.left  # remove fallback
     yield node.right  # always use fallback
 
 

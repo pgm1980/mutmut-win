@@ -1,14 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "mcp__fs-mcp-server__execute_workflow",
-      "Bash(gh api:*)",
-      "mcp__semgrep__semgrep_scan",
-      "Bash(gh milestone:*)",
-      "Bash(python -c \":*)",
-      "WebSearch",
-      "mcp__fs-mcp-server__service_catalog"
-    ],
     "defaultMode": "bypassPermissions"
   }
 }
