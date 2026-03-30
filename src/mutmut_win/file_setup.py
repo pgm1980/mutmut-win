@@ -114,7 +114,11 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     """
     skip_dirs = {".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
-    def _ignore_venvs(directory: str, files: list[str]) -> list[str]:
+    # shutil.copytree ignore callback signature requires (directory, files)
+    def _ignore_venvs(
+        _directory: str,
+        files: list[str],
+    ) -> list[str]:
         return [f for f in files if f in skip_dirs]
 
     for path_str in config.also_copy:

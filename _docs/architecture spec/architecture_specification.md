@@ -660,6 +660,45 @@ Alle Operatoren nutzen die bestehende `mutation_operators`-Architektur in `node_
 
 ---
 
+### ADR-019: CLI-Erweiterung — 10 neue Flags für Automation und CI/CD
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+mutmut-win wird primär von Claude Code Agents und in CI/CD-Pipelines genutzt. Die aktuelle CLI hat nur `--max-children` und `--show-killed`. Für Automation fehlen kritische Flags: gezieltes Mutieren, Score-Gates, maschinenlesbarer Output, inkrementelles Testing.
+
+#### Entscheidung
+
+10 CLI-Flags in 3 Tiers implementieren (~165 LOC):
+
+**Tier 1 MUST (Claude Code Automation):**
+- `--paths-to-mutate PATH...` — Überschreibt pyproject.toml Config
+- `--min-score FLOAT` — Exit code 1 wenn Score < threshold (DoD-Gate)
+- `--output text|json` — Maschinenlesbarer Output (Pydantic model_dump_json)
+
+**Tier 2 SHOULD (bessere Nutzbarkeit):**
+- `--since-commit HASH` — Nur geänderte Dateien mutieren (Alleinstellungsmerkmal)
+- `--tests-dir DIR` — Überschreibt tests_dir Config
+- `--no-progress` — Unterdrückt Live-Fortschrittsanzeige
+- `--debug` — Aktiviert Debug-Output
+
+**Tier 3 COULD (nice-to-have):**
+- `--dry-run` — Mutanten zählen ohne Tests auszuführen
+- `--timeout-multiplier FLOAT` — Timeout-Steuerung
+- `--do-not-mutate PATTERN` — Exclude-Pattern ergänzen
+
+Killer-Kombination: `mutmut-win run --since-commit HEAD~1 --min-score 80 --output json --no-progress`
+
+#### Konsequenzen
+
+- **Wird einfacher:** Vollautomatische DoD-Checks, CI/CD-Integration, gezieltes Dogfooding
+- **Wird schwieriger:** CLI-Flags müssen mit pyproject.toml-Config konsistent bleiben (Override-Semantik)
+- **Muss revisited werden:** Bei neuen Config-Feldern
+
+---
+
 ## 3. Komponentenstruktur
 
 ### 3.1 Schichtenübersicht

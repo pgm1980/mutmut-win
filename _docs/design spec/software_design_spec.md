@@ -129,6 +129,28 @@
 | FR-14.8 | Das System MUSS generierte Regex-Mutationen via `re.compile()` auf Validität prüfen | Must | v1.0 |
 | FR-14.9 | Das System SOLL eine Exclusion-Liste für Statement Removal führen (print, logger, warnings) | Should | v1.0 |
 
+### FR-15: CLI-Erweiterung für Automation und CI/CD (Hardening)
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-15.1 | Das System MUSS `--paths-to-mutate PATH...` als CLI-Flag unterstützen (überschreibt pyproject.toml) | Must | v1.0 |
+| FR-15.2 | Das System MUSS `--min-score FLOAT` als CLI-Flag unterstützen (Exit 1 wenn Score < threshold) | Must | v1.0 |
+| FR-15.3 | Das System MUSS `--output text\|json` unterstützen (JSON via Pydantic model_dump_json) | Must | v1.0 |
+| FR-15.4 | Das System MUSS `--since-commit HASH` unterstützen (git diff → nur geänderte .py Dateien) | Must | v1.0 |
+| FR-15.5 | Das System MUSS `--tests-dir DIR` als CLI-Flag unterstützen | Should | v1.0 |
+| FR-15.6 | Das System MUSS `--no-progress` unterstützen (unterdrückt Live-Fortschritt) | Should | v1.0 |
+| FR-15.7 | Das System MUSS `--debug` als CLI-Flag unterstützen | Should | v1.0 |
+| FR-15.8 | Das System SOLL `--dry-run` unterstützen (Mutanten zählen ohne Tests) | Could | v1.0 |
+| FR-15.9 | Das System SOLL `--timeout-multiplier FLOAT` als CLI-Flag unterstützen | Could | v1.0 |
+| FR-15.10 | Das System SOLL `--do-not-mutate PATTERN` als CLI-Flag unterstützen | Could | v1.0 |
+
+### FR-16: Dogfooding-Fähigkeit (Hardening)
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-16.1 | Das System MUSS sich selbst mutationstesten können (Worker importieren mutmut_win korrekt) | Must | v1.0 |
+| FR-16.2 | Das System MUSS `also_copy` Symlinks und `.venv`-Verzeichnisse überspringen | Must | v1.0 |
+
 ---
 
 ## 2. Non-Functional Requirements (NFRs)

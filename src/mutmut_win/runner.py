@@ -57,6 +57,8 @@ class PytestRunner:
         """
         cmd = self._base_pytest_cmd()
         cmd.extend(self._config.pytest_add_cli_args)
+        if self._config.tests_dir:
+            cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
@@ -205,6 +207,8 @@ class PytestRunner:
         """
         cmd = [*self._base_pytest_cmd(), "--tb=no", "-q"]
         cmd.extend(self._config.pytest_add_cli_args)
+        if self._config.tests_dir:
+            cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input

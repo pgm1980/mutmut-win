@@ -65,6 +65,11 @@ def worker_main(
         cmd.extend(pytest_extra_args)
         if task.tests:
             cmd.extend(task.tests)
+        else:
+            # No specific tests assigned — use tests_dir from config if available.
+            raw_tests_dir = config_data.get("tests_dir")
+            if isinstance(raw_tests_dir, list):
+                cmd.extend(str(d) for d in raw_tests_dir)
 
         # Activate the specific mutant via the trampoline env var.
         # Set PYTHONPATH so subprocess can import from mutants/src etc.
