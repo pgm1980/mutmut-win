@@ -1,53 +1,95 @@
+---
+current_sprint: "7"
+sprint_goal: "Hook-Fixes + mutmut E2E Reference Tests"
+branch: "fix/hook-yaml-frontmatter"
+started_at: "2026-03-30"
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
+sprint_backlog_written: false
+semgrep_passed: false
+tests_passed: true
+documentation_updated: false
+---
+
 # Sprint State
 
-**Sprint:** 6 (Final)
-**Phase:** E2E Integration & Quality Assurance
-**Branch:** feature/20-e2e-integration
-**Started:** 2026-03-30
-**Status:** Completed
-
 ## Current Focus
-- Sprint 6 complete — all implementation and testing done.
+- Fix YAML frontmatter format for all hooks
+- Implement mutmut reference E2E tests (5 projects from mutmut 3.5.0)
 
-## Completed
+## Completed Sprints
 
-### Sprint 0
-- [x] Brainstorming & Design Specification (`_docs/specs/2026-03-29-mutmut-win-design.md`)
-- [x] Serena onboarding
-- [x] Git repository initialized + remote configured
+### Sprint 0: Architecture & Design
+- [x] Brainstorming spec, Architecture spec (11 ADRs), Software Design spec
+- [x] Product Backlog, 23 GitHub Issues, Milestone
 
-### Sprint 1-5 (Implementation)
-- [x] Domain models, config, constants, exceptions (`src/mutmut_win/`)
-- [x] Mutation engine: `mutation.py`, `node_mutation.py`, `trampoline.py`, `code_coverage.py`, `type_checking.py`
-- [x] Process management: `executor.py`, `timeout.py`, `worker.py`
-- [x] Orchestrator, runner, db
-- [x] CLI (`cli.py`), TUI result browser (`browser.py`)
-- [x] 275 unit tests -- all passing
+### Sprints 1-6: Implementation
+- [x] Domain models, config, constants, exceptions
+- [x] Mutation engine (mutation.py, node_mutation.py, trampoline.py, code_coverage.py, type_checking.py)
+- [x] Process management (executor.py, timeout.py, worker.py)
+- [x] Orchestrator, runner, SQLite persistence
+- [x] CLI (run/results/show/apply/browse), TUI browser
+- [x] 279 unit + architecture tests, all green
+- [x] E2E test project (simple_lib) — but NOT the 5 mutmut reference projects
 
-### Sprint 6 (E2E Integration)
-- [x] E2E fixture project: `tests/e2e_projects/simple_lib/` (4 functions, 9 tests)
-  - `src/simple_lib/__init__.py` -- add, subtract, multiply, is_positive
-  - `tests/test_simple.py` -- full coverage tests
-  - `pyproject.toml` -- minimal mutmut config
-- [x] Integration tests: `tests/integration/test_e2e.py`
-  - `test_e2e_mutations_generated_and_killed` -- full pipeline, DB verification
-  - `test_e2e_results_command` -- CLI results sub-command verification
-  - Marked `@pytest.mark.integration` + `@pytest.mark.slow`
-- [x] Architecture tests: `tests/test_architecture.py`
-  - All modules importable
-  - Layer contracts verified
-  - Process layer isolation checked
-  - Config layer isolation checked
-- [x] Ruff: 0 findings
-- [x] Unit tests + architecture tests: all green
+## Known Issues
+- [ ] E2E tests use self-written simple_lib, not the 5 verified mutmut reference projects
+- [ ] No snapshot comparison against mutmut reference results
+- [ ] Hooks were not effective due to wrong state.md format (this sprint fixes it)
 
-## Quality Metrics
-- Unit tests: 275 passing
-- Architecture tests: 4 passing
-- E2E tests: 2 (marked slow/integration -- not run in standard CI)
-- Ruff: 0 findings
-- mypy: strict mode
+## Sprint Context (auto-saved before compaction at 2026-03-30T07:12:11Z)
 
-## Next
-- [ ] Final PR review and merge to main
-- [ ] Tag v0.1.0
+### Current Branch
+fix/hook-yaml-frontmatter
+
+### Last 10 Commits
+```
+62aafd5 merge: Sprint 6 - E2E Tests + Integration (#20, #21)
+9539d91 feat(sprint-6): E2E tests, architecture tests, integration polish
+05fd17b merge: Sprint 5 - CLI + TUI Browser (#17, #18, #19)
+4dca37f feat(sprint-5): CLI commands and TUI result browser
+e5fbfac merge: Sprint 4 - Orchestrator + Test Runner (#13, #14, #15, #16)
+e28ebfe feat(sprint-4): orchestrator, test runner, and SQLite persistence
+e0e6c68 merge: Sprint 3 - Windows Process Management (#9, #10, #11, #12)
+34b3f16 feat(sprint-3): Windows process management (spawn pool, timeout, worker)
+ef397b2 merge: Sprint 2 - Mutation Engine Port (#5, #6, #7, #8)
+2bfe550 feat(sprint-2): port mutation engine from mutmut 3.5.0
+```
+
+### Recently Changed Files
+```
+.sprint/state.md
+src/mutmut_win/__main__.py
+src/mutmut_win/browser.py
+src/mutmut_win/cli.py
+src/mutmut_win/code_coverage.py
+src/mutmut_win/db.py
+src/mutmut_win/mutation.py
+src/mutmut_win/node_mutation.py
+src/mutmut_win/orchestrator.py
+src/mutmut_win/process/__init__.py
+src/mutmut_win/process/executor.py
+src/mutmut_win/process/timeout.py
+src/mutmut_win/process/worker.py
+src/mutmut_win/result_browser_layout.tcss
+src/mutmut_win/runner.py
+src/mutmut_win/trampoline.py
+src/mutmut_win/type_checking.py
+tests/e2e_projects/simple_lib/pyproject.toml
+tests/e2e_projects/simple_lib/src/simple_lib/__init__.py
+tests/e2e_projects/simple_lib/tests/test_simple.py
+```
+
+### Uncommitted Changes
+```
+ M .claude/hooks/sprint-gate.sh
+ M .claude/hooks/sprint-state-save.sh
+ M .sprint/state.md
+?? .hypothesis/
+?? .sprint/.fs-mcp-versions/
+?? "_docs/architecture spec/.fs-mcp-versions/"
+?? "_docs/design spec/software_design_specification.md"
+?? "_docs/product backlog/.fs-mcp-versions/"
+?? uv.lock
+```

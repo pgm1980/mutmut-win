@@ -674,6 +674,74 @@ Beim Repository-Setup den `git-workflow-guide` Skill verwenden.
 
 ---
 
+## Sprint State Management (`.sprint/state.md`)
+
+Die Datei `.sprint/state.md` ist das zentrale Steuerungsdokument für alle Hooks in `.claude/hooks/`. Sie MUSS ein **YAML-Frontmatter** mit exakt den unten definierten Feldern enthalten. Fehlt die Datei oder das Frontmatter, feuern die Hooks ohne Wirkung.
+
+### Schema (PFLICHT — alle Felder erforderlich)
+
+```yaml
+---
+current_sprint: "1"                    # Sprint-Nummer (String)
+sprint_goal: "Kurzbeschreibung"        # 1-Satz Sprint-Ziel
+branch: "feature/1-kurzbeschreibung"   # Erwarteter Git-Branch für diesen Sprint
+started_at: "2026-03-30"               # ISO-Datum des Sprint-Starts
+housekeeping_done: false               # true = alle HK-Items erledigt, false = Sprint-Gate aktiv
+memory_updated: false                  # true = MEMORY.md in diesem Sprint aktualisiert
+github_issues_closed: false            # true = alle Sprint-Issues geschlossen
+sprint_backlog_written: false          # true = Sprint-Backlog-Dokument existiert
+semgrep_passed: false                  # true = Semgrep-Scan ohne Findings bestanden
+tests_passed: false                    # true = alle Tests grün (pytest + mypy + ruff)
+documentation_updated: false           # true = Docs/Docstrings aktualisiert
+---
+```
+
+### Feld-Referenz
+
+| Feld | Typ | Default | Gelesen von Hook(s) |
+|------|-----|---------|---------------------|
+| `current_sprint` | String | — | sprint-health, sprint-gate, statusline, post-compact-reminder, sprint-housekeeping-reminder |
+| `sprint_goal` | String | — | sprint-health, post-compact-reminder |
+| `branch` | String | — | sprint-health, post-compact-reminder |
+| `started_at` | ISO-Datum | — | sprint-health, sprint-gate |
+| `housekeeping_done` | Boolean | `false` | sprint-health, sprint-gate, statusline, post-compact-reminder, sprint-housekeeping-reminder |
+| `memory_updated` | Boolean | `false` | sprint-health, sprint-housekeeping-reminder |
+| `github_issues_closed` | Boolean | `false` | sprint-health, sprint-housekeeping-reminder |
+| `sprint_backlog_written` | Boolean | `false` | sprint-health, sprint-housekeeping-reminder |
+| `semgrep_passed` | Boolean | `false` | sprint-health |
+| `tests_passed` | Boolean | `false` | sprint-health |
+| `documentation_updated` | Boolean | `false` | sprint-health |
+
+### Lifecycle
+
+1. **Sprint-Start**: Claude erstellt/aktualisiert `.sprint/state.md` mit neuem Sprint, `housekeeping_done: false` und allen Items auf `false`
+2. **Während Sprint**: Items werden auf `true` gesetzt sobald sie erledigt sind
+3. **Sprint-Ende**: Alle Items `true`, dann `housekeeping_done: true` setzen → Sprint-Gate deaktiviert
+4. **Nächster Sprint**: Frontmatter mit neuer Sprint-Nummer überschreiben, alle Items zurück auf `false`
+
+### Hook-Zuordnung
+
+| Hook | Trigger | Liest | Wirkung |
+|------|---------|-------|---------|
+| `sprint-health.sh` | SessionStart | Alle Felder | Zeigt Sprint-Status + offene HK-Items + Warnungen |
+| `sprint-gate.sh` | PostToolUse (git commit) | `housekeeping_done`, `current_sprint`, `started_at` | Warnt wenn HK nicht erledigt |
+| `statusline.sh` | Permanent | `current_sprint`, `housekeeping_done` | `S1 [HK!]` oder `S1` |
+| `post-compact-reminder.sh` | PostCompact | `current_sprint`, `sprint_goal`, `branch`, `housekeeping_done` | CLAUDE.md-Reminders + Sprint-State |
+| `sprint-housekeeping-reminder.sh` | Stop | `current_sprint`, `housekeeping_done`, `memory_updated`, `github_issues_closed`, `sprint_backlog_written` | Session-End-Warnung |
+| `sprint-state-save.sh` | PreCompact | Gesamte Datei | Hängt Git-Context an state.md an |
+| `verify-after-agent.sh` | SubagentStop | — (prüft Code direkt) | Ruff + mypy + pytest + Semgrep |
+
+### Validierung
+
+Der `sprint-health.sh` Hook validiert beim SessionStart, ob alle Pflichtfelder vorhanden sind. Fehlende Felder werden als Warnung ausgegeben.
+
+**VERBOTEN:**
+- **NICHT** `.sprint/state.md` ohne YAML-Frontmatter schreiben — die Hooks ignorieren die Datei dann komplett
+- **NICHT** Felder weglassen — fehlende Felder führen zu stillen Hook-Fehlfunktionen
+- **NICHT** `housekeeping_done: true` setzen bevor alle Items tatsächlich erledigt sind
+
+---
+
 ## Entwicklungsprozess — Scrum-basiert
 
 Vollständiger Prozess: Siehe [_config/development_process.md](_config/development_process.md)
