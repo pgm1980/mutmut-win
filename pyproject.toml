@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mutmut-win"
-version = "0.6.0"
+version = "1.0.0"
 description = "Windows-native mutation testing for Python, based on mutmut 3.5.0"
 readme = "README.md"
 license = "ISC"
