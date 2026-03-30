@@ -399,6 +399,41 @@ def operator_math_methods(node: cst.Call) -> Iterable[cst.CSTNode]:
         yield cst.Integer("0")
 
 
+# ---------------------------------------------------------------------------
+# Return Value Replacement (inspired by cargo-mutants)
+# ---------------------------------------------------------------------------
+
+
+def operator_return_value(node: cst.Return) -> Iterable[cst.Return]:
+    """Replace non-literal return values with ``None``.
+
+    Skips bare ``return``, ``return None``, and literal values (numbers,
+    strings, booleans) which are already mutated by other operators.
+    """
+    if node.value is None:
+        return  # bare return
+    # Skip literals already covered by other operators
+    if isinstance(node.value, (cst.BaseNumber, cst.BaseString)):
+        return
+    if isinstance(node.value, cst.Name) and node.value.value in ("None", "True", "False"):
+        return
+    yield node.with_changes(value=cst.Name("None"))
+
+
+# ---------------------------------------------------------------------------
+# Conditional Expression mutation (inspired by Stryker.NET)
+# ---------------------------------------------------------------------------
+
+
+def operator_conditional_expression(node: cst.IfExp) -> Iterable[cst.BaseExpression]:
+    """Simplify ``x if condition else y`` to just ``x`` or just ``y``.
+
+    Tests whether both branches of a ternary expression are actually needed.
+    """
+    yield node.body    # always true-branch
+    yield node.orelse  # always false-branch
+
+
 # Operators that should be called on specific node types
 mutation_operators: OPERATORS_TYPE = [
     (cst.BaseNumber, operator_number),
@@ -418,6 +453,8 @@ mutation_operators: OPERATORS_TYPE = [
     (cst.Match, operator_match),
     (cst.Call, operator_regex),
     (cst.Call, operator_math_methods),
+    (cst.Return, operator_return_value),
+    (cst.IfExp, operator_conditional_expression),
 ]
 
 
