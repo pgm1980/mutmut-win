@@ -296,12 +296,17 @@ class MutationOrchestrator:
             file_args.append((rel_path, src_file, output_path, file_covered))
 
         # Step 5: Generate per-file mutants.
-        # Always sequential — CST parsing is fast (~100ms/file) and
-        # multiprocessing.Pool with spawn on Windows causes
-        # ModuleNotFoundError when the project is editable-installed (H-06).
-        raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = [
-            _create_mutants_worker(args) for args in file_args
-        ]
+        # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0)
+        # when max_children > 1; fall back to sequential for max_children == 1.
+        import multiprocessing
+
+        if self._config.max_children > 1:
+            with multiprocessing.Pool(processes=self._config.max_children) as pool:
+                raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = list(
+                    pool.imap_unordered(_create_mutants_worker, file_args)
+                )
+        else:
+            raw_results = [_create_mutants_worker(args) for args in file_args]
 
         for result in raw_results:
             rel_path_result, mutant_names, error, warn_msgs = result
