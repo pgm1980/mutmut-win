@@ -1,17 +1,16 @@
 #!/bin/bash
 
 # Sprint Gate — PostToolUse Hook
-# Filter: "if": "Bash(git commit*)" — fires ONLY on git commit calls.
+# Filter: "if": "Bash(*git commit*)" — fires ONLY on git commit calls.
 #
-# NOTE: Use "if" (not "matcher") for command-content filtering.
-# "matcher" only matches tool NAME (e.g. "Bash"), not arguments.
-# "if" uses permission rule syntax: Bash(git commit*) matches
-# any Bash call containing "git commit" with any arguments.
+# Hook config uses TWO levels:
+#   "matcher": "Bash"           — matches tool NAME (required for PostToolUse)
+#   "if": "Bash(*git commit*)"  — matches command CONTENT (permission rule syntax)
+#
+# IMPORTANT: The leading * in Bash(*git commit*) is required because
+# commands typically start with "cd /path && git commit..." not "git commit...".
 
 set -uo pipefail
-
-# Diagnostic: write marker so we can verify the hook fired.
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sprint-gate fired" >> .sprint/.hook-fire-log
 
 STATE_FILE=".sprint/state.md"
 

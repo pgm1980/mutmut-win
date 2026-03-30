@@ -99,26 +99,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) A-no-if >> .sprint/.hook-fire-log\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "if": "Bash(*git commit*)",
-            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) B-glob-if >> .sprint/.hook-fire-log\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "if": "Bash(* git commit *)",
-            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) C-glob-spaces >> .sprint/.hook-fire-log\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "if": "Bash",
-            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) D-if-bash-only >> .sprint/.hook-fire-log\"",
-            "timeout": 5
+            "command": "bash .claude/hooks/sprint-gate.sh",
+            "timeout": 20,
+            "statusMessage": "Checking sprint housekeeping..."
           }
         ]
       }
