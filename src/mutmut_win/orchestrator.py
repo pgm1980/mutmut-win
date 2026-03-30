@@ -92,6 +92,15 @@ class MutationOrchestrator:
             CleanTestFailedError: If the clean test run returns a non-zero exit code.
             ForcedFailError: If the forced-fail check does not detect failures.
         """
+        import sys
+
+        # Force line-buffered stdout so progress output is visible immediately
+        # in non-interactive contexts (CI/CD, piped output, editors).
+        # Without this, print() output accumulates in a buffer and the user
+        # sees no progress for minutes.
+        if not sys.stdout.line_buffering:
+            sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+
         wall_start = time.monotonic()
 
         # ------------------------------------------------------------------
