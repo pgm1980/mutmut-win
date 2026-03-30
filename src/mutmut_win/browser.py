@@ -144,6 +144,7 @@ class ResultBrowser(App[None]):
         ("f", "retest_function()", "Retest function"),
         ("m", "retest_module()", "Retest module"),
         ("a", "apply_mutant()", "Apply mutant to disk"),
+        ("t", "view_tests()", "View tests for mutant"),
     ]
 
     def __init__(
@@ -414,3 +415,9 @@ class ResultBrowser(App[None]):
         mutant_name = self._get_selected_mutant_name()
         if mutant_name:
             self._run_subprocess_command("apply", [mutant_name])
+
+    def action_view_tests(self) -> None:
+        """Show tests mapped to the currently selected mutant."""
+        mutant_name = self._get_selected_mutant_name()
+        if mutant_name:
+            self._run_subprocess_command("tests-for-mutant", [mutant_name])

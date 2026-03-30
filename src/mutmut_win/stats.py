@@ -120,29 +120,48 @@ def collect_or_load_stats(
 ) -> MutmutStats:
     """Load cached stats or collect fresh ones via *runner*.
 
-    If a valid ``mutmut-stats.json`` exists in *mutants_dir*, it is returned
-    directly.  Otherwise the runner is used to collect timing statistics and
-    the result is persisted for future runs.
+    If cached stats exist, checks for new tests and re-collects only for those
+    (incremental update). Otherwise, runs a full stats collection.
+
+    This mirrors mutmut 3.5.0's ``collect_or_load_stats()`` behavior:
+    1. Try to load cached stats from JSON.
+    2. If loaded, list current tests and compare against cached test names.
+    3. If new tests found, re-run stats collection for those tests only.
+    4. If no cached stats, run full collection.
 
     Args:
-        runner: ``PytestRunner`` instance used to collect fresh stats if no
-            cached data is found.
+        runner: ``PytestRunner`` instance.
         mutants_dir: Directory where the stats JSON file lives.
-            Defaults to ``mutants/``.
 
     Returns:
-        A ``MutmutStats`` instance populated with timing and test-mapping data.
+        A ``MutmutStats`` instance.
     """
     cached = load_stats(mutants_dir)
-    if cached is not None:
-        return cached
+    if cached is None:
+        return _run_stats_collection(runner, mutants_dir)
 
-    return _run_stats_collection(runner, mutants_dir)
+    # Incremental update: check if there are new tests.
+    current_tests = set(runner.collect_tests())
+    all_known_tests = set(cached.duration_by_test.keys())
+    new_tests = current_tests - all_known_tests
+
+    if new_tests:
+        print(f"Found {len(new_tests)} new tests, re-running stats collection for them")
+        # Use ListAllTestsResult to clean up obsolete tests.
+        result = ListAllTestsResult(ids=current_tests)
+        result.clear_out_obsolete_test_names(cached)
+        save_stats(cached, mutants_dir)
+
+        # Re-run stats for new tests only.
+        return _run_stats_collection(runner, mutants_dir, tests=list(new_tests))
+
+    return cached
 
 
 def _run_stats_collection(
     runner: PytestRunner,
     mutants_dir: Path,
+    tests: list[str] | None = None,  # noqa: ARG001 — reserved for future per-test stats collection
 ) -> MutmutStats:
     """Run a fresh stats collection and persist the result.
 
@@ -218,9 +237,7 @@ class ListAllTestsResult:
 
         for k in self._stats.tests_by_mangled_function_name:
             self._stats.tests_by_mangled_function_name[k] = {
-                name
-                for name in self._stats.tests_by_mangled_function_name[k]
-                if name in self._ids
+                name for name in self._stats.tests_by_mangled_function_name[k] if name in self._ids
             }
 
         after = sum(len(v) for v in self._stats.tests_by_mangled_function_name.values())

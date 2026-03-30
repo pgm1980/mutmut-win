@@ -54,5 +54,5 @@ class TestEmojiByStatus:
         }
         assert set(emoji_by_status.keys()) == expected_statuses
 
-    def test_killed_has_empty_emoji(self) -> None:
-        assert emoji_by_status["killed"] == ""
+    def test_killed_has_party_emoji(self) -> None:
+        assert emoji_by_status["killed"] == "\U0001f389"
