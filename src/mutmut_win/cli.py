@@ -31,15 +31,105 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--max-children", type=int, default=None, help="Number of worker processes.")
+@click.option(
+    "--paths-to-mutate",
+    multiple=True,
+    type=str,
+    help="Source paths to mutate (overrides pyproject.toml). Repeatable.",
+)
+@click.option(
+    "--tests-dir",
+    type=str,
+    default=None,
+    help="Test directory (overrides pyproject.toml).",
+)
+@click.option(
+    "--min-score",
+    type=float,
+    default=None,
+    help="Exit with code 1 if mutation score is below this threshold (0-100).",
+)
+@click.option(
+    "--output",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+@click.option(
+    "--since-commit",
+    type=str,
+    default=None,
+    help="Only mutate files changed since this git commit (e.g. HEAD~3).",
+)
+@click.option("--no-progress", is_flag=True, default=False, help="Suppress live progress output.")
+@click.option("--debug", is_flag=True, default=False, help="Enable debug output.")
+@click.option("--dry-run", is_flag=True, default=False, help="Count mutants without running tests.")
+@click.option(
+    "--timeout-multiplier",
+    type=float,
+    default=None,
+    help="Timeout multiplier (overrides pyproject.toml).",
+)
+@click.option(
+    "--do-not-mutate",
+    multiple=True,
+    type=str,
+    help="Glob pattern for files to exclude from mutation. Repeatable.",
+)
 @click.argument("mutant_names", nargs=-1)
-def run(max_children: int | None, mutant_names: tuple[str, ...]) -> None:
+def run(
+    max_children: int | None,
+    paths_to_mutate: tuple[str, ...],
+    tests_dir: str | None,
+    min_score: float | None,
+    output: str,
+    since_commit: str | None,
+    no_progress: bool,
+    debug: bool,
+    dry_run: bool,
+    timeout_multiplier: float | None,
+    do_not_mutate: tuple[str, ...],
+    mutant_names: tuple[str, ...],
+) -> None:
     """Run mutation testing.
 
     Optionally filter to specific MUTANT_NAMES. When omitted, all mutants are tested.
     """
     config = load_config()
+
+    # --- Apply CLI overrides to config ---
+    overrides: dict[str, object] = {}
     if max_children is not None:
-        config = config.model_copy(update={"max_children": max_children})
+        overrides["max_children"] = max_children
+    if paths_to_mutate:
+        overrides["paths_to_mutate"] = list(paths_to_mutate)
+    if tests_dir is not None:
+        overrides["tests_dir"] = [tests_dir]
+    if timeout_multiplier is not None:
+        overrides["timeout_multiplier"] = timeout_multiplier
+    if debug:
+        overrides["debug"] = True
+    if do_not_mutate:
+        overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
+
+    # --since-commit: resolve changed .py files via git
+    if since_commit is not None:
+        import subprocess as sp
+
+        # git command is fully controlled — commit hash is validated by git itself
+        git_result = sp.run(  # noqa: S603 — git CLI with controlled args
+            ["git", "diff", "--name-only", f"{since_commit}..HEAD"],  # noqa: S607 — git is a well-known executable
+            capture_output=True,
+            encoding="utf-8",
+        )
+        changed_py = [f for f in git_result.stdout.strip().split("\n") if f.endswith(".py") and f]
+        if not changed_py:
+            click.echo("No .py files changed since the given commit.", err=True)
+            sys.exit(0)
+        overrides["paths_to_mutate"] = changed_py
+
+    if overrides:
+        config = config.model_copy(update=overrides)
 
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
@@ -48,12 +138,25 @@ def run(max_children: int | None, mutant_names: tuple[str, ...]) -> None:
         runner=runner,
         executor=executor,
         mutant_names=mutant_names if mutant_names else None,
+        no_progress=no_progress,
     )
 
     try:
-        orchestrator.run()
-    except Exception as exc:  # surface all errors with a clean message
+        result = orchestrator.dry_run() if dry_run else orchestrator.run()
+    except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    # --- Output ---
+    if output == "json":
+        click.echo(result.model_dump_json(indent=2))
+
+    # --- Score gate ---
+    if min_score is not None and result.score < min_score:
+        click.echo(
+            f"Mutation score {result.score:.1f}% is below threshold {min_score}%",
+            err=True,
+        )
         sys.exit(1)
 
 

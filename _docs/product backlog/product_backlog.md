@@ -351,6 +351,31 @@
 
 ---
 
+### Epic 14: Hardening — CLI-Flags, Dogfooding, Hooks (Sprint 21)
+
+**Beschreibung:** 10 CLI-Flags für Automation/CI/CD, Dogfooding-Fix (Worker ModuleNotFoundError), Hook-Debugging.
+**Sprint:** 21
+**Release:** v1.0.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #62 | Bug | H-06: Worker ModuleNotFoundError bei editable install + spawn | Must | 5 | Open |
+| #63 | Feature | H-07: 10 CLI-Flags Tier 1-3 (--paths-to-mutate, --min-score, --output json, --since-commit, etc.) | Must | 8 | Open |
+| #64 | Bug | H-01–H-04: Hooks feuern nicht automatisch in Claude Desktop | Must | 5 | Open |
+| #65 | Task | Dogfooding: mutmut-win auf eigenem Code erfolgreich ausführen | Must | 3 | Open |
+
+**Acceptance Criteria:**
+- [ ] `mutmut-win run --paths-to-mutate src/mutmut_win/regex_mutation.py` funktioniert
+- [ ] `mutmut-win run --min-score 80` gibt Exit 1 wenn Score < 80%
+- [ ] `mutmut-win run --output json` gibt valides JSON zurück
+- [ ] `mutmut-win run --since-commit HEAD~1` mutiert nur geänderte Dateien
+- [ ] `mutmut-win run --dry-run` zeigt Mutanten-Anzahl ohne Ausführung
+- [ ] Worker-Prozesse können mutmut_win importieren (Dogfooding funktioniert)
+- [ ] Alle Hooks manuell verifiziert und Ergebnis in hooks.md dokumentiert
+- [ ] sprint-gate.sh sucht in `_docs/sprint backlogs/` statt `find . -maxdepth 4`
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -369,7 +394,8 @@
 | Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Open |
 | Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Open |
 | Hardening v0.5.0 | v0.5.0 | Epic 12 | #51–#54 | Open |
-| Advanced Operators v1.0.0 | v1.0.0 | Epic 13 | #55–#61 | Open |
+| Advanced Operators v1.0.0 | v1.0.0 | Epic 13 | #55–#61 | Done |
+| Hardening v1.0.0 | v1.0.0 | Epic 14 | #62–#65 | Open |
 
 ---
 
@@ -396,6 +422,7 @@
 | Sprint 18 | 5 | | | Statement Removal |
 | Sprint 19 | 3 | | | Collection-Methoden |
 | Sprint 20 | 2 | | | or-Default |
+| Sprint 21 | 23 | | | Hardening: CLI-Flags + Dogfooding + Hooks |
 
 ---
 

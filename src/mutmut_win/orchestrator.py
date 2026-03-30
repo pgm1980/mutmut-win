@@ -62,10 +62,12 @@ class MutationOrchestrator:
         executor: SpawnPoolExecutor | None = None,
         db_path: Path = DEFAULT_DB_PATH,
         mutant_names: tuple[str, ...] | None = None,
+        no_progress: bool = False,
     ) -> None:
         self._config = config
         self._db_path = db_path
         self._mutant_names: tuple[str, ...] | None = mutant_names
+        self._no_progress = no_progress
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -199,7 +201,8 @@ class MutationOrchestrator:
                 # Only count completed/timed-out mutants, not started events.
                 if is_completion:
                     completed += 1
-                    _print_live_progress(completed, total, summary)
+                    if not self._no_progress:
+                        _print_live_progress(completed, total, summary)
         except KeyboardInterrupt:
             print("\nInterrupted — shutting down workers…")
             executor.shutdown(timeout=5.0)
@@ -213,8 +216,23 @@ class MutationOrchestrator:
             sfd.save()
 
         summary.duration_seconds = time.monotonic() - wall_start
-        _print_summary(summary)
+        if not self._no_progress:
+            _print_summary(summary)
         return summary
+
+    def dry_run(self) -> MutationRunResult:
+        """Count mutants without running tests.
+
+        Generates all mutant files and returns a summary with ``total_mutants``
+        populated but all other counters at zero.
+
+        Returns:
+            ``MutationRunResult`` with only ``total_mutants`` set.
+        """
+        all_tasks, _source_data = self._generate_mutants()
+        result = MutationRunResult(total_mutants=len(all_tasks))
+        print(f"Dry run: {len(all_tasks)} mutants would be generated.")
+        return result
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -233,14 +251,9 @@ class MutationOrchestrator:
         4. Optionally gather coverage data (``mutate_only_covered_lines``).
         5. For each source file call ``create_mutants_for_file`` to generate
            mutated output and build the ``MutationTask`` list.
-           Uses ``multiprocessing.Pool.imap_unordered`` for parallelism
-           (mirrors mutmut 3.5.0 ``create_mutants``).
-
         Returns:
             A tuple of (flat task list, mapping of file path to SourceFileMutationData).
         """
-        import multiprocessing
-
         from mutmut_win.file_setup import (
             copy_also_copy_files,
             copy_src_dir,
@@ -283,16 +296,12 @@ class MutationOrchestrator:
             file_args.append((rel_path, src_file, output_path, file_covered))
 
         # Step 5: Generate per-file mutants.
-        # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0) when
-        # max_children > 1; fall back to sequential iteration for max_children == 1 to
-        # avoid spawn overhead in tests and single-core environments.
-        if self._config.max_children > 1:
-            with multiprocessing.Pool(processes=self._config.max_children) as pool:
-                raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = list(
-                    pool.imap_unordered(_create_mutants_worker, file_args)
-                )
-        else:
-            raw_results = [_create_mutants_worker(args) for args in file_args]
+        # Always sequential — CST parsing is fast (~100ms/file) and
+        # multiprocessing.Pool with spawn on Windows causes
+        # ModuleNotFoundError when the project is editable-installed (H-06).
+        raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = [
+            _create_mutants_worker(args) for args in file_args
+        ]
 
         for result in raw_results:
             rel_path_result, mutant_names, error, warn_msgs = result
