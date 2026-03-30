@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mutmut-win"
-version = "0.1.0"
+version = "0.6.0"
 description = "Windows-native mutation testing for Python, based on mutmut 3.5.0"
 readme = "README.md"
 license = "ISC"
@@ -43,7 +43,8 @@ dev = [
     "pytest-benchmark>=5.1",
     "hypothesis>=6.119",
     "import-linter>=2.1",
-    "mutmut>=3.2",
+    # mutmut-win is this project itself — no external mutation testing dependency needed.
+    # To run mutation testing: uv run mutmut-win run --paths-to-mutate src/mutmut_win/
     "mypy>=1.13",
     "ruff>=0.8",
     "pip-audit>=2.7",

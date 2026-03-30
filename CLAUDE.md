@@ -387,7 +387,7 @@ dev = [
     "pytest-benchmark>=5.1",
     "hypothesis>=6.119",
     "import-linter>=2.1",
-    "mutmut>=3.2",
+    "mutmut-win>=0.6.0",
 ]
 
 [tool.pytest.ini_options]
@@ -413,25 +413,24 @@ asyncio_mode = "auto"
 - **NICHT** `unittest.TestCase` verwenden — pytest-native Fixtures nutzen
 - **NICHT** `@pytest.mark.skip` ohne dokumentierte Begründung
 
-### mutmut — Mutation Testing
+### mutmut-win — Mutation Testing (Windows)
 
-mutmut MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität der Tests zu verifizieren.
+mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität der Tests zu verifizieren. mutmut-win ist der Windows-native Port von mutmut 3.5.0.
 
 **Installation:**
 ```bash
-uv pip install mutmut
+uv add mutmut-win --dev
 ```
 
-**Wann mutmut verwenden (PFLICHT):**
+**Wann mutmut-win verwenden (PFLICHT):**
 - **Nach Abschluss der Unit Tests eines Features**: Mutation Score als Qualitätsmetrik erheben
 - **Bei Code Reviews**: Mutation Score des geänderten Codes prüfen
 - **Bei Verdacht auf schwache Tests**: Tests die immer grün sind, aber nichts wirklich prüfen
 
 **Ausführung:**
 ```bash
-mutmut run --paths-to-mutate src/<package>/
-mutmut results
-mutmut html    # HTML-Report generieren
+mutmut-win run --paths-to-mutate src/<package>/
+mutmut-win results
 ```
 
 **VERBOTEN:**
@@ -548,7 +547,7 @@ Er MUSS bevorzugt vor Built-In Tools (Read, Write, Edit, Glob, Grep) verwendet w
 | **Tier 3: Built-In BLEIBT (mit Einschränkungen)** | Siehe Tier-3-Klarstellung unten                                                                                | Read, Edit, Glob, Grep nur unter den definierten Bedingungen        |
 | **Tier 4: EINZIGARTIG**                           | Pipelines, Auto-Versioning, Tagging, Snapshots, Templates, Use Cases, Security Scan                            | `execute_workflow` mit Steps, `sensitive_scan`, `project_overview`  |
 
-**Bash bleibt ERLAUBT für:** `uv run pytest`, `uv run ruff`, `uv run mypy`, `uv run mutmut`, `uv run lint-imports`, `semgrep`, `uv run pip-audit` — Build/Test/Lint-Befehle die KEINE Filesystem-Operationen sind.
+**Bash bleibt ERLAUBT für:** `uv run pytest`, `uv run ruff`, `uv run mypy`, `uv run mutmut-win`, `uv run lint-imports`, `semgrep`, `uv run pip-audit` — Build/Test/Lint-Befehle die KEINE Filesystem-Operationen sind.
 
 **VERBOTEN UND HART GESPERRT (settings.json `deny`):**
 - `cat`, `head`, `tail`, `cp`, `mv`, `rm`, `find`, `grep`, `rg`, `diff`, `tar`, `du`, `stat`, `ls`, `tree`, `sort`, `uniq`, `sed`, `awk`, `wc`, `base64`, `sha256sum`, `mkdir`, `touch` — **werden vom Harness blockiert**
@@ -592,8 +591,8 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 | `uv run ruff check --fix .`                          | Auto-fixbare Lint-Fehler beheben          |
 | `uv run mypy src/`                                   | Statische Typ-Prüfung                     |
 | `uv run lint-imports`                                | Architektur-Contracts prüfen              |
-| `uv run mutmut run --paths-to-mutate src/<package>/` | Mutation Testing                          |
-| `uv run mutmut html`                                 | Mutation Testing HTML-Report              |
+| `uv run mutmut-win run --paths-to-mutate src/<package>/` | Mutation Testing                      |
+| `uv run mutmut-win results`                              | Mutation Testing Ergebnisse           |
 | `semgrep scan --config auto .`                       | Security-Scan (vollständig)               |
 | `semgrep scan --config auto --changed-files`         | Security-Scan (nur geänderte Dateien)     |
 | `uv run pip-audit`                                   | Dependency-Audit auf Vulnerabilities      |
@@ -653,7 +652,7 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 | uv                          | aktuell           | Package Manager + Virtual Environments        |
 | Ruff                        | aktuell           | Linting + Formatting                          |
 | mypy                        | aktuell           | Statische Typ-Prüfung                         |
-| mutmut                      | aktuell           | Mutation Testing                              |
+| mutmut-win                  | >=0.6.0           | Mutation Testing (Windows)                    |
 | pip-audit                   | aktuell           | Dependency-Audit                              |
 | Semgrep CLI                 | aktuell           | Security-Scanning                             |
 | Serena MCP-Server           | aktuell           | Symbolbasierte Code-Analyse                   |
@@ -824,7 +823,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 - **Ruff ersetzt alles**: Nicht black, flake8, isort, pylint parallel verwenden — Ruff deckt alles ab. Konflikte sind garantiert.
 - **Serena-Onboarding nicht vergessen**: Nach jedem Projektstart `get_symbols_overview` auf die Hauptdateien ausführen, damit Serena den Projekt-Index aufbaut.
 - **pytest-cov braucht explizite Flags**: `pytest` allein erzeugt keinen Coverage-Report. Immer `--cov=src --cov-report=html` verwenden.
-- **mutmut Laufzeit**: Kann bei großen Projekten extrem lang sein. `--paths-to-mutate` für gezieltes Testen verwenden.
+- **mutmut-win Laufzeit**: Kann bei großen Projekten extrem lang sein. `--paths-to-mutate` für gezieltes Testen verwenden. `--max-children 4` bei RAM-knappen Systemen.
 - **mypy + AI-Libraries**: PyTorch, Transformers, sklearn haben unvollständige Type Stubs. `ignore_missing_imports` pro Modul konfigurieren, nicht global.
 - **`pickle.load()` ist ein Security-Risiko**: Nie auf nicht-vertrauenswürdige Daten anwenden. `safetensors` oder `torch.load(weights_only=True)` bevorzugen.
 - **Python 3.14 Features nutzen**: Template Strings (PEP 750), `@override` Decorator, verbesserte Error Messages — Context7 für aktuelle Feature-Liste konsultieren.
@@ -878,7 +877,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 - **Serialisierung**: `safetensors` (Modelle), `serde`-Äquivalente via Pydantic (Daten)
 - **Testframework**: pytest + hypothesis + pytest-benchmark + pytest-cov
 - **Coverage**: pytest-cov
-- **Mutation Testing**: mutmut
+- **Mutation Testing**: mutmut-win (Windows-nativer Port von mutmut 3.5.0)
 - **Linting**: Ruff (All-in-One) + mypy (Type Checking)
 - **Dependency-Audit**: pip-audit
 - **Architecture-Enforcement**: import-linter
