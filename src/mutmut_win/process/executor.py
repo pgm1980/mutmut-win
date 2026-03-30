@@ -8,8 +8,11 @@ is unavailable.
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import multiprocessing.queues
+import sys
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.process.worker import worker_main
@@ -19,6 +22,8 @@ if TYPE_CHECKING:
 
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import MutationTask, TaskEvent
+
+logger = logging.getLogger(__name__)
 
 
 class SpawnPoolExecutor:
@@ -44,8 +49,23 @@ class SpawnPoolExecutor:
             self._mp_ctx.Queue()
         )
         self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = self._mp_ctx.Queue()
-        self._workers: list[multiprocessing.Process] = []
+        self._workers: list[multiprocessing.process.BaseProcess] = []
         self._num_tasks: int = 0
+
+        # Orphan protection: Windows Job Object kills all children when parent dies.
+        self._job_handle: int | None = None
+        if sys.platform == "win32":
+            try:
+                from mutmut_win.process.job_object import create_kill_on_close_job
+
+                self._job_handle = create_kill_on_close_job()
+            except OSError:
+                warnings.warn(
+                    "Could not create Windows Job Object — orphan process protection "
+                    "is disabled. If mutmut-win crashes, worker processes may remain alive.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     # ------------------------------------------------------------------
     # Public API
@@ -81,6 +101,16 @@ class SpawnPoolExecutor:
                 daemon=True,
             )
             proc.start()
+
+            # Assign to Job Object for orphan protection (Windows only).
+            if self._job_handle is not None and proc.pid is not None:
+                try:
+                    from mutmut_win.process.job_object import assign_process_to_job
+
+                    assign_process_to_job(self._job_handle, proc.pid)
+                except OSError:
+                    logger.warning("Could not assign worker PID %d to Job Object", proc.pid)
+
             self._workers.append(proc)
 
     def get_events(self) -> Iterator[TaskEvent]:
@@ -131,3 +161,10 @@ class SpawnPoolExecutor:
                 worker.join()
 
         self._workers.clear()
+
+        # Release the Job Object handle (processes are already dead at this point).
+        if self._job_handle is not None:
+            from mutmut_win.process.job_object import close_job
+
+            close_job(self._job_handle)
+            self._job_handle = None

@@ -556,6 +556,67 @@ Neues Modul `mutant_diff.py` implementiert `find_mutant`, `read_mutants_module`,
 
 ---
 
+### ADR-017: Orphan-Prozess-Schutz — Windows Job Objects mit ctypes
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+Wenn der mutmut-win Hauptprozess unerwartet stirbt (Crash, Task-Manager, IDE schließt), bleiben Worker-Prozesse und deren pytest-Subprozesse als verwaiste Prozesse am Leben und konsumieren CPU-Ressourcen. Im realen Betrieb führte dies zu CPU-Überhitzung (alle 24 Kerne unter Volllast durch Orphan-Prozesse).
+
+#### Optionen
+
+##### Option A: Windows Job Objects (ctypes)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Zuverlässigkeit | 5/5 — OS-Kernel-garantiert, nicht umgehbar |
+| Komplexität | ~60 LOC in einem neuen Modul |
+| Performance | Zero Runtime-Overhead (kein Thread, kein Polling) |
+| Enkelkinder-Problem | Gelöst — Job Vererbung killt gesamten Prozessbaum |
+| Dependencies | Keine (ctypes ist stdlib) |
+
+##### Option B: Heartbeat / Named Pipe
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Zuverlässigkeit | 2/5 — Enkelkinder-Problem ungelöst |
+| Komplexität | ~190 LOC über 2 Dateien, 25 Threads, Locks |
+| Performance | Fast Zero (Polling alle 2s) |
+| Enkelkinder-Problem | NICHT gelöst — pytest-Subprozesse überleben Worker-Tod |
+| Dependencies | Keine |
+
+#### Trade-off-Analyse
+
+Das K.O.-Argument: Das reale Überhitzungsproblem wurde durch **pytest-Subprozesse** (Enkelkinder) verursacht. Heartbeat kann nur Worker killen, nicht deren Children. Job Objects killen den gesamten Prozessbaum auf OS-Kernel-Ebene. Scoring: Job Objects 47/50 vs. Heartbeat 25/50.
+
+#### Entscheidung
+
+Option A: Windows Job Objects mit ctypes. Neues Modul `process/job_object.py`.
+
+Mechanismus:
+1. `CreateJobObjectW()` — erstellt Job Object mit `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Flag
+2. `AssignProcessToJobObject()` — ordnet jeden Worker dem Job zu (pytest-Subprozesse werden automatisch vererbt)
+3. Wenn der Hauptprozess stirbt → OS schließt den Job Handle → **alle** zugeordneten Prozesse werden gekillt
+
+Graceful Degradation: Falls `CreateJobObjectW()` fehlschlägt (restriktive Sicherheitsrichtlinien), Warning ausgeben und ohne Orphan-Protection weitermachen.
+
+#### Konsequenzen
+
+- **Wird einfacher:** Kein Worker-seitiger Orphan-Check nötig, Worker bleibt simpel
+- **Wird schwieriger:** Nichts — 60 LOC, vollständig gekapselt
+- **Muss revisited werden:** Falls Python die `_popen._handle` Interna ändert → OpenProcess(pid) als Fallback
+
+#### Action Items
+
+- [ ] `process/job_object.py` implementieren (ctypes Win32 Wrapper)
+- [ ] `executor.py` integrieren (create/assign/close — 3 Stellen)
+- [ ] Deterministischer Test: Subprocess zuweisen → Handle schließen → Subprocess tot
+- [ ] DoD: E2E-Lauf darf keine Orphan-Prozesse hinterlassen
+
+---
+
 ## 3. Komponentenstruktur
 
 ### 3.1 Schichtenübersicht

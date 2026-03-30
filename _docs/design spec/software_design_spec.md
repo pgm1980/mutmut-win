@@ -106,6 +106,15 @@
 | FR-10.2 | Das System MUSS `apply` mit CST-basiertem Ersetzen implementieren | Must | v0.2 |
 | FR-10.3 | Das System MUSS Live-Fortschrittsanzeige bieten | Should | v0.2 |
 
+### FR-13: Orphan-Prozess-Schutz (Hardening)
+
+| ID | Anforderung | Priorität | Release |
+|----|-------------|-----------|---------|
+| FR-13.1 | Das System MUSS Worker-Prozesse via Windows Job Object gruppieren | Must | v0.5 |
+| FR-13.2 | Das System MUSS `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` setzen, damit bei Parent-Tod alle Worker + Subprozesse automatisch gekillt werden | Must | v0.5 |
+| FR-13.3 | Das System MUSS Graceful Degradation bieten wenn Job Object nicht erstellt werden kann (Warning statt Crash) | Must | v0.5 |
+| FR-13.4 | Das System MUSS bei normalem Shutdown den Job Handle sauber schließen | Must | v0.5 |
+
 ---
 
 ## 2. Non-Functional Requirements (NFRs)
