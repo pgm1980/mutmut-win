@@ -20,15 +20,26 @@
 
 ---
 
+## Hook-Findings (zu fixen nach Sprint 20)
+
+| # | Hook | Finding | Severity |
+|---|------|---------|----------|
+| H-01 | sprint-gate.sh | Sucht Sprint Backlog mit `find . -maxdepth 4` statt in `_docs/sprint backlogs/` | HIGH |
+| H-02 | sprint-gate.sh | Sprint Backlogs wurden in Sprint 1-13 NIE erstellt — Hook hat das nie bemängelt | HIGH |
+| H-03 | sprint-health.sh | Feuert NICHT automatisch bei SessionStart (nur manuell via bash) | CRITICAL |
+| H-04 | alle Hooks | Unklar ob Hooks in Claude Desktop überhaupt getriggert werden | CRITICAL |
+
+---
+
 ## Sprint 14: Regex-Mutationen
 
 | Hook | Gefeuert? | Output korrekt? | Notizen |
 |------|-----------|------------------|---------|
-| sprint-health (SessionStart) | | | |
-| sprint-gate (git commit) | | | |
-| verify-after-agent (SubagentStop) | | | |
-| statusline | | | |
-| sprint-housekeeping-reminder (Stop) | | | |
+| sprint-health (SessionStart) | MANUELL getestet | Ja | Sprint 14 erkannt, Branch-Warning korrekt, HK-Items aufgelistet. Hook feuert NICHT automatisch bei SessionStart — muss untersucht werden |
+| sprint-gate (git commit) | NEIN | — | Kein Output nach git commit sichtbar. Finding H-04 bestätigt |
+| verify-after-agent (SubagentStop) | N/A | — | Kein Subagent in Sprint 14 verwendet |
+| statusline | MANUELL getestet | Ja | `S14 [HK!] \| main \| 11mod` korrekt. Automatisch: unklar |
+| sprint-housekeeping-reminder (Stop) | | | Wird bei Session-Ende geprüft |
 
 ## Sprint 15: Math-Methoden
 
