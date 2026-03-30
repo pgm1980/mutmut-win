@@ -7,7 +7,7 @@ Sprint 0: [Brainstorming + Innovation → Architecture → Software Design]
                 ↓
 Product Backlog: [DoD, Epics, Features, User Stories, Acceptance Criteria → GitHub Issues + Milestones]
                 ↓
-Sprint 1–N: [Sprint Planning → Implementation (vertikal/E2E) → Unit Tests + Integrationstests → Increment, GitHub Issues schließen]
+Sprint 1–N: [Sprint Planning → Implementation (vertikal/E2E) → Unit Tests + Integrationstests + Mutation Tests → Increment, GitHub Issues schließen]
                 ↓
 Epic abgeschlossen: [Milestone erreicht → GitHub Tag]
 ```
@@ -101,7 +101,7 @@ Akzeptanzkriterien:
 **Ablauf**:
 1. **Sprint Planning**: Sprint Backlog aus Product Backlog ableiten, PBIs auf Tasks runterbrechen
 2. **Implementierung**: Vertikal / End-to-End — jeder Sprint produziert ein funktionsfähiges, testbares Increment
-3. **Testing**: Unit Tests + Integrationstests am Ende jedes Sprints
+3. **Testing**: Unit Tests + Integrationstests + Mutation Tests am Ende jedes Sprints
 4. **Increment**: Entspricht einem Feature im Product Backlog und einem `feature/*`-Branch in GitHub
 
 **Ergebnisse**:
@@ -124,6 +124,7 @@ Akzeptanzkriterien:
 **Definition of Done** (pro Sprint):
 - [ ] Alle Tasks des Sprints implementiert
 - [ ] Alle Tests grün (Unit + Integration)
+- [ ] Mutation Testing auf neuem/geändertem Code (`uv run mutmut-win run --paths-to-mutate <Module>`) — Score ≥ 80%
 - [ ] `verification-before-completion` ausgeführt — Evidence liegt vor
 - [ ] Code kompiliert ohne Fehler und Warnungen (TreatWarningsAsErrors)
 - [ ] Semgrep-Scan bestanden (keine offenen Security-Findings)
@@ -148,6 +149,7 @@ Akzeptanzkriterien:
 | Ebene                 | Wann                         | Verantwortung              |
 |-----------------------|------------------------------|----------------------------|
 | **Unit Tests**        | Während Implementation (TDD) | `test-driven-development`  |
+| **Mutation Tests**    | Nach Unit Tests              | Sprint DoD (Score ≥ 80%)   |
 | **Integration Tests** | Nach Feature-Completion      | Sprint DoD                 |
 | **E2E Tests**         | Nach Increment               | Review-Phase               |
 
