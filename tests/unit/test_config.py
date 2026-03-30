@@ -10,7 +10,12 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from mutmut_win.config import MutmutConfig, guess_paths_to_mutate, load_config
+from mutmut_win.config import (
+    MutmutConfig,
+    _apply_default_also_copy,
+    guess_paths_to_mutate,
+    load_config,
+)
 from mutmut_win.exceptions import ConfigError
 
 
@@ -86,6 +91,99 @@ class TestLoadConfig:
         pyproject.write_text("this is not valid toml {{{{", encoding="utf-8")
         with pytest.raises(ConfigError, match="Failed to read"):
             load_config(tmp_path)
+
+    def test_also_copy_defaults_appended_with_no_config(self, tmp_path: Path) -> None:
+        """F1: load_config appends default also_copy entries even when no [tool.mutmut]."""
+        config = load_config(tmp_path)
+        assert "tests/" in config.also_copy
+        assert "pyproject.toml" in config.also_copy
+        assert "setup.cfg" in config.also_copy
+        assert "pytest.ini" in config.also_copy
+        assert ".gitignore" in config.also_copy
+
+    def test_also_copy_defaults_appended_after_user_values(self, tmp_path: Path) -> None:
+        """F1: user-provided also_copy entries are preserved; defaults appended after."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[tool.mutmut]\nalso_copy = ["custom/"]\n',
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.also_copy[0] == "custom/"
+        assert "tests/" in config.also_copy
+        assert "pyproject.toml" in config.also_copy
+
+    def test_also_copy_includes_test_py_files(self, tmp_path: Path) -> None:
+        """F1: test*.py files in project root are included in also_copy defaults."""
+        (tmp_path / "test_foo.py").write_text("# test", encoding="utf-8")
+        config = load_config(tmp_path)
+        also_copy_names = [Path(p).name for p in config.also_copy]
+        assert "test_foo.py" in also_copy_names
+
+    def test_load_from_setup_cfg_when_no_pyproject(self, tmp_path: Path) -> None:
+        """F5: setup.cfg is read as fallback when pyproject.toml is absent."""
+        setup_cfg = tmp_path / "setup.cfg"
+        setup_cfg.write_text(
+            "[mutmut]\npaths_to_mutate = src/\ntimeout_multiplier = 7.5\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.paths_to_mutate == ["src/"]
+        assert config.timeout_multiplier == pytest.approx(7.5)
+
+    def test_setup_cfg_multiline_paths(self, tmp_path: Path) -> None:
+        """F5: multi-line setup.cfg values are split into lists."""
+        setup_cfg = tmp_path / "setup.cfg"
+        setup_cfg.write_text(
+            "[mutmut]\npaths_to_mutate =\n    src/\n    lib/\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert "src/" in config.paths_to_mutate
+        assert "lib/" in config.paths_to_mutate
+
+    def test_setup_cfg_ignored_if_no_mutmut_section(self, tmp_path: Path) -> None:
+        """F5: setup.cfg without [mutmut] section does not raise; defaults apply."""
+        setup_cfg = tmp_path / "setup.cfg"
+        setup_cfg.write_text("[other]\nkey = value\n", encoding="utf-8")
+        config = load_config(tmp_path)
+        assert isinstance(config, MutmutConfig)
+
+    def test_pyproject_takes_precedence_over_setup_cfg(self, tmp_path: Path) -> None:
+        """F5: pyproject.toml [tool.mutmut] takes precedence over setup.cfg."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = lib/\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.paths_to_mutate == ["src/"]
+
+
+class TestApplyDefaultAlsoCopy:
+    def test_adds_standard_defaults(self, tmp_path: Path) -> None:
+        config = MutmutConfig()
+        result = _apply_default_also_copy(config, tmp_path)
+        assert "tests/" in result.also_copy
+        assert "test/" in result.also_copy
+        assert "setup.cfg" in result.also_copy
+        assert "pyproject.toml" in result.also_copy
+        assert "pytest.ini" in result.also_copy
+        assert ".gitignore" in result.also_copy
+
+    def test_preserves_user_entries(self, tmp_path: Path) -> None:
+        config = MutmutConfig(also_copy=["my_fixtures/"])
+        result = _apply_default_also_copy(config, tmp_path)
+        assert result.also_copy[0] == "my_fixtures/"
+        assert "tests/" in result.also_copy
+
+    def test_does_not_mutate_original(self, tmp_path: Path) -> None:
+        config = MutmutConfig()
+        _apply_default_also_copy(config, tmp_path)
+        assert config.also_copy == []
 
 
 class TestGuessPathsToMutate:

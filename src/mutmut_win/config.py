@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import tomllib
+from configparser import ConfigParser, NoOptionError, NoSectionError
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
@@ -158,11 +159,91 @@ class MutmutConfig(BaseModel):
         return any(fnmatch.fnmatch(path_str, pattern) for pattern in self.do_not_mutate)
 
 
-def load_config(project_dir: Path | None = None) -> MutmutConfig:
-    """Load mutmut-win configuration from pyproject.toml.
+def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutConfig:
+    """Append default also_copy entries to *config* (mirrors mutmut 3.5.0).
+
+    The defaults are appended AFTER any user-provided entries so that
+    user configuration takes precedence for duplicate paths.
 
     Args:
-        project_dir: Directory containing pyproject.toml.
+        config: Existing ``MutmutConfig`` to extend.
+        project_dir: Project root directory used to glob ``test*.py`` files.
+
+    Returns:
+        New ``MutmutConfig`` with default also_copy entries appended.
+    """
+    default_also_copy: list[str] = [
+        "tests/",
+        "test/",
+        "setup.cfg",
+        "pyproject.toml",
+        "pytest.ini",
+        ".gitignore",
+    ] + [str(p) for p in project_dir.glob("test*.py")]
+    return config.model_copy(update={"also_copy": config.also_copy + default_also_copy})
+
+
+def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
+    """Attempt to load mutmut configuration from setup.cfg [mutmut] section.
+
+    Mirrors the ConfigParser fallback from mutmut 3.5.0 ``config_reader()``.
+
+    Args:
+        project_dir: Project root directory containing setup.cfg.
+
+    Returns:
+        ``MutmutConfig`` loaded from setup.cfg, or ``None`` if the file does
+        not exist or has no ``[mutmut]`` section.
+    """
+    setup_cfg_path = project_dir / "setup.cfg"
+    if not setup_cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    parser.read(str(setup_cfg_path), encoding="utf-8")
+
+    def _get(key: str, default: object) -> object:
+        try:
+            result = parser.get("mutmut", key)
+        except (NoOptionError, NoSectionError):
+            return default
+        if isinstance(default, list):
+            # Multi-line values: split on newlines; single-line: split on commas
+            if "\n" in result:
+                return [x for x in result.split("\n") if x]
+            return [x.strip() for x in result.split(",") if x.strip()]
+        return result
+
+    if not parser.has_section("mutmut"):
+        return None
+
+    normalized: dict[str, object] = {
+        "paths_to_mutate": _get("paths_to_mutate", []),
+        "tests_dir": _get("tests_dir", ["tests/"]),
+        "do_not_mutate": _get("do_not_mutate", []),
+        "also_copy": _get("also_copy", []),
+        "max_children": _get("max_children", _default_max_children()),
+        "timeout_multiplier": _get("timeout_multiplier", 10.0),
+        "max_stack_depth": _get("max_stack_depth", -1),
+        "debug": _get("debug", False),
+        "mutate_only_covered_lines": _get("mutate_only_covered_lines", False),
+        "pytest_add_cli_args": _get("pytest_add_cli_args", []),
+        "pytest_add_cli_args_test_selection": _get("pytest_add_cli_args_test_selection", []),
+        "type_check_command": _get("type_check_command", []),
+    }
+    # Remove empty-list defaults that were not configured so model defaults apply
+    normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
+    return MutmutConfig.model_validate(normalized)
+
+
+def load_config(project_dir: Path | None = None) -> MutmutConfig:
+    """Load mutmut-win configuration from pyproject.toml or setup.cfg.
+
+    Tries ``[tool.mutmut]`` in ``pyproject.toml`` first, then falls back to
+    the ``[mutmut]`` section in ``setup.cfg`` (mirrors mutmut 3.5.0).
+
+    Args:
+        project_dir: Directory containing pyproject.toml / setup.cfg.
                      Defaults to current working directory.
 
     Returns:
@@ -176,7 +257,11 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
 
     pyproject_path = project_dir / "pyproject.toml"
     if not pyproject_path.exists():
-        return MutmutConfig()
+        # Fall back to setup.cfg if available
+        setup_cfg_config = _load_setup_cfg(project_dir)
+        if setup_cfg_config is not None:
+            return _apply_default_also_copy(setup_cfg_config, project_dir)
+        return _apply_default_also_copy(MutmutConfig(), project_dir)
 
     try:
         with pyproject_path.open("rb") as f:
@@ -186,8 +271,12 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         raise ConfigError(msg) from e
 
     tool_config = data.get("tool", {}).get("mutmut", {})
-    if not isinstance(tool_config, dict):
-        return MutmutConfig()
+    if not isinstance(tool_config, dict) or not tool_config:
+        # No [tool.mutmut] section — try setup.cfg before returning defaults
+        setup_cfg_config = _load_setup_cfg(project_dir)
+        if setup_cfg_config is not None:
+            return _apply_default_also_copy(setup_cfg_config, project_dir)
+        return _apply_default_also_copy(MutmutConfig(), project_dir)
 
     # Map mutmut config keys with hyphens to underscores
     normalized: dict[str, object] = {}
@@ -196,7 +285,9 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         normalized[normalized_key] = value
 
     try:
-        return MutmutConfig.model_validate(normalized)
+        config = MutmutConfig.model_validate(normalized)
     except Exception as e:
         msg = f"Invalid [tool.mutmut] configuration: {e}"
         raise ConfigError(msg) from e
+
+    return _apply_default_also_copy(config, project_dir)

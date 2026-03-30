@@ -153,6 +153,34 @@ class PytestRunner:
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
             )
 
+    def prepare_main_test_run(self) -> None:
+        """Prepare for a main test run (no-op for subprocess-based runner).
+
+        Provided for API compatibility with the mutmut 3.5.0 ``TestRunner``
+        abstract interface so that ``code_coverage.gather_coverage()`` can call
+        this method without branching.
+        """
+
+    def run_tests(
+        self,
+        *,
+        mutant_name: str | None,  # noqa: ARG002  # kept for API symmetry
+        tests: list[str] | None,  # noqa: ARG002  # kept for API symmetry
+    ) -> int:
+        """Run the test suite for coverage gathering.
+
+        Provided for API compatibility with the mutmut 3.5.0 ``TestRunner``
+        interface.  Delegates to ``run_clean_test`` which runs the full suite.
+
+        Args:
+            mutant_name: Unused — kept for interface symmetry.
+            tests: Unused — kept for interface symmetry.
+
+        Returns:
+            The pytest exit code.
+        """
+        return self.run_clean_test()
+
     def run_forced_fail(
         self,
         mutant_name: str,  # noqa: ARG002  # kept for API symmetry — future: filter tests by mutant

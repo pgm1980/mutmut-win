@@ -224,14 +224,10 @@ class TestKillProcess:
 
     def test_kill_process_lookup_error_is_silent(self) -> None:
         """ProcessLookupError from os.kill must be swallowed silently."""
-        with patch(
-            "mutmut_win.process.timeout.os.kill", side_effect=ProcessLookupError
-        ):
+        with patch("mutmut_win.process.timeout.os.kill", side_effect=ProcessLookupError):
             _kill_process(9999)  # must not raise
 
     def test_kill_permission_error_is_silent(self) -> None:
         """PermissionError from os.kill must be swallowed silently."""
-        with patch(
-            "mutmut_win.process.timeout.os.kill", side_effect=PermissionError
-        ):
+        with patch("mutmut_win.process.timeout.os.kill", side_effect=PermissionError):
             _kill_process(9999)  # must not raise

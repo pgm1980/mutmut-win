@@ -11,6 +11,7 @@ from pathlib import Path
 
 import click
 
+from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
@@ -23,6 +24,7 @@ from mutmut_win.test_mapping import mangled_name_from_mutant_name, tests_for_mut
 
 
 @click.group()
+@click.version_option(version=__version__)
 def cli() -> None:
     """mutmut-win — Windows-native mutation testing for Python."""
 
@@ -41,10 +43,12 @@ def run(max_children: int | None, mutant_names: tuple[str, ...]) -> None:
 
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
-    orchestrator = MutationOrchestrator(config, runner=runner, executor=executor)
-
-    if mutant_names:
-        click.echo("Note: mutant name filtering not yet implemented; running all mutants.")
+    orchestrator = MutationOrchestrator(
+        config,
+        runner=runner,
+        executor=executor,
+        mutant_names=mutant_names if mutant_names else None,
+    )
 
     try:
         orchestrator.run()

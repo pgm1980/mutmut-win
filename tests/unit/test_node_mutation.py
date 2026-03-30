@@ -19,6 +19,7 @@ from mutmut_win.node_mutation import (
 
 # --- Helper: parse a small expression ------------------------------------------
 
+
 def _parse_expr(code: str) -> cst.BaseExpression:
     """Parse a single expression from source code."""
     module = cst.parse_module(code)
@@ -37,6 +38,7 @@ def _parse_stmt(code: str) -> cst.BaseSmallStatement:
 
 
 # --- operator_number -----------------------------------------------------------
+
 
 class TestOperatorNumber:
     def test_integer_incremented(self) -> None:
@@ -59,6 +61,7 @@ class TestOperatorNumber:
 
 
 # --- operator_string -----------------------------------------------------------
+
 
 class TestOperatorString:
     def test_simple_string_produces_mutations(self) -> None:
@@ -87,6 +90,7 @@ class TestOperatorString:
 
 # --- operator_lambda -----------------------------------------------------------
 
+
 class TestOperatorLambda:
     def test_lambda_none_becomes_zero(self) -> None:
         node = cst.parse_expression("lambda: None")
@@ -106,6 +110,7 @@ class TestOperatorLambda:
 
 
 # --- operator_name -------------------------------------------------------------
+
 
 class TestOperatorName:
     def test_true_becomes_false(self) -> None:
@@ -133,6 +138,7 @@ class TestOperatorName:
 
 
 # --- operator_keywords ---------------------------------------------------------
+
 
 class TestOperatorKeywords:
     def test_is_becomes_is_not(self) -> None:
@@ -162,6 +168,7 @@ class TestOperatorKeywords:
 
 # --- operator_assignment -------------------------------------------------------
 
+
 class TestOperatorAssignment:
     def test_value_assignment_becomes_none(self) -> None:
         stmt = _parse_stmt("a = 5")
@@ -182,6 +189,7 @@ class TestOperatorAssignment:
 
 # --- operator_augmented_assignment ---------------------------------------------
 
+
 class TestOperatorAugmentedAssignment:
     def test_aug_assign_becomes_assign(self) -> None:
         stmt = _parse_stmt("a += 1")
@@ -192,6 +200,7 @@ class TestOperatorAugmentedAssignment:
 
 
 # --- operator_remove_unary_ops -------------------------------------------------
+
 
 class TestOperatorRemoveUnaryOps:
     def test_not_removed(self) -> None:
@@ -215,6 +224,7 @@ class TestOperatorRemoveUnaryOps:
 
 # --- operator_match ------------------------------------------------------------
 
+
 class TestOperatorMatch:
     def test_single_case_not_mutated(self) -> None:
         code = "match x:\n    case 1:\n        pass\n"
@@ -235,6 +245,7 @@ class TestOperatorMatch:
 
 # --- mutation_operators list ---------------------------------------------------
 
+
 class TestMutationOperatorsList:
     def test_mutation_operators_is_sequence(self) -> None:
         assert len(mutation_operators) > 0
@@ -246,6 +257,7 @@ class TestMutationOperatorsList:
 
 
 # --- _simple_mutation_mapping --------------------------------------------------
+
 
 class TestSimpleMutationMapping:
     def test_known_type_returns_instance(self) -> None:
@@ -261,6 +273,7 @@ class TestSimpleMutationMapping:
 
 
 # --- NON_ESCAPE_SEQUENCE pattern -----------------------------------------------
+
 
 class TestNonEscapeSequencePattern:
     def test_matches_normal_chars(self) -> None:

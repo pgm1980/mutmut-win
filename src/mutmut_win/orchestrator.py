@@ -9,6 +9,7 @@ summarised in a ``MutationRunResult``.
 
 from __future__ import annotations
 
+import fnmatch
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -60,9 +61,11 @@ class MutationOrchestrator:
         runner: PytestRunner | None = None,
         executor: SpawnPoolExecutor | None = None,
         db_path: Path = DEFAULT_DB_PATH,
+        mutant_names: tuple[str, ...] | None = None,
     ) -> None:
         self._config = config
         self._db_path = db_path
+        self._mutant_names: tuple[str, ...] | None = mutant_names
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -102,6 +105,18 @@ class MutationOrchestrator:
                 total_mutants=0,
                 duration_seconds=time.monotonic() - wall_start,
             )
+
+        # ------------------------------------------------------------------
+        # Step 1a: Filter to specific mutant names if requested (fnmatch supported).
+        # ------------------------------------------------------------------
+        if self._mutant_names:
+            all_tasks = _filter_tasks_by_names(all_tasks, self._mutant_names)
+            if not all_tasks:
+                print("No mutants match the given names.")
+                return MutationRunResult(
+                    total_mutants=0,
+                    duration_seconds=time.monotonic() - wall_start,
+                )
 
         # ------------------------------------------------------------------
         # Step 1b: Apply type-checker filter (if configured).
@@ -149,6 +164,9 @@ class MutationOrchestrator:
         all_tasks = _assign_tests_to_tasks(all_tasks, mutmut_stats)
         multiplier = self._config.timeout_multiplier
         tasks_with_timeouts = _apply_timeouts(all_tasks, mutmut_stats.duration_by_test, multiplier)
+
+        # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
+        tasks_with_timeouts.sort(key=lambda t: t.estimated_time)
 
         # ------------------------------------------------------------------
         # Step 6 + 7: Run mutation tests via the pool executor.
@@ -202,14 +220,17 @@ class MutationOrchestrator:
         4. Optionally gather coverage data (``mutate_only_covered_lines``).
         5. For each source file call ``create_mutants_for_file`` to generate
            mutated output and build the ``MutationTask`` list.
+           Uses ``multiprocessing.Pool.imap_unordered`` for parallelism
+           (mirrors mutmut 3.5.0 ``create_mutants``).
 
         Returns:
             A tuple of (flat task list, mapping of file path to SourceFileMutationData).
         """
+        import multiprocessing
+
         from mutmut_win.file_setup import (
             copy_also_copy_files,
             copy_src_dir,
-            create_mutants_for_file,
             get_mutant_name,
             setup_source_paths,
             walk_source_files,
@@ -237,37 +258,43 @@ class MutationOrchestrator:
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}
 
-        # Step 5: Generate per-file mutants.
+        # Build per-file args for the pool worker.
+        file_args: list[tuple[str, Path, Path, set[int] | None]] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
-
-            # Determine per-file covered lines (None = no filter).
             file_covered: set[int] | None = None
             if covered_lines_map is not None:
                 from mutmut_win.code_coverage import get_covered_lines_for_file
 
                 file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
+            file_args.append((rel_path, src_file, output_path, file_covered))
 
-            try:
-                mutant_names, _warns = create_mutants_for_file(
-                    src_file,
-                    output_path,
-                    file_covered,
+        # Step 5: Generate per-file mutants.
+        # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0) when
+        # max_children > 1; fall back to sequential iteration for max_children == 1 to
+        # avoid spawn overhead in tests and single-core environments.
+        if self._config.max_children > 1:
+            with multiprocessing.Pool(processes=self._config.max_children) as pool:
+                raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = list(
+                    pool.imap_unordered(_create_mutants_worker, file_args)
                 )
-            except Exception as exc:  # broad catch: log and continue with remaining files
-                print(f"Warning: could not mutate {rel_path}: {exc}")
-                continue
+        else:
+            raw_results = [_create_mutants_worker(args) for args in file_args]
 
+        for result in raw_results:
+            rel_path_result, mutant_names, error, warn_msgs = result
+            for msg in warn_msgs:
+                print(f"Warning: {msg}")
+            if error is not None:
+                print(f"Warning: could not mutate {rel_path_result}: {error}")
+                continue
             if not mutant_names:
                 continue
-
-            # Build fully qualified names via get_mutant_name.
-            qualified_names = [get_mutant_name(src_file, name) for name in mutant_names]
-
-            sfd = SourceFileMutationData(path=rel_path)
+            src_file_result = Path(rel_path_result)
+            qualified_names = [get_mutant_name(src_file_result, name) for name in mutant_names]
+            sfd = SourceFileMutationData(path=rel_path_result)
             sfd.load()
-            source_data[rel_path] = sfd
-
+            source_data[rel_path_result] = sfd
             all_tasks.extend(
                 MutationTask(
                     mutant_name=qname,
@@ -312,6 +339,59 @@ class MutationOrchestrator:
 # ---------------------------------------------------------------------------
 # Module-level helpers (pure functions — easy to unit-test independently)
 # ---------------------------------------------------------------------------
+
+
+def _create_mutants_worker(
+    args: tuple[str, Path, Path, set[int] | None],
+) -> tuple[str, list[str], Exception | None, list[str]]:
+    """Top-level picklable worker for parallel mutant generation.
+
+    Called by ``multiprocessing.Pool.imap_unordered`` inside
+    ``MutationOrchestrator._generate_mutants``.  The ``rel_path`` is echoed
+    back so the parent can correlate results despite unordered delivery.
+
+    Args:
+        args: A tuple of ``(rel_path, filename, output_path, covered_lines)``
+              where ``rel_path`` is the string path relative to the project root.
+
+    Returns:
+        A tuple of ``(rel_path, mutant_names, error, warning_messages)`` where
+        ``error`` is ``None`` on success and ``mutant_names`` may be empty.
+    """
+    from mutmut_win.file_setup import create_mutants_for_file
+
+    rel_path, filename, output_path, covered_lines = args
+    try:
+        mutant_names, warns = create_mutants_for_file(filename, output_path, covered_lines)
+        warn_msgs = [str(w.message) for w in warns]
+        return rel_path, mutant_names, None, warn_msgs
+    except Exception as exc:  # broad catch: pool workers must not crash the parent
+        return rel_path, [], exc, []
+
+
+def _filter_tasks_by_names(
+    tasks: list[MutationTask],
+    mutant_names: tuple[str, ...],
+) -> list[MutationTask]:
+    """Return only tasks whose ``mutant_name`` matches any of *mutant_names*.
+
+    Supports ``fnmatch`` glob patterns (e.g. ``src.foo.*``).  A task is
+    included if its name is an exact match **or** matches at least one pattern
+    via :func:`fnmatch.fnmatch`.
+
+    Args:
+        tasks: Full list of mutation tasks.
+        mutant_names: Filter patterns supplied by the caller.
+
+    Returns:
+        Filtered list of tasks (may be empty).
+    """
+    filtered: list[MutationTask] = []
+    for task in tasks:
+        key = task.mutant_name
+        if key in mutant_names or any(fnmatch.fnmatch(key, pattern) for pattern in mutant_names):
+            filtered.append(task)
+    return filtered
 
 
 def _apply_timeouts(
@@ -382,34 +462,32 @@ def _filter_with_type_checker(
     source_data_by_file: dict[str, SourceFileMutationData],
     type_check_command: list[str],
 ) -> tuple[list[MutationTask], set[str]]:
-    """Run the type checker against the mutants directory and mark caught mutants.
+    """Run the type checker and mark caught mutants using CST-based line matching.
 
-    Runs *type_check_command* inside the ``mutants/`` directory.  Any error
-    reported by the type checker is used to derive a mutant name; matching
-    tasks are removed from the pending list and recorded with exit code 37
-    (``caught by type check``) in *source_data_by_file*.
-
-    The error-to-mutant mapping uses a file-path heuristic: when the type
-    checker reports an error in a file under ``mutants/``, all pending tasks
-    whose ``mutant_name`` matches the same module path are considered caught.
-    This is a conservative approximation — the full CST-based line-number
-    matching from the reference implementation requires ``MutatedMethodsCollector``
-    which is a future extension.
+    Mirrors mutmut 3.5.0's ``filter_mutants_with_type_checker()``: runs the
+    type checker inside ``mutants/``, parses errors, then uses
+    ``MutatedMethodsCollector`` to determine which *specific* mutant function
+    contains the error line.  Only that exact mutant is marked — not the
+    entire module.
 
     Args:
         tasks: All pending mutation tasks.
-        source_data_by_file: Mapping of file path to ``SourceFileMutationData``
-            updated in-place for caught mutants.
-        type_check_command: The type checker command to run (e.g.
-            ``["mypy", "--output=json", "."]``).
+        source_data_by_file: Updated in-place for caught mutants.
+        type_check_command: Command list, e.g. ``["mypy", "--output=json", "."]``.
 
     Returns:
-        A tuple of ``(remaining_tasks, caught_mutant_names)`` where
-        ``caught_mutant_names`` is the set of mutant names removed from the
-        task list.
+        ``(remaining_tasks, caught_mutant_names)``
     """
     import os
 
+    import libcst as cst
+
+    from mutmut_win.file_setup import get_mutant_name
+    from mutmut_win.type_checker_filter import (
+        FailedTypeCheckMutant,
+        MutatedMethodsCollector,
+        group_by_path,
+    )
     from mutmut_win.type_checking import run_type_checker
 
     caught: set[str] = set()
@@ -428,30 +506,48 @@ def _filter_with_type_checker(
     if not errors:
         return tasks, caught
 
-    # Collect the set of erroneous file paths (relative to mutants/).
-    erroneous_modules: set[str] = set()
-    for error in errors:
-        error_path = Path(error.file_path)
+    errors_by_path = group_by_path(errors)
+    mutants_to_skip: dict[str, FailedTypeCheckMutant] = {}
+
+    for path, errors_of_file in errors_by_path.items():
         try:
-            rel = error_path.relative_to(mutants_dir.resolve())
-        except ValueError:
-            # Try relative to absolute mutants_dir.
-            try:
-                rel = error_path.relative_to(mutants_dir.absolute())
-            except ValueError:
+            with (mutants_dir / path).open(encoding="utf-8") as f:
+                source = f.read()
+        except OSError:
+            continue
+
+        wrapper = cst.MetadataWrapper(cst.parse_module(source))
+        visitor = MutatedMethodsCollector(path)
+        wrapper.visit(visitor)
+        mutated_methods = visitor.found_mutants
+
+        for error in errors_of_file:
+            mutant = next(
+                (
+                    m
+                    for m in mutated_methods
+                    if m.line_number_start <= error.line_number <= m.line_number_end
+                ),
+                None,
+            )
+            if mutant is None:
+                # Error outside any mutated method — skip (don't crash)
                 continue
-        # Convert path to dotted module name prefix (without .py suffix).
-        module_prefix = str(rel).replace("\\", "/").replace("/", ".").removesuffix(".py")
-        erroneous_modules.add(module_prefix)
 
-    # Match each pending task against erroneous module prefixes.
-    for task in tasks:
-        for module_prefix in erroneous_modules:
-            if task.mutant_name.startswith(module_prefix):
-                caught.add(task.mutant_name)
-                break
+            try:
+                rel_path = path.relative_to(Path().absolute())
+            except ValueError:
+                rel_path = path
+            mutant_name = get_mutant_name(rel_path, mutant.function_name)
 
-    # Remove caught mutants from tasks and update source_data_by_file.
+            mutants_to_skip[mutant_name] = FailedTypeCheckMutant(
+                method_location=mutant,
+                name=mutant_name,
+                error=error,
+            )
+
+    # Remove caught mutants from tasks and update source_data.
+    caught = set(mutants_to_skip.keys())
     remaining = [t for t in tasks if t.mutant_name not in caught]
     for mutant_name in caught:
         _update_source_data(

@@ -96,9 +96,7 @@ def test_e2e_mutations_generated_and_killed(simple_lib_project: Path) -> None:
     )
 
     with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT mutant_name, status FROM mutant"
-        ).fetchall()
+        rows = conn.execute("SELECT mutant_name, status FROM mutant").fetchall()
 
     assert len(rows) > 0, "No mutation results found in the database."
 
@@ -111,9 +109,7 @@ def test_e2e_mutations_generated_and_killed(simple_lib_project: Path) -> None:
 
     # With a complete test suite like simple_lib's, at least one mutant
     # should be killed.
-    killed_count = sum(
-        1 for _, status in rows if status in {"killed", "caught by type check"}
-    )
+    killed_count = sum(1 for _, status in rows if status in {"killed", "caught by type check"})
     assert killed_count > 0, (
         f"Expected at least one killed mutant, got 0.\n"
         f"All statuses: {statuses}\n"
@@ -144,9 +140,7 @@ def test_e2e_results_command(simple_lib_project: Path) -> None:
 
     # Query results.
     result = _run_mutmut_win(simple_lib_project, "results")
-    assert result.returncode == 0, (
-        f"mutmut-win results failed:\n{result.stdout}\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"mutmut-win results failed:\n{result.stdout}\n{result.stderr}"
 
     output = result.stdout
     assert "Total:" in output, f"Expected 'Total:' in output:\n{output}"
