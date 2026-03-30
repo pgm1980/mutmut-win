@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
@@ -66,15 +67,26 @@ def worker_main(
             cmd.extend(task.tests)
 
         # Activate the specific mutant via the trampoline env var.
+        # Set PYTHONPATH so subprocess can import from mutants/src etc.
         env = os.environ.copy()
+        extra_paths = []
+        for subdir in ["src", "source", "."]:
+            candidate = Path("mutants") / subdir
+            if candidate.exists():
+                extra_paths.append(str(candidate.absolute()))
+        if extra_paths:
+            existing = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
         env[MUTANT_ENV_VAR] = task.mutant_name
 
         start = time.monotonic()
+        # Run pytest inside mutants/ so it imports the trampolined code.
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd,
             env=env,
             capture_output=True,
             encoding="utf-8",
+            cwd="mutants",
         )
         duration = time.monotonic() - start
 
