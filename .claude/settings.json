@@ -99,10 +99,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) matcher-only-NO-if >> .sprint/.hook-fire-log\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "if": "Bash(git commit*)",
-            "command": "bash .claude/hooks/sprint-gate.sh",
-            "timeout": 20,
-            "statusMessage": "Checking sprint housekeeping..."
+            "command": "bash -c \"echo $(date -u +%Y-%m-%dT%H:%M:%SZ) matcher-PLUS-if >> .sprint/.hook-fire-log\"",
+            "timeout": 5
           }
         ]
       }
