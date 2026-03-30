@@ -60,3 +60,4 @@ html/
 
 # Misc
 *.log
+.sprint/.last-gate-commit
