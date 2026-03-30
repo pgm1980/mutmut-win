@@ -14,6 +14,7 @@ import click
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
+from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.runner import PytestRunner
@@ -100,62 +101,21 @@ def results(show_all: bool) -> None:
 @click.argument("mutant_name")
 def show(mutant_name: str) -> None:
     """Show the diff for a specific mutant MUTANT_NAME."""
-    _get_diff(mutant_name)
-
-
-def _get_diff(mutant_name: str) -> None:
-    """Print the unified diff for *mutant_name*, reading from the mutants/ directory.
-
-    Args:
-        mutant_name: Unique mutant identifier (e.g. 'src/foo.py::bar__mutmut_1').
-    """
-    import difflib
-
-    # Derive the source file path from the mutant name.
-    # Convention: mutant_name uses dot-separated module path + __mutmut_N suffix.
-    # We look under the mutants/ directory for the compiled source.
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    # Find mutant file: walk all .py under mutants/, look for the mutant name in it
-    found_path: Path | None = None
-    for py_file in mutants_dir.rglob("*.py"):
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if mutant_name in content:
-            found_path = py_file
-            break
-
-    if found_path is None:
-        click.echo(f"Mutant '{mutant_name}' not found in mutants/ directory.", err=True)
+    config = load_config()
+    try:
+        diff = get_diff_for_mutant(mutant_name, config)
+    except FileNotFoundError as exc:
+        click.echo(str(exc), err=True)
         sys.exit(1)
 
-    # The original source file is at the same relative path without the mutants/ prefix
-    rel_path = found_path.relative_to(mutants_dir)
-    orig_path = Path(rel_path)
-
-    if not orig_path.exists():
-        click.echo(f"Original source '{orig_path}' not found.", err=True)
-        sys.exit(1)
-
-    orig_lines = orig_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    mutant_lines = found_path.read_text(encoding="utf-8").splitlines(keepends=True)
-
-    diff = list(
-        difflib.unified_diff(
-            orig_lines,
-            mutant_lines,
-            fromfile=str(orig_path),
-            tofile=str(found_path),
-        )
-    )
     if diff:
         click.echo(f"# {mutant_name}")
-        click.echo("".join(diff))
+        click.echo(diff)
     else:
         click.echo(f"No diff found for '{mutant_name}'.")
 
@@ -169,30 +129,14 @@ def apply(mutant_name: str) -> None:
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    found_path: Path | None = None
-    for py_file in mutants_dir.rglob("*.py"):
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if mutant_name in content:
-            found_path = py_file
-            break
-
-    if found_path is None:
-        click.echo(f"Mutant '{mutant_name}' not found in mutants/ directory.", err=True)
+    config = load_config()
+    try:
+        apply_mutant(mutant_name, config)
+    except FileNotFoundError as exc:
+        click.echo(str(exc), err=True)
         sys.exit(1)
 
-    rel_path = found_path.relative_to(mutants_dir)
-    orig_path = Path(rel_path)
-
-    if not orig_path.exists():
-        click.echo(f"Original source '{orig_path}' not found.", err=True)
-        sys.exit(1)
-
-    mutant_content = found_path.read_text(encoding="utf-8")
-    orig_path.write_text(mutant_content, encoding="utf-8")
-    click.echo(f"Applied mutant '{mutant_name}' to '{orig_path}'.")
+    click.echo(f"Applied mutant '{mutant_name}'.")
 
 
 @cli.command()

@@ -168,9 +168,7 @@ class MutationOrchestrator:
             for event in executor.get_events():
                 _update_summary_and_persist(event, summary, self._db_path, source_data_by_file)
                 completed += 1
-                if completed % max(1, total // 20) == 0 or completed == total:
-                    pct = completed / total * 100
-                    print(f"Progress: {completed}/{total} ({pct:.0f}%)")
+                _print_live_progress(completed, total, summary)
         except KeyboardInterrupt:
             print("\nInterrupted — shutting down workers…")
             executor.shutdown(timeout=5.0)
@@ -556,6 +554,31 @@ def _update_source_data(
             if duration is not None:
                 sfd.durations_by_key[mutant_name] = duration
             return
+
+
+def _print_live_progress(completed: int, total: int, summary: MutationRunResult) -> None:
+    """Print a single-line emoji progress indicator after each mutant finishes.
+
+    Output format (mirrors mutmut reference)::
+
+        12/65  🎉 8  🫥 1  ⏰ 0  🤔 0  🙁 3  🔇 0  🧙 0
+
+    Args:
+        completed: Number of mutants processed so far.
+        total: Total number of mutants to process.
+        summary: Live ``MutationRunResult`` with current counts.
+    """
+    line = (
+        f"{completed}/{total}"
+        f"  \U0001f389 {summary.killed}"
+        f"  \U0001fae5 {summary.no_tests}"
+        f"  \u23f0 {summary.timeout}"
+        f"  \U0001f914 {summary.suspicious}"
+        f"  \U0001f641 {summary.survived}"
+        f"  \U0001f507 {summary.skipped}"
+        f"  \U0001f9d9 {summary.type_check_caught}"
+    )
+    print(line)
 
 
 def _print_summary(result: MutationRunResult) -> None:

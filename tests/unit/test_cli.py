@@ -210,22 +210,16 @@ class TestShowCommand:
 
     def test_show_prints_diff(self, tmp_path: Path) -> None:
         runner = CliRunner()
+        fake_diff = (
+            "--- src/sample.py\n+++ src/sample.py\n@@ -1 +1 @@\n-    return 1\n+    return 2"
+        )
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            # Set up orig + mutant files
-            src_dir = Path("src")
-            src_dir.mkdir()
-            orig_file = src_dir / "sample.py"
-            orig_file.write_text("def foo():\n    return 1\n", encoding="utf-8")
-
-            mutants_dir = Path("mutants") / "src"
-            mutants_dir.mkdir(parents=True)
-            mutant_file = mutants_dir / "sample.py"
-            mutant_file.write_text(
-                "# src.sample.foo__mutmut_1\ndef foo():\n    return 2\n",
-                encoding="utf-8",
-            )
-
-            result = runner.invoke(cli, ["show", "src.sample.foo__mutmut_1"])
+            Path("mutants").mkdir()
+            with (
+                patch("mutmut_win.cli.load_config"),
+                patch("mutmut_win.cli.get_diff_for_mutant", return_value=fake_diff),
+            ):
+                result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
 
         assert result.exit_code == 0
         # The output should contain diff markers
@@ -256,25 +250,15 @@ class TestApplyCommand:
     def test_apply_writes_mutant_to_source(self, tmp_path: Path) -> None:
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            src_dir = Path("src")
-            src_dir.mkdir()
-            orig_file = src_dir / "sample.py"
-            orig_content = "def foo():\n    return 1\n"
-            orig_file.write_text(orig_content, encoding="utf-8")
-
-            mutant_content = "# src.sample.foo__mutmut_1\ndef foo():\n    return 2\n"
-            mutants_dir = Path("mutants") / "src"
-            mutants_dir.mkdir(parents=True)
-            mutant_file = mutants_dir / "sample.py"
-            mutant_file.write_text(mutant_content, encoding="utf-8")
-
-            result = runner.invoke(cli, ["apply", "src.sample.foo__mutmut_1"])
+            Path("mutants").mkdir()
+            with (
+                patch("mutmut_win.cli.load_config"),
+                patch("mutmut_win.cli.apply_mutant") as mock_apply,
+            ):
+                result = runner.invoke(cli, ["apply", "src.sample.x_foo__mutmut_1"])
 
         assert result.exit_code == 0
-        # The original file should now contain the mutant content
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            pass  # We already checked exit_code; content assertion done below
-
+        mock_apply.assert_called_once()
         # Check that the "Applied mutant" message appears
         assert "Applied mutant" in result.output
 
