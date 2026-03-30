@@ -184,9 +184,13 @@ class MutationOrchestrator:
         try:
             executor.start(tasks_with_timeouts)
             for event in executor.get_events():
-                _update_summary_and_persist(event, summary, self._db_path, source_data_by_file)
-                completed += 1
-                _print_live_progress(completed, total, summary)
+                is_completion = _update_summary_and_persist(
+                    event, summary, self._db_path, source_data_by_file
+                )
+                # Only count completed/timed-out mutants, not started events.
+                if is_completion:
+                    completed += 1
+                    _print_live_progress(completed, total, summary)
         except KeyboardInterrupt:
             print("\nInterrupted — shutting down workers…")
             executor.shutdown(timeout=5.0)
@@ -565,7 +569,7 @@ def _update_summary_and_persist(
     summary: MutationRunResult,
     db_path: Path,
     source_data_by_file: dict[str, SourceFileMutationData],
-) -> None:
+) -> bool:
     """Update *summary* counters and persist the result for a finished event.
 
     Args:
@@ -573,11 +577,15 @@ def _update_summary_and_persist(
         summary: Mutable summary object to update in-place.
         db_path: Path to the SQLite result cache.
         source_data_by_file: Mapping of file path to ``SourceFileMutationData``.
+
+    Returns:
+        ``True`` if the event represents a completed/timed-out mutant
+        (i.e. a progress-relevant event), ``False`` for ``TaskStarted``.
     """
     from mutmut_win.models import TaskCompleted, TaskStarted, TaskTimedOut
 
     if isinstance(event, TaskStarted):
-        return
+        return False
 
     if isinstance(event, TaskTimedOut):
         mutant_name = event.mutant_name
@@ -590,7 +598,7 @@ def _update_summary_and_persist(
         duration = event.duration
         status = status_by_exit_code[exit_code]
     else:
-        return
+        return False
 
     # Update summary counters.
     _increment_summary(summary, status)
@@ -600,6 +608,7 @@ def _update_summary_and_persist(
 
     # Update in-memory SourceFileMutationData.
     _update_source_data(mutant_name, exit_code, duration, source_data_by_file)
+    return True
 
 
 def _increment_summary(summary: MutationRunResult, status: str) -> None:

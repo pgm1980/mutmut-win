@@ -34,6 +34,14 @@
 - [ ] **Mutation Testing**: Score ≥ <Ziel>% auf neuem/geändertem Code
 - [ ] **Performance**: Benchmarks auf Hot Paths durchgeführt (falls relevant)
 
+### E2E-Validierung (PFLICHT — NICHT VERHANDELBAR)
+
+- [ ] **Echter E2E-Lauf**: Das Increment MUSS mindestens einmal auf einem echten Projekt (nicht gemockt!) End-to-End ausgeführt werden
+- [ ] **Kein reines Unit-Test-Vertrauen**: Unit-Tests mit gemocktem subprocess, I/O oder externen Systemen decken KEINE Integrationsfehler auf (cwd, PYTHONPATH, sys.path, Dateipfade, Encoding, Prozess-Isolation). Der echte E2E-Lauf ist unverzichtbar und ersetzt keinen Unit-Test, sondern ergänzt ihn.
+- [ ] **Ergebnis dokumentiert**: E2E-Testergebnis im Sprint-Backlog oder Protokoll-Datei festgehalten
+
+> **Erfahrungswert:** 471 Unit-Tests, 3 Cross-Check-Audits, 12 Sprints — und ein kritischer Bug (subprocess ohne `cwd`, fehlendes `PYTHONPATH`) wurde erst beim ersten echten End-to-End-Lauf auf einem realen Projekt gefunden. Alle Unit-Tests hatten subprocess.run() gemockt und den realen Integrationspfad nie getestet.
+
 ### Prozess-Gates
 
 - [ ] **Code Review**: Mindestens 1 Review (Agent oder Mensch) bestanden
