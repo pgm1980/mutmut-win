@@ -1,95 +1,37 @@
 ---
-current_sprint: "7"
-sprint_goal: "Hook-Fixes + mutmut E2E Reference Tests"
-branch: "fix/hook-yaml-frontmatter"
+current_sprint: "8"
+sprint_goal: "File Setup Pipeline (copy_src, write_mutants, setup_paths)"
+branch: "feature/24-file-setup-pipeline"
 started_at: "2026-03-30"
 housekeeping_done: false
 memory_updated: false
 github_issues_closed: false
 sprint_backlog_written: false
 semgrep_passed: false
-tests_passed: true
+tests_passed: false
 documentation_updated: false
 ---
 
 # Sprint State
 
 ## Current Focus
-- Fix YAML frontmatter format for all hooks
-- Implement mutmut reference E2E tests (5 projects from mutmut 3.5.0)
+- Sprint 8: File Setup Pipeline — the critical missing piece that enables end-to-end mutation testing
 
-## Completed Sprints
+## Sprint Plan (v0.2.0)
 
-### Sprint 0: Architecture & Design
-- [x] Brainstorming spec, Architecture spec (11 ADRs), Software Design spec
-- [x] Product Backlog, 23 GitHub Issues, Milestone
+### Sprint 8: File Setup Pipeline (Tier 1 Critical)
+- [ ] `file_setup.py`: walk_source_files, copy_src_dir, setup_source_paths, write_all_mutants_to_file
+- [ ] Orchestrator integration: use file_setup in _generate_mutants
+- Issues: #24, #25, #26, #27, #28
 
-### Sprints 1-6: Implementation
-- [x] Domain models, config, constants, exceptions
-- [x] Mutation engine (mutation.py, node_mutation.py, trampoline.py, code_coverage.py, type_checking.py)
-- [x] Process management (executor.py, timeout.py, worker.py)
-- [x] Orchestrator, runner, SQLite persistence
-- [x] CLI (run/results/show/apply/browse), TUI browser
-- [x] 279 unit + architecture tests, all green
-- [x] E2E test project (simple_lib) — but NOT the 5 mutmut reference projects
+### Sprint 9: Test Mapping + Stats (Tier 2 High)
+- [ ] `test_mapping.py`: mangled_name_from_mutant_name, tests_for_mutant_names
+- [ ] `stats.py`: load_stats, save_stats, collect_or_load_stats
+- [ ] Type-checker filter wiring in orchestrator
+- Issues: #29, #30, #31, #32, #33
 
-## Known Issues
-- [ ] E2E tests use self-written simple_lib, not the 5 verified mutmut reference projects
-- [ ] No snapshot comparison against mutmut reference results
-- [ ] Hooks were not effective due to wrong state.md format (this sprint fixes it)
-
-## Sprint Context (auto-saved before compaction at 2026-03-30T07:12:11Z)
-
-### Current Branch
-fix/hook-yaml-frontmatter
-
-### Last 10 Commits
-```
-62aafd5 merge: Sprint 6 - E2E Tests + Integration (#20, #21)
-9539d91 feat(sprint-6): E2E tests, architecture tests, integration polish
-05fd17b merge: Sprint 5 - CLI + TUI Browser (#17, #18, #19)
-4dca37f feat(sprint-5): CLI commands and TUI result browser
-e5fbfac merge: Sprint 4 - Orchestrator + Test Runner (#13, #14, #15, #16)
-e28ebfe feat(sprint-4): orchestrator, test runner, and SQLite persistence
-e0e6c68 merge: Sprint 3 - Windows Process Management (#9, #10, #11, #12)
-34b3f16 feat(sprint-3): Windows process management (spawn pool, timeout, worker)
-ef397b2 merge: Sprint 2 - Mutation Engine Port (#5, #6, #7, #8)
-2bfe550 feat(sprint-2): port mutation engine from mutmut 3.5.0
-```
-
-### Recently Changed Files
-```
-.sprint/state.md
-src/mutmut_win/__main__.py
-src/mutmut_win/browser.py
-src/mutmut_win/cli.py
-src/mutmut_win/code_coverage.py
-src/mutmut_win/db.py
-src/mutmut_win/mutation.py
-src/mutmut_win/node_mutation.py
-src/mutmut_win/orchestrator.py
-src/mutmut_win/process/__init__.py
-src/mutmut_win/process/executor.py
-src/mutmut_win/process/timeout.py
-src/mutmut_win/process/worker.py
-src/mutmut_win/result_browser_layout.tcss
-src/mutmut_win/runner.py
-src/mutmut_win/trampoline.py
-src/mutmut_win/type_checking.py
-tests/e2e_projects/simple_lib/pyproject.toml
-tests/e2e_projects/simple_lib/src/simple_lib/__init__.py
-tests/e2e_projects/simple_lib/tests/test_simple.py
-```
-
-### Uncommitted Changes
-```
- M .claude/hooks/sprint-gate.sh
- M .claude/hooks/sprint-state-save.sh
- M .sprint/state.md
-?? .hypothesis/
-?? .sprint/.fs-mcp-versions/
-?? "_docs/architecture spec/.fs-mcp-versions/"
-?? "_docs/design spec/software_design_specification.md"
-?? "_docs/product backlog/.fs-mcp-versions/"
-?? uv.lock
-```
+### Sprint 10: CLI show/apply + E2E Validation (Tier 3)
+- [ ] `mutant_diff.py`: find_mutant, get_diff_for_mutant, apply_mutant
+- [ ] Live progress display
+- [ ] End-to-end validation: full pipeline on reference projects
+- Issues: #34, #35, #36, #37, #38
