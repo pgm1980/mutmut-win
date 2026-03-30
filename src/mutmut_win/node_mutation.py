@@ -434,6 +434,117 @@ def operator_conditional_expression(node: cst.IfExp) -> Iterable[cst.BaseExpress
     yield node.orelse  # always false-branch
 
 
+# ---------------------------------------------------------------------------
+# Statement Removal — void calls + raise → pass (inspired by Stryker.NET)
+# ---------------------------------------------------------------------------
+
+#: Function names whose calls should NOT be removed (too noisy as surviving mutants).
+_EXCLUDED_VOID_CALLS: set[str] = {
+    "print",
+    "pprint",
+    # logging methods
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "critical",
+    "exception",
+    "log",
+    # typing runtime no-ops
+    "assert_type",
+    "reveal_type",
+    # warnings
+    "warn",
+}
+
+
+def operator_void_call_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """Remove void function calls by replacing the statement with ``pass``.
+
+    Only targets single-expression statements where the expression is a
+    ``Call`` whose return value is ignored (void / side-effect calls).
+    Excludes logging, print, typing, and warnings calls.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Expr):
+        return
+    expr = node.body[0]
+    if not isinstance(expr.value, cst.Call):
+        return
+
+    # Get the leaf function name for the exclusion check.
+    func_name = _get_call_simple_name(expr.value)
+    if func_name and func_name in _EXCLUDED_VOID_CALLS:
+        return
+
+    yield node.with_changes(body=[cst.Pass()])
+
+
+def operator_raise_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """Remove ``raise`` statements by replacing with ``pass``.
+
+    Tests whether error/exception paths are actually covered by tests.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Raise):
+        return
+    yield node.with_changes(body=[cst.Pass()])
+
+
+# ---------------------------------------------------------------------------
+# Collection method mutations (inspired by Stryker.NET LINQ mutator)
+# ---------------------------------------------------------------------------
+
+#: Builtin calls that can be neutralised to their first argument.
+_COLLECTION_NEUTRALIZE: set[str] = {"sorted", "reversed", "list", "tuple", "frozenset", "set"}
+
+
+def operator_collection_neutralize(node: cst.Call) -> Iterable[cst.CSTNode]:
+    """Neutralise collection operations: ``sorted(x)`` → ``x``, etc.
+
+    Tests whether sorting, reversing, or type conversion is actually needed.
+    """
+    func_name = _get_call_simple_name(node)
+    if func_name not in _COLLECTION_NEUTRALIZE:
+        return
+    if not node.args:
+        return
+    yield node.args[0].value
+
+
+def operator_comprehension_filter_removal(
+    node: cst.ListComp,
+) -> Iterable[cst.ListComp]:
+    """Remove ``if`` filter clauses from list comprehensions.
+
+    ``[x for x in items if pred(x)]`` → ``[x for x in items]``
+    Tests whether the filter condition is actually needed.
+    """
+    for_in = node.for_in
+    if not isinstance(for_in, cst.CompFor) or not for_in.ifs:
+        return
+    yield node.with_changes(for_in=for_in.with_changes(ifs=[]))
+
+
+# ---------------------------------------------------------------------------
+# or-Default mutation (inspired by Stryker.NET null-coalescing)
+# ---------------------------------------------------------------------------
+
+
+def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpression]:
+    """Simplify ``x or default`` to just ``x`` or just ``default``.
+
+    Only applies to ``or`` operations (not ``and``).
+    Tests whether the fallback value is actually needed.
+    """
+    if not isinstance(node.operator, cst.Or):
+        return
+    yield node.left   # remove fallback
+    yield node.right  # always use fallback
+
+
 # Operators that should be called on specific node types
 mutation_operators: OPERATORS_TYPE = [
     (cst.BaseNumber, operator_number),
@@ -455,6 +566,11 @@ mutation_operators: OPERATORS_TYPE = [
     (cst.Call, operator_math_methods),
     (cst.Return, operator_return_value),
     (cst.IfExp, operator_conditional_expression),
+    (cst.SimpleStatementLine, operator_void_call_removal),
+    (cst.SimpleStatementLine, operator_raise_removal),
+    (cst.Call, operator_collection_neutralize),
+    (cst.ListComp, operator_comprehension_filter_removal),
+    (cst.BooleanOperation, operator_or_default),
 ]
 
 
