@@ -50,6 +50,7 @@ fi
 # Replace everything after the closing --- (the context section)
 # Keep frontmatter + prompt, replace context
 python -c "
+import re
 import sys
 
 state_file = sys.argv[1]
@@ -61,25 +62,26 @@ with open(state_file, 'r', encoding='utf-8') as f:
 # Split on frontmatter boundaries
 parts = content.split('---')
 if len(parts) >= 3:
-    # parts[0] = empty before first ---
-    # parts[1] = YAML frontmatter
-    # parts[2+] = body content
+    # Has YAML frontmatter: parts[0]=empty, parts[1]=YAML, parts[2+]=body
     body = '---'.join(parts[2:])
 
-    # Find existing Sprint Context section and replace, or append
-    import re
     pattern = r'## Sprint Context.*'
     if re.search(pattern, body, re.DOTALL):
-        # Replace existing context section
         body = re.sub(pattern, new_context, body, flags=re.DOTALL)
     else:
-        # Append context section
         body = body.rstrip() + '\n\n' + new_context + '\n'
 
     result = '---' + parts[1] + '---' + body
+else:
+    # No YAML frontmatter — append context section to whatever content exists.
+    pattern = r'## Sprint Context.*'
+    if re.search(pattern, content, re.DOTALL):
+        result = re.sub(pattern, new_context, content, flags=re.DOTALL)
+    else:
+        result = content.rstrip() + '\n\n' + new_context + '\n'
 
-    with open(state_file, 'w', encoding='utf-8') as f:
-        f.write(result)
+with open(state_file, 'w', encoding='utf-8') as f:
+    f.write(result)
 
 " "$STATE_FILE" "$CONTEXT"
 

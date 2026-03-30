@@ -19,8 +19,9 @@ fi
 # Parse housekeeping_done
 DONE=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE" | grep '^housekeeping_done:' | sed 's/housekeeping_done: *//' | tr -d '"')
 
-# If housekeeping is already done, no gate needed
-if [[ "$DONE" != "false" ]]; then
+# If housekeeping is already done (or state.md has no frontmatter → DONE is empty), no gate needed.
+# We explicitly check for "false" — any other value (including empty) means "not blocking".
+if [[ "$DONE" == "true" ]] || [[ -z "$DONE" ]]; then
   exit 0
 fi
 
