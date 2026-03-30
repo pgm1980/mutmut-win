@@ -45,19 +45,26 @@ class PytestRunner:
     # ------------------------------------------------------------------
 
     def run_clean_test(self) -> int:
-        """Run pytest without any mutations active.
+        """Run pytest without any mutations active (in mutants/ directory).
 
-        Validates the test suite passes before mutation testing begins.
+        The test suite runs against the trampolined code in ``mutants/`` with
+        ``MUTANT_UNDER_TEST=''``, so all trampoline calls forward to the
+        original functions.  This validates the test suite passes before
+        mutation testing begins.
 
         Returns:
             The pytest exit code (0 means all tests passed).
         """
         cmd = self._base_pytest_cmd()
         cmd.extend(self._config.pytest_add_cli_args)
+        env = self._mutants_env()
+        env[MUTANT_ENV_VAR] = ""
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd,
             capture_output=True,
             encoding="utf-8",
+            cwd="mutants",
+            env=env,
         )
         return result.returncode
 
@@ -167,10 +174,10 @@ class PytestRunner:
         mutant_name: str | None,  # noqa: ARG002  # kept for API symmetry
         tests: list[str] | None,  # noqa: ARG002  # kept for API symmetry
     ) -> int:
-        """Run the test suite for coverage gathering.
+        """Run the test suite (in mutants/ directory) for coverage gathering.
 
         Provided for API compatibility with the mutmut 3.5.0 ``TestRunner``
-        interface.  Delegates to ``run_clean_test`` which runs the full suite.
+        interface.  Delegates to ``run_clean_test`` which runs in ``mutants/``.
 
         Args:
             mutant_name: Unused — kept for interface symmetry.
@@ -185,10 +192,10 @@ class PytestRunner:
         self,
         mutant_name: str,  # noqa: ARG002  # kept for API symmetry — future: filter tests by mutant
     ) -> int:
-        """Run pytest with a known-bad mutant to verify the trampoline works.
+        """Run pytest with ``MUTANT_UNDER_TEST=fail`` in mutants/ directory.
 
-        Sets ``MUTANT_UNDER_TEST=fail`` which causes the trampoline to raise
-        ``MutmutProgrammaticFailException`` for every function call.
+        The trampoline raises ``MutmutProgrammaticFailException`` for every
+        function call, so all tests should fail.
 
         Args:
             mutant_name: Mutant identifier (reserved for future test filtering — unused now).
@@ -196,16 +203,15 @@ class PytestRunner:
         Returns:
             The pytest exit code (non-zero means tests caught the failure, as expected).
         """
-        import os
-
         cmd = [*self._base_pytest_cmd(), "--tb=no", "-q"]
         cmd.extend(self._config.pytest_add_cli_args)
-        env = os.environ.copy()
+        env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd,
             capture_output=True,
             encoding="utf-8",
+            cwd="mutants",
             env=env,
         )
         return result.returncode
@@ -221,3 +227,29 @@ class PytestRunner:
             Base command list: ``[sys.executable, '-m', 'pytest']``.
         """
         return [sys.executable, "-m", "pytest"]
+
+    def _mutants_env(self) -> dict[str, str]:
+        """Build env dict for subprocess runs inside ``mutants/``.
+
+        Sets ``PYTHONPATH`` so the subprocess can import source modules from
+        ``mutants/src``, ``mutants/source``, or ``mutants/.``.  This is the
+        subprocess equivalent of ``setup_source_paths()`` which manipulates
+        ``sys.path`` in-process.
+
+        Returns:
+            Copy of ``os.environ`` with ``PYTHONPATH`` adjusted.
+        """
+        import os
+
+        env = os.environ.copy()
+        mutants_abs = Path("mutants").absolute()
+        # Same paths as setup_source_paths: src, source, .
+        extra_paths = []
+        for subdir in ["src", "source", "."]:
+            candidate = mutants_abs / subdir
+            if candidate.exists():
+                extra_paths.append(str(candidate))
+        if extra_paths:
+            existing = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+        return env
