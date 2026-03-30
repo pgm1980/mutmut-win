@@ -43,3 +43,7 @@ class MutationError(MutmutWinError):
 
 class MutationParseError(MutationError):
     """Failed to parse a source file for mutation."""
+
+
+class MutmutProgrammaticFailException(MutmutWinError):  # noqa: N818 — name hardcoded in trampoline_impl
+    """Raised by the trampoline when MUTANT_UNDER_TEST == 'fail'."""

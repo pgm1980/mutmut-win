@@ -15,7 +15,6 @@ Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from pathlib import Path
@@ -27,12 +26,6 @@ if TYPE_CHECKING:
 
 #: Default filename for the stats JSON cache.
 _STATS_FILENAME = "mutmut-stats.json"
-
-#: Environment variable used by the trampoline to select the active mutant.
-_MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
-
-#: Sentinel value that triggers stats recording in the trampoline.
-_MUTANT_STATS_SENTINEL = "stats"
 
 
 @dataclass
@@ -150,8 +143,9 @@ def _run_stats_collection(
 ) -> MutmutStats:
     """Run a fresh stats collection and persist the result.
 
-    Sets ``MUTANT_UNDER_TEST=stats`` in the environment before calling
-    ``runner.run_stats()``, then saves the collected data to disk.
+    Calls ``runner.run_stats()`` which runs pytest in-process with the
+    ``StatsCollector`` plugin.  Reads the populated ``_state`` globals and
+    saves the collected data to disk.
 
     Args:
         runner: ``PytestRunner`` used to execute the stats run.
@@ -160,15 +154,15 @@ def _run_stats_collection(
     Returns:
         A freshly populated ``MutmutStats`` instance.
     """
-    os.environ[_MUTANT_ENV_VAR] = _MUTANT_STATS_SENTINEL
-    os.environ["PY_IGNORE_IMPORTMISMATCH"] = "1"
+    from mutmut_win import _state
 
     start_cpu = process_time()
-    duration_by_test = runner.run_stats()
+    runner.run_stats()
     stats_time = process_time() - start_cpu
 
     stats = MutmutStats(
-        duration_by_test=duration_by_test,
+        tests_by_mangled_function_name=dict(_state.tests_by_mangled_function_name),
+        duration_by_test=dict(_state.duration_by_test),
         stats_time=stats_time,
     )
     save_stats(stats, mutants_dir)

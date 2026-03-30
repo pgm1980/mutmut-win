@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 import pytest
 
+import mutmut_win._state as _state_module
 from mutmut_win.stats import (
     _STATS_FILENAME,
     MutmutStats,
@@ -169,7 +170,10 @@ class TestCollectOrLoadStats:
 
     def test_calls_runner_when_no_cache(self, tmp_path: Path) -> None:
         runner = MagicMock()
-        runner.run_stats.return_value = {"t::test_a": 0.5}
+        # run_stats now returns None; data is populated into _state globals.
+        runner.run_stats.return_value = None
+        _state_module._reset_globals()
+        _state_module.duration_by_test["t::test_a"] = 0.5
 
         result = collect_or_load_stats(runner, mutants_dir=tmp_path)
 
@@ -178,7 +182,9 @@ class TestCollectOrLoadStats:
 
     def test_persists_collected_stats(self, tmp_path: Path) -> None:
         runner = MagicMock()
-        runner.run_stats.return_value = {"t::test_a": 0.7}
+        runner.run_stats.return_value = None
+        _state_module._reset_globals()
+        _state_module.duration_by_test["t::test_a"] = 0.7
 
         collect_or_load_stats(runner, mutants_dir=tmp_path)
 
@@ -190,15 +196,28 @@ class TestCollectOrLoadStats:
 
     def test_returns_mutmut_stats_instance(self, tmp_path: Path) -> None:
         runner = MagicMock()
-        runner.run_stats.return_value = {}
+        runner.run_stats.return_value = None
+        _state_module._reset_globals()
         result = collect_or_load_stats(runner, mutants_dir=tmp_path)
         assert isinstance(result, MutmutStats)
 
     def test_stats_time_is_positive_after_collection(self, tmp_path: Path) -> None:
         runner = MagicMock()
-        runner.run_stats.return_value = {}
+        runner.run_stats.return_value = None
+        _state_module._reset_globals()
 
         with patch("mutmut_win.stats.process_time", side_effect=[0.0, 1.5]):
             result = collect_or_load_stats(runner, mutants_dir=tmp_path)
 
         assert result.stats_time == pytest.approx(1.5)
+
+    def test_tests_by_mangled_populated_from_state(self, tmp_path: Path) -> None:
+        runner = MagicMock()
+        runner.run_stats.return_value = None
+        _state_module._reset_globals()
+        _state_module.tests_by_mangled_function_name["pkg.func__mutmut_1"].add("tests/t.py::test_x")
+
+        result = collect_or_load_stats(runner, mutants_dir=tmp_path)
+
+        assert "pkg.func__mutmut_1" in result.tests_by_mangled_function_name
+        assert "tests/t.py::test_x" in result.tests_by_mangled_function_name["pkg.func__mutmut_1"]

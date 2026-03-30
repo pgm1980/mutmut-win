@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -83,33 +84,74 @@ class PytestRunner:
                 tests.append(line)
         return sorted(tests)
 
-    def run_stats(self) -> dict[str, float]:
-        """Run each test once and collect execution timing statistics.
+    def run_stats(self) -> None:
+        """Run pytest in-process with StatsCollector plugin to track trampoline hits.
 
-        Uses the trampoline's ``stats`` sentinel so calls are recorded
-        without activating any mutant.
-
-        Returns:
-            Mapping of test node ID to duration in seconds.
+        Sets ``MUTANT_UNDER_TEST=stats`` so the trampoline records which
+        mangled function names are called by each test.  After this method
+        completes, ``_state.tests_by_mangled_function_name`` and
+        ``_state.duration_by_test`` are populated.
         """
         import os
-        import time
 
-        tests = self.collect_tests()
-        stats: dict[str, float] = {}
-        for test in tests:
-            cmd = [*self._base_pytest_cmd(), "--tb=no", "-q", test]
-            env = os.environ.copy()
-            env[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
-            start = time.monotonic()
-            subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                capture_output=True,
-                encoding="utf-8",
-                env=env,
+        import pytest
+
+        from mutmut_win import _state
+        from mutmut_win.file_setup import strip_prefix
+
+        _state._reset_globals()
+        os.environ[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
+        os.environ["PY_IGNORE_IMPORTMISMATCH"] = "1"
+
+        class StatsCollector:
+            """Pytest plugin that maps trampoline hits to test node IDs."""
+
+            def pytest_runtest_teardown(  # type: ignore[no-untyped-def]
+                self,
+                item,
+                nextitem,  # noqa: ARG002  # nextitem required by hook signature
+            ) -> None:
+                """Record trampoline hits accumulated during this test."""
+                for function in _state._stats:
+                    _state.tests_by_mangled_function_name[function].add(
+                        strip_prefix(item._nodeid, prefix="mutants/")
+                    )
+                _state._stats.clear()
+
+            def pytest_runtest_makereport(  # type: ignore[no-untyped-def]
+                self, item, call
+            ) -> None:
+                """Accumulate per-test duration across setup/call/teardown phases."""
+                _state.duration_by_test[item.nodeid] = (
+                    _state.duration_by_test.get(item.nodeid, 0.0) + call.duration
+                )
+
+        stats_collector = StatsCollector()
+        pytest_args = ["-x", "-q", "--rootdir=.", "--tb=native"]
+        pytest_args += self._config.pytest_add_cli_args
+        pytest_args += self._config.tests_dir
+
+        if self._config.debug:
+            pytest_args = ["-vv", *pytest_args]
+
+        old_cwd = Path.cwd()
+        os.chdir("mutants")
+        try:
+            exit_code = int(pytest.main(pytest_args, plugins=[stats_collector]))
+        finally:
+            os.chdir(old_cwd)
+
+        os.environ[MUTANT_ENV_VAR] = ""
+
+        if exit_code != 0:
+            print(f"Warning: stats collection returned exit code {exit_code}")
+
+        # Verify we got some test-to-mutant mappings.
+        num_mapped = sum(len(t) for t in _state.tests_by_mangled_function_name.values())
+        if num_mapped == 0:
+            print(
+                "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
             )
-            stats[test] = time.monotonic() - start
-        return stats
 
     def run_forced_fail(
         self,
