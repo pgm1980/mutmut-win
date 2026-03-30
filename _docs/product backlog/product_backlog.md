@@ -296,6 +296,29 @@
 
 ---
 
+### Epic 12: Hardening — Orphan-Prozess-Schutz (Sprint 13)
+
+**Beschreibung:** Windows Job Objects für zuverlässigen Orphan-Prozess-Schutz. Verhindert CPU-Überhitzung wenn der Hauptprozess unerwartet stirbt.
+**Sprint:** 13
+**Release:** v0.5.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #51 | Story | Als User will ich dass Worker-Prozesse automatisch sterben wenn mutmut-win crasht | Must | 5 | Open |
+| #52 | Task | `process/job_object.py` — ctypes Win32 Job Object Wrapper | Must | 3 | Open |
+| #53 | Task | `executor.py` Integration (create/assign/close) + Graceful Degradation | Must | 3 | Open |
+| #54 | Task | Deterministischer Test: Job Object kill-on-close Verhalten | Must | 2 | Open |
+
+**Acceptance Criteria:**
+- [ ] `job_object.py` implementiert `create_kill_on_close_job()`, `assign_process_to_job()`, `close_job()`
+- [ ] SpawnPoolExecutor erstellt Job Object im `__init__`, weist Worker in `start()` zu, schließt in `shutdown()`
+- [ ] Bei Parent-Tod: ALLE Worker + deren pytest-Subprozesse werden vom OS gekillt
+- [ ] Graceful Degradation: Warning statt Crash wenn Job Object nicht erstellt werden kann
+- [ ] Deterministischer Test beweist kill-on-close Verhalten
+- [ ] DoD aktualisiert: E2E-Lauf darf keine Orphan-Prozesse hinterlassen
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -313,6 +336,7 @@
 | MVP | v0.1.0 | Epic 1–6 | #1–#23 | Open |
 | Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Open |
 | Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Open |
+| Hardening v0.5.0 | v0.5.0 | Epic 12 | #51–#54 | Open |
 
 ---
 
@@ -331,6 +355,7 @@
 | Sprint 10 | 21 | | | CLI show/apply + E2E Validation |
 | Sprint 11 | 24 | | | In-Process Stats + Trampoline Tracking |
 | Sprint 12 | 34 | | | Feature Completeness + E2E Validation |
+| Sprint 13 | 13 | | | Hardening: Job Object Orphan Protection |
 
 ---
 

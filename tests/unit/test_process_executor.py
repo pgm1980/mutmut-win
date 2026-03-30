@@ -51,9 +51,11 @@ class _FakeProcess:
 
     def __init__(self, **_kwargs: Any) -> None:
         self._alive = False
+        self.pid: int | None = None
 
     def start(self) -> None:
         self._alive = True
+        self.pid = 99999
 
     def is_alive(self) -> bool:
         return self._alive
