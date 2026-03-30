@@ -3,6 +3,7 @@
 # Sprint Health Check — SessionStart Hook
 # Shows sprint status, open housekeeping items, and warnings at session start.
 # Reads .sprint/state.md if it exists.
+# Validates YAML frontmatter schema (all 11 required fields).
 
 set -uo pipefail
 # NOTE: -e deliberately omitted — git commands may fail in edge cases
@@ -17,6 +18,46 @@ fi
 # Parse YAML frontmatter
 FRONTMATTER=$(sed -n '/^---$/,/^---$/{ /^---$/d; p; }' "$STATE_FILE")
 
+# --- Schema Validation ---
+# All 11 fields are required per CLAUDE.md "Sprint State Management" section.
+REQUIRED_FIELDS=(
+  "current_sprint"
+  "sprint_goal"
+  "branch"
+  "started_at"
+  "housekeeping_done"
+  "memory_updated"
+  "github_issues_closed"
+  "sprint_backlog_written"
+  "semgrep_passed"
+  "tests_passed"
+  "documentation_updated"
+)
+
+MISSING_FIELDS=""
+if [[ -z "$FRONTMATTER" ]]; then
+  MISSING_FIELDS="ALL (no YAML frontmatter found — file must start with ---)"
+else
+  for field in "${REQUIRED_FIELDS[@]}"; do
+    if ! echo "$FRONTMATTER" | grep -q "^${field}:"; then
+      MISSING_FIELDS="$MISSING_FIELDS $field"
+    fi
+  done
+fi
+
+if [[ -n "$MISSING_FIELDS" ]]; then
+  echo "SPRINT STATE VALIDATION FAILED"
+  echo ""
+  echo "  .sprint/state.md is missing required YAML frontmatter fields:"
+  echo "  $MISSING_FIELDS"
+  echo ""
+  echo "  See CLAUDE.md section 'Sprint State Management' for the required schema."
+  echo "  Fix .sprint/state.md before proceeding."
+  echo ""
+  # Continue with remaining checks — don't exit, so Claude still gets branch/commit info
+fi
+
+# Parse fields
 SPRINT=$(echo "$FRONTMATTER" | grep '^current_sprint:' | sed 's/current_sprint: *//' | tr -d '"')
 GOAL=$(echo "$FRONTMATTER" | grep '^sprint_goal:' | sed 's/sprint_goal: *//' | tr -d '"')
 BRANCH=$(echo "$FRONTMATTER" | grep '^branch:' | sed 's/branch: *//' | tr -d '"')
