@@ -47,13 +47,13 @@ def _task(name: str = "src/foo.py::bar__mutmut_1", **kwargs: Any) -> MutationTas
 def _make_runner(
     clean_exit: int = 0,
     forced_fail_exit: int = 1,
-    stats: dict[str, float] | None = None,
     tests: list[str] | None = None,
 ) -> MagicMock:
     runner = MagicMock()
     runner.run_clean_test.return_value = clean_exit
     runner.run_forced_fail.return_value = forced_fail_exit
-    runner.run_stats.return_value = stats or {}
+    # run_stats returns None (side-effect: populates _state globals)
+    runner.run_stats.return_value = None
     runner.collect_tests.return_value = tests or []
     return runner
 
@@ -246,9 +246,7 @@ class TestMutationOrchestratorRunCleanTestFail:
         runner = _make_runner(clean_exit=1)
         executor = _make_executor()
         cfg = _config(paths_to_mutate=[str(src)])
-        orch = MutationOrchestrator(
-            cfg, runner=runner, executor=executor, db_path=tmp_path / "db"
-        )
+        orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         with pytest.raises(CleanTestFailedError):
             orch.run()
 
@@ -267,9 +265,7 @@ class TestMutationOrchestratorRunForcedFailCheck:
         runner = _make_runner(clean_exit=0, forced_fail_exit=0)
         executor = _make_executor()
         cfg = _config(paths_to_mutate=[str(src)])
-        orch = MutationOrchestrator(
-            cfg, runner=runner, executor=executor, db_path=tmp_path / "db"
-        )
+        orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         with pytest.raises(ForcedFailError):
             orch.run()
 
@@ -307,9 +303,7 @@ class TestMutationOrchestratorRunHappyPath:
 
         executor.get_events.side_effect = fake_get_events
 
-        orch = MutationOrchestrator(
-            cfg, runner=runner, executor=executor, db_path=tmp_path / "db"
-        )
+        orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         result = orch.run()
         assert result.total_mutants > 0
         assert result.killed == result.total_mutants
@@ -338,9 +332,7 @@ class TestMutationOrchestratorRunHappyPath:
 
         executor.get_events.side_effect = fake_get_events
 
-        orch = MutationOrchestrator(
-            cfg, runner=runner, executor=executor, db_path=tmp_path / "db"
-        )
+        orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         result = orch.run()
         assert result.timeout == result.total_mutants
 
