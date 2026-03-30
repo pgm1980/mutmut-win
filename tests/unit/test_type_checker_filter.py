@@ -117,15 +117,9 @@ class TestGroupByPath:
         assert result[Path("src/foo.py")] == [error]
 
     def test_groups_by_path(self) -> None:
-        err1 = TypeCheckingError(
-            file_path=Path("src/foo.py"), line_number=1, error_description="a"
-        )
-        err2 = TypeCheckingError(
-            file_path=Path("src/foo.py"), line_number=2, error_description="b"
-        )
-        err3 = TypeCheckingError(
-            file_path=Path("src/bar.py"), line_number=5, error_description="c"
-        )
+        err1 = TypeCheckingError(file_path=Path("src/foo.py"), line_number=1, error_description="a")
+        err2 = TypeCheckingError(file_path=Path("src/foo.py"), line_number=2, error_description="b")
+        err3 = TypeCheckingError(file_path=Path("src/bar.py"), line_number=5, error_description="c")
         result = group_by_path([err1, err2, err3])
         assert len(result) == 2
         assert len(result[Path("src/foo.py")]) == 2

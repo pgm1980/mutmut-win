@@ -250,9 +250,7 @@ def export_cicd_stats_cmd() -> None:
         click.echo("No results found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    pairs: list[tuple[str, str | None]] = [
-        (r.mutant_name, r.status) for r in all_results
-    ]
+    pairs: list[tuple[str, str | None]] = [(r.mutant_name, r.status) for r in all_results]
     mutants_dir = Path("mutants")
     cicd = save_cicd_stats(pairs, mutants_dir)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
