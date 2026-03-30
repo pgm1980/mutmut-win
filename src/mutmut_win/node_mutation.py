@@ -343,6 +343,62 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
         yield node.with_changes(args=[new_arg, *node.args[1:]])
 
 
+# ---------------------------------------------------------------------------
+# Math method mutations (inspired by Stryker.NET)
+# ---------------------------------------------------------------------------
+
+#: Pairwise swaps for math functions.
+_MATH_SWAPS: dict[str, str] = {
+    "ceil": "floor",
+    "floor": "ceil",
+    "min": "max",
+    "max": "min",
+}
+
+#: Functions whose result is replaced by their first argument (neutralisation).
+_MATH_NEUTRALIZE_TO_ARG: set[str] = {"abs", "round"}
+
+#: Functions whose result is replaced by a constant.
+_MATH_NEUTRALIZE_TO_ZERO: set[str] = {"sum"}
+
+
+def _get_call_simple_name(node: cst.Call) -> str | None:
+    """Extract the function name from a simple call like ``abs(x)`` or ``math.ceil(x)``."""
+    if isinstance(node.func, cst.Name):
+        return node.func.value
+    if isinstance(node.func, cst.Attribute) and isinstance(node.func.value, cst.Name):
+        return node.func.attr.value
+    return None
+
+
+def operator_math_methods(node: cst.Call) -> Iterable[cst.CSTNode]:
+    """Mutate math functions: swap pairs and neutralise.
+
+    - ``math.ceil(x)`` ↔ ``math.floor(x)``, ``min(a,b)`` ↔ ``max(a,b)``
+    - ``abs(x)`` → ``x``, ``round(x)`` → ``x``
+    - ``sum(iterable)`` → ``0``
+    """
+    func_name = _get_call_simple_name(node)
+    if func_name is None:
+        return
+
+    # Pairwise swap (ceil↔floor, min↔max)
+    if func_name in _MATH_SWAPS:
+        new_name = _MATH_SWAPS[func_name]
+        if isinstance(node.func, cst.Name):
+            yield node.with_changes(func=cst.Name(new_name))
+        elif isinstance(node.func, cst.Attribute):
+            yield node.with_deep_changes(node.func.attr, value=new_name)
+
+    # Neutralise to first argument (abs(x)→x, round(x)→x)
+    if func_name in _MATH_NEUTRALIZE_TO_ARG and node.args:
+        yield node.args[0].value
+
+    # Neutralise to zero (sum(x)→0)
+    if func_name in _MATH_NEUTRALIZE_TO_ZERO:
+        yield cst.Integer("0")
+
+
 # Operators that should be called on specific node types
 mutation_operators: OPERATORS_TYPE = [
     (cst.BaseNumber, operator_number),
@@ -361,6 +417,7 @@ mutation_operators: OPERATORS_TYPE = [
     (cst.CSTNode, operator_swap_op),
     (cst.Match, operator_match),
     (cst.Call, operator_regex),
+    (cst.Call, operator_math_methods),
 ]
 
 
