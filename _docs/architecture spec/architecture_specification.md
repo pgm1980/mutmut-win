@@ -709,9 +709,117 @@ uv publish
 
 ---
 
+### ADR-015: In-Process Stats Collection via pytest.main()
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+Workers use subprocess for mutation runs (isolation). But stats collection needs in-process pytest plugins to track trampoline hits correctly. mutmut runs `pytest.main()` in the main process for stats, not via subprocess.
+
+#### Optionen
+
+##### Option A: Two-Phase Execution Model
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Medium |
+| Korrektheit | Hoch (identisch mit mutmut) |
+| Testbarkeit | Medium |
+| Wartbarkeit | Hoch |
+
+**Vorteile:**
+- Stats-Phase läuft in-process → Trampoline-Hits können über Module-Globals verfolgt werden
+- Mutation-Phase läuft in subprocess → Isolation bleibt gewährleistet
+- 1:1-Parität mit mutmut's Execution Model
+
+**Nachteile:**
+- Zwei unterschiedliche Ausführungspfade (in-process vs. subprocess) müssen synchronisiert werden
+
+##### Option B: Subprocess für alle Phasen
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Korrektheit | Niedrig (Trampoline-Hits nicht trackbar via subprocess) |
+| Komplexität | Low |
+
+**Nachteile:**
+- Kann `tests_by_mangled_function_name` nicht korrekt aufbauen — Stats-Daten unvollständig
+- Weicht von mutmut's Execution Model ab
+
+#### Entscheidung
+
+Option A: Two-Phase Execution Model.
+
+- **Phase 1 (Stats):** `pytest.main()` in main process with `StatsCollector` plugin. Tracks trampoline hits via `_state` module globals.
+- **Phase 2 (Mutation runs):** subprocess in spawned workers (unchanged).
+
+#### Neue Module
+
+- **`_state.py`** — shared module-level globals for trampoline hit tracking. Enthält: `tests_by_mangled_function_name: dict[str, list[str]]`, `current_test_name: str | None`.
+- **`record_trampoline_hit()`** und **`MutmutProgrammaticFailException`** werden aus `__main__.py` re-exportiert (required by hardcoded trampoline imports — trampolines importieren immer aus `mutmut.__main__`).
+
+#### Konsequenzen
+
+- **Wird einfacher:** Korrekte Test-Zuordnung pro Mutant — nur relevante Tests laufen
+- **Wird schwieriger:** `_state` muss vor/nach Stats-Phasen sauber resettet werden
+- **Muss revisited werden:** Bei mutmut-Versionswechseln mit geänderten Trampoline-Imports
+
+#### Action Items
+
+- [ ] `_state.py` im Domain Layer implementieren
+- [ ] `__main__.py` — `record_trampoline_hit` + `MutmutProgrammaticFailException` re-exportieren
+- [ ] `PytestRunner.run_stats()` auf `pytest.main()` mit `StatsCollector`-Plugin umschreiben
+- [ ] `stats.py` — `collect_or_load_stats` nutzt `_state` globals nach `run_stats()`
+- [ ] Orchestrator-Integration: reale Test-Zuordnung aus Stats-Daten
+
+---
+
+### ADR-016: Remaining Completeness Gaps
+
+**Status:** Accepted
+**Datum:** 2026-03-30
+
+#### Kontext
+
+Cross-Check gegen mutmut 3.5.0 ergab fehlende Funktionen und CLI-Commands für 100% Feature-Parität.
+
+#### Entscheidung
+
+Port aller verbleibenden mutmut-Funktionen für vollständige Feature-Parität:
+
+| Feature | Modul | Priorität |
+|---------|-------|-----------|
+| `guess_paths_to_mutate()` | `config.py` | Must |
+| `ListAllTestsResult` + inkrementelle Stats | `stats.py` | Should |
+| CLI-Commands: `tests-for-mutant`, `time-estimates` | `cli.py` | Should |
+| CI/CD-Stats Export: `save_cicd_stats` + CLI | `cli.py`, `stats.py` | Should |
+| Type-Checker Helpers: `MutatedMethodsCollector`, `MutatedMethodLocation`, `FailedTypeCheckMutant`, `group_by_path` | `type_checking.py` | Must |
+| `BadTestExecutionCommandsException`, `InvalidGeneratedSyntaxException` | `exceptions.py` | Must |
+| `MutmutProgrammaticFailException` | `exceptions.py` | Must |
+
+#### Konsequenzen
+
+- **Wird einfacher:** Vollständige Kompatibilität mit mutmut-Workflowsund CI/CD-Integrationen
+- **Wird schwieriger:** Erhöhter Implementierungsaufwand (Sprint 12)
+- **Muss revisited werden:** Bei mutmut-Versionswechseln
+
+#### Action Items
+
+- [ ] `guess_paths_to_mutate()` in `config.py` implementieren
+- [ ] `ListAllTestsResult` in `stats.py` ergänzen
+- [ ] CLI-Commands `tests-for-mutant` und `time-estimates` in `cli.py` ergänzen
+- [ ] CI/CD-Stats-Export in `stats.py` + `cli.py` implementieren
+- [ ] Type-Checker-Helpers vollständig in `type_checking.py` implementieren
+- [ ] `exceptions.py` um fehlende Exception-Klassen ergänzen
+
+---
+
 ## Änderungshistorie
 
 | Version | Datum | Autor | Änderung |
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-30 | Claude Code Agent | Initiale Version |
 | 0.2.0 | 2026-03-30 | Claude Code Agent | ADR-012–014: File Setup Pipeline, Test Mapping + Stats, Mutant Inspection + CLI; neue Module in Komponentenstruktur |
+| 0.3.0 | 2026-03-30 | Claude Code Agent | ADR-015–016: In-Process Stats Collection via pytest.main(), Remaining Completeness Gaps |
