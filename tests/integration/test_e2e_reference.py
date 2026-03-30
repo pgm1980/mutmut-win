@@ -165,9 +165,7 @@ def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
     from uncovered lines.
     """
     project_dir = _copy_project("mutate_only_covered_lines", tmp_path)
-    source_file = (
-        project_dir / "src" / "mutate_only_covered_lines" / "__init__.py"
-    )
+    source_file = project_dir / "src" / "mutate_only_covered_lines" / "__init__.py"
 
     generated = _collect_mutant_names(source_file)
     expected = _expected_local_names(EXPECTED_COVERAGE)

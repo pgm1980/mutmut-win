@@ -20,6 +20,7 @@ from mutmut_win.models import (
 from mutmut_win.orchestrator import (
     MutationOrchestrator,
     _apply_timeouts,
+    _filter_tasks_by_names,
     _increment_summary,
     _update_source_data,
     _update_summary_and_persist,
@@ -431,3 +432,102 @@ class TestUpdateSummaryAndPersist:
         assert summary.timeout == 1
         results = load_results(db)
         assert results[0].status == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# _filter_tasks_by_names — F2 mutant_names filtering
+# ---------------------------------------------------------------------------
+
+
+class TestFilterTasksByNames:
+    def test_exact_match_keeps_task(self) -> None:
+        tasks = [_task("src.foo.x_bar__mutmut_1"), _task("src.foo.x_baz__mutmut_2")]
+        result = _filter_tasks_by_names(tasks, ("src.foo.x_bar__mutmut_1",))
+        assert len(result) == 1
+        assert result[0].mutant_name == "src.foo.x_bar__mutmut_1"
+
+    def test_fnmatch_glob_pattern(self) -> None:
+        tasks = [
+            _task("src.foo.x_bar__mutmut_1"),
+            _task("src.foo.x_bar__mutmut_2"),
+            _task("src.baz.x_qux__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.foo.*",))
+        assert len(result) == 2
+        assert all(t.mutant_name.startswith("src.foo.") for t in result)
+
+    def test_multiple_patterns(self) -> None:
+        tasks = [
+            _task("src.a.x_fn__mutmut_1"),
+            _task("src.b.x_fn__mutmut_1"),
+            _task("src.c.x_fn__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.a.*", "src.c.*"))
+        names = {t.mutant_name for t in result}
+        assert "src.a.x_fn__mutmut_1" in names
+        assert "src.c.x_fn__mutmut_1" in names
+        assert "src.b.x_fn__mutmut_1" not in names
+
+    def test_no_match_returns_empty(self) -> None:
+        tasks = [_task("src.foo.x_bar__mutmut_1")]
+        result = _filter_tasks_by_names(tasks, ("src.totally_different.*",))
+        assert result == []
+
+    def test_empty_names_returns_empty(self) -> None:
+        tasks = [_task("src.foo.x_bar__mutmut_1")]
+        result = _filter_tasks_by_names(tasks, ())
+        assert result == []
+
+    def test_preserves_order(self) -> None:
+        tasks = [_task(f"src.mod.x_fn__mutmut_{i}") for i in range(5)]
+        result = _filter_tasks_by_names(tasks, ("src.mod.*",))
+        assert [t.mutant_name for t in result] == [t.mutant_name for t in tasks]
+
+
+# ---------------------------------------------------------------------------
+# MutationOrchestrator — F7 sort by estimated_time
+# ---------------------------------------------------------------------------
+
+
+class TestSortByEstimatedTime:
+    def test_apply_timeouts_result_is_sortable(self) -> None:
+        """F7: tasks after _apply_timeouts can be sorted by estimated_time."""
+        tasks = [
+            _task("m3", tests=["t3"]),
+            _task("m1", tests=["t1"]),
+            _task("m2", tests=["t2"]),
+        ]
+        stats = {"t1": 0.1, "t2": 1.0, "t3": 0.5}
+        result = _apply_timeouts(tasks, stats, 1.0)
+        sorted_result = sorted(result, key=lambda t: t.estimated_time)
+        times = [t.estimated_time for t in sorted_result]
+        assert times == sorted(times)
+
+    def test_tasks_sorted_ascending_by_estimated_time(self) -> None:
+        """F7: after sorting, fast mutants come first."""
+        tasks = [
+            _task("fast", tests=["t_fast"]),
+            _task("slow", tests=["t_slow"]),
+        ]
+        stats = {"t_fast": 0.1, "t_slow": 5.0}
+        result = _apply_timeouts(tasks, stats, 1.0)
+        result.sort(key=lambda t: t.estimated_time)
+        assert result[0].mutant_name == "fast"
+        assert result[1].mutant_name == "slow"
+
+
+# ---------------------------------------------------------------------------
+# MutationOrchestrator — F2 mutant_names parameter in __init__
+# ---------------------------------------------------------------------------
+
+
+class TestMutationOrchestratorMutantNamesParam:
+    def test_accepts_mutant_names_in_init(self) -> None:
+        cfg = _config()
+        orch = MutationOrchestrator(cfg, mutant_names=("src.foo.*",))
+        assert orch._mutant_names == ("src.foo.*",)
+
+    def test_mutant_names_none_by_default(self) -> None:
+        cfg = _config()
+        orch = MutationOrchestrator(cfg)
+        assert orch._mutant_names is None

@@ -17,6 +17,7 @@ from mutmut_win.type_checking import (
 
 # --- TypeCheckingError dataclass ----------------------------------------------
 
+
 class TestTypeCheckingError:
     def test_fields_are_accessible(self) -> None:
         err = TypeCheckingError(
@@ -30,6 +31,7 @@ class TestTypeCheckingError:
 
 
 # --- parse_pyright_report -----------------------------------------------------
+
 
 class TestParsePyrightReport:
     def test_parses_errors(self) -> None:
@@ -59,6 +61,7 @@ class TestParsePyrightReport:
 
 # --- parse_pyrefly_report -----------------------------------------------------
 
+
 class TestParsePyreflyReport:
     def test_parses_errors(self) -> None:
         report = {
@@ -85,6 +88,7 @@ class TestParsePyreflyReport:
 
 
 # --- parse_mypy_report --------------------------------------------------------
+
 
 class TestParseMypyReport:
     def test_parses_error_severity(self) -> None:
@@ -119,6 +123,7 @@ class TestParseMypyReport:
 
 
 # --- parse_ty_report ----------------------------------------------------------
+
 
 class TestParseTyReport:
     def test_parses_major_severity(self) -> None:
@@ -173,6 +178,7 @@ class TestParseTyReport:
 
 
 # --- run_type_checker ---------------------------------------------------------
+
 
 class TestRunTypeChecker:
     def test_invalid_json_raises_exception(self) -> None:

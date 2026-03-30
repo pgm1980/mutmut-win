@@ -43,9 +43,7 @@ class SpawnPoolExecutor:
         self._task_queue: multiprocessing.queues.Queue[dict[str, object] | None] = (
             self._mp_ctx.Queue()
         )
-        self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = (
-            self._mp_ctx.Queue()
-        )
+        self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = self._mp_ctx.Queue()
         self._workers: list[multiprocessing.Process] = []
         self._num_tasks: int = 0
 

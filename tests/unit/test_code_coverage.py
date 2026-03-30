@@ -11,6 +11,7 @@ from mutmut_win.code_coverage import (
 
 # --- get_covered_lines_for_file -----------------------------------------------
 
+
 class TestGetCoveredLinesForFile:
     def test_none_covered_lines_returns_none(self) -> None:
         result = get_covered_lines_for_file("foo.py", None)  # type: ignore[arg-type]
@@ -40,6 +41,7 @@ class TestGetCoveredLinesForFile:
 
 
 # --- _unload_modules_not_in ---------------------------------------------------
+
 
 class TestUnloadModulesNotIn:
     def test_does_not_unload_mutmut_win_code_coverage(self) -> None:

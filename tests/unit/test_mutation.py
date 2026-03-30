@@ -16,6 +16,7 @@ from mutmut_win.mutation import (
 
 # --- pragma_no_mutate_lines ---------------------------------------------------
 
+
 class TestPragmaNoMutateLines:
     def test_no_pragmas_returns_empty_set(self) -> None:
         result = pragma_no_mutate_lines("x = 1\ny = 2\n")
@@ -42,6 +43,7 @@ class TestPragmaNoMutateLines:
 
 
 # --- deep_replace -------------------------------------------------------------
+
 
 class TestDeepReplace:
     def test_replaces_integer_node(self) -> None:
@@ -75,6 +77,7 @@ class TestDeepReplace:
 
 # --- get_statements_until_func_or_class ---------------------------------------
 
+
 class TestGetStatementsUntilFuncOrClass:
     def test_stops_at_function(self) -> None:
         module = cst.parse_module("x = 1\ndef foo(): pass\ny = 2\n")
@@ -99,6 +102,7 @@ class TestGetStatementsUntilFuncOrClass:
 
 # --- group_by_top_level_node --------------------------------------------------
 
+
 class TestGroupByTopLevelNode:
     def test_empty_mutations_returns_empty_mapping(self) -> None:
         result = group_by_top_level_node([])
@@ -117,6 +121,7 @@ class TestGroupByTopLevelNode:
 
 
 # --- _is_generator ------------------------------------------------------------
+
 
 class TestIsGenerator:
     def test_non_generator_returns_false(self) -> None:
@@ -142,6 +147,7 @@ class TestIsGenerator:
 
 # --- create_mutations ---------------------------------------------------------
 
+
 class TestCreateMutations:
     def test_simple_function_creates_mutations(self) -> None:
         code = "def foo():\n    return 1 + 2\n"
@@ -165,13 +171,11 @@ class TestCreateMutations:
         code = "def foo(x: int) -> int:\n    return x\n"
         _module, mutations = create_mutations(code)
         # Type annotations should not be mutated
-        assert all(
-            not isinstance(m.original_node, cst.Annotation)
-            for m in mutations
-        )
+        assert all(not isinstance(m.original_node, cst.Annotation) for m in mutations)
 
 
 # --- mutate_file_contents -----------------------------------------------------
+
 
 class TestMutateFileContents:
     def test_returns_string_and_list(self) -> None:
@@ -199,6 +203,7 @@ class TestMutateFileContents:
 
 
 # --- ChildReplacementTransformer ----------------------------------------------
+
 
 class TestChildReplacementTransformer:
     def test_replaces_matching_node(self) -> None:

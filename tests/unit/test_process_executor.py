@@ -174,9 +174,7 @@ class TestSpawnPoolExecutorStart:
 class TestSpawnPoolExecutorGetEvents:
     """Test get_events() by seeding the event_queue with pre-built event dicts."""
 
-    def _seed_events(
-        self, event_q: _FakeQueue, task_names: list[str], exit_code: int = 0
-    ) -> None:
+    def _seed_events(self, event_q: _FakeQueue, task_names: list[str], exit_code: int = 0) -> None:
         """Push started + completed pairs for each task name."""
         for name in task_names:
             event_q.put(TaskStarted(mutant_name=name, worker_pid=os.getpid()).model_dump())

@@ -81,9 +81,7 @@ def read_orig_module(path: Path | str) -> cst.Module:
         return cst.parse_module(f.read())
 
 
-def find_top_level_function_or_method(
-    module: cst.Module, name: str
-) -> cst.FunctionDef | None:
+def find_top_level_function_or_method(module: cst.Module, name: str) -> cst.FunctionDef | None:
     """Find a function or method by name in a CST module.
 
     Searches top-level functions and methods of top-level classes.

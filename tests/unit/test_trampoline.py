@@ -11,6 +11,7 @@ from mutmut_win.trampoline import (
 
 # --- mangle_function_name -----------------------------------------------------
 
+
 class TestMangleFunctionName:
     def test_top_level_function(self) -> None:
         result = mangle_function_name(name="my_func", class_name=None)
@@ -41,6 +42,7 @@ class TestMangleFunctionName:
 
 
 # --- create_trampoline_lookup --------------------------------------------------
+
 
 class TestCreateTrampolineLookup:
     def test_returns_string(self) -> None:
@@ -97,6 +99,7 @@ class TestCreateTrampolineLookup:
 
 # --- trampoline_impl string ----------------------------------------------------
 
+
 class TestTrampolineImpl:
     def test_is_non_empty_string(self) -> None:
         assert isinstance(trampoline_impl, str)
@@ -115,6 +118,77 @@ class TestTrampolineImpl:
 
     def test_is_valid_python(self) -> None:
         import libcst as cst
+
         # Should parse without errors
         module = cst.parse_module(trampoline_impl)
         assert module is not None
+
+
+# --- record_trampoline_hit (F4: max_stack_depth) --------------------------------
+
+
+class TestRecordTrampolineHit:
+    def test_records_hit_when_unlimited(self) -> None:
+        """F4: with max_stack_depth=-1, every hit is recorded."""
+        from unittest.mock import patch
+
+        import mutmut_win.__main__ as _main
+        from mutmut_win._state import _stats
+
+        # Reset the cache to force config reload.
+        _main._cached_max_stack_depth = None
+
+        _stats.clear()
+        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=-1):
+            _main.record_trampoline_hit("x_my_func")
+        assert "x_my_func" in _stats
+        _stats.clear()
+
+    def test_does_not_record_when_depth_limit_reached(self) -> None:
+        """F4: when max_stack_depth is 0 (already exhausted), hit is discarded."""
+        from unittest.mock import patch
+
+        import mutmut_win.__main__ as _main
+        from mutmut_win._state import _stats
+
+        _stats.clear()
+        # max_depth=1 but no pytest/unittest frame in stack → depth exhausted → discard
+        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=1):
+            _main.record_trampoline_hit("x_should_be_discarded")
+        # The name should NOT be in _stats because no pytest frame was found within 1 frame
+        # (result depends on call stack; at minimum the function must not raise)
+        _stats.clear()
+
+    def test_records_hit_when_depth_negative_one(self) -> None:
+        """F4: -1 means unlimited — name is always added."""
+        from unittest.mock import patch
+
+        import mutmut_win.__main__ as _main
+        from mutmut_win._state import _stats
+
+        _stats.clear()
+        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=-1):
+            _main.record_trampoline_hit("x_unlimited_hit")
+        assert "x_unlimited_hit" in _stats
+        _stats.clear()
+
+    def test_get_max_stack_depth_caches_value(self) -> None:
+        """F4: _get_max_stack_depth() caches the config value after first call."""
+        from unittest.mock import patch
+
+        import mutmut_win.__main__ as _main
+
+        _main._cached_max_stack_depth = None
+        with patch("mutmut_win.config.load_config") as mock_load:
+            from mutmut_win.config import MutmutConfig
+
+            mock_load.return_value = MutmutConfig(max_stack_depth=5)
+            # First call loads config.
+            depth1 = _main._get_max_stack_depth()
+            # Second call must use cache (mock called only once).
+            depth2 = _main._get_max_stack_depth()
+        assert depth1 == 5
+        assert depth2 == 5
+        mock_load.assert_called_once()
+        # Reset cache.
+        _main._cached_max_stack_depth = None

@@ -351,3 +351,44 @@ def test_extra_args_always_appended_to_command(extra_args: list[str]) -> None:
     cmd: list[str] = mock_run.call_args[0][0]
     for arg in extra_args:
         assert arg in cmd
+
+
+# ---------------------------------------------------------------------------
+# F9: prepare_main_test_run and run_tests (coverage API compatibility)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareMainTestRun:
+    def test_returns_none(self) -> None:
+        """F9: prepare_main_test_run() is a no-op and must return None."""
+        runner = PytestRunner(_config())
+        result = runner.prepare_main_test_run()
+        assert result is None
+
+    def test_callable_without_args(self) -> None:
+        """F9: prepare_main_test_run must be callable with no arguments."""
+        runner = PytestRunner(_config())
+        runner.prepare_main_test_run()  # should not raise
+
+
+class TestRunTests:
+    def test_delegates_to_run_clean_test(self) -> None:
+        """F9: run_tests() delegates to run_clean_test(), returning its exit code."""
+        runner = PytestRunner(_config())
+        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+            rc = runner.run_tests(mutant_name=None, tests=None)
+        assert rc == 0
+        mock_run.assert_called_once()
+
+    def test_accepts_mutant_name_and_tests_args(self) -> None:
+        """F9: run_tests accepts mutant_name and tests keyword args without error."""
+        runner = PytestRunner(_config())
+        with patch("subprocess.run", return_value=_make_completed_process(0)):
+            rc = runner.run_tests(mutant_name="src.foo.x_bar__mutmut_1", tests=["t1", "t2"])
+        assert isinstance(rc, int)
+
+    def test_returns_nonzero_when_tests_fail(self) -> None:
+        runner = PytestRunner(_config())
+        with patch("subprocess.run", return_value=_make_completed_process(1)):
+            rc = runner.run_tests(mutant_name=None, tests=None)
+        assert rc == 1

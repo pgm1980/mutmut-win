@@ -466,6 +466,23 @@ class TestMainEntryPoint:
         assert expected.issubset(set(cli.commands.keys()))
 
 
+class TestVersionFlag:
+    def test_version_flag_shows_version(self) -> None:
+        """F8: --version flag outputs the package version."""
+        from mutmut_win import __version__
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert __version__ in result.output
+
+    def test_version_flag_exits_zero(self) -> None:
+        """F8: --version flag exits with code 0."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+
+
 # ---------------------------------------------------------------------------
 # Browser import test
 # ---------------------------------------------------------------------------
