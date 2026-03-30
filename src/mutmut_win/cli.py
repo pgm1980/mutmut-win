@@ -18,6 +18,8 @@ from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.runner import PytestRunner
+from mutmut_win.stats import load_stats, save_cicd_stats
+from mutmut_win.test_mapping import mangled_name_from_mutant_name, tests_for_mutant_names
 
 
 @click.group()
@@ -150,3 +152,104 @@ def browse(show_killed: bool) -> None:
     """Launch TUI result browser."""
     app = ResultBrowser(show_killed=show_killed)
     app.run()
+
+
+@cli.command("tests-for-mutant")
+@click.argument("name")
+def tests_for_mutant_cmd(name: str) -> None:
+    """Show the tests mapped to mutant NAME.
+
+    Loads the stats cache and prints each test node ID that covers the
+    mutated function.  Exits with code 1 if no stats are available.
+    """
+    mutants_dir = Path("mutants")
+    stats = load_stats(mutants_dir)
+    if stats is None:
+        click.echo(
+            "No stats found. Run 'mutmut-win run' first to collect stats.",
+            err=True,
+        )
+        sys.exit(1)
+
+    mapped_tests = tests_for_mutant_names([name], stats.tests_by_mangled_function_name)
+    if not mapped_tests:
+        click.echo(f"No tests found for mutant '{name}'.")
+        return
+
+    for test in sorted(mapped_tests):
+        click.echo(test)
+
+
+@cli.command("time-estimates")
+@click.argument("mutant_names", nargs=-1)
+def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
+    """Show estimated run times for mutants.
+
+    When MUTANT_NAMES are given, only those mutants are shown; otherwise all
+    mutants recorded in the results cache are listed.  Estimates are derived
+    from the stats-collected per-test durations.
+
+    Exits with code 1 if no stats are available.
+    """
+    mutants_dir = Path("mutants")
+    stats = load_stats(mutants_dir)
+    if stats is None:
+        click.echo(
+            "No stats found. Run 'mutmut-win run' first to collect stats.",
+            err=True,
+        )
+        sys.exit(1)
+
+    all_results = load_results(DEFAULT_DB_PATH)
+    if not all_results:
+        click.echo("No results found. Run 'mutmut-win run' first.")
+        return
+
+    # Filter to requested mutant names (if any).
+    if mutant_names:
+        filtered = [r for r in all_results if r.mutant_name in mutant_names]
+        if not filtered:
+            click.echo(f"No results found for the given mutant names: {list(mutant_names)}")
+            return
+        target_results = filtered
+    else:
+        target_results = all_results
+
+    times_and_names: list[tuple[float, str]] = []
+    for result in target_results:
+        try:
+            mangled = mangled_name_from_mutant_name(result.mutant_name)
+        except AssertionError:
+            times_and_names.append((0.0, result.mutant_name))
+            continue
+        test_ids = stats.tests_by_mangled_function_name.get(mangled, set())
+        estimated = sum(stats.duration_by_test.get(t, 0.0) for t in test_ids)
+        times_and_names.append((estimated, result.mutant_name))
+
+    for estimated, mutant_name in sorted(times_and_names):
+        if estimated == 0.0:
+            click.echo(f"<no tests>  {mutant_name}")
+        else:
+            click.echo(f"{int(estimated * 1000)}ms  {mutant_name}")
+
+
+@cli.command("export-cicd-stats")
+def export_cicd_stats_cmd() -> None:
+    """Export aggregated mutation stats to mutants/mutmut-cicd-stats.json.
+
+    The output JSON is intended for use in CI/CD pipelines to gate pull
+    requests based on mutation score.  Exits with code 1 if no previous
+    mutation data is found.
+    """
+    all_results = load_results(DEFAULT_DB_PATH)
+    if not all_results:
+        click.echo("No results found. Run 'mutmut-win run' first.", err=True)
+        sys.exit(1)
+
+    pairs: list[tuple[str, str | None]] = [
+        (r.mutant_name, r.status) for r in all_results
+    ]
+    mutants_dir = Path("mutants")
+    cicd = save_cicd_stats(pairs, mutants_dir)
+    click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
+    click.echo(f"Score: {cicd.score:.1f}%  ({cicd.killed} killed / {cicd.total} total)")

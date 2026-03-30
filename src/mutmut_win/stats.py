@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mutmut_win.runner import PytestRunner
 
+#: Default filename for the CI/CD stats JSON export.
+_CICD_STATS_FILENAME = "mutmut-cicd-stats.json"
+
 #: Default filename for the stats JSON cache.
 _STATS_FILENAME = "mutmut-stats.json"
 
@@ -166,4 +169,192 @@ def _run_stats_collection(
         stats_time=stats_time,
     )
     save_stats(stats, mutants_dir)
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# ListAllTestsResult — incremental stats update helper
+# ---------------------------------------------------------------------------
+
+
+class ListAllTestsResult:
+    """Result of listing all currently collected test IDs.
+
+    Used to perform incremental stats updates: obsolete test names that are
+    no longer present are removed from the cached stats, and new tests are
+    identified for a targeted re-run.
+
+    Args:
+        ids: Set of currently active pytest node IDs.
+        stats: The loaded ``MutmutStats`` to compare against.
+    """
+
+    def __init__(self, *, ids: set[str], stats: MutmutStats) -> None:
+        if not isinstance(ids, set):
+            msg = "ids must be a set"
+            raise TypeError(msg)
+        self._ids = ids
+        self._stats = stats
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def ids(self) -> set[str]:
+        """Return the set of currently active test node IDs."""
+        return self._ids
+
+    def clear_out_obsolete_test_names(self, mutants_dir: Path = Path("mutants")) -> None:
+        """Remove test names that no longer exist from the cached stats.
+
+        Modifies *stats* in-place and persists the result if any entries were
+        removed.
+
+        Args:
+            mutants_dir: Directory where the stats JSON file lives.
+        """
+        before = sum(len(v) for v in self._stats.tests_by_mangled_function_name.values())
+
+        for k in self._stats.tests_by_mangled_function_name:
+            self._stats.tests_by_mangled_function_name[k] = {
+                name
+                for name in self._stats.tests_by_mangled_function_name[k]
+                if name in self._ids
+            }
+
+        after = sum(len(v) for v in self._stats.tests_by_mangled_function_name.values())
+        if before != after:
+            removed = before - after
+            print(f"Removed {removed} obsolete test names")
+            save_stats(self._stats, mutants_dir)
+
+    def new_tests(self) -> set[str]:
+        """Return test IDs that are not yet present in the cached stats.
+
+        Returns:
+            Set of test node IDs that appear in *ids* but not in the current
+            ``duration_by_test`` mapping.
+        """
+        return self._ids - set(self._stats.duration_by_test.keys())
+
+
+# ---------------------------------------------------------------------------
+# CI/CD stats export
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CicdStats:
+    """Aggregated mutation run statistics for CI/CD export.
+
+    Attributes:
+        killed: Number of mutants killed by tests.
+        survived: Number of surviving (un-killed) mutants.
+        total: Total number of mutants generated.
+        no_tests: Number of mutants with no covering tests.
+        skipped: Number of explicitly skipped mutants.
+        suspicious: Number of mutants with suspicious exit codes.
+        timeout: Number of timed-out mutants.
+        check_was_interrupted_by_user: Number of mutants interrupted by the user.
+        segfault: Number of mutants that caused a segfault.
+        caught_by_type_check: Number of mutants caught by the type checker.
+        score: Mutation score as a percentage (0.0-100.0).
+    """
+
+    killed: int = 0
+    survived: int = 0
+    total: int = 0
+    no_tests: int = 0
+    skipped: int = 0
+    suspicious: int = 0
+    timeout: int = 0
+    check_was_interrupted_by_user: int = 0
+    segfault: int = 0
+    caught_by_type_check: int = 0
+
+    @property
+    def score(self) -> float:
+        """Mutation score as a percentage.
+
+        Returns:
+            A float in [0.0, 100.0]; 0.0 if no testable mutants exist.
+        """
+        denominator = self.total - self.skipped - self.no_tests
+        if denominator <= 0:
+            return 0.0
+        return (self.killed + self.caught_by_type_check) / denominator * 100.0
+
+
+def compute_cicd_stats(results: list[tuple[str, str | None]]) -> CicdStats:
+    """Compute CI/CD stats from a flat list of (mutant_name, status) pairs.
+
+    Args:
+        results: List of ``(mutant_name, status)`` tuples.  *status* is a
+            string from ``constants.status_by_exit_code`` or ``None`` for
+            unchecked mutants.
+
+    Returns:
+        A populated ``CicdStats`` instance.
+    """
+    stats = CicdStats(total=len(results))
+    for _name, status in results:
+        match status:
+            case "killed":
+                stats.killed += 1
+            case "survived":
+                stats.survived += 1
+            case "no tests":
+                stats.no_tests += 1
+            case "skipped":
+                stats.skipped += 1
+            case "suspicious":
+                stats.suspicious += 1
+            case "timeout":
+                stats.timeout += 1
+            case "check was interrupted by user":
+                stats.check_was_interrupted_by_user += 1
+            case "segfault":
+                stats.segfault += 1
+            case "caught by type check":
+                stats.caught_by_type_check += 1
+    return stats
+
+
+def save_cicd_stats(
+    results: list[tuple[str, str | None]],
+    mutants_dir: Path = Path("mutants"),
+) -> CicdStats:
+    """Compute and persist CI/CD stats to *mutants_dir*/mutmut-cicd-stats.json.
+
+    Ported from ``save_cicd_stats`` in mutmut 3.5.0 ``__main__.py``.
+    The output JSON is designed for consumption by CI/CD pipelines to gate
+    pull requests based on mutation score.
+
+    Args:
+        results: List of ``(mutant_name, status)`` tuples.
+        mutants_dir: Directory where the JSON file will be written.
+            Defaults to ``mutants/``.
+
+    Returns:
+        The computed ``CicdStats`` instance.
+    """
+    stats = compute_cicd_stats(results)
+    mutants_dir.mkdir(parents=True, exist_ok=True)
+    cicd_path = mutants_dir / _CICD_STATS_FILENAME
+    payload = {
+        "killed": stats.killed,
+        "survived": stats.survived,
+        "total": stats.total,
+        "no_tests": stats.no_tests,
+        "skipped": stats.skipped,
+        "suspicious": stats.suspicious,
+        "timeout": stats.timeout,
+        "check_was_interrupted_by_user": stats.check_was_interrupted_by_user,
+        "segfault": stats.segfault,
+        "caught_by_type_check": stats.caught_by_type_check,
+        "score": stats.score,
+    }
+    with cicd_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=4)
     return stats

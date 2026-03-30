@@ -17,6 +17,7 @@ from mutmut_win.models import (
     MutationResult,
     MutationRunResult,
 )
+from mutmut_win.stats import MutmutStats
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -311,6 +312,134 @@ class TestBrowseCommand:
 # ---------------------------------------------------------------------------
 
 
+class TestTestsForMutantCommand:
+    def test_shows_tests_for_known_mutant(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats(
+            tests_by_mangled_function_name={"src.mod.x_foo": {"tests/t.py::test_a"}},
+            duration_by_test={"tests/t.py::test_a": 0.1},
+        )
+        with patch("mutmut_win.cli.load_stats", return_value=stats):
+            result = runner.invoke(cli, ["tests-for-mutant", "src.mod.x_foo__mutmut_1"])
+
+        assert result.exit_code == 0
+        assert "tests/t.py::test_a" in result.output
+
+    def test_exits_nonzero_when_no_stats(self) -> None:
+        runner = CliRunner()
+        with patch("mutmut_win.cli.load_stats", return_value=None):
+            result = runner.invoke(cli, ["tests-for-mutant", "src.mod.x_foo__mutmut_1"])
+
+        assert result.exit_code == 1
+        assert "No stats found" in result.output
+
+    def test_shows_message_when_no_tests_found(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats()
+        with patch("mutmut_win.cli.load_stats", return_value=stats):
+            result = runner.invoke(cli, ["tests-for-mutant", "src.mod.x_unknown__mutmut_1"])
+
+        assert result.exit_code == 0
+        assert "No tests found" in result.output
+
+
+class TestTimeEstimatesCommand:
+    def test_shows_estimates_for_all_results(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats(
+            tests_by_mangled_function_name={"src.mod.x_foo": {"tests/t.py::test_a"}},
+            duration_by_test={"tests/t.py::test_a": 0.5},
+        )
+        all_results = [_make_result("src.mod.x_foo__mutmut_1", "survived")]
+        with (
+            patch("mutmut_win.cli.load_stats", return_value=stats),
+            patch("mutmut_win.cli.load_results", return_value=all_results),
+        ):
+            result = runner.invoke(cli, ["time-estimates"])
+
+        assert result.exit_code == 0
+        assert "src.mod.x_foo__mutmut_1" in result.output
+
+    def test_exits_nonzero_when_no_stats(self) -> None:
+        runner = CliRunner()
+        with patch("mutmut_win.cli.load_stats", return_value=None):
+            result = runner.invoke(cli, ["time-estimates"])
+
+        assert result.exit_code == 1
+
+    def test_shows_no_tests_for_uncovered_mutant(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats()
+        all_results = [_make_result("src.mod.x_bar__mutmut_2", "survived")]
+        with (
+            patch("mutmut_win.cli.load_stats", return_value=stats),
+            patch("mutmut_win.cli.load_results", return_value=all_results),
+        ):
+            result = runner.invoke(cli, ["time-estimates"])
+
+        assert result.exit_code == 0
+        assert "<no tests>" in result.output
+
+    def test_filters_to_given_mutant_names(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats()
+        all_results = [
+            _make_result("src.a__mutmut_1", "survived"),
+            _make_result("src.b__mutmut_2", "killed"),
+        ]
+        with (
+            patch("mutmut_win.cli.load_stats", return_value=stats),
+            patch("mutmut_win.cli.load_results", return_value=all_results),
+        ):
+            result = runner.invoke(cli, ["time-estimates", "src.a__mutmut_1"])
+
+        assert result.exit_code == 0
+        assert "src.a__mutmut_1" in result.output
+        assert "src.b__mutmut_2" not in result.output
+
+
+class TestExportCicdStatsCommand:
+    def test_exports_stats_file(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        all_results = [
+            _make_result("a__mutmut_1", "killed"),
+            _make_result("a__mutmut_2", "survived"),
+        ]
+        mutants_dir = tmp_path / "mutants"
+        mutants_dir.mkdir()
+
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            Path("mutants").mkdir(exist_ok=True)
+            with patch("mutmut_win.cli.load_results", return_value=all_results):
+                result = runner.invoke(cli, ["export-cicd-stats"])
+
+        assert result.exit_code == 0
+        assert "mutmut-cicd-stats.json" in result.output
+
+    def test_exits_nonzero_when_no_results(self) -> None:
+        runner = CliRunner()
+        with patch("mutmut_win.cli.load_results", return_value=[]):
+            result = runner.invoke(cli, ["export-cicd-stats"])
+
+        assert result.exit_code == 1
+        assert "No results found" in result.output
+
+    def test_shows_score(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        all_results = [
+            _make_result("a__mutmut_1", "killed"),
+            _make_result("a__mutmut_2", "killed"),
+            _make_result("a__mutmut_3", "survived"),
+        ]
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            Path("mutants").mkdir(exist_ok=True)
+            with patch("mutmut_win.cli.load_results", return_value=all_results):
+                result = runner.invoke(cli, ["export-cicd-stats"])
+
+        assert result.exit_code == 0
+        assert "Score:" in result.output
+
+
 class TestMainEntryPoint:
     def test_main_module_imports_cli(self) -> None:
         """Verify __main__.py exports the cli object."""
@@ -324,7 +453,16 @@ class TestMainEntryPoint:
         assert isinstance(cli, click.Group)
 
     def test_cli_has_expected_commands(self) -> None:
-        expected = {"run", "results", "show", "apply", "browse"}
+        expected = {
+            "run",
+            "results",
+            "show",
+            "apply",
+            "browse",
+            "tests-for-mutant",
+            "time-estimates",
+            "export-cicd-stats",
+        }
         assert expected.issubset(set(cli.commands.keys()))
 
 
