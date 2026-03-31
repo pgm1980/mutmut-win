@@ -132,6 +132,53 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         else:
             shutil.copytree(path, destination, dirs_exist_ok=True, ignore=_ignore_venvs)
 
+    # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
+    # that contain relative paths. These paths are relative to the original
+    # project root and break when resolved from mutants/ (one level deeper).
+    _sanitise_mutants_pyproject()
+
+
+def _sanitise_mutants_pyproject() -> None:
+    """Remove [tool.uv.sources] from the copied pyproject.toml in mutants/.
+
+    When mutmut-win copies pyproject.toml into the mutants/ staging directory,
+    any ``[tool.uv.sources]`` entries with relative paths (e.g.
+    ``../../_deps/my-package``) break because mutants/ is one directory level
+    deeper. Removing the entire section is safe — the mutants/ directory uses
+    the parent project's venv via sys.executable, not its own.
+
+    This prevents the "Distribution not found at: file:///..." error on
+    repeated mutation testing runs.
+    """
+    pyproject_path = Path("mutants") / "pyproject.toml"
+    if not pyproject_path.exists():
+        return
+
+    try:
+        content = pyproject_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    # Remove [tool.uv.sources] section (TOML section until next [section] or EOF).
+    import re
+
+    # Match [tool.uv.sources] and everything until the next top-level section
+    cleaned = re.sub(
+        r'\[tool\.uv\.sources\]\s*\n(?:(?!\[)[^\n]*\n)*',
+        '',
+        content,
+    )
+
+    # Also remove [tool.uv] if it only contained sources (now empty)
+    cleaned = re.sub(
+        r'\[tool\.uv\]\s*\n(?=\[|\Z)',
+        '',
+        cleaned,
+    )
+
+    if cleaned != content:
+        pyproject_path.write_text(cleaned, encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # sys.path manipulation
