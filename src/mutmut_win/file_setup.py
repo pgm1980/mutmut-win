@@ -80,9 +80,9 @@ def copy_src_dir(config: MutmutConfig) -> None:
     """Copy source files to the mutants/ staging directory.
 
     Preserves the directory structure relative to the project root.
-    Skips files that already exist in the target location.  Uses
-    ``shutil.copy2`` to preserve modification times — the mtime comparison
-    in ``create_mutants_for_file`` relies on this.
+    Updates files whose source has been modified since the last copy
+    (mtime comparison).  Uses ``shutil.copy2`` to preserve modification
+    times so subsequent runs can detect changes.
 
     Args:
         config: Active ``MutmutConfig`` instance.
@@ -92,6 +92,16 @@ def copy_src_dir(config: MutmutConfig) -> None:
         target_path = Path("mutants") / root / name
 
         if target_path.exists():
+            # Update if source is newer than the copy in mutants/.
+            if source_path.is_file() and _source_is_newer(source_path, target_path):
+                shutil.copy2(source_path, target_path)
+                print(f"     updated: {source_path} (source changed since last run)")
+                # Invalidate cached mutation results for this file —
+                # the .meta file contains exit codes from the previous run
+                # which are now stale because the source changed.
+                meta_path = Path(str(target_path) + ".meta")
+                if meta_path.exists():
+                    meta_path.unlink()
             continue
 
         if source_path.is_dir():
@@ -101,6 +111,14 @@ def copy_src_dir(config: MutmutConfig) -> None:
             # copy2 preserves mtime so create_mutants_for_file can detect
             # whether the source was modified after the mutant was created.
             shutil.copy2(source_path, target_path)
+
+
+def _source_is_newer(source: Path, target: Path) -> bool:
+    """Return True if *source* was modified more recently than *target*."""
+    try:
+        return source.stat().st_mtime > target.stat().st_mtime
+    except OSError:
+        return True
 
 
 def copy_also_copy_files(config: MutmutConfig) -> None:

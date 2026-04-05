@@ -76,6 +76,12 @@ def cli() -> None:
     type=str,
     help="Glob pattern for files to exclude from mutation. Repeatable.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Delete mutants/ and .mutmut-cache/ before running (clean slate).",
+)
 @click.argument("mutant_names", nargs=-1)
 def run(
     max_children: int | None,
@@ -89,12 +95,23 @@ def run(
     dry_run: bool,
     timeout_multiplier: float | None,
     do_not_mutate: tuple[str, ...],
+    force: bool,
     mutant_names: tuple[str, ...],
 ) -> None:
     """Run mutation testing.
 
     Optionally filter to specific MUTANT_NAMES. When omitted, all mutants are tested.
     """
+    # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
+    if force:
+        import shutil
+
+        for dirname in ("mutants", ".mutmut-cache"):
+            p = Path(dirname)
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=True)
+                click.echo(f"Removed {dirname}/")
+
     config = load_config()
 
     # --- Apply CLI overrides to config ---
