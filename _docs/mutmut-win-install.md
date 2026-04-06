@@ -18,7 +18,7 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.2" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.3" --dev
 ```
 
 Verifikation:

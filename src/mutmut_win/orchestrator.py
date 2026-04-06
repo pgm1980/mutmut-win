@@ -221,17 +221,33 @@ class MutationOrchestrator:
         return summary
 
     def dry_run(self) -> MutationRunResult:
-        """Count mutants without running tests.
+        """Count mutants without running tests or touching the filesystem.
 
-        Generates all mutant files and returns a summary with ``total_mutants``
-        populated but all other counters at zero.
+        Reads source files in-memory and counts how many mutants would be
+        generated, without creating the ``mutants/`` directory or any files.
+        This prevents the "cache poisoning" problem where a dry-run leaves
+        behind a ``mutants/`` directory that blocks the next real run.
 
         Returns:
             ``MutationRunResult`` with only ``total_mutants`` set.
         """
-        all_tasks, _source_data = self._generate_mutants()
-        result = MutationRunResult(total_mutants=len(all_tasks))
-        print(f"Dry run: {len(all_tasks)} mutants would be generated.")
+        from mutmut_win.file_setup import walk_source_files
+        from mutmut_win.mutation import mutate_file_contents
+
+        total = 0
+        for src_file in walk_source_files(self._config):
+            rel_path = str(src_file)
+            if self._config.should_ignore_for_mutation(rel_path):
+                continue
+            try:
+                code = src_file.read_text(encoding="utf-8")
+                _mutated_code, mutant_names = mutate_file_contents(rel_path, code)
+                total += len(mutant_names)
+            except Exception:  # noqa: S112 — dry-run must not crash on unparseable files
+                continue
+
+        result = MutationRunResult(total_mutants=total)
+        print(f"Dry run: {total} mutants would be generated.")
         return result
 
     # ------------------------------------------------------------------
