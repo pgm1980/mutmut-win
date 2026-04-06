@@ -18,14 +18,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.3" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.4" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 1.0.1`
+Erwartete Ausgabe: `mutmut-win, version 1.0.3`
 
 ## Schritt 2: pyproject.toml konfigurieren
 
@@ -65,12 +65,12 @@ Folgende Einträge in der CLAUDE.md des Projekts ergänzen, sofern noch nicht vo
 ### Unter PROJEKT-STANDARDS (Subagent-Prompt-Standard):
 ```
 - mutmut-win Mutation Testing auf JEDEN neuen/geänderten Code (`uv run mutmut-win run --paths-to-mutate <geänderte Module>`)
-- Mutation Score ≥ 80% auf neuem Code — surviving Mutants dokumentieren wenn unter 80%
+- Mutation Score ≥ 97% auf neuem Code — surviving Mutants dokumentieren wenn unter 80%
 ```
 
 ### Unter Verifikation nach Subagent-Rückkehr:
 ```
-- [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80%?
+- [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 97%?
 ```
 
 ### Unter Commands-Tabelle:
@@ -81,7 +81,7 @@ Folgende Einträge in der CLAUDE.md des Projekts ergänzen, sofern noch nicht vo
 
 ### Unter Definition of Done (pro Sprint):
 ```
-- [ ] Mutation Testing auf neuem/geändertem Code (`uv run mutmut-win run --paths-to-mutate <Module>`) — Score ≥ 80%
+- [ ] Mutation Testing auf neuem/geändertem Code (`uv run mutmut-win run --paths-to-mutate <Module>`) — Score ≥ 97%
 ```
 
 ## Schritt 5: Erster richtiger Mutations-Lauf

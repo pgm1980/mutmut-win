@@ -346,20 +346,23 @@ class TestCreateMutantsForFile:
         # no exception is raised and the return types are correct.
         assert isinstance(names, list)
 
-    def test_skips_if_source_unmodified(self, tmp_path: Path) -> None:
-        """When the mutant file is newer than the source, skip re-generation."""
+    def test_reuses_names_if_source_unmodified(self, tmp_path: Path) -> None:
+        """When the mutant file is newer than the source, return existing names from .meta."""
         src = tmp_path / "mod.py"
         src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
         output = tmp_path / "mod_out.py"
-        output.write_text(_SIMPLE_SOURCE, encoding="utf-8")
 
-        # Make output much newer than source.
+        # First run: generate mutants normally.
+        names_first, _ = create_mutants_for_file(src, output)
+        assert len(names_first) > 0
+
+        # Make output much newer than source (simulates "already mutated").
         future_mtime = src.stat().st_mtime + 3600
         os.utime(output, (future_mtime, future_mtime))
 
-        names, _ = create_mutants_for_file(src, output)
-        # Fast-path: returns empty list without re-generating.
-        assert names == []
+        # Second run: fast-path should return the same names from .meta.
+        names_second, _ = create_mutants_for_file(src, output)
+        assert names_second == names_first
 
     def test_handles_syntax_error_gracefully(self, tmp_path: Path) -> None:
         src = tmp_path / "bad.py"

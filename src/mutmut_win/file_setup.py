@@ -332,18 +332,33 @@ def create_mutants_for_file(
     """
     collected_warnings: list[warnings.WarningMessage] = []
 
-    # Fast-path: if the source is unchanged since we last mutated it, skip.
+    # Fast-path: if the source is unchanged since we last mutated it, reuse
+    # the existing mutant names from the .meta file instead of re-generating.
+    # This enables repeated runs: the orchestrator gets the task list even
+    # though the mutated file already exists in mutants/.
     try:
         source_mtime = filename.stat().st_mtime
         mutant_mtime = output_path.stat().st_mtime
         if source_mtime < mutant_mtime:
-            # Source untouched — reset metadata so old results are cleared.
             source_file_mutation_data = SourceFileMutationData(path=str(filename))
             source_file_mutation_data.load()
+            # Extract local mutant names from the qualified keys in .meta.
+            # Qualified keys look like "module.submod.func__mutmut_1" — the
+            # local name is the part containing "__mutmut_" (the mangled name).
+            existing_local: list[str] = []
             for key in source_file_mutation_data.exit_code_by_key:
-                source_file_mutation_data.exit_code_by_key[key] = None
-            source_file_mutation_data.save()
-            return [], collected_warnings
+                # Find the mangled method name: everything from the last
+                # component that contains __mutmut_
+                parts = key.split(".")
+                local = next(
+                    (p for p in reversed(parts) if "__mutmut_" in p),
+                    None,
+                )
+                if local:
+                    existing_local.append(local)
+            if existing_local:
+                return existing_local, collected_warnings
+            # No names in meta → fall through to regenerate
     except OSError:
         pass
 
