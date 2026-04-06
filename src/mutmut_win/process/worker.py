@@ -65,33 +65,26 @@ def worker_main(
         cmd: list[str] = ["pytest", "--tb=no", "-q"]
         cmd.extend(pytest_extra_args)
 
-        # Windows CreateProcess has a 32767-char command line limit.
-        # When a mutant has many assigned tests, passing them all as args
-        # exceeds this limit → WinError 206. Use pytest's @file syntax:
-        # pytest @testlist.txt reads arguments from a file, one per line.
-        # Threshold: if the joined test list would exceed 8000 chars (leaves
-        # plenty of headroom for PYTHONPATH + other args), write to a file.
+        # Always use pytest's @file syntax for test arguments.
+        # This avoids the Windows CreateProcess 32767-char command line limit
+        # (WinError 206) regardless of how many tests are assigned — no magic
+        # thresholds, no dual code paths, predictable behavior at any scale.
+        # pytest reads arguments from the file, one per line.
         tests_argfile: Path | None = None
         if task.tests:
-            total_len = sum(len(t) + 1 for t in task.tests)
-            if total_len > 8000:
-                # Too many tests for the command line — use @file syntax.
-                import tempfile
+            import tempfile
 
-                fd, argfile_path = tempfile.mkstemp(
-                    suffix=".txt",
-                    prefix="mutmut_tests_",
-                    dir="mutants",
-                    text=True,
-                )
-                tests_argfile = Path(argfile_path)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    for test in task.tests:
-                        f.write(test + "\n")
-                # pytest accepts @file for argument-file loading
-                cmd.append(f"@{tests_argfile.name}")
-            else:
-                cmd.extend(task.tests)
+            fd, argfile_path = tempfile.mkstemp(
+                suffix=".txt",
+                prefix="mutmut_tests_",
+                dir="mutants",
+                text=True,
+            )
+            tests_argfile = Path(argfile_path)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for test in task.tests:
+                    f.write(test + "\n")
+            cmd.append(f"@{tests_argfile.name}")
         else:
             # No specific tests assigned — use tests_dir from config if available.
             raw_tests_dir = config_data.get("tests_dir")
