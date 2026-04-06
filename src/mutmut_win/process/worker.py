@@ -8,6 +8,7 @@ worker to exit cleanly.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import time
@@ -63,8 +64,34 @@ def worker_main(
         # Build the pytest command.
         cmd: list[str] = ["pytest", "--tb=no", "-q"]
         cmd.extend(pytest_extra_args)
+
+        # Windows CreateProcess has a 32767-char command line limit.
+        # When a mutant has many assigned tests, passing them all as args
+        # exceeds this limit → WinError 206. Use pytest's @file syntax:
+        # pytest @testlist.txt reads arguments from a file, one per line.
+        # Threshold: if the joined test list would exceed 8000 chars (leaves
+        # plenty of headroom for PYTHONPATH + other args), write to a file.
+        tests_argfile: Path | None = None
         if task.tests:
-            cmd.extend(task.tests)
+            total_len = sum(len(t) + 1 for t in task.tests)
+            if total_len > 8000:
+                # Too many tests for the command line — use @file syntax.
+                import tempfile
+
+                fd, argfile_path = tempfile.mkstemp(
+                    suffix=".txt",
+                    prefix="mutmut_tests_",
+                    dir="mutants",
+                    text=True,
+                )
+                tests_argfile = Path(argfile_path)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    for test in task.tests:
+                        f.write(test + "\n")
+                # pytest accepts @file for argument-file loading
+                cmd.append(f"@{tests_argfile.name}")
+            else:
+                cmd.extend(task.tests)
         else:
             # No specific tests assigned — use tests_dir from config if available.
             raw_tests_dir = config_data.get("tests_dir")
@@ -85,21 +112,33 @@ def worker_main(
         env[MUTANT_ENV_VAR] = task.mutant_name
 
         start = time.monotonic()
-        # Run pytest inside mutants/ so it imports the trampolined code.
-        result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-            cmd,
-            env=env,
-            capture_output=True,
-            encoding="utf-8",
-            cwd="mutants",
-        )
+        try:
+            # Run pytest inside mutants/ so it imports the trampolined code.
+            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+                cmd,
+                env=env,
+                capture_output=True,
+                encoding="utf-8",
+                cwd="mutants",
+            )
+            exit_code = result.returncode
+        except OSError as exc:
+            # WinError 206 / ENAMETOOLONG: command line too long even with @file.
+            # Report as suspicious (exit code 35) so the orchestrator doesn't crash.
+            print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
+            exit_code = 35  # suspicious
+        finally:
+            if tests_argfile is not None and tests_argfile.exists():
+                with contextlib.suppress(OSError):
+                    tests_argfile.unlink()
+
         duration = time.monotonic() - start
 
         event_queue.put(
             TaskCompleted(
                 mutant_name=task.mutant_name,
                 worker_pid=pid,
-                exit_code=result.returncode,
+                exit_code=exit_code,
                 duration=duration,
             ).model_dump()
         )
