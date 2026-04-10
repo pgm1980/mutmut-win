@@ -61,6 +61,10 @@ class TaskCompleted(BaseModel):
     worker_pid: int
     exit_code: int
     duration: float = Field(ge=0.0, description="Duration in seconds")
+    last_output: str | None = Field(
+        default=None,
+        description="Last pytest output lines (captured on timeout/suspicious exit codes)",
+    )
 
 
 class TaskTimedOut(BaseModel):

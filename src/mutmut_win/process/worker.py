@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
 
 #: Environment variable checked by mutmut's trampoline to activate a mutant.
 MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
+
+#: Maximum number of pytest output lines to capture on timeout/suspicious.
+_MAX_DIAGNOSTIC_LINES: int = 50
 
 
 def worker_main(
@@ -78,8 +82,6 @@ def worker_main(
         # pytest reads arguments from the file, one per line.
         tests_argfile: Path | None = None
         if task.tests:
-            import tempfile
-
             fd, argfile_path = tempfile.mkstemp(
                 suffix=".txt",
                 prefix="mutmut_tests_",
@@ -110,31 +112,44 @@ def worker_main(
             env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
         env[MUTANT_ENV_VAR] = task.mutant_name
 
+        # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
+        # - PIPE deadlocks on Windows when grandchild processes inherit handles
+        # - DEVNULL loses diagnostic output needed for timeout investigation
+        # - Temp files: no deadlock (no pipe EOF semantics), output preserved
+        log_fd, log_path_str = tempfile.mkstemp(
+            suffix=".log", prefix="mutmut_out_", dir="mutants", text=True,
+        )
+        log_path = Path(log_path_str)
+        last_output: str | None = None
+
         start = time.monotonic()
         try:
-            # Run pytest inside mutants/ so it imports the trampolined code.
-            # Use DEVNULL instead of capture_output=True — we only need the
-            # exit code.  Pipes can deadlock on Windows when pytest spawns
-            # grandchild processes (hypothesis, pytest-asyncio) that inherit
-            # the pipe handles and don't exit promptly.
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
                 cmd,
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
                 cwd="mutants",
                 timeout=worker_timeout,
             )
             exit_code = result.returncode
         except subprocess.TimeoutExpired:
-            # Hung pytest process — report as timeout so the orchestrator continues.
             exit_code = 36  # timeout
+            # Read last lines for diagnostics before cleanup.
+            os.close(log_fd)
+            log_fd = -1
+            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
         except OSError as exc:
-            # WinError 206 / ENAMETOOLONG: command line too long even with @file.
-            # Report as suspicious (exit code 35) so the orchestrator doesn't crash.
             print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
             exit_code = 35  # suspicious
         finally:
+            if log_fd >= 0:
+                os.close(log_fd)
+            # Read diagnostics for suspicious exits (if not already read).
+            if exit_code == 35 and last_output is None:
+                last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+            with contextlib.suppress(OSError):
+                log_path.unlink()
             if tests_argfile is not None and tests_argfile.exists():
                 with contextlib.suppress(OSError):
                     tests_argfile.unlink()
@@ -147,5 +162,16 @@ def worker_main(
                 worker_pid=pid,
                 exit_code=exit_code,
                 duration=duration,
+                last_output=last_output,
             ).model_dump()
         )
+
+
+def _read_last_lines(path: Path, n: int) -> str | None:
+    """Read the last *n* lines from *path*, returning None on failure."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = content.splitlines()
+    return "\n".join(lines[-n:]) if lines else None

@@ -1,7 +1,7 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.0.2
+**Version:** v2.0.3
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 ---
@@ -19,14 +19,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.0.2" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.0.3" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.0.2`
+Erwartete Ausgabe: `mutmut-win, version 2.0.3`
 
 ## Schritt 2: pyproject.toml konfigurieren
 
@@ -101,7 +101,7 @@ uv run mutmut-win results
 ## Wichtige Hinweise
 
 - **mutmut-win MUSS als dev-Dependency installiert bleiben.** Nicht entfernen. `uv run mutmut-win` nutzt `sys.executable` aus dem Projekt-venv.
-- **Wiederholte Läufe:** v2.0.2 aktualisiert geänderte Dateien automatisch (mtime-Vergleich). Bei Problemen: `uv run mutmut-win run --force` für einen sauberen Neulauf.
+- **Wiederholte Läufe:** v2.0.3 aktualisiert geänderte Dateien automatisch (mtime-Vergleich). Bei Problemen: `uv run mutmut-win run --force` für einen sauberen Neulauf.
 - **Editable Installs (.pth):** Bei editierbaren Installationen (`uv pip install -e .`) kann die `.pth`-Datei in `site-packages/` die Trampoline-Mechanik überschatten. Workaround: `.pth`-Datei temporär umbenennen vor dem Lauf.
 
 ## Nützliche CLI-Flags
