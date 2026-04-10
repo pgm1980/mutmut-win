@@ -148,8 +148,8 @@ def collect_or_load_stats(
     if new_tests:
         print(f"Found {len(new_tests)} new tests, re-running stats collection for them")
         # Use ListAllTestsResult to clean up obsolete tests.
-        result = ListAllTestsResult(ids=current_tests)
-        result.clear_out_obsolete_test_names(cached)
+        result = ListAllTestsResult(ids=current_tests, stats=cached)
+        result.clear_out_obsolete_test_names(mutants_dir)
         save_stats(cached, mutants_dir)
 
         # Re-run stats for new tests only.

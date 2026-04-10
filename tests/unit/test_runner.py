@@ -167,124 +167,57 @@ class TestCollectTests:
 
 
 class TestRunStats:
+    """Tests for run_stats (subprocess-based stats collection)."""
+
     def test_returns_none(self) -> None:
         """run_stats is a side-effect function — it must return None."""
         runner = PytestRunner(_config())
-        with (
-            patch("pytest.main", return_value=0) as _mock_pytest,
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
+        collect_result = MagicMock(stdout="test_a.py::test_1\ntest_b.py::test_2\n", returncode=0)
+        run_result = MagicMock(stdout="PASSED\nPASSED\n", returncode=0)
+        with patch("subprocess.run", side_effect=[collect_result, run_result]):
             result = runner.run_stats()
         assert result is None
 
-    def test_sets_stats_sentinel_in_env(self) -> None:
+    def test_calls_subprocess_twice(self) -> None:
+        """run_stats calls subprocess.run twice: once for --collect-only, once for the run."""
         runner = PytestRunner(_config())
-        captured_env: dict[str, str] = {}
+        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
+        run_result = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", side_effect=[collect_result, run_result]) as mock_sub:
+            runner.run_stats()
+        assert mock_sub.call_count == 2
 
+    def test_returns_early_if_no_tests(self) -> None:
+        """If --collect-only finds no tests, run_stats returns immediately."""
+        runner = PytestRunner(_config())
+        collect_result = MagicMock(stdout="no tests ran\n", returncode=0)
+        with patch("subprocess.run", return_value=collect_result) as mock_sub:
+            runner.run_stats()
+        # Only one call (collect-only), no second call for the actual run.
+        assert mock_sub.call_count == 1
+
+    def test_clears_mutant_env_after_run(self) -> None:
+        """MUTANT_UNDER_TEST must be cleared after stats collection."""
         import os
 
-        with (
-            patch("pytest.main", return_value=0),
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
-            runner.run_stats()
-            captured_env = dict(os.environ)
-
-        # After run_stats, MUTANT_UNDER_TEST must be cleared (set to "")
-        # It was set to "stats" during the run — we verify it was set.
-        assert MUTANT_ENV_VAR in captured_env
-
-    def test_calls_pytest_main(self) -> None:
         runner = PytestRunner(_config())
-        with (
-            patch("pytest.main", return_value=0) as mock_pytest,
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
+        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
+        run_result = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", side_effect=[collect_result, run_result]):
             runner.run_stats()
-        mock_pytest.assert_called_once()
-
-    def test_pytest_main_receives_plugin(self) -> None:
-        runner = PytestRunner(_config())
-        with (
-            patch("pytest.main", return_value=0) as mock_pytest,
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
-            runner.run_stats()
-        call_kwargs = mock_pytest.call_args
-        assert call_kwargs is not None
-        plugins = call_kwargs[1].get("plugins") or (
-            call_kwargs[0][1] if len(call_kwargs[0]) > 1 else []
-        )
-        assert len(plugins) == 1
-
-    def test_restores_cwd_on_success(self) -> None:
-        from pathlib import Path
-
-        runner = PytestRunner(_config())
-        original_cwd = Path.cwd()
-        chdir_calls: list[Any] = []
-
-        def fake_chdir(path: Any) -> None:
-            chdir_calls.append(path)
-
-        with (
-            patch("pytest.main", return_value=0),
-            patch("os.chdir", side_effect=fake_chdir),
-            patch("pathlib.Path.cwd", return_value=original_cwd),
-        ):
-            runner.run_stats()
-
-        # First chdir is to "mutants", second is back to original_cwd.
-        assert len(chdir_calls) == 2
-        assert chdir_calls[0] == "mutants"
-        assert chdir_calls[1] == original_cwd
-
-    def test_restores_cwd_on_pytest_exception(self) -> None:
-        from pathlib import Path
-
-        runner = PytestRunner(_config())
-        original_cwd = Path.cwd()
-        chdir_calls: list[Any] = []
-
-        def fake_chdir(path: Any) -> None:
-            chdir_calls.append(path)
-
-        with (
-            patch("pytest.main", side_effect=RuntimeError("pytest crashed")),
-            patch("os.chdir", side_effect=fake_chdir),
-            patch("pathlib.Path.cwd", return_value=original_cwd),
-            pytest.raises(RuntimeError, match="pytest crashed"),
-        ):
-            runner.run_stats()
-
-        # Even on exception, the finally block should restore cwd.
-        assert chdir_calls[-1] == original_cwd
-
-    def test_extra_pytest_args_forwarded(self) -> None:
-        runner = PytestRunner(_config(pytest_add_cli_args=["--timeout=5"]))
-        with (
-            patch("pytest.main", return_value=0) as mock_pytest,
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
-            runner.run_stats()
-        args_passed = mock_pytest.call_args[0][0]
-        assert "--timeout=5" in args_passed
+        assert os.environ.get(MUTANT_ENV_VAR, "") == ""
 
     def test_tests_dir_forwarded(self) -> None:
+        """tests_dir config should be included in the pytest command."""
         runner = PytestRunner(_config(tests_dir=["tests/unit/"]))
-        with (
-            patch("pytest.main", return_value=0) as mock_pytest,
-            patch("os.chdir"),
-            patch("pathlib.Path.cwd", return_value=MagicMock()),
-        ):
+        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
+        run_result = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", side_effect=[collect_result, run_result]) as mock_sub:
             runner.run_stats()
-        args_passed = mock_pytest.call_args[0][0]
-        assert "tests/unit/" in args_passed
+        # Both subprocess calls should include tests_dir
+        for call in mock_sub.call_args_list:
+            cmd = call[0][0] if call[0] else call[1].get("cmd", [])
+            assert "tests/unit/" in cmd
 
 
 # ---------------------------------------------------------------------------
