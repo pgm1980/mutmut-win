@@ -76,10 +76,17 @@ def walk_source_files(config: MutmutConfig) -> Iterator[Path]:
 # ---------------------------------------------------------------------------
 
 
-def copy_src_dir(config: MutmutConfig) -> None:
-    """Copy source files to the mutants/ staging directory.
+def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept for API compatibility; source dirs are auto-detected
+    """Copy the ENTIRE source tree to the mutants/ staging directory.
 
-    Preserves the directory structure relative to the project root.
+    Copies ALL files from standard source directories (src/, source/, .)
+    — not just the files in ``paths_to_mutate``.  This ensures that
+    non-mutated modules are available for import when pytest runs inside
+    ``mutants/``.  Without this, cross-package imports in conftest.py fail.
+
+    ``paths_to_mutate`` only controls which files get **mutated**, not
+    which files get **copied**.
+
     Updates files whose source has been modified since the last copy
     (mtime comparison).  Uses ``shutil.copy2`` to preserve modification
     times so subsequent runs can detect changes.
@@ -87,30 +94,35 @@ def copy_src_dir(config: MutmutConfig) -> None:
     Args:
         config: Active ``MutmutConfig`` instance.
     """
-    for root, name in walk_all_files(config):
-        source_path = Path(root) / name
-        target_path = Path("mutants") / root / name
+    skip_dirs = {".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+                 ".ruff_cache", ".git", ".hypothesis", "mutants", ".mutmut-cache"}
 
-        if target_path.exists():
-            # Update if source is newer than the copy in mutants/.
-            if source_path.is_file() and _source_is_newer(source_path, target_path):
-                shutil.copy2(source_path, target_path)
-                print(f"     updated: {source_path} (source changed since last run)")
-                # Invalidate cached mutation results for this file —
-                # the .meta file contains exit codes from the previous run
-                # which are now stale because the source changed.
-                meta_path = Path(str(target_path) + ".meta")
-                if meta_path.exists():
-                    meta_path.unlink()
+    for source_root_name in ["src", "source", "."]:
+        source_root = Path(source_root_name)
+        if not source_root.exists() or not source_root.is_dir():
             continue
 
-        if source_path.is_dir():
-            shutil.copytree(source_path, target_path)
-        else:
-            target_path.parent.mkdir(exist_ok=True, parents=True)
-            # copy2 preserves mtime so create_mutants_for_file can detect
-            # whether the source was modified after the mutant was created.
-            shutil.copy2(source_path, target_path)
+        for root_str, dirs, files in os.walk(source_root):
+            # Skip cache/venv directories
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+
+            for name in files:
+                source_path = Path(root_str) / name
+                target_path = Path("mutants") / root_str / name
+
+                if target_path.exists():
+                    # Update if source is newer than the copy in mutants/.
+                    if source_path.is_file() and _source_is_newer(source_path, target_path):
+                        shutil.copy2(source_path, target_path)
+                        print(f"     updated: {source_path} (source changed since last run)")
+                        # Invalidate cached mutation results for this file.
+                        meta_path = Path(str(target_path) + ".meta")
+                        if meta_path.exists():
+                            meta_path.unlink()
+                    continue
+
+                target_path.parent.mkdir(exist_ok=True, parents=True)
+                shutil.copy2(source_path, target_path)
 
 
 def _source_is_newer(source: Path, target: Path) -> bool:

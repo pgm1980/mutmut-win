@@ -1,0 +1,445 @@
+# Product Backlog — mutmut-win
+
+**Version:** 0.1.0
+**Datum:** 2026-03-29
+**Status:** Active
+
+---
+
+## Release-Übersicht
+
+| Release | Codename | Sprints | Status | Highlights |
+|---------|----------|---------|--------|------------|
+| v0.1.0 | MVP | Sprint 1–6 | Planned | Vollständiges Mutation Testing auf Windows |
+
+---
+
+## Definition of Done (DoD)
+
+### Quality-Gates
+
+- [ ] **Build**: `uv sync` — 0 Warnings, 0 Errors
+- [ ] **Tests**: `uv run pytest` — alle Unit + Integration Tests grün
+- [ ] **Coverage**: `uv run pytest --cov=src --cov-report=html` — ≥80% gesamt, ≥90% process/
+- [ ] **Linting**: `uv run ruff check .` — 0 Findings
+- [ ] **Formatting**: `uv run ruff format --check .` — 0 Abweichungen
+- [ ] **Type Checking**: `uv run mypy src/` — 0 Errors (strict mode)
+- [ ] **Security Scan**: `semgrep scan --config auto .` — 0 offene Security-Findings
+- [ ] **Dependency Audit**: `uv run pip-audit` — 0 bekannte Vulnerabilities
+- [ ] **Architecture Tests**: `uv run lint-imports` — 0 Schichtverletzungen
+- [ ] **Property-Based Tests**: hypothesis-Properties für alle kritischen Roundtrips vorhanden
+- [ ] **Mutation Testing**: `uv run mutmut run --paths-to-mutate src/mutmut_win/` — Score ≥80%
+
+### Prozess-Gates
+
+- [ ] **Code Review**: Mindestens 1 Review (Agent oder Mensch) bestanden
+- [ ] **MEMORY.md**: Projektgedächtnis aktualisiert
+- [ ] **Commit**: Conventional Commit Messages verwendet
+
+---
+
+## Epics und Sprint-Zuordnung
+
+### Epic 1: Projekt-Setup & Domain Layer
+
+**Beschreibung:** Projekt-Infrastruktur aufsetzen, Domain-Module implementieren (config, models, constants). Grundlage für alle weiteren Sprints.
+**Sprint:** Sprint 1
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #1 | Task | Projekt-Struktur: pyproject.toml, src/mutmut_win/, tests/, py.typed | Must | 2 | Open |
+| #2 | Story | Als Entwickler will ich eine validierte Konfiguration aus pyproject.toml laden, damit Fehlkonfigurationen sofort erkannt werden | Must | 5 | Open |
+| #3 | Story | Als Entwickler will ich typsichere Datenmodelle für Tasks und Events, damit Queue-Kommunikation fehlerfrei ist | Must | 3 | Open |
+| #4 | Story | Als Entwickler will ich ein Exit-Code-Mapping, damit pytest-Ergebnisse korrekt in Mutationsstatus übersetzt werden | Must | 2 | Open |
+| #5 | Task | import-linter Contracts definieren und als Tests einbinden | Must | 2 | Open |
+| #6 | Task | Windows-Check in __init__.py: ImportError auf Nicht-Windows | Must | 1 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] `uv sync` erfolgreich, alle Dependencies installiert
+- [ ] MutmutWinConfig: model_validate() akzeptiert gültige und weist ungültige Config zurück
+- [ ] MutationTask, TaskStarted, TaskCompleted, TaskTimedOut: pickle-Roundtrip besteht
+- [ ] status_by_exit_code: Alle int-Werte liefern einen gültigen Status (hypothesis)
+- [ ] import-linter: 0 Verletzungen
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+### Epic 2: Mutation Engine Integration
+
+**Beschreibung:** CST-basierte Mutationsengine aus mutmut 3.5.0 übernehmen. Plattformunabhängige Module 1:1 portieren mit encoding-Fixes.
+**Sprint:** Sprint 2
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #7 | Story | Als Entwickler will ich Python-Quelldateien CST-basiert mutieren, damit alle Mutations-Operatoren von mutmut verfügbar sind | Must | 5 | Open |
+| #8 | Story | Als Entwickler will ich Trampoline-Dateien erzeugen, damit parallele Mutationstests ohne Dateikonflikte möglich sind | Must | 5 | Open |
+| #9 | Story | Als Entwickler will ich Coverage-Daten verarbeiten, damit nur abgedeckte Zeilen mutiert werden können | Should | 3 | Open |
+| #10 | Story | Als Entwickler will ich Type-Checker-Integration, damit Mutanten durch Type Checking abgefangen werden können | Should | 3 | Open |
+| #11 | Task | encoding='utf-8' auf alle File-I/O-Operationen in übernommenen Modulen anwenden | Must | 2 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] mutation.py erzeugt identische Mutanten wie mutmut 3.5.0 für die 5 E2E-Testprojekte
+- [ ] Trampoline-Datei enthält alle Mutanten, MUTANT_UNDER_TEST selektiert korrekt
+- [ ] Alle Dateien mit encoding='utf-8' geöffnet (Semgrep-verifiziert)
+- [ ] mangle/demangle-Roundtrip besteht (hypothesis)
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+### Epic 3: Process Management
+
+**Beschreibung:** Windows-native Prozess-Steuerung implementieren: Worker-Pool (spawn), Zwei-Queue-IPC, Wall-Clock-Timeout-Monitor. Kern des Refactorings.
+**Sprint:** Sprint 3
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #12 | Story | Als Entwickler will ich einen Worker-Pool mit spawn-Strategie, damit N Mutationstests parallel auf Windows laufen | Must | 8 | Open |
+| #13 | Story | Als Entwickler will ich einen Wall-Clock-Timeout-Monitor, damit Endlosschleifen-Mutanten automatisch terminiert werden | Must | 5 | Open |
+| #14 | Story | Als Entwickler will ich Worker-Crash-Recovery, damit ein einzelner Worker-Absturz den Gesamtlauf nicht stoppt | Must | 5 | Open |
+| #15 | Story | Als Entwickler will ich Graceful Shutdown bei Ctrl+C, damit Teilergebnisse bei Abbruch erhalten bleiben | Must | 3 | Open |
+| #16 | Task | Integration Tests: Echte Worker-Prozesse mit kleinem Testprojekt | Must | 3 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] SpawnPoolExecutor startet N Worker via multiprocessing.spawn
+- [ ] Worker führt subprocess.run(['python', '-m', 'pytest', ...]) pro Task aus
+- [ ] WallClockTimeoutMonitor killt Worker bei Deadline-Überschreitung
+- [ ] Getimeouter Worker wird durch Ersatz-Worker ersetzt
+- [ ] Ctrl+C → alle Worker gekillt, Teilergebnisse gespeichert
+- [ ] Max 3 Neustarts pro Worker-Slot, dann Abbruch mit PoolExhaustedError
+- [ ] Coverage ≥90% für process/ Package
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+### Epic 4: Orchestrator & Test Runner
+
+**Beschreibung:** MutationOrchestrator (3-Phasen-Koordination) und PytestRunner implementieren. Verbindet Domain, Mutation Engine und Process Management.
+**Sprint:** Sprint 4
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #17 | Story | Als Entwickler will ich einen PytestRunner, damit Clean-Run, Stats-Run und Mutation-Run gekapselt sind | Must | 5 | Open |
+| #18 | Story | Als Entwickler will ich einen Orchestrator der die 3 Phasen koordiniert, damit der gesamte Mutation-Testing-Ablauf automatisiert ist | Must | 8 | Open |
+| #19 | Story | Als Entwickler will ich dass der Orchestrator Ergebnisse in SQLite speichert, damit Ergebnisse persistiert und später abrufbar sind | Must | 3 | Open |
+| #20 | Task | Integration Tests: Orchestrator mit echtem Testprojekt (End-to-End ohne CLI) | Must | 5 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] PytestRunner.run_clean() gibt exit_code 0 für valide Test-Suite
+- [ ] PytestRunner.run_stats() gibt {test_id: duration} zurück
+- [ ] Orchestrator Phase 1: Clean → Mutants → Stats → Forced Fail (sequentiell)
+- [ ] Orchestrator Phase 2: Event-Consumer-Loop verarbeitet TaskStarted/Completed/TimedOut
+- [ ] Orchestrator Phase 3: Zusammenfassung druckt survived/killed/timeout-Zähler
+- [ ] SQLite-DB kompatibel mit mutmut 3.5.0 Format
+- [ ] Timeout-Formel: max(30, (est + 5) * multiplier) — hypothesis-verifiziert
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+### Epic 5: CLI & Result Management
+
+**Beschreibung:** Click CLI implementieren (run, results, show, apply). E2E-Tests mit den 5 mutmut-Testprojekten als Gold-Standard.
+**Sprint:** Sprint 5
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #21 | Story | Als User will ich `mutmut-win run` ausführen, damit mein Python-Code auf Windows mutation-getestet wird | Must | 5 | Open |
+| #22 | Story | Als User will ich `mutmut-win results` sehen, damit ich einen Überblick über den Mutationsstatus habe | Must | 3 | Open |
+| #23 | Story | Als User will ich `mutmut-win show <NAME>` aufrufen, damit ich den Diff eines Mutanten inspizieren kann | Must | 2 | Open |
+| #24 | Story | Als User will ich `mutmut-win apply <NAME>` aufrufen, damit ich einen Mutanten auf meinen Code anwenden kann | Must | 2 | Open |
+| #25 | Story | Als User will ich `mutmut-win run MUTANT_NAMES...` nutzen, damit ich gezielt einzelne Mutanten testen kann | Should | 2 | Open |
+| #26 | Task | E2E-Tests: 5 mutmut-Testprojekte übernehmen und als Snapshot-Tests einbinden | Must | 8 | Open |
+| #27 | Task | Segfault-Mutant: Windows-Exit-Code ermitteln und in E2E-Snapshot einpflegen | Should | 2 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] `mutmut-win run` führt vollständigen Mutation-Testing-Lauf durch
+- [ ] `mutmut-win results` zeigt Tabelle aller Ergebnisse
+- [ ] `mutmut-win show <NAME>` zeigt Diff
+- [ ] `mutmut-win apply <NAME>` modifiziert Quelldatei
+- [ ] E2E: my_lib Projekt — alle ~65 Mutanten-Ergebnisse stimmen mit mutmut-Snapshot überein
+- [ ] E2E: config Projekt — alle ~12 Mutanten-Ergebnisse stimmen überein
+- [ ] E2E: mutate_only_covered_lines — ~32 Mutanten stimmen überein
+- [ ] E2E: type_checking — ~11 Mutanten stimmen überein
+- [ ] E2E: py3_14_features — ~4 Mutanten stimmen überein (oder Skip mit Begründung)
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+### Epic 6: TUI Browser & Finalisierung
+
+**Beschreibung:** Textual-basierter TUI Result Browser integrieren. Finale Qualitäts-Checks, Meta-Mutation-Testing, Dokumentation.
+**Sprint:** Sprint 6
+**Release:** v0.1.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #28 | Story | Als User will ich `mutmut-win browse` nutzen, damit ich Mutationsergebnisse interaktiv im Terminal explorieren kann | Should | 5 | Open |
+| #29 | Task | Meta-Test: mutmut-win auf eigenen Code anwenden (Mutation Score ≥80%) | Must | 3 | Open |
+| #30 | Task | pip-audit: Finaler Dependency-Audit vor Release | Must | 1 | Open |
+| #31 | Task | Semgrep: Finaler Security-Scan vor Release | Must | 1 | Open |
+| #32 | Task | PyPI-Paketierung: Entry Point, Wheel-Build, README | Should | 3 | Open |
+
+**Acceptance Criteria (Epic-Level):**
+- [ ] `mutmut-win browse` startet Textual TUI, zeigt Mutanten-Liste, Diff-Ansicht
+- [ ] Mutation Score auf eigenen Code ≥80%
+- [ ] pip-audit: 0 Findings
+- [ ] Semgrep: 0 Findings
+- [ ] `uv build` erzeugt valides Wheel
+- [ ] Ruff 0, mypy strict 0
+
+---
+
+## Priorisierung
+
+| Priorität | Bedeutung | Issues |
+|-----------|-----------|--------|
+| **Must** | Ohne diese Features ist das Release wertlos | #1–#6, #7–#8, #11–#16, #17–#20, #21–#24, #26, #29–#31 |
+| **Should** | Wichtig, Release funktioniert ohne sie | #9–#10, #25, #27–#28, #32 |
+| **Could** | Nice-to-have | FR-01.10 (Echtzeit-Fortschritt) — nicht als Issue |
+| **Won't** | Explizit ausgeschlossen | Unix/Linux/macOS Support, neue Mutations-Operatoren |
+
+---
+
+## Milestone-Zuordnung (GitHub)
+
+| Milestone | Release | Epics | Issues | Status |
+|-----------|---------|-------|--------|--------|
+| MVP: Windows Mutation Testing | v0.1.0 | Epic 1–6 | #1–#32 | Open |
+
+---
+
+## Velocity Tracking
+
+| Sprint | Geplant (SP) | Erledigt (SP) | Velocity | Notizen |
+|--------|-------------|---------------|----------|--------|
+| Sprint 1 | 15 | | | Epic 1: Setup & Domain |
+| Sprint 2 | 18 | | | Epic 2: Mutation Engine |
+| Sprint 3 | 24 | | | Epic 3: Process Management |
+| Sprint 4 | 21 | | | Epic 4: Orchestrator |
+| Sprint 5 | 24 | | | Epic 5: CLI & E2E |
+| Sprint 6 | 13 | | | Epic 6: TUI & Finalisierung |
+
+---
+
+## User Stories — Detail
+
+### US-01: Konfiguration laden und validieren (#2)
+
+```
+Als Entwickler
+möchte ich eine validierte Konfiguration aus pyproject.toml [tool.mutmut] laden
+damit Fehlkonfigurationen sofort beim Start erkannt werden (Fail-Fast)
+
+Akzeptanzkriterien:
+- [ ] Gültige Config wird korrekt geladen (paths_to_mutate, max_workers, timeout_multiplier)
+- [ ] Fehlende Config-Sektion → Defaults werden verwendet
+- [ ] Ungültige Werte (max_workers=0, timeout_multiplier=0.5) → ValidationError + sys.exit(2)
+- [ ] CLI-Flags überschreiben Config-Datei-Werte
+- [ ] hypothesis: Beliebige Config-Werte erzeugen entweder valid oder ValidationError
+```
+
+### US-02: Typsichere Datenmodelle (#3)
+
+```
+Als Entwickler
+möchte ich typsichere Pydantic-Models für MutationTask und Event-Typen
+damit Queue-Kommunikation zwischen Hauptprozess und Workern fehlerfrei ist
+
+Akzeptanzkriterien:
+- [ ] MutationTask: pickle.dumps(task) → pickle.loads() → identisches Objekt
+- [ ] TaskStarted, TaskCompleted, TaskTimedOut: pickle-Roundtrip besteht
+- [ ] Alle Felder haben korrekte Typen und Validierung
+- [ ] hypothesis: MutationTask-pickle-Roundtrip für beliebige gültige Werte
+```
+
+### US-03: Exit-Code-Mapping (#4)
+
+```
+Als Entwickler
+möchte ich ein deterministisches Mapping von pytest-Exit-Codes zu Mutationsstatus
+damit jedes Testergebnis korrekt klassifiziert wird
+
+Akzeptanzkriterien:
+- [ ] exit_code 0 → SURVIVED
+- [ ] exit_code 1, 3 → KILLED
+- [ ] exit_code 5, 33 → NO_TESTS
+- [ ] exit_code 34 → SKIPPED
+- [ ] exit_code 37 → CAUGHT_BY_TYPE_CHECK
+- [ ] hypothesis: Jeder int-Wert liefert einen gültigen Status (nie KeyError)
+```
+
+### US-04: CST-basierte Mutation (#7)
+
+```
+Als Entwickler
+möchte ich Python-Quelldateien mit CST-basierten Mutationen verändern
+damit alle Mutations-Operatoren von mutmut 3.5.0 auf Windows verfügbar sind
+
+Akzeptanzkriterien:
+- [ ] mutate_file_contents() erzeugt Mutanten für: Strings, Arithmetic, Comparisons, Keywords, Booleans
+- [ ] Mutation Engine produziert identische Mutanten wie mutmut 3.5.0 (E2E-Vergleich)
+- [ ] encoding='utf-8' für alle Datei-Operationen
+- [ ] libcst-Fehler bei ungültigem Python-Code werden sauber abgefangen
+```
+
+### US-05: Trampoline-Dateien (#8)
+
+```
+Als Entwickler
+möchte ich Trampoline-Dateien erzeugen die alle Mutanten einer Quelldatei enthalten
+damit parallele Mutationstests ohne Dateikonflikte möglich sind
+
+Akzeptanzkriterien:
+- [ ] write_all_mutants_to_file() schreibt Trampoline mit allen Mutanten
+- [ ] MUTANT_UNDER_TEST-Env-Var selektiert den aktiven Mutanten korrekt
+- [ ] Ohne gesetzte Env-Var wird Original-Code ausgeführt
+- [ ] mangle_function_name() / demangle: Roundtrip besteht (hypothesis)
+- [ ] Mehrere Worker können gleichzeitig dieselbe Trampoline-Datei nutzen
+```
+
+### US-06: Worker-Pool (#12)
+
+```
+Als Entwickler
+möchte ich einen Worker-Pool mit spawn-Strategie
+damit N Mutationstests parallel auf Windows laufen
+
+Akzeptanzkriterien:
+- [ ] SpawnPoolExecutor startet max_workers Worker via multiprocessing.Process
+- [ ] multiprocessing.set_start_method('spawn') ist gesetzt
+- [ ] Worker empfängt Tasks aus task_queue, sendet Events in event_queue
+- [ ] Worker führt subprocess.run(['python', '-m', 'pytest', ...]) pro Task aus
+- [ ] Worker beendet sich sauber bei Sentinel-Empfang (None)
+- [ ] Integration Test: 3+ Tasks parallel ausgeführt, alle Ergebnisse korrekt
+```
+
+### US-07: Timeout-Monitor (#13)
+
+```
+Als Entwickler
+möchte ich einen Wall-Clock-Timeout-Monitor
+damit Endlosschleifen-Mutanten automatisch nach Deadline terminiert werden
+
+Akzeptanzkriterien:
+- [ ] Monitor-Thread prüft aktive Tasks gegen Deadlines (poll_interval=0.5s)
+- [ ] Deadline-Überschreitung → Process.kill() auf Worker
+- [ ] TaskTimedOut-Event wird in event_queue injiziert
+- [ ] Abgeschlossene Tasks werden aus Monitor-Liste entfernt
+- [ ] Timeout-Formel: max(30, (estimated_time + 5) * timeout_multiplier)
+- [ ] hypothesis: Positive estimated_time → timeout > estimated_time
+```
+
+### US-08: Worker-Crash-Recovery (#14)
+
+```
+Als Entwickler
+möchte ich dass abgestürzte Worker automatisch ersetzt werden
+damit ein einzelner Crash den Gesamtlauf nicht stoppt
+
+Akzeptanzkriterien:
+- [ ] Worker-Crash (Process.is_alive() == False) wird erkannt
+- [ ] Task des abgestürzten Workers als SUSPICIOUS markiert
+- [ ] Ersatz-Worker wird gestartet
+- [ ] Max 3 Neustarts pro Worker-Slot, dann PoolExhaustedError
+- [ ] Integration Test: Worker wird absichtlich gekillt, Recovery verifiziert
+```
+
+### US-09: Graceful Shutdown (#15)
+
+```
+Als Entwickler
+möchte ich bei Ctrl+C einen sauberen Shutdown
+damit bisher gesammelte Ergebnisse nicht verloren gehen
+
+Akzeptanzkriterien:
+- [ ] KeyboardInterrupt → Orchestrator.shutdown() aufgerufen
+- [ ] Alle Worker: Process.kill() + Process.join(timeout=5)
+- [ ] Queues geschlossen
+- [ ] Bisherige Ergebnisse in SQLite gespeichert
+- [ ] "Stopping..." + Zusammenfassung auf stdout
+```
+
+### US-10: PytestRunner (#17)
+
+```
+Als Entwickler
+möchte ich einen gekapselten PytestRunner
+damit Clean-Run, Stats-Run und Mutation-Run einheitlich ausgeführt werden
+
+Akzeptanzkriterien:
+- [ ] run_clean(): subprocess.run(['python', '-m', 'pytest']) → exit_code
+- [ ] run_stats(): {test_id: duration_seconds}
+- [ ] run_for_mutant(mutant_name, tests): setzt MUTANT_UNDER_TEST, gibt (exit_code, duration) zurück
+- [ ] Alle subprocess.run-Aufrufe ohne shell=True (Semgrep S603)
+```
+
+### US-11: Orchestrator (#18)
+
+```
+Als Entwickler
+möchte ich einen Orchestrator der die 3 Phasen koordiniert
+damit der gesamte Mutation-Testing-Ablauf automatisiert ist
+
+Akzeptanzkriterien:
+- [ ] Phase 1: Config → Clean Test → Mutants erzeugen → Stats → Forced Fail
+- [ ] Phase 2: Pool starten → Tasks dispatchen → Event-Consumer-Loop
+- [ ] Phase 3: Stats drucken → Exit-Code zurückgeben
+- [ ] Clean Test Failure → CleanTestFailureError
+- [ ] Integration Test: Orchestrator.run() auf kleinem Testprojekt
+```
+
+### US-12: CLI run-Befehl (#21)
+
+```
+Als User
+möchte ich `mutmut-win run` ausführen
+damit mein Python-Code auf Windows mutation-getestet wird
+
+Akzeptanzkriterien:
+- [ ] `mutmut-win run` startet vollständigen Lauf (Clean → Mutants → Stats → Mutations → Results)
+- [ ] --max-workers N setzt Anzahl Worker
+- [ ] --timeout-multiplier F setzt Timeout-Faktor
+- [ ] Exit 0: mindestens ein Mutant getötet
+- [ ] Exit 1: alle Mutanten überlebt
+- [ ] Exit 2: Fehler (Config, Clean Test, etc.)
+```
+
+### US-13: CLI results-Befehl (#22)
+
+```
+Als User
+möchte ich `mutmut-win results` sehen
+damit ich einen Überblick über den Mutationsstatus habe
+
+Akzeptanzkriterien:
+- [ ] Zeigt Tabelle: survived/killed/timeout/suspicious Zähler
+- [ ] --all zeigt auch getötete Mutanten
+- [ ] Ohne vorherigen Run: "No results found" mit Hinweis
+```
+
+### US-14: TUI Browser (#28)
+
+```
+Als User
+möchte ich `mutmut-win browse` nutzen
+damit ich Mutationsergebnisse interaktiv im Terminal explorieren kann
+
+Akzeptanzkriterien:
+- [ ] Textual TUI startet
+- [ ] Liste aller Mutanten mit Status-Filter
+- [ ] Diff-Ansicht für ausgewählten Mutant
+- [ ] --show-killed zeigt auch getötete Mutanten
+- [ ] ESC / q beendet den Browser
+```
+
+---
+
+## Änderungshistorie
+
+| Version | Datum | Autor | Änderung |
+|---------|-------|-------|----------|
+| 0.1.0 | 2026-03-29 | Claude Opus 4.6 | Initiales Backlog — 32 Issues, 6 Epics, 6 Sprints |

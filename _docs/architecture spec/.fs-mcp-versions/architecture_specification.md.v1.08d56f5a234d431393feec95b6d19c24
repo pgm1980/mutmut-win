@@ -1,0 +1,865 @@
+# Architecture Specification — mutmut-win
+
+**Version:** 0.1.0
+**Datum:** 2026-03-29
+**Status:** Approved
+**Basis:** Brainstorming-Ergebnis: `_docs/specs/2026-03-29-mutmut-win-design.md`
+
+---
+
+## 1. Systemübersicht
+
+**Kurzbeschreibung:** mutmut-win ist ein Windows-natives Mutation-Testing-Tool — ein eigenständiger Fork von mutmut 3.5.0, der die Unix-only APIs (`os.fork`, `resource.RLIMIT_CPU`, `signal.SIGXCPU`) durch Windows-kompatible Mechanismen ersetzt.
+
+**Architekturtyp:** Layered Architecture + Process-Orchestration Pattern (CLI Tool)
+
+### 1.1 Kontextdiagramm
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                         Systemkontext                              │
+│                                                                    │
+│  ┌──────────────┐    ┌─────────────────────────────────────────┐  │
+│  │  Developer   │───►│            mutmut-win CLI               │  │
+│  │  (Windows)   │    │   (mutmut-win run / results / browse)   │  │
+│  └──────────────┘    └──────────────────┬──────────────────────┘  │
+│                                         │                          │
+│              ┌──────────────────────────┼───────────────────┐     │
+│              ▼                          ▼                   ▼     │
+│  ┌───────────────────┐  ┌───────────────────────┐  ┌────────────┐ │
+│  │  pyproject.toml   │  │   Source Files        │  │  SQLite DB │ │
+│  │  [tool.mutmut]    │  │   (Python Code)       │  │  (Results) │ │
+│  └───────────────────┘  └───────────────────────┘  └────────────┘ │
+│                                         │                          │
+│                                         ▼                          │
+│                          ┌──────────────────────────┐             │
+│                          │  pytest (subprocess)     │             │
+│                          │  (N parallel Workers)    │             │
+│                          └──────────────────────────┘             │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 Qualitätsziele
+
+| Priorität | Ziel | Maßnahme | Metrik |
+|-----------|------|----------|--------|
+| 1 | Korrektheit | E2E-Snapshot-Tests aus mutmut als Gold-Standard | Alle 5 E2E-Projekte bestehen |
+| 2 | Windows-Kompatibilität | Nur Windows-native APIs, kein os.fork/RLIMIT_CPU | CI auf windows-latest, Python ≥3.11 |
+| 3 | Testbarkeit | Fokussierte Module, Dependency Injection | Coverage >80% gesamt, >90% process/ |
+| 4 | Wartbarkeit | Layered Architecture, import-linter Contracts | 0 Architekturverletzungen, Ruff 0, mypy strict 0 |
+| 5 | Performance | Worker-Pool für kontrollierten Parallelismus | N parallele pytest-Subprozesse |
+
+### 1.3 Technologie-Stack
+
+| Kategorie | Technologie | Version | Begründung |
+|-----------|-------------|---------|------------|
+| Runtime | Python | ≥3.11 (Dev: 3.14) | tomllib (stdlib 3.11+), match statements, PEP 750 |
+| Mutation Engine | libcst | ≥1.8.5 | CST-basierte Mutation — übernommen aus mutmut |
+| Config/Models | Pydantic | ≥2.0.0 | Validierung, Type Safety, model_validate() |
+| CLI | Click | ≥8.0.0 | Etabliert, kompatibel mit mutmut CLI-Struktur |
+| TUI | Textual | ≥1.0.0 | Result Browser — übernommen aus mutmut |
+| Testing | pytest + hypothesis + pytest-cov + pytest-benchmark | aktuell | Test-Pyramide + Property-Based Testing |
+| Linting | Ruff + mypy strict | aktuell | All-in-One Linter, Type Safety |
+| Architecture | import-linter | ≥2.1 | Schichtenregeln als ausführbare Contracts |
+| Mutation Test | mutmut | ≥3.2 | Meta-Test auf eigenen Code |
+| Security | Semgrep + pip-audit | aktuell | Static Analysis, Dependency Audit |
+| Process Coverage | coverage | ≥7.3.0 | Coverage-gesteuerte Mutation |
+| Process Title | setproctitle | ≥1.1.0 | Worker-Prozess-Beschriftung (kosmetisch) |
+
+---
+
+## 2. Architekturentscheidungen (ADRs)
+
+### ADR-001: Prozess-Strategie — Parallelismus auf Windows
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+mutmut 3.5.0 nutzt `os.fork()` um pro Mutant einen Kind-Prozess zu erzeugen. `os.fork()` existiert nicht auf Windows. Es wird eine Windows-kompatible Strategie für paralleles Mutation Testing benötigt.
+
+#### Optionen
+
+##### Option A: subprocess.Popen pro Mutant (aus Hauptprozess)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low |
+| Kosten (Entwicklung + Betrieb) | Niedrig (einfaches Modell) |
+| Skalierbarkeit | Medium (kein Parallelismus-Limit) |
+| Wartbarkeit | High (einfach zu verstehen) |
+| Ecosystem-Reife | High |
+
+**Vorteile:**
+- Einfachste mögliche Implementierung
+- Jeder Mutant völlig isoliert
+
+**Nachteile:**
+- N unkontrollierte Subprozesse ohne Backpressure
+- Hoher Overhead durch wiederholten Python-Interpreter-Start pro Subprozess
+- Kein Parallelismus-Limit → Ressourcen-Überlastung bei vielen Mutanten
+
+##### Option B: multiprocessing spawn + Worker-Pool (Queue-basiert)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Medium |
+| Kosten (Entwicklung + Betrieb) | Medium |
+| Skalierbarkeit | High (N Worker = kontrollierter Parallelismus) |
+| Wartbarkeit | High (fokussierte Module) |
+| Ecosystem-Reife | High (Python stdlib) |
+
+**Vorteile:**
+- Kontrollierter Parallelismus: max_workers Worker laufen gleichzeitig
+- Worker-Prozesse sind langlebig → Python-Interpreter-Startup amortisiert
+- Saubere IPC via Queues (keine Pipes pro Worker)
+- Timeout-Monitor kann Worker bei Deadline killen und ersetzen
+
+**Nachteile:**
+- Komplexere Initialisierung (Worker-Pool-Setup)
+- Worker-Crash erfordert Restart-Logik
+
+**Wichtige Einschränkung:** pytest kann nicht mehrfach via `pytest.main()` im selben Prozess aufgerufen werden (sys.modules-Pollution, Plugin-State-Akkumulation). Daher führt jeder Worker per Task einen `subprocess.run(['python', '-m', 'pytest', ...])`-Aufruf durch. Der Worker-Pool kontrolliert den Parallelismus und abstrahiert IPC — er amortisiert nicht den pytest-Startup-Overhead.
+
+##### Option C: concurrent.futures.ProcessPoolExecutor
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low |
+| Kosten | Niedrig |
+| Skalierbarkeit | High |
+| Wartbarkeit | Medium |
+| Ecosystem-Reife | High |
+
+**Vorteile:**
+- Einfache High-Level API
+- Kein manuelles Pool-Management
+
+**Nachteile:**
+- Weniger Kontrolle über Worker-Initialisierung
+- Schwierige Integration von Timeout-Monitor
+- Timeout-killed Worker schwerer zu ersetzen (Future-API)
+- Keine TaskStarted/TaskCompleted Events im selben Modell
+
+#### Trade-off-Analyse
+
+Option B gewinnt klar gegenüber A (unkontrollierter Parallelismus) und C (zu wenig Kontrolle für Event-basiertes Timeout-System). Der Worker-Pool bietet:
+1. Kontrollierten Parallelismus (Qualitätsziel Performance)
+2. Saubere Integration des Timeout-Monitors via event_queue
+3. Ersetzen abgestürzter/getimeouter Worker ohne Neustart des Gesamtprozesses
+
+#### Entscheidung
+
+Option B — multiprocessing spawn + Worker-Pool mit subprocess.run per Task.
+
+#### Konsequenzen
+
+- **Wird einfacher:** Parallelismus-Kontrolle, Timeout-Integration, Worker-Restart nach Crash
+- **Wird schwieriger:** Worker-Pool-Initialisierung, Graceful Shutdown muss alle Worker killen
+- **Muss revisited werden:** Ob pytest.main() mit modularem State-Reset doch nutzbar ist (Performance-Optimierung für spätere Version)
+
+#### Action Items
+
+- [ ] process/executor.py: SpawnPoolExecutor implementieren
+- [ ] process/worker.py: Worker-Loop mit subprocess.run implementieren
+- [ ] process/timeout.py: WallClockTimeoutMonitor implementieren
+- [ ] E2E-Test: Worker-Pool-Verhalten mit my_lib validieren
+
+---
+
+### ADR-002: Timeout-Strategie — Zeitlimit ohne resource.RLIMIT_CPU
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+mutmut nutzt `resource.setrlimit(RLIMIT_CPU)` um CPU-Zeit pro Fork-Kindprozess zu begrenzen. Das `resource`-Modul existiert nicht auf Windows. Mutationen die Endlosschleifen oder sehr langsame Tests erzeugen, müssen trotzdem terminiert werden.
+
+#### Optionen
+
+##### Option A: Kein Timeout
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low |
+| Kosten | Sehr niedrig |
+| Zuverlässigkeit | Unakzeptabel |
+| Wartbarkeit | — |
+| Ecosystem-Reife | — |
+
+**Nachteile:**
+- Eine Endlosschleifen-Mutation hängt den gesamten Lauf für immer auf
+- Nicht akzeptabel für ein produktives Tool
+
+##### Option B: Wall-Clock-Timeout via Monitor-Thread
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Medium |
+| Kosten | Niedrig |
+| Zuverlässigkeit | High |
+| Wartbarkeit | High |
+| Ecosystem-Reife | High (Python threading) |
+
+**Vorteile:**
+- Funktioniert auf allen Plattformen (Windows, Linux, macOS)
+- Monitor-Thread läuft im Hauptprozess, zentralisierte Kontrolle
+- Timeout-Überschreitung → `Process.kill()` + `TaskTimedOut`-Event → Ersatz-Worker
+- Konfigurierbar via `timeout_multiplier` in pyproject.toml
+
+**Nachteile:**
+- Wall-Clock ≠ CPU-Zeit (I/O-intensive Tests scheinen länger zu dauern)
+- Großzügiger Multiplikator nötig (Default: 10x) um False Positives zu vermeiden
+
+##### Option C: Windows Job Objects API
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | High |
+| Kosten | Hoch (ctypes/pywin32) |
+| Zuverlässigkeit | High |
+| Wartbarkeit | Low |
+| Ecosystem-Reife | Low (Windows-spezifische API) |
+
+**Vorteile:**
+- Echter CPU-Zeit-Limit (wie RLIMIT_CPU)
+
+**Nachteile:**
+- Erfordert pywin32 oder ctypes-Binding (Windows-only Dependency)
+- Spawned Subprozesse müssen manuell zum Job Object assigned werden
+- Python multiprocessing integriert nicht nativ mit Job Objects
+- Hohe Komplexität bei minimalem Mehrwert gegenüber Wall-Clock
+
+#### Trade-off-Analyse
+
+Option B ist die einzig sinnvolle Windows-native Alternative zu RLIMIT_CPU. Option C bietet zwar True-CPU-Zeit-Messung, aber zu hohe Implementierungskomplexität. Der großzügige Default-Multiplikator (10x) kompensiert Wall-Clock-Ungenauigkeiten ausreichend für einen Development-Workflow.
+
+**Timeout-Formel:**
+```
+timeout_seconds = max(30, (estimated_time_sum + 5) * timeout_multiplier)
+```
+- `estimated_time_sum`: Summe geschätzter Testlaufzeiten (aus Stats-Phase)
+- `timeout_multiplier`: Default 10.0, konfigurierbar via `[tool.mutmut]`
+- Minimum: 30 Sekunden
+
+#### Entscheidung
+
+Option B — Wall-Clock-Timeout via Monitor-Thread im Hauptprozess.
+
+#### Konsequenzen
+
+- **Wird einfacher:** Timeout-Implementierung (pures Python threading), keine C-Extension nötig
+- **Wird schwieriger:** Kalibrierung des Multiplikators für verschiedene Systeme
+- **Muss revisited werden:** Ob ein per-task threading.Timer (statt zentralem Monitor) ergonomischer ist
+
+#### Action Items
+
+- [ ] process/timeout.py: WallClockTimeoutMonitor-Thread implementieren
+- [ ] Timeout-Formel in config.py als computed_field integrieren
+- [ ] Integration: Monitor → event_queue → Orchestrator
+
+---
+
+### ADR-003: IPC-Architektur — Kommunikation zwischen Hauptprozess und Workern
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+Der Hauptprozess muss Tasks an Worker verteilen und Ergebnisse einsammeln. Der Timeout-Monitor muss Timeout-Events in den Ergebnisstrom einschleusen. Eine klare, typsichere IPC-Architektur ist erforderlich.
+
+#### Optionen
+
+##### Option A: Single Shared Queue (bidirektional, getaggt)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low |
+| Kosten | Niedrig |
+| Typsicherheit | Low |
+| Wartbarkeit | Medium |
+| Ecosystem-Reife | High |
+
+**Nachteile:**
+- Hauptprozess muss eigene gesendete Nachrichten herausfiltern
+- Timeout-Monitor und Worker schreiben in dieselbe Queue → Namespace-Kollision
+- Schwerer zu typisieren und zu testen
+
+##### Option B: Zwei-Queue-Architektur (task_queue + event_queue)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Medium |
+| Kosten | Niedrig |
+| Typsicherheit | High |
+| Wartbarkeit | High |
+| Ecosystem-Reife | High |
+
+**Vorteile:**
+- Klare Richtungsverträge: task_queue (→Worker), event_queue (→Hauptprozess)
+- Timeout-Monitor injiziert `TaskTimedOut` direkt in event_queue → Hauptprozess sieht alle Events in einem Stream
+- Alle Queue-Objekte sind Pydantic-Models → typsicher + picklebar
+- Einfacher Consumer-Loop im Hauptprozess: `for event in event_queue`
+
+**Nachteile:**
+- Zwei Queues zu verwalten (minimaler Mehraufwand)
+
+##### Option C: multiprocessing.Pipe pro Worker
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | High |
+| Kosten | Medium |
+| Typsicherheit | Low |
+| Wartbarkeit | Low |
+| Ecosystem-Reife | High |
+
+**Nachteile:**
+- N Pipes für N Worker → komplexes Fan-In im Hauptprozess
+- Kein gemeinsamer Timeout-Strom
+- Dynamische Pool-Änderungen (Worker-Restart) kompliziert
+
+#### Trade-off-Analyse
+
+Die Zwei-Queue-Architektur liefert den besten Trade-off: klare Verantwortlichkeiten, einfacher Consumer-Loop, elegante Timeout-Integration. Sie ist das Standardmuster für Worker-Pool-Kommunikation in Python.
+
+**Datentypen:**
+
+```
+task_queue: Queue[MutationTask]
+    MutationTask(mutant_name, tests, estimated_time, timeout_seconds)
+
+event_queue: Queue[TaskStarted | TaskCompleted | TaskTimedOut]
+    TaskStarted(mutant_name, worker_pid, timestamp)
+    TaskCompleted(mutant_name, worker_pid, exit_code, duration)
+    TaskTimedOut(mutant_name, worker_pid)  # vom Monitor injiziert
+```
+
+Alle Typen sind Pydantic BaseModel mit ausschließlich primitiven Feldern → pickle-kompatibel.
+
+#### Entscheidung
+
+Option B — Zwei-Queue-Architektur (task_queue + event_queue).
+
+#### Konsequenzen
+
+- **Wird einfacher:** Event-Consumer-Loop, Timeout-Integration, Typsicherheit
+- **Wird schwieriger:** Queue-Cleanup bei Graceful Shutdown muss beide Queues berücksichtigen
+- **Muss revisited werden:** Queue-Größe bei sehr vielen Mutanten (Memory-Druck)
+
+#### Action Items
+
+- [ ] models.py: MutationTask, TaskStarted, TaskCompleted, TaskTimedOut als Pydantic-Models
+- [ ] process/executor.py: task_queue + event_queue erzeugen und verwalten
+- [ ] orchestrator.py: Consumer-Loop über event_queue implementieren
+
+---
+
+### ADR-004: Modul-Architektur — Struktur des Quellcodes
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+mutmuts `__main__.py` ist ~1700 Zeilen. Als eigenständiger Fork kann mutmut-win frei refactoren. Die Frage ist, wie tief das Refactoring gehen soll.
+
+#### Optionen
+
+##### Option A: Minimaler Patch — Inline-Fixes in mutmuts Struktur
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low (initial) |
+| Kosten | Niedrig (anfangs) |
+| Testbarkeit | Low |
+| Wartbarkeit | Low |
+| Ecosystem-Reife | — |
+
+**Nachteile:**
+- Unix-Code und Windows-Code vermischt
+- 1700-Zeilen-Monolith untestbar
+- Keine klaren Modulgrenzen
+
+##### Option B: Clean-Room Rewrite — Fokussierte Module
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Medium |
+| Kosten | Medium |
+| Testbarkeit | High |
+| Wartbarkeit | High |
+| Ecosystem-Reife | — |
+
+**Vorteile:**
+- Jedes Modul hat eine klare Verantwortung und ist isoliert testbar
+- Mutation Engine (mutation.py, node_mutation.py, trampoline.py) bleibt 1:1 aus mutmut
+- Neue Windows-spezifische Logik in process/ klar abgegrenzt
+- import-linter kann Schichtenverletzungen erkennen
+
+#### Trade-off-Analyse
+
+Clean-Room Rewrite ist die einzig vertretbare Option für ein eigenständiges Fork-Projekt das Qualitätsziele (>80% Coverage, mypy strict) erfüllen soll. Option A ist kurzfristig einfacher, erzeugt aber schnell untragbare technische Schuld.
+
+#### Entscheidung
+
+Option B — Clean-Room Rewrite mit fokussierten Modulen.
+
+**Modulstruktur:**
+
+```
+src/mutmut_win/
+  __init__.py                  # Package Root, Windows-Check, Version
+  py.typed                     # PEP 561 Marker
+
+  # Domain (keine internen Abhängigkeiten)
+  config.py                    # MutmutWinConfig (Pydantic), config_reader
+  models.py                    # MutationTask, TaskStarted, TaskCompleted, TaskTimedOut
+  constants.py                 # status_by_exit_code, emoji_by_status
+
+  # Mutation Engine (1:1 aus mutmut 3.5.0)
+  mutation.py                  # mutate_file_contents, write_all_mutants_to_file
+  node_mutation.py             # Node-Level CST-Mutationen
+  trampoline.py                # Trampoline-Templates, mangle_function_name
+  code_coverage.py             # Coverage-Sammlung
+  type_checking.py             # Type-Checker-Integration
+
+  # Prozess-Steuerung (NEU — Kern des Refactorings)
+  process/
+    __init__.py
+    executor.py                # SpawnPoolExecutor — Worker-Pool-Management
+    timeout.py                 # WallClockTimeoutMonitor — Monitor-Thread
+    worker.py                  # Worker-Loop-Logik (subprocess.run pro Task)
+
+  # Test Runner
+  runner.py                    # PytestRunner — pytest-Ausführung kapseln
+
+  # Orchestrierung
+  orchestrator.py              # MutationOrchestrator — Phase 1+2+3
+
+  # CLI + UI
+  cli.py                       # Click CLI (run, results, show, apply, browse)
+  browser.py                   # TUI Result Browser (Textual)
+  result_browser_layout.tcss   # TUI Stylesheet
+```
+
+**Herkunft der Module:**
+
+| Modul | Herkunft | Änderungen |
+|-------|----------|------------|
+| mutation.py | mutmut file_mutation.py | encoding='utf-8' |
+| node_mutation.py | mutmut node_mutation.py | Keine |
+| trampoline.py | mutmut trampoline_templates.py | Keine |
+| code_coverage.py | mutmut code_coverage.py | encoding='utf-8' |
+| type_checking.py | mutmut type_checking.py | Keine |
+| browser.py | mutmut __main__.py (ResultBrowser) | Extrahiert, encoding='utf-8' |
+| config.py | **Neu** | Pydantic Model, neue Windows-Felder |
+| models.py | **Neu** | Queue-Datentypen |
+| constants.py | **Neu** | Windows-Exit-Code-Mapping |
+| process/ | **Neu** | Spawn-Pool, Timeout, Worker |
+| orchestrator.py | **Neu** | Extrahiert aus mutmut _run() |
+| runner.py | **Neu** | PytestRunner |
+| cli.py | **Neu** | Click CLI |
+
+#### Konsequenzen
+
+- **Wird einfacher:** Unit-Testing einzelner Komponenten, Verständlichkeit, Wartung
+- **Wird schwieriger:** Initiales Refactoring erfordert genaues Verständnis der mutmut-Logik
+- **Muss revisited werden:** Ob browser.py/TUI in einer späteren Version als separates Optional-Feature behandelt wird
+
+#### Action Items
+
+- [ ] Paketstruktur in Sprint 1 anlegen
+- [ ] Mutation Engine 1:1 aus mutmut 3.5.0 kopieren, encoding-Fixes anwenden
+- [ ] import-linter Contracts in pyproject.toml definieren
+- [ ] `__init__.py`: Windows-Check (`sys.platform != 'win32'` → ImportError)
+
+---
+
+### ADR-005: Konfigurationssystem — Validierung und Typsicherheit
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+mutmut nutzt eine dataclass ohne Validierung. mutmut-win führt neue Windows-spezifische Felder ein (`max_workers`, `timeout_multiplier`) und muss Konfigurationsfehler beim Start erkennen (Fail-Fast).
+
+#### Optionen
+
+##### Option A: dataclass (wie mutmut)
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low |
+| Validierung | Keine |
+| Wartbarkeit | Low |
+| Type Safety | Medium |
+
+**Nachteile:**
+- Keine automatische Validierung
+- Manuelle Typ-Konvertierung aus TOML-Dict
+- Keine klaren Fehlermeldungen bei ungültiger Config
+
+##### Option B: Pydantic v2 BaseModel
+
+| Dimension | Bewertung |
+|-----------|-----------|
+| Komplexität | Low-Medium |
+| Validierung | Vollständig |
+| Wartbarkeit | High |
+| Type Safety | High |
+
+**Vorteile:**
+- `model_validate(toml_dict)` für direktes Laden aus pyproject.toml
+- `Field(ge=1, default=4)` für nummerische Constraints
+- Klare `ValidationError`-Nachrichten beim Start
+- `model_json_schema()` für Dokumentation
+- CLAUDE.md mandatiert Pydantic für alle Datenstrukturen
+
+#### Entscheidung
+
+Option B — Pydantic v2 BaseModel. Mandatiert durch CLAUDE.md, klar die bessere technische Wahl.
+
+**Konfigurationsfelder:**
+
+| Feld | Typ | Default | Validierung |
+|------|-----|---------|-------------|
+| paths_to_mutate | list[str] | ["src/"] | min_length=1 |
+| do_not_mutate | list[str] | [] | — |
+| also_copy | list[str] | [] | — |
+| test_command | str | "python -m pytest" | min_length=1 |
+| runner | Literal["pytest"] | "pytest" | — |
+| max_workers | int | cpu_count() ÷ 2 | ge=1 |
+| timeout_multiplier | float | 10.0 | ge=1.0 |
+| use_coverage | bool | False | — |
+| pre_mutation_coverage | bool | False | — |
+| coverage_data_file | str \| None | None | — |
+| tests_dir | str | "tests" | — |
+
+#### Konsequenzen
+
+- **Wird einfacher:** Konfigurationsvalidierung, Fehlermeldungen, Typsicherheit
+- **Wird schwieriger:** Nichts (Pydantic ist bereits im Dependency-Set)
+- **Muss revisited werden:** Ob `test_command` für nicht-pytest Runner erweitert wird (v2)
+
+#### Action Items
+
+- [ ] config.py: MutmutWinConfig als Pydantic-Model implementieren
+- [ ] config_reader(): pyproject.toml laden, [tool.mutmut]-Sektion extrahieren, model_validate()
+- [ ] Fehlerbehandlung: ValidationError → klare Fehlermeldung + sys.exit(1)
+
+---
+
+### ADR-006: Testing-Strategie — Korrektheitsnachweise auf Windows
+
+**Status:** Accepted
+**Datum:** 2026-03-29
+
+#### Kontext
+
+Mutation-Testing-Tools sind schwer zu testen: korrekte Mutations-Ergebnisse für Python-Konstrukte sind nicht trivial selbst zu definieren. Gleichzeitig müssen wir nachweisen, dass mutmut-win auf Windows dieselben Ergebnisse liefert wie mutmut auf Unix.
+
+#### Optionen
+
+##### Option A: Tests vollständig neu schreiben
+
+**Nachteile:**
+- Wir müssen korrekte Mutations-Ergebnisse unabhängig von mutmut definieren
+- Hohe Fehlerwahrscheinlichkeit bei ~65+ Mutanten in my_lib allein
+- Kein extern validierter Gold-Standard
+
+##### Option B: mutmut E2E-Testprojekte als Gold-Standard übernehmen
+
+**Vorteile:**
+- 5 verifizierte Testprojekte von mutmut 3.5.0 mit exakten Exit-Codes pro Mutant
+- Plattformunabhängige pytest-Exit-Codes (außer Segfault)
+- Sofort erkennbar wenn Windows-Implementierung divergiert
+- Deckt alle Mutations-Operatoren, async, Klassen, Coverage, Type-Checking ab
+
+| E2E-Projekt | Mutanten | Testet |
+|-------------|----------|--------|
+| my_lib | ~65 | Kern-Mutationen, async, Klassen, Segfault, Signatures |
+| config | ~12 | Config-Features, paths_to_mutate, do_not_mutate, also_copy |
+| mutate_only_covered_lines | ~32 | Coverage-gesteuertes Mutieren |
+| type_checking | ~11 | Type-Checker-Integration |
+| py3_14_features | ~4 | Python 3.14 Features |
+
+#### Entscheidung
+
+Option B — mutmut E2E-Testprojekte als Gold-Standard + Test-Pyramide.
+
+**Test-Pyramide:**
+- **Unit Tests (~70%)**: Isoliert, gemockt, schnell — config, models, executor, timeout, worker, orchestrator
+- **Integration Tests (~20%)**: Echte Prozesse, kleines Testprojekt — `@pytest.mark.integration`
+- **E2E Tests (~10%)**: CLI-Befehle auf übernommenen Testprojekten, Snapshot-Vergleich — `@pytest.mark.slow`
+
+**hypothesis-Properties:**
+- Config: Beliebige Werte → valid oder ValidationError (nie Exception)
+- MutationTask: pickle-Roundtrip
+- Exit-Code-Mapping: Alle int → immer ein Status-String
+- Timeout-Formel: Positive estimated_time → timeout > estimated_time
+- Name-Mangling: mangle → demangle Roundtrip
+
+**Besonderheiten:**
+- Segfault-Mutant (`ctypes.string_at(0)`): Windows-Exit-Code abweichend (nicht -11/SIGSEGV) → separater erwarteter Wert oder `@pytest.mark.skip` mit Begründung
+- Snapshot-Tests: Direkte Dict-Vergleiche ohne `inline_snapshot`-Dependency
+
+#### Konsequenzen
+
+- **Wird einfacher:** Korrektheitsnachweise, Regressionsschutz bei Änderungen
+- **Wird schwieriger:** E2E-Tests laufen langsam (echte pytest-Läufe auf Mutations)
+- **Muss revisited werden:** py3_14_features wenn libcst Python 3.14 vollständig unterstützt
+
+#### Action Items
+
+- [ ] tests/e2e/: 5 mutmut-Testprojekte übernehmen
+- [ ] Snapshot-Dateien für alle 5 Projekte anlegen
+- [ ] Segfault-Mutant: Erwarteten Windows-Exit-Code ermitteln
+- [ ] pytest.ini: `integration`, `slow` Marker konfigurieren
+
+---
+
+## 3. Komponentenstruktur
+
+### 3.1 Schichtenübersicht
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   CLI / Presentation                         │  ← cli.py, browser.py
+├─────────────────────────────────────────────────────────────┤
+│                   Orchestration / Application                │  ← orchestrator.py
+├─────────────────────────────────────────────────────────────┤
+│         Process Management   │   Test Runner                 │  ← process/, runner.py
+├─────────────────────────────────────────────────────────────┤
+│                   Mutation Engine                            │  ← mutation.py, node_mutation.py,
+│                                                             │     trampoline.py
+├─────────────────────────────────────────────────────────────┤
+│    config.py   │   models.py   │   constants.py              │  ← Domain (keine internen Deps)
+└─────────────────────────────────────────────────────────────┘
+│                   Infrastructure                             │  ← code_coverage.py, type_checking.py
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 CLI / Presentation Layer
+
+**Verantwortung:** Benutzerschnittstelle, Argument-Parsing, Ausgabe-Formatierung.
+**Enthält:** `cli.py` (Click-Commands: run, results, show, apply, browse), `browser.py` (Textual TUI), `result_browser_layout.tcss`
+**Abhängigkeiten:** Orchestration Layer, Domain Layer
+
+### 3.3 Orchestration / Application Layer
+
+**Verantwortung:** Koordination der drei Phasen (Vorbereitung, Mutation Testing, Ergebnisse). Sequentieller Ablauf und Event-Consumer-Loop.
+**Enthält:** `orchestrator.py` (MutationOrchestrator: Phase 1 + Phase 2 + Phase 3)
+**Abhängigkeiten:** Process Management, Mutation Engine, Runner, Domain Layer
+
+### 3.4 Process Management Layer
+
+**Verantwortung:** Worker-Pool-Lifecycle, IPC (Queues), Wall-Clock-Timeout-Monitor.
+**Enthält:** `process/executor.py` (SpawnPoolExecutor), `process/worker.py` (Worker-Loop), `process/timeout.py` (WallClockTimeoutMonitor)
+**Abhängigkeiten:** Domain Layer (models.py, config.py, constants.py)
+
+### 3.5 Mutation Engine Layer
+
+**Verantwortung:** CST-basierte Mutation der Python-Quellcode-Dateien (aus mutmut 3.5.0).
+**Enthält:** `mutation.py`, `node_mutation.py`, `trampoline.py`
+**Abhängigkeiten:** libcst (extern), Domain Layer (config.py)
+
+### 3.6 Infrastructure Layer
+
+**Verantwortung:** Integration externer Tools (Coverage, Type Checker).
+**Enthält:** `runner.py` (PytestRunner), `code_coverage.py`, `type_checking.py`
+**Abhängigkeiten:** Domain Layer
+
+### 3.7 Domain Layer
+
+**Verantwortung:** Datenmodelle, Konfiguration, Konstanten — keine Abhängigkeiten zu anderen internen Schichten.
+**Enthält:** `config.py`, `models.py`, `constants.py`
+**Abhängigkeiten:** Nur externe Libraries (Pydantic, Python stdlib)
+
+---
+
+## 4. Abhängigkeitsregeln
+
+```
+CLI/Presentation
+      │
+      ▼
+ Orchestration ──────────────────────────────────┐
+      │                                           │
+      ▼                                           ▼
+ Process Management ◄──── Domain Layer ───► Infrastructure
+      │                      ▲                    │
+      │                      │                    │
+      ▼                      │                    │
+ Mutation Engine ────────────┘◄──────────────────┘
+```
+
+| Von | Darf zugreifen auf | Darf NICHT zugreifen auf |
+|-----|-------------------|-------------------------|
+| CLI / Presentation | Orchestration, Domain | Process Management (direkt), Mutation Engine |
+| Orchestration | Process Management, Mutation Engine, Infrastructure, Domain | — |
+| Process Management | Domain | Orchestration, CLI, Mutation Engine, Infrastructure |
+| Mutation Engine | Domain (config.py), libcst | Process Management, Orchestration, CLI |
+| Infrastructure | Domain | Process Management, Orchestration, CLI |
+| Domain | Nichts intern | Alle anderen Schichten |
+
+**Durchsetzung via import-linter:**
+
+```ini
+[importlinter]
+root_packages = mutmut_win
+
+[importlinter:contract:domain-independence]
+name = Domain Layer darf keine internen Abhängigkeiten haben
+type = forbidden
+source_modules = mutmut_win.config, mutmut_win.models, mutmut_win.constants
+forbidden_modules = mutmut_win.process, mutmut_win.orchestrator, mutmut_win.cli, mutmut_win.browser, mutmut_win.runner
+
+[importlinter:contract:process-independence]
+name = Process Management darf nicht auf Orchestration oder CLI zugreifen
+type = forbidden
+source_modules = mutmut_win.process
+forbidden_modules = mutmut_win.orchestrator, mutmut_win.cli, mutmut_win.browser
+
+[importlinter:contract:mutation-engine-independence]
+name = Mutation Engine darf nicht auf Process oder Orchestration zugreifen
+type = forbidden
+source_modules = mutmut_win.mutation, mutmut_win.node_mutation, mutmut_win.trampoline
+forbidden_modules = mutmut_win.process, mutmut_win.orchestrator, mutmut_win.cli, mutmut_win.browser
+```
+
+---
+
+## 5. Querschnittsthemen
+
+### 5.1 Fehlerbehandlung
+
+**Strategie:** Exception-Hierarchie mit spezifischen Exception-Typen. Fail-Fast bei Konfigurationsfehlern.
+
+| Fehlertyp | Handling | Beispiel |
+|-----------|----------|----------|
+| Config-Fehler | Sofort sys.exit(1) mit klarer Meldung | Ungültige pyproject.toml-Sektion |
+| Worker-Crash | Task als "suspicious" markieren, Ersatz-Worker starten | Worker stirbt unerwartet |
+| Worker-Timeout | Process.kill() → TaskTimedOut → Ersatz-Worker | Endlosschleifen-Mutation |
+| pytest-Init-Failure | Max 3 Neustarts pro Worker-Slot, dann Abbruch | pytest nicht installiert |
+| KeyboardInterrupt | Graceful Shutdown: alle Worker killen, Teilergebnisse speichern | Ctrl+C |
+| Unerwartete Fehler | Logging + Graceful Degradation | Unbekannte Ausnahme im Orchestrator |
+
+**Graceful Shutdown:**
+```
+KeyboardInterrupt
+  → Orchestrator.shutdown()
+    → Alle Worker: Process.kill()
+    → Alle Worker: Process.join(timeout=5)
+    → Queues schließen
+    → Bisherige Ergebnisse speichern
+    → "Stopping..." + Zusammenfassung
+```
+
+### 5.2 Logging
+
+**Framework:** Python stdlib `logging`
+**Strategie:** Strukturiertes Logging, Level via `--verbose` CLI-Flag steuerbar.
+
+| Level | Verwendung |
+|-------|-----------|
+| ERROR | Unerwartete Fehler, Worker-Crashes, Config-Fehler |
+| WARN | Worker-Timeout, Suspicious-Mutant, Retry-Ereignisse |
+| INFO | Phase-Start/Stop, Mutant-Ergebnisse, Zusammenfassung |
+| DEBUG | Task-Dispatch, Worker-Events, Timeout-Monitor-Aktivität |
+
+### 5.3 Konfiguration
+
+**Strategie:** `[tool.mutmut]` in `pyproject.toml` — kompatibel mit mutmut. Geladen via tomllib (Python 3.11+ stdlib), validiert via Pydantic v2.
+
+**Hierarchie:** CLI-Flags > pyproject.toml > Defaults
+
+### 5.4 Security
+
+**Strategie:** mutmut-win führt keinen Code aus, den der User nicht selbst bereitgestellt hat. Die Hauptangriffsvektoren sind:
+1. Mutation Engine schreibt temporäre Python-Dateien: Nur in User-eigene Source-Directories
+2. pytest-Subprozesse führen User-Tests aus: Mit User-Berechtigungen, keine Privilege Escalation
+3. pickle via multiprocessing.Queue: Nur intern, keine Deserialisierung aus Netzwerkquellen
+
+---
+
+## 6. Deployment
+
+### 6.1 Deployment-Modell
+
+**Typ:** Python Package (wheel + sdist), installiert via pip/uv, CLI-Entry-Point `mutmut-win`.
+
+**Windows-Check in `__init__.py`:**
+```python
+import sys
+if sys.platform != 'win32':
+    raise ImportError(
+        "mutmut-win is Windows-only. "
+        "Use 'mutmut' (https://github.com/boxed/mutmut) on Unix/Linux/macOS."
+    )
+```
+
+### 6.2 Plattform-Support
+
+| Plattform | Support-Level | Besonderheiten |
+|-----------|--------------|----------------|
+| Windows 10/11 (64-bit) | Primär | CI-verifiziert, vollständige Unterstützung |
+| Linux | Explizit NICHT unterstützt | ImportError mit Hinweis auf mutmut |
+| macOS | Explizit NICHT unterstützt | ImportError mit Hinweis auf mutmut |
+
+### 6.3 Build & Distribution
+
+```bash
+# Entwicklungsumgebung
+uv sync
+
+# Tests
+uv run pytest
+uv run pytest tests/unit/
+uv run pytest tests/integration/ -m integration
+uv run pytest tests/e2e/ -m slow
+
+# Qualitätschecks
+uv run ruff check .
+uv run mypy src/
+uv run lint-imports
+
+# Build
+uv build
+
+# Publish
+uv publish
+```
+
+**Python-Versionsmatrix:**
+- Python 3.11 (tomllib, match)
+- Python 3.12 (Development)
+- Python 3.13 (Development)
+- Python 3.14 (Primäre Dev-Version, CLAUDE.md)
+
+---
+
+## 7. Risiken und technische Schulden
+
+| # | Risiko / Schuld | Impact | Mitigation | Status |
+|---|----------------|--------|------------|--------|
+| 1 | pytest.main() nicht wiederholbar im selben Prozess | High | Worker nutzt subprocess.run pro Task (bereits in ADR-001 berücksichtigt) | Mitigiert |
+| 2 | Segfault-Mutant hat anderen Exit-Code auf Windows | Medium | Separater erwarteter Wert in E2E-Snapshot oder Skip mit Begründung | Open |
+| 3 | libcst unterstützt Python 3.14 unvollständig | Medium | py3_14_features E2E-Test als Frühwarnung; ggf. Skip einzelner Mutanten | Open |
+| 4 | Wall-Clock-Timeout False Positives auf langsamen CI-Rechnern | Medium | Großzügiger Default-Multiplikator (10x); in CI erhöhbar via Config | Mitigiert |
+| 5 | Windows Antivirus verlangsamt Prozess-Spawning | Low | Dokumentation: AV-Ausnahme für Projektverzeichnis empfohlen | Open |
+| 6 | mutmut DB-Format-Änderung in künftigen mutmut-Versionen | Low | mutmut-win forkt 3.5.0; DB-Schema intern dokumentiert | Open |
+| 7 | Worker-Prozesse bleiben nach Hauptprozess-Crash | Low | atexit-Handler + Windows Job Object (optional v2) | Open |
+| 8 | setproctitle auf Windows nur kosmetisch | Info | Dokumentiert; kein funktionaler Impact | Mitigiert |
+
+---
+
+## Änderungshistorie
+
+| Version | Datum | Autor | Änderung |
+|---------|-------|-------|----------|
+| 0.1.0 | 2026-03-29 | Claude Sonnet 4.6 | Initiale Version — Sprint 0 Phase 2 |

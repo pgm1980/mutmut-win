@@ -1,14 +1,14 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v1.0.6
+**Version:** v1.0.7
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 ---
 
 ## Voraussetzungen
 
-- Python >= 3.12
+- Python >= 3.14
 - Windows 10/11
 - uv als Package Manager
 - pyproject.toml vorhanden
@@ -19,7 +19,7 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.6" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v1.0.7" --dev
 ```
 
 Verifikation:
@@ -66,12 +66,12 @@ Folgende Einträge in der CLAUDE.md des Projekts ergänzen, sofern noch nicht vo
 ### Unter PROJEKT-STANDARDS (Subagent-Prompt-Standard):
 ```
 - mutmut-win Mutation Testing auf JEDEN neuen/geänderten Code (`uv run mutmut-win run --paths-to-mutate <geänderte Module>`)
-- Mutation Score ≥ 80% auf neuem Code — surviving Mutants dokumentieren wenn unter 80%
+- Mutation Score ≥ 97% auf neuem Code — surviving Mutants dokumentieren wenn unter 80%
 ```
 
 ### Unter Verifikation nach Subagent-Rückkehr:
 ```
-- [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80%?
+- [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 97%?
 ```
 
 ### Unter Commands-Tabelle:
@@ -82,7 +82,7 @@ Folgende Einträge in der CLAUDE.md des Projekts ergänzen, sofern noch nicht vo
 
 ### Unter Definition of Done (pro Sprint):
 ```
-- [ ] Mutation Testing auf neuem/geändertem Code (`uv run mutmut-win run --paths-to-mutate <Module>`) — Score ≥ 80%
+- [ ] Mutation Testing auf neuem/geändertem Code (`uv run mutmut-win run --paths-to-mutate <Module>`) — Score ≥ 97%
 ```
 
 ## Schritt 5: Erster richtiger Mutations-Lauf
@@ -101,7 +101,7 @@ uv run mutmut-win results
 ## Wichtige Hinweise
 
 - **mutmut-win MUSS als dev-Dependency installiert bleiben.** Nicht entfernen. `uv run mutmut-win` nutzt `sys.executable` aus dem Projekt-venv.
-- **Wiederholte Läufe:** v1.0.6 aktualisiert geänderte Dateien automatisch (mtime-Vergleich). Bei Problemen: `uv run mutmut-win run --force` für einen sauberen Neulauf.
+- **Wiederholte Läufe:** v1.0.7 aktualisiert geänderte Dateien automatisch (mtime-Vergleich). Bei Problemen: `uv run mutmut-win run --force` für einen sauberen Neulauf.
 - **Editable Installs (.pth):** Bei editierbaren Installationen (`uv pip install -e .`) kann die `.pth`-Datei in `site-packages/` die Trampoline-Mechanik überschatten. Workaround: `.pth`-Datei temporär umbenennen vor dem Lauf.
 
 ## Nützliche CLI-Flags

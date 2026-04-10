@@ -1,0 +1,46 @@
+# Sprint State
+
+## Aktueller Sprint: Sprint 0
+
+**Status**: Done
+**Gestartet**: 2026-03-29
+**Abgeschlossen**: 2026-03-29
+**Ziel**: Architektur & Softwaredesign
+
+---
+
+## Phasen
+
+| Phase | Status | Ergebnis |
+|-------|--------|----------|
+| Phase 1: Brainstorming & Innovation | ✅ Done | `_docs/specs/2026-03-29-mutmut-win-design.md` |
+| Phase 2: Architektur (ADRs) | ✅ Done | `_docs/architecture spec/architecture_specification.md` |
+| Phase 3: Softwaredesign (FRs/NFRs) | ✅ Done | `_docs/design spec/software_design_specification.md` |
+
+---
+
+## Definition of Done — Sprint 0
+
+- [x] Brainstorming abgeschlossen, Innovationen dokumentiert
+- [x] `architecture_specification.md` liegt vor mit allen ADRs (6 ADRs)
+- [x] `software_design_specification.md` liegt vor mit allen FRs und NFRs
+- [ ] Architektur und Design mit User abgestimmt
+
+---
+
+## Kontext
+
+- **Projekt**: mutmut-win — Windows-Port von mutmut 3.5.0
+- **ADRs**: ADR-001 (Spawn+Pool), ADR-002 (Wall-Clock-Timeout), ADR-003 (Zwei-Queue),
+             ADR-004 (Clean-Room Rewrite), ADR-005 (Pydantic Config), ADR-006 (E2E-Tests)
+- **Key Insight**: Trampoline-Mechanismus ermöglicht echten Parallelismus ohne Datei-Konflikte
+- **Nächster Schritt**: User-Review der Dokumente, dann Product Backlog anlegen
+
+---
+
+## Nächster Sprint: Product Backlog
+
+Nach User-Review von Sprint 0 Dokumenten:
+- DoD definieren
+- Epics, Features, User Stories mit Acceptance Criteria
+- Template: `_docs/templates/product backlog/product_backlog.md`
