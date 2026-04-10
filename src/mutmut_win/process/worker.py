@@ -50,6 +50,12 @@ def worker_main(
     if isinstance(raw_extra, list):
         pytest_extra_args = [str(a) for a in raw_extra]
 
+    # Per-mutant timeout: generous default (60s), prevents hung pytest processes
+    # (e.g. pytest-asyncio event loop corruption) from blocking the pool forever.
+    raw_timeout = config_data.get("timeout_multiplier", 30.0)
+    timeout_val = float(raw_timeout) if isinstance(raw_timeout, (int, float)) else 60.0
+    worker_timeout = max(60.0, timeout_val)
+
     while True:
         raw_item = task_queue.get()
         if raw_item is None:
@@ -113,8 +119,13 @@ def worker_main(
                 capture_output=True,
                 encoding="utf-8",
                 cwd="mutants",
+                timeout=worker_timeout,
             )
             exit_code = result.returncode
+        except subprocess.TimeoutExpired:
+            # Hung pytest process (e.g. pytest-asyncio event loop corruption).
+            # Report as timeout (exit code 36) so the orchestrator can continue.
+            exit_code = 36  # timeout
         except OSError as exc:
             # WinError 206 / ENAMETOOLONG: command line too long even with @file.
             # Report as suspicious (exit code 35) so the orchestrator doesn't crash.
