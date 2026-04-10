@@ -251,9 +251,14 @@ class PytestRunner:
         Sets ``PYTHONPATH`` so the subprocess can import source modules from
         ``mutants/src``, ``mutants/source``, or ``mutants/.``.
 
-        Also disables editable ``.pth`` files by setting
-        ``PYTHONNOUSERSITE=1`` and injecting a ``sitecustomize.py`` that
-        removes the real ``src/`` from ``sys.path`` at startup.
+        Also disables editable ``.pth`` files by injecting a
+        ``sitecustomize.py`` that removes the real ``src/`` from
+        ``sys.path`` at startup.
+
+        Prevents ``uv`` from auto-creating a ``.venv`` inside ``mutants/``
+        by setting ``UV_PROJECT_ENVIRONMENT`` to the parent venv.  Without
+        this, ``uv`` detects the copied ``pyproject.toml`` in ``mutants/``
+        and creates an empty ``.venv`` that shadows the parent interpreter.
 
         Returns:
             Copy of ``os.environ`` with ``PYTHONPATH`` adjusted.
@@ -271,6 +276,13 @@ class PytestRunner:
         if extra_paths:
             existing = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+
+        # Prevent uv from auto-creating a .venv in mutants/.
+        # uv detects the copied pyproject.toml and would create an empty
+        # venv that shadows the parent interpreter.  UV_PROJECT_ENVIRONMENT
+        # tells uv to use the parent venv instead of creating a new one.
+        parent_venv = Path(sys.executable).resolve().parent.parent
+        env["UV_PROJECT_ENVIRONMENT"] = str(parent_venv)
 
         # Disable .pth files from editable installs that shadow mutants/src/.
         # Write a sitecustomize.py into mutants/ that removes the real src/
