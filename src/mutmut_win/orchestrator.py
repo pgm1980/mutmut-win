@@ -626,6 +626,7 @@ def _update_summary_and_persist(
     if isinstance(event, TaskStarted):
         return False
 
+    last_output: str | None = None
     if isinstance(event, TaskTimedOut):
         mutant_name = event.mutant_name
         status = status_by_exit_code[EXIT_CODE_TIMEOUT]
@@ -636,6 +637,7 @@ def _update_summary_and_persist(
         exit_code = event.exit_code
         duration = event.duration
         status = status_by_exit_code[exit_code]
+        last_output = event.last_output
     else:
         return False
 
@@ -643,7 +645,7 @@ def _update_summary_and_persist(
     _increment_summary(summary, status)
 
     # Persist to SQLite.
-    save_result(db_path, mutant_name, status, exit_code, duration)
+    save_result(db_path, mutant_name, status, exit_code, duration, last_output)
 
     # Update in-memory SourceFileMutationData.
     _update_source_data(mutant_name, exit_code, duration, source_data_by_file)

@@ -88,6 +88,10 @@ class MutationResult(BaseModel):
     status: str = Field(description="survived, killed, timeout, suspicious, etc.")
     exit_code: int | None = None
     duration: float | None = Field(default=None, ge=0.0)
+    last_output: str | None = Field(
+        default=None,
+        description="Last pytest output lines (captured on timeout/suspicious exit codes)",
+    )
 
 
 class SourceFileMutationData(BaseModel):
