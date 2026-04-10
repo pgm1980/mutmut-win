@@ -179,7 +179,7 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
         "pyproject.toml",
         "pytest.ini",
         ".gitignore",
-    ] + [str(p) for p in project_dir.glob("test*.py")]
+    ] + [str(p.relative_to(project_dir)) for p in project_dir.glob("test*.py")]
     return config.model_copy(update={"also_copy": config.also_copy + default_also_copy})
 
 

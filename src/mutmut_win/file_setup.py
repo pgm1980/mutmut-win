@@ -193,6 +193,14 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     for path_str in config.also_copy:
         print("     also copying", path_str)
         path = Path(path_str)
+        # Guard: absolute paths break Path("mutants") / path because Python
+        # discards the left operand when the right is absolute, causing a
+        # self-copy (source == destination).  Make them relative to CWD.
+        if path.is_absolute():
+            try:
+                path = path.relative_to(Path.cwd())
+            except ValueError:
+                continue  # Path outside the project — skip
         destination = Path("mutants") / path
         if not path.exists():
             continue
