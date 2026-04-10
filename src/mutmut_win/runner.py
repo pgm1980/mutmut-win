@@ -96,81 +96,55 @@ class PytestRunner:
     def run_stats(self) -> None:
         """Run pytest as subprocess with MUTANT_UNDER_TEST=stats to collect timing data.
 
-        Runs each test individually to measure duration.  The trampoline
-        records which mangled function names are called by each test into
-        ``_state.tests_by_mangled_function_name``.
+        Injects a pytest plugin (``_mutmut_stats_plugin.py``) into
+        ``mutants/`` that captures per-test trampoline hits and durations.
+        The plugin writes the mapping to ``mutants/mutmut-stats.json``
+        at session end, which the parent reads after the subprocess exits.
 
         Uses subprocess instead of in-process ``pytest.main()`` to avoid
         hangs caused by pytest-asyncio, hypothesis, or other plugins that
-        don't clean up properly in embedded pytest runs (Bug 1).
+        don't clean up properly in embedded pytest runs.
         """
         import os
 
         from mutmut_win import _state
+        from mutmut_win.stats import load_stats
 
         _state._reset_globals()
 
-        # Step 1: Collect all test node IDs via --collect-only
-        cmd = [*self._base_pytest_cmd(), "--collect-only", "-q"]
+        env = self._mutants_env()
+        env[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
+        env["PY_IGNORE_IMPORTMISMATCH"] = "1"
+
+        # Inject the stats-collection pytest plugin into mutants/.
+        mutants_abs = Path("mutants").absolute()
+        self._write_stats_plugin(mutants_abs)
+
+        # Run all tests with the stats plugin active.
+        cmd = [*self._base_pytest_cmd(), "-p", "_mutmut_stats_plugin", "--tb=no", "-q"]
         cmd.extend(self._config.pytest_add_cli_args)
         if self._config.tests_dir:
             cmd.extend(self._config.tests_dir)
 
-        env = self._mutants_env()
-        env[MUTANT_ENV_VAR] = ""
-
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd, capture_output=True, encoding="utf-8", cwd="mutants", env=env,
         )
-        test_ids: list[str] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if "::" in line and not line.startswith(("=", "-", " ")):
-                test_ids.append(line)
 
-        if not test_ids:
-            return
-
-        # Step 2: Run each test individually with MUTANT_UNDER_TEST=stats
-        # to measure duration. The trampoline records hits to _state._stats
-        # which we can't capture from subprocess — so we use --durations output.
-        env[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
-        env["PY_IGNORE_IMPORTMISMATCH"] = "1"
-
-        cmd_base = [*self._base_pytest_cmd(), "--tb=no", "-q"]
-        cmd_base.extend(self._config.pytest_add_cli_args)
-        if self._config.tests_dir:
-            cmd_base.extend(self._config.tests_dir)
-
-        # Run all tests at once to get durations (not one-by-one — too slow)
-        result = subprocess.run(  # noqa: S603
-            cmd_base, capture_output=True, encoding="utf-8", cwd="mutants", env=env,
-        )
-
-        # Parse durations from pytest output
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if "::" in line and ("PASSED" in line or "FAILED" in line):
-                # Extract test ID (everything before PASSED/FAILED)
-                parts = line.split()
-                if parts:
-                    test_id = parts[0]
-                    _state.duration_by_test[test_id] = 0.1  # default ~100ms
-
-        # If trampoline hits can't be collected from subprocess (no shared state),
-        # fall back to mapping ALL tests to ALL mutants. This is less efficient
-        # but correct — every mutant runs against the full test suite.
-        # The trampoline hit optimization is a performance optimization, not
-        # a correctness requirement.
         os.environ[MUTANT_ENV_VAR] = ""
 
         exit_code = result.returncode
         if exit_code != 0:
             print(f"Warning: stats collection returned exit code {exit_code}")
 
-        # Verify we got some test-to-mutant mappings.
-        num_mapped = sum(len(t) for t in _state.tests_by_mangled_function_name.values())
-        if num_mapped == 0:
+        # Read the JSON file written by the plugin in the subprocess.
+        stats = load_stats(mutants_abs)
+        if stats is not None:
+            _state.tests_by_mangled_function_name.update(stats.tests_by_mangled_function_name)
+            _state.duration_by_test.update(stats.duration_by_test)
+            num_mapped = sum(len(t) for t in _state.tests_by_mangled_function_name.values())
+            num_tests = len(_state.duration_by_test)
+            print(f"Collected {num_mapped} test-to-mutant mappings across {num_tests} tests.")
+        else:
             print(
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
             )
@@ -290,6 +264,67 @@ class PytestRunner:
         self._write_sitecustomize_pth_blocker(mutants_abs)
 
         return env
+
+    @staticmethod
+    def _write_stats_plugin(mutants_abs: Path) -> None:
+        """Write the stats-collection pytest plugin into *mutants_abs*.
+
+        The generated ``_mutmut_stats_plugin.py`` is loaded by pytest via
+        ``-p _mutmut_stats_plugin`` during the stats subprocess.  It uses
+        ``hookwrapper`` on ``pytest_runtest_protocol`` to track which
+        trampoline functions each test exercises, and writes the complete
+        mapping to ``mutmut-stats.json`` at session end.
+
+        This bridges the subprocess isolation gap: trampoline hits
+        accumulate in ``_state._stats`` inside the subprocess, the plugin
+        snapshots them per-test, and persists the result to a JSON file
+        that the parent process reads after the subprocess exits.
+        """
+        plugin_path = mutants_abs / "_mutmut_stats_plugin.py"
+        plugin_path.write_text(
+            '''\
+# Auto-generated by mutmut-win — pytest plugin for per-test trampoline hit collection
+import json
+from collections import defaultdict
+from pathlib import Path
+
+import pytest
+
+_tests_by_func: dict[str, set[str]] = defaultdict(set)
+_duration_by_test: dict[str, float] = {}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):  # noqa: ARG001
+    """Wrap each test: clear hits before, snapshot after."""
+    from mutmut_win._state import _stats
+    _stats.clear()
+    yield
+    for func_name in list(_stats):
+        _tests_by_func[func_name].add(item.nodeid)
+
+
+def pytest_runtest_makereport(item, call):
+    """Capture per-test duration from the call phase."""
+    if call.when == "call":
+        _duration_by_test[item.nodeid] = call.duration
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    """Write the collected mapping to mutmut-stats.json."""
+    payload = {
+        "tests_by_mangled_function_name": {
+            k: sorted(v) for k, v in _tests_by_func.items()
+        },
+        "duration_by_test": _duration_by_test,
+        "stats_time": sum(_duration_by_test.values()),
+    }
+    stats_path = Path("mutmut-stats.json")
+    with stats_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=4)
+''',
+            encoding="utf-8",
+        )
 
     def _write_sitecustomize_pth_blocker(self, mutants_abs: Path) -> None:
         """Write a sitecustomize.py that removes the real src/ from sys.path.

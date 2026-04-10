@@ -1,0 +1,80 @@
+Sehr gut. Es funktioniert und ist hoch-performant. Ich habe eine Frage an dich. In einem anderen Python Projekt setze ich auch mutmut-win 1.0.11 ein. Allerdings scheint es zu extremen Performance Problemen zu kommen. Ich habe das andere Claude Code in diesem Projekt darauf angesprochen. Und das war die Antwort: "Aktueller Stand? Gibt es immer noch Probleme? Das andere Python Projekt, auf dem ich mutmut-win 1.0.11 jetzt gerade getestet hat benötigt für 108 Mutanten mit einem Worker 31 Sekunden und mit 12 Workern 7,5 Sekunden. Das hat hier rund 15 Minuten gedauert.
+
+Commit v1.0.11 upgrade
+Commit v1.0.11 upgrade
+
+mutmut-win 1.0.11 funktioniert jetzt direkt ohne Wrapper. Der Clean-Test-Suite-Blocker ist gelöst.
+
+Zum Performance-Vergleich: Das andere Projekt schafft 108 Mutanten in 7,5s (12 Worker) bzw. 31s (1 Worker). Hier haben 42 Mutanten (~5 Minuten) deutlich länger gedauert. Die Ursachen:
+
+Keine Test-to-Mutant-Mappings (bekannte Limitierung) — alle 914 Tests laufen pro Mutant statt nur der relevanten ~10. Das ist der Hauptfaktor (~100x Overhead).
+
+915 Tests pro Mutant vs. vermutlich ~100 Tests im anderen Projekt.
+
+Der mutmut-win-Entwickler hat bestätigt, dass die fehlenden Mappings by design sind (Subprocess-Runner kann keine Trampoline-Hits an den Hauptprozess melden). Der empfohlene Workaround ist --paths-to-mutate auf einzelne Module beschränken. Für einen Sprint-basierten Workflow reicht:
+
+uv run mutmut-win run --paths-to-mutate src/nextgen_cot_mcp_server/domain/errors.py
+
+statt die gesamte Codebase auf einmal." Klingt das für dich plausibel?
+
+Show less
+
+
+Ja, das klingt plausibel. Der Kernpunkt ist richtig — lass mich es mit unseren Zahlen untermauern:
+
+Wir hatten hier dieselbe Warning:
+
+Warning: no test-to-mutant mappings found. Tests may not cover any mutated code.
+
+Aber bei uns faellt das nicht auf, weil wir nur 52 Tests haben. Das andere Projekt hat 914 Tests. Ohne Mappings laufen alle Tests fuer jeden Mutanten:
+
+Dieses Projekt	Anderes Projekt
+Mutanten	103	42
+Tests pro Mutant	52	914
+Test-Laeufe gesamt	5.356	38.388
+Dauer (12 Workers)	7.5s	~5 min
+Das sind 7x mehr Test-Laeufe bei vermutlich auch schwereren Tests (Integration, I/O etc. vs. unsere reinen Rechentests).
+
+Ein Punkt ist aber etwas ungenau: Der Vorschlag --paths-to-mutate auf einzelne Module zu beschraenken reduziert die Anzahl Mutanten, aber nicht die 914 Tests pro Mutant. Das lindert das Symptom, loest aber nicht die Ursache. Wenn das Projekt waechst und 200+ Mutanten hat, bleibt es langsam.
+
+Der eigentliche Hebel waeren funktionierende Test-to-Mutant-Mappings — dann wuerden statt 914 nur die ~5-20 relevanten Tests pro Mutant laufen.
+
+Wie wird denn mit mutmut-win dieses Test-to-Mutant-Mapping umgesetzt?
+
+
+
+Research mutmut-win test mapping
+Research mutmut-win test mapping
+
+Das Mapping funktioniert ueber einen Trampoline-Mechanismus in drei Phasen:
+
+1. Mutanten-Erzeugung
+Jede Funktion im Quellcode wird mit einem Trampoline umhuellt. Aus def add(a, b): return a + b wird intern:
+
+# Original umbenannt
+def x_add__mutmut_orig(a, b): return a + b
+
+# Mutanten-Dict
+x_add__mutmut_mutants = {
+    'x_add__mutmut_1': lambda a, b: return a - b,   # + → -
+    'x_add__mutmut_2': lambda a, b: return a * b,   # + → *
+}
+
+# Trampoline ersetzt die Original-Funktion
+def add(*args, **kwargs):
+    return _mutmut_trampoline(x_add__mutmut_orig, x_add__mutmut_mutants, *args, **kwargs)
+
+2. Stats-Collection (Mapping aufbauen)
+Vor dem eigentlichen Mutations-Lauf startet mutmut-win pytest als Subprocess mit MUTANT_UNDER_TEST=stats. Im Stats-Modus laesst das Trampoline die Originalfunktion laufen, merkt sich aber per record_trampoline_hit(): "Funktion X wurde aufgerufen."
+
+3. Das Problem: Subprocess-Isolation
+Und hier liegt die architektonische Limitierung: Der Stats-Lauf passiert in einem separaten Prozess. Die Trampoline-Hits landen im _state-Modul des Child-Prozesses — der Parent-Prozess sieht sie nie.
+
+Aus runner.py:160-164:
+
+"If trampoline hits can't be collected from subprocess (no shared state), fall back to mapping ALL tests to ALL mutants."
+
+Deshalb die Warning no test-to-mutant mappings found und deshalb laeuft jeder Mutant gegen alle Tests — bei uns 52 Tests (kein Problem), beim anderen Projekt 914 Tests (massives Problem).
+
+Fazit
+Das Mapping-System ist implementiert aber funktional wirkungslos, weil die Subprocess-Architektur den Datentransfer verhindert. Um es zum Laufen zu bringen, muesste mutmut-win entweder die Hits in eine Datei/Datenbank schreiben oder pytest in-process ausfuehren (was aber laut Code-Kommentar wegen pytest-asyncio/hypothesis Haengern vermieden wird).

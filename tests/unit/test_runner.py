@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -167,57 +169,65 @@ class TestCollectTests:
 
 
 class TestRunStats:
-    """Tests for run_stats (subprocess-based stats collection)."""
+    """Tests for run_stats (subprocess-based stats collection with injected plugin)."""
 
     def test_returns_none(self) -> None:
         """run_stats is a side-effect function — it must return None."""
         runner = PytestRunner(_config())
-        collect_result = MagicMock(stdout="test_a.py::test_1\ntest_b.py::test_2\n", returncode=0)
-        run_result = MagicMock(stdout="PASSED\nPASSED\n", returncode=0)
-        with patch("subprocess.run", side_effect=[collect_result, run_result]):
+        run_result = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", return_value=run_result):
             result = runner.run_stats()
         assert result is None
 
-    def test_calls_subprocess_twice(self) -> None:
-        """run_stats calls subprocess.run twice: once for --collect-only, once for the run."""
+    def test_calls_subprocess_once(self) -> None:
+        """run_stats calls subprocess.run once with the stats plugin."""
         runner = PytestRunner(_config())
-        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
         run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", side_effect=[collect_result, run_result]) as mock_sub:
+        with patch("subprocess.run", return_value=run_result) as mock_sub:
             runner.run_stats()
-        assert mock_sub.call_count == 2
-
-    def test_returns_early_if_no_tests(self) -> None:
-        """If --collect-only finds no tests, run_stats returns immediately."""
-        runner = PytestRunner(_config())
-        collect_result = MagicMock(stdout="no tests ran\n", returncode=0)
-        with patch("subprocess.run", return_value=collect_result) as mock_sub:
-            runner.run_stats()
-        # Only one call (collect-only), no second call for the actual run.
         assert mock_sub.call_count == 1
+
+    def test_stats_plugin_flag_in_command(self) -> None:
+        """The -p _mutmut_stats_plugin flag must be in the pytest command."""
+        runner = PytestRunner(_config())
+        run_result = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", return_value=run_result) as mock_sub:
+            runner.run_stats()
+        cmd = mock_sub.call_args[0][0]
+        assert "-p" in cmd
+        p_idx = cmd.index("-p")
+        assert cmd[p_idx + 1] == "_mutmut_stats_plugin"
+
+    def test_stats_plugin_file_written(self) -> None:
+        """_write_stats_plugin must create the plugin file in mutants/."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mutants_dir = Path(tmpdir)
+            PytestRunner._write_stats_plugin(mutants_dir)
+            plugin_path = mutants_dir / "_mutmut_stats_plugin.py"
+            assert plugin_path.exists()
+            content = plugin_path.read_text(encoding="utf-8")
+            assert "pytest_runtest_protocol" in content
+            assert "pytest_sessionfinish" in content
+            assert "mutmut-stats.json" in content
 
     def test_clears_mutant_env_after_run(self) -> None:
         """MUTANT_UNDER_TEST must be cleared after stats collection."""
         import os
 
         runner = PytestRunner(_config())
-        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
         run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", side_effect=[collect_result, run_result]):
+        with patch("subprocess.run", return_value=run_result):
             runner.run_stats()
         assert os.environ.get(MUTANT_ENV_VAR, "") == ""
 
     def test_tests_dir_forwarded(self) -> None:
         """tests_dir config should be included in the pytest command."""
         runner = PytestRunner(_config(tests_dir=["tests/unit/"]))
-        collect_result = MagicMock(stdout="test_a.py::test_1\n", returncode=0)
         run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", side_effect=[collect_result, run_result]) as mock_sub:
+        with patch("subprocess.run", return_value=run_result) as mock_sub:
             runner.run_stats()
-        # Both subprocess calls should include tests_dir
-        for call in mock_sub.call_args_list:
-            cmd = call[0][0] if call[0] else call[1].get("cmd", [])
-            assert "tests/unit/" in cmd
+        cmd = mock_sub.call_args[0][0]
+        assert "tests/unit/" in cmd
 
 
 # ---------------------------------------------------------------------------
