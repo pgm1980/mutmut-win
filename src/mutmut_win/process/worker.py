@@ -113,18 +113,21 @@ def worker_main(
         start = time.monotonic()
         try:
             # Run pytest inside mutants/ so it imports the trampolined code.
+            # Use DEVNULL instead of capture_output=True — we only need the
+            # exit code.  Pipes can deadlock on Windows when pytest spawns
+            # grandchild processes (hypothesis, pytest-asyncio) that inherit
+            # the pipe handles and don't exit promptly.
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
                 cmd,
                 env=env,
-                capture_output=True,
-                encoding="utf-8",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 cwd="mutants",
                 timeout=worker_timeout,
             )
             exit_code = result.returncode
         except subprocess.TimeoutExpired:
-            # Hung pytest process (e.g. pytest-asyncio event loop corruption).
-            # Report as timeout (exit code 36) so the orchestrator can continue.
+            # Hung pytest process — report as timeout so the orchestrator continues.
             exit_code = 36  # timeout
         except OSError as exc:
             # WinError 206 / ENAMETOOLONG: command line too long even with @file.

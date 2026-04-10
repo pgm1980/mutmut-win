@@ -71,8 +71,8 @@ class PytestRunner:
         try:
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
                 cmd,
-                capture_output=True,
-                encoding="utf-8",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 cwd="mutants",
                 env=env,
                 timeout=_RUNNER_TIMEOUT,
@@ -140,8 +140,8 @@ class PytestRunner:
 
         try:
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd, capture_output=True, encoding="utf-8", cwd="mutants", env=env,
-                timeout=_RUNNER_TIMEOUT,
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                cwd="mutants", env=env, timeout=_RUNNER_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
             print(f"Warning: stats collection timed out after {_RUNNER_TIMEOUT}s")
@@ -219,8 +219,8 @@ class PytestRunner:
         try:
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
                 cmd,
-                capture_output=True,
-                encoding="utf-8",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 cwd="mutants",
                 env=env,
                 timeout=_FORCED_FAIL_TIMEOUT,

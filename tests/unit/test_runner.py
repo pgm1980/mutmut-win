@@ -84,19 +84,17 @@ class TestRunCleanTest:
         assert "--timeout=10" in cmd
         assert "-x" in cmd
 
-    def test_encoding_is_utf8(self) -> None:
-        runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
-            runner.run_clean_test()
-        kwargs = mock_run.call_args[1]
-        assert kwargs.get("encoding") == "utf-8"
+    def test_output_redirected_to_devnull(self) -> None:
+        """stdout/stderr must go to DEVNULL, not PIPE — PIPE can deadlock on Windows
+        when grandchild processes (hypothesis, pytest-asyncio) inherit pipe handles."""
+        import subprocess as _subprocess
 
-    def test_capture_output_is_true(self) -> None:
         runner = PytestRunner(_config())
         with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
             runner.run_clean_test()
         kwargs = mock_run.call_args[1]
-        assert kwargs.get("capture_output") is True
+        assert kwargs.get("stdout") == _subprocess.DEVNULL
+        assert kwargs.get("stderr") == _subprocess.DEVNULL
 
 
 # ---------------------------------------------------------------------------
@@ -258,12 +256,16 @@ class TestRunForcedFail:
         assert len(captured_envs) == 1
         assert captured_envs[0][MUTANT_ENV_VAR] == MUTANT_FAIL_SENTINEL
 
-    def test_encoding_utf8(self) -> None:
+    def test_output_redirected_to_devnull(self) -> None:
+        """stdout/stderr must go to DEVNULL to avoid pipe deadlocks on Windows."""
+        import subprocess as _subprocess
+
         runner = PytestRunner(_config())
         with patch("subprocess.run", return_value=_make_completed_process(1)) as mock_run:
             runner.run_forced_fail("m1")
         kwargs = mock_run.call_args[1]
-        assert kwargs.get("encoding") == "utf-8"
+        assert kwargs.get("stdout") == _subprocess.DEVNULL
+        assert kwargs.get("stderr") == _subprocess.DEVNULL
 
     def test_returns_zero_when_all_tests_pass(self) -> None:
         """Edge case: if forced-fail somehow returns 0, runner faithfully reports it."""
