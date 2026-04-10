@@ -26,7 +26,7 @@ Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 1.0.6`
+Erwartete Ausgabe: `mutmut-win, version 1.0.7`
 
 ## Schritt 2: pyproject.toml konfigurieren
 

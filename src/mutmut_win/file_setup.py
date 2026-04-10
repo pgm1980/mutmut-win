@@ -207,7 +207,16 @@ def _sanitise_mutants_pyproject() -> None:
     )
 
     if cleaned != content:
-        pyproject_path.write_text(cleaned, encoding="utf-8")
+        import time
+
+        for attempt in range(5):
+            try:
+                pyproject_path.write_text(cleaned, encoding="utf-8")
+                break
+            except OSError:
+                if attempt < 4:
+                    time.sleep(0.1 * (2 ** attempt))
+                # Last attempt failed — continue silently, sanitisation is best-effort
 
 
 # ---------------------------------------------------------------------------
