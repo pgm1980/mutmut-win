@@ -16,6 +16,7 @@ import ast
 import os
 import shutil
 import sys
+import time
 import warnings
 from io import StringIO
 from pathlib import Path
@@ -76,6 +77,44 @@ def walk_source_files(config: MutmutConfig) -> Iterator[Path]:
 # ---------------------------------------------------------------------------
 
 
+def _copy_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    is_tree: bool = False,
+    max_attempts: int = 5,
+    **kwargs: object,
+) -> None:
+    """Copy a file or directory tree with retry logic for Windows file locks.
+
+    On Windows, recently written files can be temporarily locked by Defender,
+    the Search Indexer, or NTFS journaling.  This wrapper retries with
+    exponential backoff (0.1 s, 0.2 s, 0.4 s, 0.8 s) before giving up.
+
+    Args:
+        src: Source path.
+        dst: Destination path.
+        is_tree: If True, use ``shutil.copytree`` instead of ``shutil.copy2``.
+        max_attempts: Maximum number of attempts before raising.
+        **kwargs: Additional keyword arguments forwarded to the copy function.
+    """
+    for attempt in range(max_attempts):
+        try:
+            if is_tree:
+                shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
+            else:
+                shutil.copy2(src, dst)
+            return
+        except OSError:
+            if attempt < max_attempts - 1:
+                time.sleep(0.1 * (2 ** attempt))
+    # Final attempt — let the exception propagate if it still fails.
+    if is_tree:
+        shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
+    else:
+        shutil.copy2(src, dst)
+
+
 def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept for API compatibility; source dirs are auto-detected
     """Copy the ENTIRE source tree to the mutants/ staging directory.
 
@@ -113,7 +152,7 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                 if target_path.exists():
                     # Update if source is newer than the copy in mutants/.
                     if source_path.is_file() and _source_is_newer(source_path, target_path):
-                        shutil.copy2(source_path, target_path)
+                        _copy_with_retry(source_path, target_path)
                         print(f"     updated: {source_path} (source changed since last run)")
                         # Invalidate cached mutation results for this file.
                         meta_path = Path(str(target_path) + ".meta")
@@ -122,7 +161,7 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                     continue
 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
-                shutil.copy2(source_path, target_path)
+                _copy_with_retry(source_path, target_path)
 
 
 def _source_is_newer(source: Path, target: Path) -> bool:
@@ -158,9 +197,10 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         if not path.exists():
             continue
         if path.is_file():
-            shutil.copy2(path, destination)
+            _copy_with_retry(path, destination)
         else:
-            shutil.copytree(path, destination, dirs_exist_ok=True, ignore=_ignore_venvs)
+            _copy_with_retry(path, destination, is_tree=True,
+                             dirs_exist_ok=True, ignore=_ignore_venvs)
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
     # that contain relative paths. These paths are relative to the original
@@ -207,8 +247,6 @@ def _sanitise_mutants_pyproject() -> None:
     )
 
     if cleaned != content:
-        import time
-
         for attempt in range(5):
             try:
                 pyproject_path.write_text(cleaned, encoding="utf-8")

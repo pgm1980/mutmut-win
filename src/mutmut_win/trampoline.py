@@ -63,7 +63,10 @@ MutantDict = Annotated[dict[str, Callable], "Mutant"] # type: ignore
 def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None): # type: ignore
     \"""Forward call to original or mutated function, depending on the environment\"""
     import os # type: ignore
-    mutant_under_test = os.environ['MUTANT_UNDER_TEST'] # type: ignore
+    mutant_under_test = os.environ.get('MUTANT_UNDER_TEST') # type: ignore
+    if mutant_under_test is None: # type: ignore
+        result = orig(*call_args, **call_kwargs) # type: ignore
+        return result # type: ignore
     if mutant_under_test == 'fail': # type: ignore
         from mutmut_win.__main__ import MutmutProgrammaticFailException # type: ignore
         raise MutmutProgrammaticFailException('Failed programmatically')       # type: ignore
