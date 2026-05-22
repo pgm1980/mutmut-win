@@ -1,8 +1,8 @@
 ---
-current_sprint: "23"
-sprint_goal: "v2.0.x Reliability Wave — fix Bug #68 (multi-line if/or), #71 (Hypothesis timeout), #70 (default param equiv)"
-branch: "fix/v2.2.0-reliability-wave"
-started_at: "2026-05-22"
+current_sprint: "24"
+sprint_goal: "Must-priority carryover — Worker recovery (#12), E2E harness (#38/#49), Job-Object test (#54), Dogfooding (#65). Release v2.3.0."
+branch: "feature/v2.3.0-must-carryover"
+started_at: "2026-05-23"
 housekeeping_done: true
 memory_updated: true
 github_issues_closed: true
