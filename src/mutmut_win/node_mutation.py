@@ -541,8 +541,30 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     """
     if not isinstance(node.operator, cst.Or):
         return
+    if _is_multiline_boolean_op(node):
+        # Bug #68: in multi-line continuations like ``if (\n  A\n  or B\n):``
+        # the outer ``BooleanOperation`` represents ``(A or B) or C`` and the
+        # ``or`` token is preceded by a newline. Yielding ``node.left`` (the
+        # inner ``(A or B)``) drops the enclosing parentheses but keeps the
+        # original whitespace, leaving stranded continuation operand lines that
+        # don't parse. The single-line ``a or b`` case is unaffected.
+        return
     yield node.left  # remove fallback
     yield node.right  # always use fallback
+
+
+def _is_multiline_boolean_op(node: cst.BooleanOperation) -> bool:
+    """True if the ``BooleanOperation`` straddles a line boundary.
+
+    The whitespace nodes live on the ``operator`` token (``cst.Or`` / ``cst.And``)
+    via their ``whitespace_before`` / ``whitespace_after`` fields. libcst encodes
+    a line continuation as ``ParenthesizedWhitespace`` (vs. ``SimpleWhitespace``
+    for inline runs).
+    """
+    op = node.operator
+    return isinstance(op.whitespace_before, cst.ParenthesizedWhitespace) or isinstance(
+        op.whitespace_after, cst.ParenthesizedWhitespace
+    )
 
 
 # Operators that should be called on specific node types
