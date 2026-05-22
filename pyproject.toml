@@ -54,7 +54,7 @@ dev = [
 mutmut-win = "mutmut_win.cli:cli"
 
 [tool.mutmut]
-paths_to_mutate = ["src/mutmut_win/regex_mutation.py"]
+paths_to_mutate = ["src/mutmut_win/"]
 tests_dir = ["tests/unit/"]
 
 [tool.ruff]
