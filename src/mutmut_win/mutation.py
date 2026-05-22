@@ -203,17 +203,19 @@ class MutationVisitor(cst.CSTVisitor):
         if isinstance(node, cst.Annotation):
             return True
 
-        # default args are executed at definition time
-        # We want to prevent e.g. def foo(x = abs(-1)) mutating to def foo(x = abs(None)),
-        # which would raise an Exception as soon as the function is defined
-        # (can break the whole import)
-        # Therefore we only allow simple default values, where mutations should not raise
-        # exceptions
-        if (
-            isinstance(node, cst.Param)
-            and node.default
-            and not isinstance(node.default, (cst.Name, cst.BaseNumber, cst.BaseString))
-        ):
+        # Default parameter values are evaluated at function-definition time.
+        # Two reasons to skip mutations inside them:
+        # 1) Complex defaults (e.g. ``def foo(x=abs(-1)): ...``) that mutate to
+        #    ``def foo(x=abs(None)): ...`` raise at definition time and break the
+        #    whole import.
+        # 2) Even simple defaults (``Name``, ``BaseNumber``, ``BaseString``) cannot
+        #    be killed: mutmut's trampoline architecture captures the *mutated*
+        #    default at import time of the mutant variant, but every caller still
+        #    goes through the original symbol's default — so the mutation is
+        #    structurally unobservable through behavioural tests (Bug #70).
+        # The union of both reasons is "any ``cst.Param`` with a default" — skip
+        # the whole subtree.
+        if isinstance(node, cst.Param) and node.default is not None:
             return True
 
         # ignore decorated functions, because

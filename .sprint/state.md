@@ -1,8 +1,8 @@
 ---
-current_sprint: "22"
-sprint_goal: "v2.0.x Stabilization — Timeout Diagnostics, Bug #4 fix, housekeeping (post v2.0 release)"
-branch: "main"
-started_at: "2026-04-10"
+current_sprint: "23"
+sprint_goal: "v2.0.x Reliability Wave — fix Bug #68 (multi-line if/or), #71 (Hypothesis timeout), #70 (default param equiv)"
+branch: "fix/v2.2.0-reliability-wave"
+started_at: "2026-05-22"
 housekeeping_done: true
 memory_updated: true
 github_issues_closed: true

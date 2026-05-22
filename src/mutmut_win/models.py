@@ -168,7 +168,19 @@ class MutationRunResult(BaseModel):
     @property
     def score(self) -> float:
         """Mutation score as percentage (killed / (total - skipped - no_tests))."""
+        return self.compute_score(treat_timeout_as_kill=False)
+
+    def compute_score(self, treat_timeout_as_kill: bool = False) -> float:
+        """Mutation score with optional timeout-as-kill accounting.
+
+        Default behaviour matches ``score`` (timeouts excluded from the
+        numerator). Setting ``treat_timeout_as_kill=True`` counts timeout
+        mutants toward the kill bucket — a downstream mitigation for Bug #71
+        where Hypothesis tests turn infinite-loop mutations into TIMEOUT
+        instead of KILLED, deflating the reported score.
+        """
         denominator = self.total_mutants - self.skipped - self.no_tests
         if denominator <= 0:
             return 0.0
-        return (self.killed / denominator) * 100.0
+        effective_killed = self.killed + (self.timeout if treat_timeout_as_kill else 0)
+        return (effective_killed / denominator) * 100.0
