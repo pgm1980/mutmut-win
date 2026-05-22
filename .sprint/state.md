@@ -1,42 +1,73 @@
 ---
-current_sprint: "14"
-sprint_goal: "Regex-Mutationen — Alleinstellungsmerkmal (kein Python-Tool hat das)"
-branch: "feature/55-regex-mutations"
-started_at: "2026-03-30"
+current_sprint: "21"
+sprint_goal: "v2.0.x Stabilization — Timeout Diagnostics, Dogfooding & Bug Fixes (post v2.0 release)"
+branch: "main"
+started_at: "2026-04-10"
 housekeeping_done: false
-memory_updated: false
-github_issues_closed: false
-sprint_backlog_written: false
+memory_updated: true
+github_issues_closed: true
+sprint_backlog_written: true
 semgrep_passed: false
 tests_passed: false
-documentation_updated: true
+documentation_updated: false
 ---
 
-# Sprint State
+# Sprint State (Refreshed 2026-05-22)
 
 ## Current Focus
-- Sprint 11: In-Process Stats + Trampoline Tracking — critical fix for correct test-per-mutant assignment
+Post-release stabilization for v2.0.x. The advanced-operators / hardening waves
+(Sprints 14–20 + Hardening Sprint) have all merged to main. Active work is the
+v2.0.x timeout-diagnostics series and bug fixes that surfaced through dogfooding
+in downstream projects.
 
-## Sprint Plan (v0.3.0)
+## Recently Completed (since the last state-of-record update)
+- **Sprints 14–20** — all seven advanced mutation operators merged to main:
+  Regex (#55), Math (#56), Return Value (#57), Conditional Expression (#58),
+  Statement Removal (#59), Collection (#60), or-Default (#61).
+- **Hardening Sprint** — Windows Job Object orphan-process protection (#52–#54),
+  10 CLI flags Tier 1-3 (#63).
+- **v2.0.0 release** — test-to-mutant mapping via injected pytest plugin (`fe194c2`),
+  replacing the older subprocess-based stats collection.
+- **v1.0.x bug-fix wave** — repeated-run cache invalidation, WinError 32/206 fixes,
+  `.pth` shadowing, package-copy issues, `--dry-run` cache poisoning.
+- **Hook fixes H-01 – H-07** — corrected matcher regex semantics, `if`-filter
+  placement inside hook object, dual-output `systemMessage` for user visibility.
+- **v2.0.x timeout diagnostics** — `subprocess.run` timeouts everywhere,
+  `capture_output=True` → DEVNULL (pipe deadlock fix), temp-file capture replacing
+  DEVNULL, `last_output` persisted to DB for post-mortem inspection.
 
-### Sprint 11: In-Process Stats + Trampoline Tracking (Tier 1 Critical)
-- [ ] `_state.py`: tests_by_mangled_function_name, current_test_name, reset_state(), record_trampoline_hit()
-- [ ] `__main__.py`: re-export record_trampoline_hit + MutmutProgrammaticFailException
-- [ ] `PytestRunner.run_stats()` rewrite: pytest.main() in-process with StatsCollector plugin
-- [ ] `stats.py` update: collect_or_load_stats uses _state globals after run_stats()
-- [ ] Orchestrator: real test assignment from stats data
-- Issues: #39, #40, #41, #42, #43
+## Sprint 21 Backlog
+- [ ] Merge [PR #66](https://github.com/pgm1980/mutmut-win/pull/66) — skip
+      `typing.cast()` first-arg mutations (Bug #4 from critique-model-service).
+- [ ] Issue #65 — full dogfooding: extend `[tool.mutmut] paths_to_mutate` beyond
+      `regex_mutation.py` and reach a green run on the whole src tree.
+- [ ] Issue #12 — worker crash recovery beyond detection (define and implement
+      recovery strategy).
+- [ ] Issue #23 — performance benchmarks vs upstream mutmut (create `benchmarks/`
+      with pytest-benchmark suite).
+- [ ] Issues #38 / #49 — end-to-end validation pipeline on
+      `tests/e2e_projects/simple_lib` + `my_lib` with result-comparison harness.
+- [ ] Issue #54 — deterministic test for Job Object kill-on-close behaviour.
+- [ ] After PR #66 merge: bump `pyproject.toml` to v2.0.5 and sync `uv.lock`.
 
-### Sprint 12: Feature Completeness + E2E Validation (Tier 2)
-- [ ] `guess_paths_to_mutate()` in config.py
-- [ ] `ListAllTestsResult` + incremental stats in stats.py
-- [ ] CLI commands: tests-for-mutant, time-estimates
-- [ ] CI/CD stats export: save_cicd_stats + export-cicd-stats CLI
-- [ ] Type-checker helpers: MutatedMethodsCollector, MutatedMethodLocation, FailedTypeCheckMutant, group_by_path
-- [ ] Full E2E validation: mutmut-win run on simple_lib + my_lib, result comparison
-- [ ] exceptions.py: MutmutProgrammaticFailException, BadTestExecutionCommandsException, InvalidGeneratedSyntaxException
-- Issues: #44, #45, #46, #47, #48, #49, #50
+## Housekeeping Notes
+- Sprint nomenclature continues the linear numbering from the v0.3.0 era for
+  historical traceability — the project is on v2.0.x, sprint 21 is the next
+  unused integer.
+- `MEMORY.md` was empty before this session; it now indexes the
+  `memory/` folder.
+- 40 GitHub issues that had been fully delivered between Sprints 11 and the
+  Hardening wave were left open. They were verified against the v2.0.4
+  codebase and closed in this housekeeping pass.
+- Branch policy: the v1.x/v2.x bug-fix and hook-debugging history shows that
+  small fixes have been landing directly on `main`. Larger feature work
+  (advanced operators, hardening) used `feature/<issue>-*` branches and merge
+  commits. Stick to that split going forward.
 
-## Context: 360° Cross-Check Gaps Found
-- **Critical (F-02/F-03/F-09):** In-process stats (pytest.main()), trampoline hit tracking (_state), record_trampoline_hit re-export
-- **Medium (F-01/F-04–F-08):** guess_paths_to_mutate, ListAllTestsResult, CLI commands, CI/CD stats export, type-checker helpers
+## Open Items Carried Over
+- #12 Worker crash recovery (PARTIAL)
+- #23 Performance benchmark vs mutmut (UNCLEAR — no benchmarks/ yet)
+- #38 End-to-end validation test (UNCLEAR — e2e_projects exist, harness unclear)
+- #49 Sprint-12 full E2E (UNCLEAR — same as #38)
+- #54 Deterministic Job Object kill-on-close test (UNCLEAR)
+- #65 Dogfooding (PARTIAL — config narrowed to one module)
