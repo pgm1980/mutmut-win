@@ -3,12 +3,12 @@ current_sprint: "21"
 sprint_goal: "v2.0.x Stabilization — Timeout Diagnostics, Dogfooding & Bug Fixes (post v2.0 release)"
 branch: "main"
 started_at: "2026-04-10"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
 github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
+semgrep_passed: true
+tests_passed: true
 documentation_updated: false
 ---
 
@@ -37,8 +37,12 @@ in downstream projects.
   DEVNULL, `last_output` persisted to DB for post-mortem inspection.
 
 ## Sprint 21 Backlog
-- [ ] Merge [PR #66](https://github.com/pgm1980/mutmut-win/pull/66) — skip
+- [x] Merge [PR #66](https://github.com/pgm1980/mutmut-win/pull/66) — skip
       `typing.cast()` first-arg mutations (Bug #4 from critique-model-service).
+      Merged 2026-05-22; 5 new tests; full suite 564 passed / 3 skipped.
+- [x] Sprint-21 quality gates: pytest 564 passed / 3 skipped on `src/` +
+      `tests/`; semgrep `--config auto` 0 findings on `src/` + `tests/unit/` +
+      `tests/integration/` (2026-05-22).
 - [ ] Issue #65 — full dogfooding: extend `[tool.mutmut] paths_to_mutate` beyond
       `regex_mutation.py` and reach a green run on the whole src tree.
 - [ ] Issue #12 — worker crash recovery beyond detection (define and implement
@@ -48,7 +52,7 @@ in downstream projects.
 - [ ] Issues #38 / #49 — end-to-end validation pipeline on
       `tests/e2e_projects/simple_lib` + `my_lib` with result-comparison harness.
 - [ ] Issue #54 — deterministic test for Job Object kill-on-close behaviour.
-- [ ] After PR #66 merge: bump `pyproject.toml` to v2.0.5 and sync `uv.lock`.
+- [ ] Bump `pyproject.toml` to v2.0.5 and sync `uv.lock` (next release packaging).
 
 ## Housekeeping Notes
 - Sprint nomenclature continues the linear numbering from the v0.3.0 era for
