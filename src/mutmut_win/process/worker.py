@@ -66,105 +66,154 @@ def worker_main(
             # Sentinel: no more tasks — exit cleanly.
             break
 
-        task = MutationTask.model_validate(raw_item)
+        # Best-effort extract mutant_name from the raw dict so we can still
+        # report something useful if validation itself blows up.
+        fallback_name = "unknown"
+        if isinstance(raw_item, dict):
+            raw_name = raw_item.get("mutant_name")
+            if isinstance(raw_name, str) and raw_name:
+                fallback_name = raw_name
 
-        # Notify main process that work has started.
-        event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
-
-        # Build the pytest command.
-        cmd: list[str] = ["pytest", "--tb=no", "-q"]
-        cmd.extend(pytest_extra_args)
-
-        # Always use pytest's @file syntax for test arguments.
-        # This avoids the Windows CreateProcess 32767-char command line limit
-        # (WinError 206) regardless of how many tests are assigned — no magic
-        # thresholds, no dual code paths, predictable behavior at any scale.
-        # pytest reads arguments from the file, one per line.
-        tests_argfile: Path | None = None
-        if task.tests:
-            fd, argfile_path = tempfile.mkstemp(
-                suffix=".txt",
-                prefix="mutmut_tests_",
-                dir="mutants",
-                text=True,
-            )
-            tests_argfile = Path(argfile_path)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                for test in task.tests:
-                    f.write(test + "\n")
-            cmd.append(f"@{tests_argfile.name}")
-        else:
-            # No specific tests assigned — use tests_dir from config if available.
-            raw_tests_dir = config_data.get("tests_dir")
-            if isinstance(raw_tests_dir, list):
-                cmd.extend(str(d) for d in raw_tests_dir)
-
-        # Activate the specific mutant via the trampoline env var.
-        # Set PYTHONPATH so subprocess can import from mutants/src etc.
-        env = os.environ.copy()
-        extra_paths = []
-        for subdir in ["src", "source", "."]:
-            candidate = Path("mutants") / subdir
-            if candidate.exists():
-                extra_paths.append(str(candidate.absolute()))
-        if extra_paths:
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
-        env[MUTANT_ENV_VAR] = task.mutant_name
-
-        # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
-        # - PIPE deadlocks on Windows when grandchild processes inherit handles
-        # - DEVNULL loses diagnostic output needed for timeout investigation
-        # - Temp files: no deadlock (no pipe EOF semantics), output preserved
-        log_fd, log_path_str = tempfile.mkstemp(
-            suffix=".log", prefix="mutmut_out_", dir="mutants", text=True,
-        )
-        log_path = Path(log_path_str)
-        last_output: str | None = None
-
-        start = time.monotonic()
         try:
-            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                env=env,
-                stdout=log_fd,
-                stderr=subprocess.STDOUT,
-                cwd="mutants",
-                timeout=worker_timeout,
+            _process_task(
+                raw_item, event_queue, pid, pytest_extra_args, config_data, worker_timeout
             )
-            exit_code = result.returncode
-        except subprocess.TimeoutExpired:
-            exit_code = 36  # timeout
-            # Read last lines for diagnostics before cleanup.
-            os.close(log_fd)
-            log_fd = -1
-            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
-        except OSError as exc:
-            print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
-            exit_code = 35  # suspicious
-        finally:
-            if log_fd >= 0:
-                os.close(log_fd)
-            # Read diagnostics for suspicious exits (if not already read).
-            if exit_code == 35 and last_output is None:
-                last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
-            with contextlib.suppress(OSError):
-                log_path.unlink()
-            if tests_argfile is not None and tests_argfile.exists():
-                with contextlib.suppress(OSError):
-                    tests_argfile.unlink()
+        except Exception as exc:  # Bug #12 recovery: keep the worker alive
+            # Any uncaught exception (Pydantic ValidationError, RuntimeError from
+            # the subprocess layer, libcst hiccup, transient FS error, …) would
+            # otherwise kill the worker mid-task. The orchestrator would then
+            # hang in get_events() waiting for a TaskCompleted that will never
+            # arrive. Emit a synthetic completion so progress can be made, and
+            # continue the loop.
+            print(
+                f"WORKER RECOVERY (#12): uncaught {type(exc).__name__} on "
+                f"{fallback_name}: {exc}",
+                flush=True,
+            )
+            event_queue.put(
+                TaskCompleted(
+                    mutant_name=fallback_name,
+                    worker_pid=pid,
+                    exit_code=35,  # suspicious
+                    duration=0.0,
+                    last_output=f"Worker recovery (Bug #12): {type(exc).__name__}: {exc}",
+                ).model_dump()
+            )
 
-        duration = time.monotonic() - start
 
-        event_queue.put(
-            TaskCompleted(
-                mutant_name=task.mutant_name,
-                worker_pid=pid,
-                exit_code=exit_code,
-                duration=duration,
-                last_output=last_output,
-            ).model_dump()
+def _process_task(
+    raw_item: dict[str, object],
+    event_queue: multiprocessing.queues.Queue[dict[str, object]],
+    pid: int,
+    pytest_extra_args: list[str],
+    config_data: dict[str, object],
+    worker_timeout: float,
+) -> None:
+    """Process a single mutation task.
+
+    Extracted from the main loop so ``worker_main`` can catch any exception
+    that bubbles up from here and synthesise a recovery event (Bug #12).
+    """
+    task = MutationTask.model_validate(raw_item)
+
+    # Notify main process that work has started.
+    event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
+
+    # Build the pytest command.
+    cmd: list[str] = ["pytest", "--tb=no", "-q"]
+    cmd.extend(pytest_extra_args)
+
+    # Always use pytest's @file syntax for test arguments.
+    # This avoids the Windows CreateProcess 32767-char command line limit
+    # (WinError 206) regardless of how many tests are assigned — no magic
+    # thresholds, no dual code paths, predictable behavior at any scale.
+    # pytest reads arguments from the file, one per line.
+    tests_argfile: Path | None = None
+    if task.tests:
+        fd, argfile_path = tempfile.mkstemp(
+            suffix=".txt",
+            prefix="mutmut_tests_",
+            dir="mutants",
+            text=True,
         )
+        tests_argfile = Path(argfile_path)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for test in task.tests:
+                f.write(test + "\n")
+        cmd.append(f"@{tests_argfile.name}")
+    else:
+        # No specific tests assigned — use tests_dir from config if available.
+        raw_tests_dir = config_data.get("tests_dir")
+        if isinstance(raw_tests_dir, list):
+            cmd.extend(str(d) for d in raw_tests_dir)
+
+    # Activate the specific mutant via the trampoline env var.
+    # Set PYTHONPATH so subprocess can import from mutants/src etc.
+    env = os.environ.copy()
+    extra_paths = []
+    for subdir in ["src", "source", "."]:
+        candidate = Path("mutants") / subdir
+        if candidate.exists():
+            extra_paths.append(str(candidate.absolute()))
+    if extra_paths:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+    env[MUTANT_ENV_VAR] = task.mutant_name
+
+    # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
+    # - PIPE deadlocks on Windows when grandchild processes inherit handles
+    # - DEVNULL loses diagnostic output needed for timeout investigation
+    # - Temp files: no deadlock (no pipe EOF semantics), output preserved
+    log_fd, log_path_str = tempfile.mkstemp(
+        suffix=".log", prefix="mutmut_out_", dir="mutants", text=True,
+    )
+    log_path = Path(log_path_str)
+    last_output: str | None = None
+    exit_code: int = 35  # default to suspicious so the finally clause is safe
+
+    start = time.monotonic()
+    try:
+        result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+            cmd,
+            env=env,
+            stdout=log_fd,
+            stderr=subprocess.STDOUT,
+            cwd="mutants",
+            timeout=worker_timeout,
+        )
+        exit_code = result.returncode
+    except subprocess.TimeoutExpired:
+        exit_code = 36  # timeout
+        # Read last lines for diagnostics before cleanup.
+        os.close(log_fd)
+        log_fd = -1
+        last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+    except OSError as exc:
+        print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
+        exit_code = 35  # suspicious
+    finally:
+        if log_fd >= 0:
+            os.close(log_fd)
+        # Read diagnostics for suspicious exits (if not already read).
+        if exit_code == 35 and last_output is None:
+            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+        with contextlib.suppress(OSError):
+            log_path.unlink()
+        if tests_argfile is not None and tests_argfile.exists():
+            with contextlib.suppress(OSError):
+                tests_argfile.unlink()
+
+    duration = time.monotonic() - start
+
+    event_queue.put(
+        TaskCompleted(
+            mutant_name=task.mutant_name,
+            worker_pid=pid,
+            exit_code=exit_code,
+            duration=duration,
+            last_output=last_output,
+        ).model_dump()
+    )
 
 
 def _read_last_lines(path: Path, n: int) -> str | None:
