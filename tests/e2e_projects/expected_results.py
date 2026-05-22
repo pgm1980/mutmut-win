@@ -97,7 +97,10 @@ EXPECTED_MY_LIB: dict[str, dict[str, int]] = {
         "my_lib.x_some_func__mutmut_1": 0,
         "my_lib.x_some_func__mutmut_2": 0,
         "my_lib.x_some_func__mutmut_3": 1,
-        "my_lib.x_some_func__mutmut_4": 0,
+        # mutmut_4 was the default-value mutation on ``b: str = "111"``. mutmut-win
+        # v2.2.0 skips it (Bug #70: trampoline architecture makes default-param
+        # mutations structurally unkillable). Intentional divergence from upstream
+        # mutmut 3.5.0 reference.
         "my_lib.x_func_with_star__mutmut_1": 1,
         "my_lib.x_func_with_star__mutmut_2": 1,
         "my_lib.x_func_with_star__mutmut_3": 1,
