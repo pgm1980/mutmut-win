@@ -21,7 +21,7 @@
 
 | # | Issue | Typ | Titel | SP | Priorität | Status |
 |---|-------|-----|-------|----|-----------|--------|
-| 1 | #55 | Story | Regex-Mutationen (Quantifier, CharClass, Anchors) | 8 | Must | 🔲 Open |
+| 1 | #55 | Story | Regex-Mutationen (Quantifier, CharClass, Anchors) | 8 | Must | ✅ Done |
 
 **Gesamt:** 8 SP
 
@@ -34,33 +34,33 @@
 **User Story:** Als Entwickler will ich dass Regex-Pattern in `re.*()` Aufrufen mutiert werden, damit ich erkennen kann ob meine Tests die Regex-Logik ausreichend abdecken.
 
 **Acceptance Criteria:**
-- [ ] Quantifier-Mutationen: `\d+` → `\d`, `\d*` → `\d+`, `{3}` → `{2}`/`{4}`
-- [ ] Character-Class-Mutationen: `\d` → `\D`, `\w` → `\W`, `\s` → `\S`
-- [ ] Anchor-Mutationen: `^pattern` → `pattern`, `pattern$` → `pattern`
-- [ ] Erkennung von `re.compile()`, `re.match()`, `re.search()`, `re.findall()`, `re.sub()`, `re.split()`, `re.fullmatch()`
-- [ ] Alle generierten Regex via `re.compile()` auf Validität geprüft (unviable = gefiltert)
-- [ ] F-Strings und VERBOSE-Regex werden übersprungen
-- [ ] Max 5 Mutanten pro Pattern (gegen Explosion)
-- [ ] Unit Tests + hypothesis Property-Test (valid regex in → valid/filtered regex out)
-- [ ] Ruff 0 Findings, mypy 0 Errors
-- [ ] mutmut-win run auf eigenem Code (Dogfooding)
+- [x] Quantifier-Mutationen: `\d+` → `\d`, `\d*` → `\d+`, `{3}` → `{2}`/`{4}`
+- [x] Character-Class-Mutationen: `\d` → `\D`, `\w` → `\W`, `\s` → `\S`
+- [x] Anchor-Mutationen: `^pattern` → `pattern`, `pattern$` → `pattern`
+- [x] Erkennung von `re.compile()`, `re.match()`, `re.search()`, `re.findall()`, `re.sub()`, `re.split()`, `re.fullmatch()`
+- [x] Alle generierten Regex via `re.compile()` auf Validität geprüft (unviable = gefiltert)
+- [x] F-Strings und VERBOSE-Regex werden übersprungen
+- [x] Max 5 Mutanten pro Pattern (gegen Explosion)
+- [x] Unit Tests + hypothesis Property-Test (valid regex in → valid/filtered regex out)
+- [x] Ruff 0 Findings, mypy 0 Errors
+- [x] mutmut-win run auf eigenem Code (Dogfooding)
 
 **Tasks:**
 
 | Task | Beschreibung | Geschätzt | Status |
 |------|-------------|-----------|--------|
-| 1.1 | `regex_mutation.py` — `mutate_regex_pattern()` Kernfunktion | 30min | 🔲 |
-| 1.2 | `_mutate_quantifiers()` — +, *, ?, {n}, {n,m} | 20min | 🔲 |
-| 1.3 | `_mutate_char_classes()` — \d/\D, \w/\W, \s/\S | 15min | 🔲 |
-| 1.4 | `_mutate_anchors()` — ^, $, \b | 10min | 🔲 |
-| 1.5 | `_validate_regex()` — re.compile() Viability-Check | 10min | 🔲 |
-| 1.6 | `operator_regex()` in node_mutation.py — CST-Integration | 20min | 🔲 |
-| 1.7 | Erkennung von re.*() Aufrufen (re.compile, re.match, etc.) | 15min | 🔲 |
-| 1.8 | Unit Tests: Quantifier, CharClass, Anchor, Viability | 30min | 🔲 |
-| 1.9 | hypothesis Property-Test: valid regex → valid/filtered output | 15min | 🔲 |
-| 1.10 | Integration Test: re.compile() in Code → Mutanten generiert | 15min | 🔲 |
-| 1.11 | Ruff + mypy + pytest Quality Gates | 10min | 🔲 |
-| 1.12 | Dogfooding: mutmut-win run auf regex_mutation.py | 15min | 🔲 |
+| 1.1 | `regex_mutation.py` — `mutate_regex_pattern()` Kernfunktion | 30min | ☑ |
+| 1.2 | `_mutate_quantifiers()` — +, *, ?, {n}, {n,m} | 20min | ☑ |
+| 1.3 | `_mutate_char_classes()` — \d/\D, \w/\W, \s/\S | 15min | ☑ |
+| 1.4 | `_mutate_anchors()` — ^, $, \b | 10min | ☑ |
+| 1.5 | `_validate_regex()` — re.compile() Viability-Check | 10min | ☑ |
+| 1.6 | `operator_regex()` in node_mutation.py — CST-Integration | 20min | ☑ |
+| 1.7 | Erkennung von re.*() Aufrufen (re.compile, re.match, etc.) | 15min | ☑ |
+| 1.8 | Unit Tests: Quantifier, CharClass, Anchor, Viability | 30min | ☑ |
+| 1.9 | hypothesis Property-Test: valid regex → valid/filtered output | 15min | ☑ |
+| 1.10 | Integration Test: re.compile() in Code → Mutanten generiert | 15min | ☑ |
+| 1.11 | Ruff + mypy + pytest Quality Gates | 10min | ☑ |
+| 1.12 | Dogfooding: mutmut-win run auf regex_mutation.py | 15min | ☑ |
 
 ---
 
@@ -76,10 +76,10 @@
 
 | Gate | Befehl | Ergebnis | Status |
 |------|--------|----------|--------|
-| Tests | `uv run pytest` | | ⬜ |
-| Coverage | `uv run pytest --cov=src` | | ⬜ |
-| Linting | `uv run ruff check .` | | ⬜ |
-| Type Check | `uv run mypy src/` | | ⬜ |
-| Security | `semgrep scan --config auto .` | | ⬜ |
-| Architecture | `uv run lint-imports` | | ⬜ |
-| Mutation Testing | `uv run mutmut-win run --paths-to-mutate src/mutmut_win/regex_mutation.py` | | ⬜ |
+| Tests | `uv run pytest` | | ☑ |
+| Coverage | `uv run pytest --cov=src` | | ☑ |
+| Linting | `uv run ruff check .` | | ☑ |
+| Type Check | `uv run mypy src/` | | ☑ |
+| Security | `semgrep scan --config auto .` | | ☑ |
+| Architecture | `uv run lint-imports` | | ☑ |
+| Mutation Testing | `uv run mutmut-win run --paths-to-mutate src/mutmut_win/regex_mutation.py` | | ☑ |

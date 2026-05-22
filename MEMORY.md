@@ -16,29 +16,35 @@ generation.
 - Distributed as `mutmut-win` on PyPI. Console script: `mutmut-win`.
 
 ## Where we are
-- **Version**: `pyproject.toml` declares **v2.0.4** (next release). `uv.lock` is
-  one bump behind at v2.0.3 — sync as part of the next release.
-- **Sprint**: 21 — *v2.0.x Stabilization*. See `.sprint/state.md` for the
-  detailed backlog and historical record.
-- **In flight**: [PR #66](https://github.com/pgm1980/mutmut-win/pull/66) —
-  skip `typing.cast()` first-arg mutations (Bug #4 from downstream dogfooding
-  in `pgm1980/critique-model-service`).
+- **Version**: **v2.1.0** released 2026-05-22. `pyproject.toml` and `uv.lock`
+  both at v2.1.0; annotated tag `v2.1.0` on `main` (`8685f93`).
+  [GitHub release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.1.0).
+- **Sprint**: 22 — *v2.0.x Stabilization* (closed with v2.1.0). Sprint 21
+  was Hardening v1.0.0 per `_docs/product backlog/product_backlog.md`. See
+  `.sprint/state.md` for the detailed backlog.
+- **In flight**: nothing — Sprint 22 is closed. Next sprint will pick from
+  the carryover below.
 
 ## Open Decisions / Open Items
-- **#65 Dogfooding** — `[tool.mutmut] paths_to_mutate` is currently narrowed to
-  `regex_mutation.py` only. Decision needed: expand to full `src/mutmut_win/`
-  and accept the runtime cost, or keep narrow and document.
 - **#12 Worker crash recovery** — detection works, full recovery strategy
-  still to be defined.
+  still to be defined. Sprint 3 carryover, Must priority.
 - **#23 Performance benchmarks** — `benchmarks/` directory not created yet.
   Decision needed: which workload to benchmark against upstream `mutmut`.
 - **#38 / #49 E2E validation** — `tests/e2e_projects/` exists (5 fixture
   projects), but no comparison-harness that runs `mutmut-win run` and checks
-  the result table against a frozen baseline.
+  the result table against a frozen baseline. Sprint 10/12 carryover.
 - **#54 Job Object kill-on-close test** — deterministic test missing.
-- **Release cadence** — last several releases bumped patch and minor versions
-  rapidly (1.0.10 → 2.0.0 → 2.0.4 across ~6 weeks). No documented release
-  policy; commit log is currently the only release record.
+  Sprint 13 carryover.
+- **#65 Dogfooding** — `[tool.mutmut] paths_to_mutate` is currently narrowed
+  to `regex_mutation.py` only. Decision needed: expand to full
+  `src/mutmut_win/` and accept the runtime cost, or keep narrow and document.
+- **#67 H-05 also_copy .venv-Symlink review** — filed retroactively in the
+  2026-05-22 housekeeping pass; verify `copy_also_copy_files()` behaviour on
+  inputs that contain or point at a `.venv` directory.
+- **Release cadence** — last several releases bumped patch and minor
+  versions rapidly (1.0.10 → 2.0.0 → 2.1.0 across ~7 weeks). No documented
+  release policy; commit log + GitHub releases (now caught up through
+  v2.1.0) are the record.
 
 ## Architecture Cheatsheet
 - `cli.py` / `browser.py` — UI layer (click + textual).
@@ -54,15 +60,19 @@ generation.
   `cli|browser → orchestrator|runner|mutant_diff → config|models|constants|mutation|node_mutation|trampoline → process`.
 
 ## Recent History (one-liners)
-- v2.0.x — Timeout diagnostics: subprocess timeouts, DEVNULL fix, temp-file
-  capture, DB-persisted `last_output`.
-- v2.0.0 — Test-to-mutant mapping via injected pytest plugin (`fe194c2`).
-- v1.0.x — Cache-invalidation fixes, WinError 32/206 fixes, `.pth` shadow,
-  package copy.
-- Hardening Sprint — Job Objects (#52–#54), 10 CLI flags (#63), hook fixes
-  H-01–H-07.
-- Sprints 14–20 — seven advanced operators merged (Regex, Math, Return,
-  Conditional, Statement Removal, Collection, or-Default).
+- **Sprint 22 / v2.1.0** — Bug #4 typing.cast() skip (PR #66), housekeeping
+  (42 stale issues closed, MEMORY.md+state.md+backlogs synced), v2.1.0 tag
+  and consolidated GitHub release covering everything since v1.0.7.
+- **v2.0.x** — Timeout diagnostics: subprocess timeouts, DEVNULL fix,
+  temp-file capture, DB-persisted `last_output`.
+- **v2.0.0** — Test-to-mutant mapping via injected pytest plugin
+  (`fe194c2`).
+- **v1.0.x** — Cache-invalidation fixes, WinError 32/206 fixes, `.pth`
+  shadow, package copy.
+- **Sprint 21 / Hardening v1.0.0** — Job Objects (#52–#54), 10 CLI flags
+  (#63), hook fixes H-01–H-07 (#64), worker import fix H-06 (#62).
+- **Sprints 14–20** — seven advanced operators merged (Regex, Math,
+  Return, Conditional, Statement Removal, Collection, or-Default).
 
 ## Conventions Reminders
 - Tooling: `uv` only (not `pip`). `uv run <tool>` for everything.
