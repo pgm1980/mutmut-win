@@ -61,3 +61,6 @@ html/
 # Misc
 *.log
 .sprint/.last-gate-commit
+
+# Local bug-report scratchpad (downstream findings before they become GitHub issues)
+_issues/
