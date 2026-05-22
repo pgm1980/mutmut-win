@@ -116,10 +116,23 @@ class MutationVisitor(cst.CSTVisitor):
         self._operators = operators
         self._ignored_lines = ignore_lines
         self._covered_lines = covered_lines
+        # ids() of CST nodes whose entire subtree must NOT be mutated.
+        # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
+        # whose first argument is a pure type annotation (see Bug #4).
+        self._skip_subtree_ids: set[int] = set()
 
     def on_visit(self, node: cst.CSTNode) -> bool:
+        if id(node) in self._skip_subtree_ids:
+            return False
         if self._skip_node_and_children(node):
             return False
+
+        # If this is a typing.cast(...) call, mark its first argument's entire
+        # subtree as no-mutate. The first argument is a pure type annotation
+        # (``cast`` is the identity function at runtime) and mutations there
+        # are observable-equivalent — see Bug #4.
+        if isinstance(node, cst.Call) and _is_cast_call(node) and node.args:
+            node.args[0].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
 
         if self._should_mutate_node(node):
             self._create_mutations(node)
@@ -128,9 +141,27 @@ class MutationVisitor(cst.CSTVisitor):
         return True
 
     def _create_mutations(self, node: cst.CSTNode) -> None:
+        is_cast = isinstance(node, cst.Call) and _is_cast_call(node)
+        original_first_arg: cst.Arg | None = None
+        if is_cast:
+            # mypy: the is_cast guard already proves node is a cst.Call
+            assert isinstance(node, cst.Call)  # noqa: S101 - narrow-only assert
+            original_first_arg = node.args[0] if node.args else None
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
+                    # Bug #4: drop any mutation of a typing.cast(...) call that would
+                    # change the first argument — it has no runtime effect and the
+                    # resulting mutants are unkillable equivalents.
+                    if (
+                        is_cast
+                        and original_first_arg is not None
+                        and isinstance(mutated_node, cst.Call)
+                        and (
+                            not mutated_node.args or mutated_node.args[0] is not original_first_arg
+                        )
+                    ):
+                        continue
                     mutation = Mutation(
                         original_node=node,
                         mutated_node=mutated_node,
@@ -193,6 +224,38 @@ class MutationVisitor(cst.CSTVisitor):
         # 3) @property decorators break the trampoline signature assignment
         #    (which expects it to be a function)
         return bool(isinstance(node, (cst.FunctionDef, cst.ClassDef)) and len(node.decorators))
+
+
+def _is_cast_call(node: cst.Call) -> bool:
+    """Return True if ``node`` is a call to ``typing.cast`` or unqualified ``cast``.
+
+    The first argument of :func:`typing.cast` is a *type annotation* — at runtime
+    ``cast`` is the identity function and returns the second argument unchanged.
+    Mutating the first argument therefore can never change observable behaviour,
+    which makes such mutants unkillable (see Bug #4 in critique-model-service's
+    ``_misc/mutmut-win-bugs.md``).
+    """
+    func = node.func
+    if isinstance(func, cst.Name) and func.value == "cast":
+        return True
+    return (
+        isinstance(func, cst.Attribute)
+        and isinstance(func.value, cst.Name)
+        and func.value.value == "typing"
+        and func.attr.value == "cast"
+    )
+
+
+class _SubtreeIdCollector(cst.CSTVisitor):
+    """Collect ``id()`` of every node in a CST subtree (including the root)."""
+
+    def __init__(self, target: set[int]) -> None:
+        super().__init__()
+        self._target = target
+
+    def on_visit(self, node: cst.CSTNode) -> bool:
+        self._target.add(id(node))
+        return True
 
 
 MODULE_STATEMENT = cst.SimpleStatementLine | cst.BaseCompoundStatement
