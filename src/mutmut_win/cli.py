@@ -82,6 +82,16 @@ def cli() -> None:
     default=False,
     help="Delete mutants/ and .mutmut-cache/ before running (clean slate).",
 )
+@click.option(
+    "--treat-timeout-as-kill",
+    is_flag=True,
+    default=False,
+    help=(
+        "Count TIMEOUT mutants toward the kill bucket for --min-score and "
+        "score reporting. Workaround for Bug #71 (Hypothesis tests turn "
+        "infinite-loop mutations into TIMEOUT)."
+    ),
+)
 @click.argument("mutant_names", nargs=-1)
 def run(
     max_children: int | None,
@@ -96,6 +106,7 @@ def run(
     timeout_multiplier: float | None,
     do_not_mutate: tuple[str, ...],
     force: bool,
+    treat_timeout_as_kill: bool,
     mutant_names: tuple[str, ...],
 ) -> None:
     """Run mutation testing.
@@ -169,17 +180,31 @@ def run(
         click.echo(result.model_dump_json(indent=2))
 
     # --- Score gate ---
-    if min_score is not None and result.score < min_score:
-        click.echo(
-            f"Mutation score {result.score:.1f}% is below threshold {min_score}%",
-            err=True,
-        )
-        sys.exit(1)
+    if min_score is not None:
+        gate_score = result.compute_score(treat_timeout_as_kill=treat_timeout_as_kill)
+        if gate_score < min_score:
+            qualifier = " (timeouts counted as kills)" if treat_timeout_as_kill else ""
+            click.echo(
+                f"Mutation score {gate_score:.1f}%{qualifier} is below threshold "
+                f"{min_score}%",
+                err=True,
+            )
+            sys.exit(1)
 
 
 @cli.command()
 @click.option("--all", "show_all", is_flag=True, default=False, help="Include killed mutants.")
-def results(show_all: bool) -> None:
+@click.option(
+    "--treat-timeout-as-kill",
+    is_flag=True,
+    default=False,
+    help=(
+        "Count TIMEOUT mutants toward the kill bucket in the displayed score. "
+        "Workaround for Bug #71 (Hypothesis tests turn infinite-loop mutations "
+        "into TIMEOUT)."
+    ),
+)
+def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     """Print a summary of mutation testing results from the cache database."""
     all_results = load_results(DEFAULT_DB_PATH)
 
@@ -200,7 +225,8 @@ def results(show_all: bool) -> None:
     suspicious = counts.get("suspicious", 0)
 
     denominator = total - skipped - no_tests
-    score = (killed / denominator * 100.0) if denominator > 0 else 0.0
+    effective_killed = killed + (timeout if treat_timeout_as_kill else 0)
+    score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
     click.echo(f"Total:     {total}")
     click.echo(f"Killed:    {killed}")
@@ -209,7 +235,10 @@ def results(show_all: bool) -> None:
     click.echo(f"Suspicious:{suspicious}")
     click.echo(f"Skipped:   {skipped}")
     click.echo(f"No tests:  {no_tests}")
-    click.echo(f"Score:     {score:.1f}%")
+    if treat_timeout_as_kill and timeout > 0:
+        click.echo(f"Score:     {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
+    else:
+        click.echo(f"Score:     {score:.1f}%")
 
     if show_all:
         click.echo("")
