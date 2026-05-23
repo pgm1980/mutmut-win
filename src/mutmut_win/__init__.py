@@ -1,3 +1,8 @@
 """mutmut-win: Windows-native mutation testing for Python."""
 
-__version__ = "2.0.4"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("mutmut-win")
+except PackageNotFoundError:  # pragma: no cover - editable / unpacked source install
+    __version__ = "unknown"

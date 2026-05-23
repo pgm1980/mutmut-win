@@ -40,6 +40,7 @@ def _make_config(**overrides: Any) -> dict[str, Any]:
         "pytest_add_cli_args_test_selection": [],
         "mutate_only_covered_lines": False,
         "type_check_command": [],
+        "infinite_loop_detection": False,
     }
     base.update(overrides)
     return base

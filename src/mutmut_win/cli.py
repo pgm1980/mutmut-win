@@ -102,6 +102,27 @@ def cli() -> None:
         "(e.g. benchmarks/). Repeatable. Overrides [tool.mutmut].extra_paths."
     ),
 )
+@click.option(
+    "--no-infinite-loop-detection",
+    "no_infinite_loop_detection",
+    is_flag=True,
+    default=False,
+    help=(
+        "Disable triple-check IL classification (Issue #71). Wall-clock "
+        "timeouts will be bucketed as plain TIMEOUT regardless of CPU / "
+        "output / process status. Off by default — IL detection is on."
+    ),
+)
+@click.option(
+    "--infinite-loop-cpu-threshold",
+    type=float,
+    default=None,
+    help=(
+        "Override the mean-CPU%% threshold (0 - 10000) above which a timed-out "
+        "mutant is reclassified as killed_by_infinite_loop. pyproject default "
+        "is 70.0."
+    ),
+)
 @click.argument("mutant_names", nargs=-1)
 def run(
     max_children: int | None,
@@ -118,6 +139,8 @@ def run(
     force: bool,
     treat_timeout_as_kill: bool,
     extra_paths_to_copy: tuple[str, ...],
+    no_infinite_loop_detection: bool,
+    infinite_loop_cpu_threshold: float | None,
     mutant_names: tuple[str, ...],
 ) -> None:
     """Run mutation testing.
@@ -152,6 +175,10 @@ def run(
         overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
     if extra_paths_to_copy:
         overrides["extra_paths"] = list(extra_paths_to_copy)
+    if no_infinite_loop_detection:
+        overrides["infinite_loop_detection"] = False
+    if infinite_loop_cpu_threshold is not None:
+        overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
 
     # --since-commit: resolve changed .py files via git
     if since_commit is not None:
@@ -230,7 +257,12 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         counts[result.status] = counts.get(result.status, 0) + 1
 
     total = len(all_results)
-    killed = counts.get("killed", 0) + counts.get("caught by type check", 0)
+    killed = (
+        counts.get("killed", 0)
+        + counts.get("caught by type check", 0)
+        + counts.get("killed_by_infinite_loop", 0)  # Issue #71 — IL classification
+    )
+    il_killed = counts.get("killed_by_infinite_loop", 0)
     survived = counts.get("survived", 0)
     timeout = counts.get("timeout", 0)
     skipped = counts.get("skipped", 0)
@@ -242,7 +274,10 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
     click.echo(f"Total:     {total}")
-    click.echo(f"Killed:    {killed}")
+    if il_killed > 0:
+        click.echo(f"Killed:    {killed}  (incl. {il_killed} infinite-loop)")
+    else:
+        click.echo(f"Killed:    {killed}")
     click.echo(f"Survived:  {survived}")
     click.echo(f"Timeout:   {timeout}")
     click.echo(f"Suspicious:{suspicious}")
