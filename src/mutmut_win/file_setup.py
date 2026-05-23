@@ -190,10 +190,24 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     ) -> list[str]:
         return [f for f in files if f in skip_dirs]
 
-    for path_str in config.also_copy:
-        print("     also copying", path_str)
+    # extra_paths (Bug #69) are handled by the same copy mechanism as also_copy.
+    # Their distinguishing trait — being added to the worker's PYTHONPATH — is
+    # implemented in process/worker.py rather than here.
+    paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
+
+    for path_str in paths_to_copy:
         path = Path(path_str)
-        # Guard: absolute paths break Path("mutants") / path because Python
+        # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
+        # be mirrored into mutants/ even when the user lists them explicitly.
+        # The ``_ignore_venvs`` callback below only filters *children* during
+        # copytree, so a top-level entry like ``also_copy = [".venv"]`` would
+        # otherwise reach copy_with_retry() and mirror the whole virtualenv —
+        # slow at best, broken on Windows because of symlinked Scripts/python.exe.
+        if path.name in skip_dirs:
+            print("     skipping", path_str, "(matches venv/cache skip list)")
+            continue
+        print("     also copying", path_str)
+        # Guard 2: absolute paths break Path("mutants") / path because Python
         # discards the left operand when the right is absolute, causing a
         # self-copy (source == destination).  Make them relative to CWD.
         if path.is_absolute():

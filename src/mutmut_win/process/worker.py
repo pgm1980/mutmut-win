@@ -150,14 +150,24 @@ def _process_task(
     # Activate the specific mutant via the trampoline env var.
     # Set PYTHONPATH so subprocess can import from mutants/src etc.
     env = os.environ.copy()
-    extra_paths = []
+    pythonpath_dirs: list[str] = []
     for subdir in ["src", "source", "."]:
         candidate = Path("mutants") / subdir
         if candidate.exists():
-            extra_paths.append(str(candidate.absolute()))
-    if extra_paths:
+            pythonpath_dirs.append(str(candidate.absolute()))
+    # Bug #69: extra_paths from config map to mutants/<extra_path> and must be
+    # on PYTHONPATH so sibling-package imports resolve inside the mutants venv.
+    raw_extra_paths = config_data.get("extra_paths", [])
+    if isinstance(raw_extra_paths, list):
+        for extra in raw_extra_paths:
+            extra_path = Path("mutants") / str(extra)
+            if extra_path.exists():
+                pythonpath_dirs.append(str(extra_path.absolute()))
+    if pythonpath_dirs:
         existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+        env["PYTHONPATH"] = os.pathsep.join(
+            pythonpath_dirs + ([existing] if existing else [])
+        )
     env[MUTANT_ENV_VAR] = task.mutant_name
 
     # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.

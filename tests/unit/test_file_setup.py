@@ -194,6 +194,57 @@ class TestCopyAlsoCopyFiles:
         finally:
             os.chdir(original_cwd)
 
+    def test_top_level_venv_is_skipped(self, tmp_path: Path) -> None:
+        """Bug #67/H-05: a top-level ``.venv`` in ``also_copy`` must be ignored.
+
+        The pre-Sprint-25 implementation only skipped ``.venv`` directories that
+        appeared as *children* of a copied directory (via the ``shutil.copytree``
+        ignore callback). A user who configured ``also_copy = [".venv"]``
+        directly would still get the entire virtualenv mirrored under
+        ``mutants/.venv`` — slow at best, broken on Windows with symlinked
+        ``Scripts/python.exe`` at worst.
+        """
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text("home = …\n", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        original_cwd = Path.cwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = _config(also_copy=[".venv"])
+            copy_also_copy_files(cfg)
+            assert not (tmp_path / "mutants" / ".venv").exists(), (
+                "Top-level .venv in also_copy was mirrored into mutants/ — "
+                "Bug #67 regression."
+            )
+        finally:
+            os.chdir(original_cwd)
+
+    def test_nested_venv_inside_copied_directory_is_skipped(self, tmp_path: Path) -> None:
+        """A ``.venv`` inside a copied parent directory must also be ignored.
+
+        Regression guard for the existing ``shutil.copytree`` ignore callback.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "main.py").write_text("print('hi')\n", encoding="utf-8")
+        (project / ".venv").mkdir()
+        (project / ".venv" / "pyvenv.cfg").write_text("home = …\n", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        original_cwd = Path.cwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = _config(also_copy=["project"])
+            copy_also_copy_files(cfg)
+            assert (tmp_path / "mutants" / "project" / "main.py").exists()
+            assert not (tmp_path / "mutants" / "project" / ".venv").exists(), (
+                "Nested .venv under a copied directory was mirrored — "
+                "Bug #67 regression."
+            )
+        finally:
+            os.chdir(original_cwd)
+
 
 # ---------------------------------------------------------------------------
 # setup_source_paths

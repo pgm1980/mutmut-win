@@ -1,7 +1,7 @@
 ---
-current_sprint: "24"
-sprint_goal: "Must-priority carryover — Worker recovery (#12), E2E harness (#38/#49), Job-Object test (#54), Dogfooding (#65). Release v2.3.0."
-branch: "feature/v2.3.0-must-carryover"
+current_sprint: "25"
+sprint_goal: "Final cleanup — H-05 .venv-skip (#67), sibling packages (#69), Performance benchmarks (#23). Release v2.4.0."
+branch: "feature/v2.4.0-final-cleanup"
 started_at: "2026-05-23"
 housekeeping_done: true
 memory_updated: true
