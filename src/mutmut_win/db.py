@@ -7,6 +7,7 @@ cache database.  The default database location is
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,30 +25,37 @@ CREATE TABLE IF NOT EXISTS mutant (
     status      TEXT NOT NULL,
     exit_code   INTEGER,
     duration    REAL,
-    last_output TEXT
+    last_output TEXT,
+    forensics   TEXT
 )
 """
 
 #: Migration: add last_output column to existing databases.
-_MIGRATE_ADD_LAST_OUTPUT = (
-    "ALTER TABLE mutant ADD COLUMN last_output TEXT"
-)
+_MIGRATE_ADD_LAST_OUTPUT = "ALTER TABLE mutant ADD COLUMN last_output TEXT"
+
+#: Migration: add forensics JSON column for IL-detection evidence (Issue #71).
+_MIGRATE_ADD_FORENSICS = "ALTER TABLE mutant ADD COLUMN forensics TEXT"
 
 #: INSERT-or-replace statement used by save_result.
 _UPSERT_SQL = """
-INSERT OR REPLACE INTO mutant (mutant_name, status, exit_code, duration, last_output)
-VALUES (?, ?, ?, ?, ?)
+INSERT OR REPLACE INTO mutant
+    (mutant_name, status, exit_code, duration, last_output, forensics)
+VALUES (?, ?, ?, ?, ?, ?)
 """
 
 #: SELECT statement for load_results.
-_SELECT_ALL_SQL = "SELECT mutant_name, status, exit_code, duration, last_output FROM mutant"
+_SELECT_ALL_SQL = (
+    "SELECT mutant_name, status, exit_code, duration, last_output, forensics "
+    "FROM mutant"
+)
 
 
 def create_db(path: Path = DEFAULT_DB_PATH) -> None:
     """Create the SQLite database and schema if they do not exist.
 
     Parent directories are created automatically.  Existing databases
-    from older versions are migrated (``last_output`` column added).
+    from older versions are migrated (``last_output`` and ``forensics``
+    columns added).
 
     Args:
         path: Filesystem path to the SQLite database file.
@@ -55,10 +63,12 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.execute(_CREATE_TABLE_SQL)
-        # Migrate existing databases: add last_output if missing.
+        # Migrate existing databases from older schemas.
         columns = {row[1] for row in conn.execute("PRAGMA table_info(mutant)").fetchall()}
         if "last_output" not in columns:
             conn.execute(_MIGRATE_ADD_LAST_OUTPUT)
+        if "forensics" not in columns:
+            conn.execute(_MIGRATE_ADD_FORENSICS)
         conn.commit()
 
 
@@ -69,6 +79,7 @@ def save_result(
     exit_code: int | None,
     duration: float | None,
     last_output: str | None = None,
+    forensics: dict[str, object] | None = None,
 ) -> None:
     """Persist a single mutation result (upsert semantics).
 
@@ -77,14 +88,20 @@ def save_result(
     Args:
         path: Filesystem path to the SQLite database file.
         mutant_name: Unique mutant identifier.
-        status: Mutation status string (e.g. ``"killed"``, ``"survived"``).
+        status: Mutation status string (e.g. ``"killed"``, ``"survived"``,
+            ``"killed_by_infinite_loop"``).
         exit_code: Pytest exit code, or ``None`` if not available.
         duration: Test execution time in seconds, or ``None`` if not measured.
         last_output: Last pytest output lines (captured on timeout/suspicious).
+        forensics: Optional IL-detection forensic snapshot, serialised as JSON.
     """
     create_db(path)
+    forensics_json = json.dumps(forensics) if forensics is not None else None
     with sqlite3.connect(path) as conn:
-        conn.execute(_UPSERT_SQL, (mutant_name, status, exit_code, duration, last_output))
+        conn.execute(
+            _UPSERT_SQL,
+            (mutant_name, status, exit_code, duration, last_output, forensics_json),
+        )
         conn.commit()
 
 
@@ -108,13 +125,25 @@ def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
         cursor = conn.execute(_SELECT_ALL_SQL)
         rows = cursor.fetchall()
 
-    return [
-        MutationResult(
-            mutant_name=row[0],
-            status=row[1],
-            exit_code=row[2],
-            duration=row[3],
-            last_output=row[4] if len(row) > 4 else None,
+    out: list[MutationResult] = []
+    for row in rows:
+        forensics_raw = row[5] if len(row) > 5 else None
+        forensics: dict[str, object] | None = None
+        if forensics_raw:
+            try:
+                parsed = json.loads(forensics_raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                forensics = parsed
+        out.append(
+            MutationResult(
+                mutant_name=row[0],
+                status=row[1],
+                exit_code=row[2],
+                duration=row[3],
+                last_output=row[4] if len(row) > 4 else None,
+                forensics=forensics,
+            )
         )
-        for row in rows
-    ]
+    return out

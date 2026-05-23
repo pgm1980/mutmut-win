@@ -660,7 +660,9 @@ def _increment_summary(summary: MutationRunResult, status: str) -> None:
         status: Mutation status string from ``constants.status_by_exit_code``.
     """
     match status:
-        case "killed" | "caught by type check":
+        case "killed" | "caught by type check" | "killed_by_infinite_loop":
+            # Issue #71: killed_by_infinite_loop is a true kill (suite never
+            # terminates under the mutant — observable behaviour change).
             summary.killed += 1
         case "survived":
             summary.survived += 1

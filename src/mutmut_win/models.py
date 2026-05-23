@@ -65,6 +65,16 @@ class TaskCompleted(BaseModel):
         default=None,
         description="Last pytest output lines (captured on timeout/suspicious exit codes)",
     )
+    forensics: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "Optional IL-detection forensic snapshot from the triple-check "
+            "classifier (Issue #71). Populated when the worker timed out and "
+            "infinite_loop_detection was active. Stored as plain dict so it "
+            "round-trips through multiprocessing.Queue pickling without "
+            "binding to loop_monitor types."
+        ),
+    )
 
 
 class TaskTimedOut(BaseModel):
@@ -85,12 +95,26 @@ class MutationResult(BaseModel):
     """Result of a single mutation test."""
 
     mutant_name: str
-    status: str = Field(description="survived, killed, timeout, suspicious, etc.")
+    status: str = Field(
+        description=(
+            "survived, killed, timeout, killed_by_infinite_loop, suspicious, etc."
+        )
+    )
     exit_code: int | None = None
     duration: float | None = Field(default=None, ge=0.0)
     last_output: str | None = Field(
         default=None,
         description="Last pytest output lines (captured on timeout/suspicious exit codes)",
+    )
+    forensics: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "Optional IL-detection forensic snapshot (cpu mean/max, output "
+            "growth, running ratio, confidence). Populated only when the "
+            "triple-check classifier ran — Issue #71. Stored as a plain dict "
+            "so the orchestrator can pickle it across the multiprocessing "
+            "boundary without depending on loop_monitor types."
+        ),
     )
 
 

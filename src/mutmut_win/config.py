@@ -136,6 +136,46 @@ class MutmutConfig(BaseModel):
         description="Type checker command (e.g. ['mypy', 'src/'])",
     )
 
+    # ---- True infinite-loop detection (Bug #5 / Issue #71, Sprint 26) -----
+    infinite_loop_detection: bool = Field(
+        default=True,
+        description=(
+            "Enable triple-check classifier that reclassifies wall-clock "
+            "timeouts as killed_by_infinite_loop when CPU is pegged AND no "
+            "output growth AND process status=running. Requires psutil. "
+            "See Issue #71."
+        ),
+    )
+    infinite_loop_cpu_threshold: float = Field(
+        default=70.0,
+        ge=0.0,
+        le=10_000.0,
+        description="Mean CPU%% in window required to classify as infinite loop.",
+    )
+    infinite_loop_output_threshold: int = Field(
+        default=1024,
+        ge=0,
+        description=(
+            "Maximum output growth (bytes) in window allowed for an IL "
+            "verdict. Above this, the test is making observable progress."
+        ),
+    )
+    infinite_loop_running_ratio: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum fraction of samples where process status == 'running' "
+            "required for an IL verdict. Filters out sleeping (network-wait) "
+            "tests."
+        ),
+    )
+    infinite_loop_window_seconds: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="Rolling sample window (seconds) used by the classifier.",
+    )
+
     @field_validator("paths_to_mutate", "tests_dir", mode="before")
     @classmethod
     def _coerce_string_to_list(cls, v: object) -> object:

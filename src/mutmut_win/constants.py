@@ -18,6 +18,7 @@ status_by_exit_code: defaultdict[int | None, str] = defaultdict(
         35: "suspicious",
         36: "timeout",
         37: "caught by type check",
+        38: "killed_by_infinite_loop",  # Issue #71 — triple-check IL classifier
         -24: "timeout",  # SIGXCPU (overrides -24: "killed" above, same as mutmut)
         24: "timeout",  # SIGXCPU
         152: "timeout",  # SIGXCPU
@@ -38,6 +39,7 @@ emoji_by_status: dict[str, str] = {
     "check was interrupted by user": "\U0001f6d1",
     "not checked": "?",
     "killed": "\U0001f389",
+    "killed_by_infinite_loop": "\U0001f300",  # cyclone — IL classification (Issue #71)
     "segfault": "\U0001f4a5",
 }
 
@@ -50,3 +52,4 @@ exit_code_to_emoji: defaultdict[int | None, str] = defaultdict(
 EXIT_CODE_TIMEOUT: int = 36
 EXIT_CODE_SKIPPED: int = 34
 EXIT_CODE_TYPE_CHECK: int = 37
+EXIT_CODE_INFINITE_LOOP: int = 38  # Issue #71 — triple-check IL classifier verdict

@@ -118,12 +118,14 @@ class TestExtraPathsPythonPath:
         try:
             captured_env: dict[str, str] = {}
 
-            def fake_run(_cmd: list[str], **kwargs: Any) -> MagicMock:
+            def fake_popen(_cmd: list[str], **kwargs: Any) -> MagicMock:
                 env = kwargs.get("env", {})
                 captured_env.update(env)
-                result = MagicMock()
-                result.returncode = 0
-                return result
+                proc = MagicMock()
+                proc.pid = 12345
+                proc.wait.return_value = 0
+                proc.poll.return_value = 0
+                return proc
 
             task_q: Queue[Any] = Queue()
             event_q: Queue[Any] = Queue()
@@ -144,9 +146,10 @@ class TestExtraPathsPythonPath:
                 "pytest_add_cli_args_test_selection": [],
                 "mutate_only_covered_lines": False,
                 "type_check_command": [],
+                "infinite_loop_detection": False,
             }
 
-            with patch("mutmut_win.process.worker.subprocess.run", side_effect=fake_run):
+            with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
                 worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]
 
             python_path = captured_env.get("PYTHONPATH", "")

@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 
@@ -179,29 +179,60 @@ def _process_task(
     )
     log_path = Path(log_path_str)
     last_output: str | None = None
+    forensics_dict: dict[str, object] | None = None
     exit_code: int = 35  # default to suspicious so the finally clause is safe
 
+    # ---- IL-detection setup (Issue #71, Sprint 26) ---------------------
+    il_enabled = bool(config_data.get("infinite_loop_detection", True))
+    il_thresholds = _build_il_thresholds(config_data)
+    monitor: Any = None  # ProcessMonitor or None — Any avoids loop_monitor import
+
     start = time.monotonic()
+    proc: subprocess.Popen[bytes] | None = None
     try:
-        result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+        # Popen + wait(timeout) so we can attach the monitor against a live PID
+        # and run our classifier on timeout. (subprocess.run cannot expose the
+        # PID until after the call returns.)
+        proc = subprocess.Popen(  # noqa: S603 - command is fully controlled
             cmd,
             env=env,
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             cwd="mutants",
-            timeout=worker_timeout,
         )
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired:
-        exit_code = 36  # timeout
-        # Read last lines for diagnostics before cleanup.
-        os.close(log_fd)
-        log_fd = -1
-        last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+        monitor = _maybe_start_loop_monitor(il_enabled, proc.pid, log_path)
+        try:
+            exit_code = proc.wait(timeout=worker_timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the still-running subprocess (and its children via Job Object
+            # if available) before sampling so the classifier sees the final
+            # state of the rolling window.
+            _kill_proc_tree(proc)
+            os.close(log_fd)
+            log_fd = -1
+            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+            if monitor is not None:
+                samples = monitor.take_samples_snapshot()
+                classification = _classify_with_monitor(samples, il_thresholds, last_output)
+                if classification.verdict == "killed_by_infinite_loop":
+                    exit_code = 38  # EXIT_CODE_INFINITE_LOOP — kill-bucket
+                    forensics_dict = classification.forensics.model_dump()
+                    forensics_dict["confidence"] = classification.confidence
+                else:
+                    exit_code = 36  # timeout
+                    # Persist forensics even on plain timeout so the user can see
+                    # why the classifier said "not IL".
+                    forensics_dict = classification.forensics.model_dump()
+                    forensics_dict["confidence"] = classification.confidence
+            else:
+                exit_code = 36  # timeout (no detection available)
     except OSError as exc:
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
         exit_code = 35  # suspicious
     finally:
+        if monitor is not None:
+            with contextlib.suppress(Exception):
+                monitor.shutdown()
         if log_fd >= 0:
             os.close(log_fd)
         # Read diagnostics for suspicious exits (if not already read).
@@ -222,6 +253,7 @@ def _process_task(
             exit_code=exit_code,
             duration=duration,
             last_output=last_output,
+            forensics=forensics_dict,
         ).model_dump()
     )
 
@@ -234,3 +266,98 @@ def _read_last_lines(path: Path, n: int) -> str | None:
         return None
     lines = content.splitlines()
     return "\n".join(lines[-n:]) if lines else None
+
+
+# ---------------------------------------------------------------------------
+# IL-detection helpers (Issue #71, Sprint 26)
+# ---------------------------------------------------------------------------
+
+
+def _maybe_start_loop_monitor(
+    enabled: bool, pid: int, log_path: Path
+) -> Any:
+    """Try to spawn an IL-detection monitor; return ``None`` on opt-out / failure.
+
+    Failures here MUST NEVER take down the worker — IL detection is best-effort
+    enhancement. psutil missing, permission denied on the PID, or any other
+    error degrades gracefully to "no detection, plain timeout".
+    """
+    if not enabled:
+        return None
+    try:
+        from mutmut_win.process.loop_monitor import ProcessMonitor, has_psutil
+
+        if not has_psutil():
+            return None
+        monitor = ProcessMonitor(pid=pid, log_path=log_path)
+        monitor.start()
+    except Exception as exc:  # graceful degradation: never poison the run
+        print(f"WORKER MONITOR start failed: {exc}", flush=True)
+        return None
+    return monitor
+
+
+def _build_il_thresholds(config_data: dict[str, object]) -> Any:
+    """Build an :class:`IlThresholds` from the worker's config dict.
+
+    Lazy-imported so that workers can avoid the loop_monitor module entirely
+    when IL detection is disabled (one less code path loaded under the GIL).
+    """
+    from mutmut_win.process.loop_monitor import IlThresholds
+
+    def _coerce_float(key: str, default: float) -> float:
+        v = config_data.get(key, default)
+        try:
+            return float(v) if isinstance(v, (int, float)) else default
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_int(key: str, default: int) -> int:
+        v = config_data.get(key, default)
+        try:
+            return int(v) if isinstance(v, (int, float)) else default
+        except (TypeError, ValueError):
+            return default
+
+    return IlThresholds(
+        cpu_threshold=_coerce_float("infinite_loop_cpu_threshold", 70.0),
+        output_threshold=_coerce_int("infinite_loop_output_threshold", 1024),
+        running_ratio=_coerce_float("infinite_loop_running_ratio", 0.8),
+        window_seconds=_coerce_float("infinite_loop_window_seconds", 10.0),
+    )
+
+
+def _classify_with_monitor(
+    samples: Any,
+    thresholds: Any,
+    last_output: str | None,
+) -> Any:
+    """Lazy-import classifier indirection — keeps loop_monitor optional in tests."""
+    from mutmut_win.process.loop_monitor import classify_samples
+
+    return classify_samples(samples, thresholds, last_output_tail=last_output)  # type: ignore[arg-type,unused-ignore]
+
+
+def _kill_proc_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Terminate the subprocess (and its child tree if psutil is around)."""
+    if proc.poll() is not None:
+        return
+    try:
+        from mutmut_win.process.loop_monitor import has_psutil
+
+        if has_psutil():
+            import psutil  # type: ignore[import-untyped,unused-ignore]
+
+            try:
+                parent = psutil.Process(proc.pid)
+                for child in parent.children(recursive=True):
+                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                        child.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except ImportError:
+        pass
+    with contextlib.suppress(Exception):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=2.0)

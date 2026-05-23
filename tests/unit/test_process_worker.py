@@ -18,7 +18,12 @@ from mutmut_win.process.worker import MUTANT_ENV_VAR, worker_main
 
 
 def _make_config(**overrides: Any) -> dict[str, Any]:
-    """Return a minimal config_data dict accepted by worker_main."""
+    """Return a minimal config_data dict accepted by worker_main.
+
+    IL detection is OFF by default in these tests so the worker doesn't try to
+    import psutil / spawn a ProcessMonitor thread against the mocked subprocess.
+    Tests that exercise IL detection live in test_loop_monitor.py.
+    """
     base: dict[str, Any] = {
         "paths_to_mutate": ["src/"],
         "tests_dir": ["tests/"],
@@ -32,9 +37,19 @@ def _make_config(**overrides: Any) -> dict[str, Any]:
         "pytest_add_cli_args_test_selection": [],
         "mutate_only_covered_lines": False,
         "type_check_command": [],
+        "infinite_loop_detection": False,
     }
     base.update(overrides)
     return base
+
+
+def _make_popen_mock(exit_code: int = 0) -> MagicMock:
+    """Return a Mock that quacks like ``subprocess.Popen`` for worker tests."""
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+    fake_proc.wait.return_value = exit_code
+    fake_proc.poll.return_value = exit_code  # already exited
+    return fake_proc
 
 
 def _simple_task(**overrides: Any) -> dict[str, Any]:
@@ -86,10 +101,10 @@ class TestWorkerMain:
         task_q.put(_simple_task())
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-
-        with patch("mutmut_win.process.worker.subprocess.run", return_value=fake_result):
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            return_value=_make_popen_mock(exit_code=0),
+        ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
         started_raw = event_q.get()
@@ -113,10 +128,10 @@ class TestWorkerMain:
         task_q.put(_simple_task())
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 1
-
-        with patch("mutmut_win.process.worker.subprocess.run", return_value=fake_result):
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            return_value=_make_popen_mock(exit_code=1),
+        ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
         event_q.get()  # TaskStarted
@@ -125,24 +140,21 @@ class TestWorkerMain:
         assert completed.exit_code == 1
 
     def test_mutant_env_var_is_set(self) -> None:
-        """MUTANT_UNDER_TEST env var must be forwarded to subprocess.run."""
+        """MUTANT_UNDER_TEST env var must be forwarded to subprocess."""
         task_q: _SimpleQueue = _SimpleQueue()
         event_q: _SimpleQueue = _SimpleQueue()
 
         task_q.put(_simple_task())
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-
         captured_env: dict[str, str] = {}
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             env = kwargs.get("env", {})
             captured_env.update(env)
-            return fake_result
+            return _make_popen_mock(exit_code=0)
 
-        with patch("mutmut_win.process.worker.subprocess.run", side_effect=fake_run):
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
         assert captured_env.get(MUTANT_ENV_VAR) == "src/foo.py::bar__mutmut_1"
@@ -155,16 +167,13 @@ class TestWorkerMain:
         task_q.put(_simple_task())
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-
         captured_cmds: list[list[str]] = []
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             captured_cmds.append(list(cmd))
-            return fake_result
+            return _make_popen_mock(exit_code=0)
 
-        with patch("mutmut_win.process.worker.subprocess.run", side_effect=fake_run):
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
             worker_main(
                 task_q,  # type: ignore[arg-type]
                 event_q,  # type: ignore[arg-type]
@@ -186,10 +195,10 @@ class TestWorkerMain:
             task_q.put(task)
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-
-        with patch("mutmut_win.process.worker.subprocess.run", return_value=fake_result):
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            return_value=_make_popen_mock(exit_code=0),
+        ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
         events = []
@@ -208,15 +217,13 @@ class TestWorkerMain:
         task_q.put(bare_task)
         task_q.put(None)
 
-        fake_result = MagicMock()
-        fake_result.returncode = 0
         captured: list[list[str]] = []
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             captured.append(list(cmd))
-            return fake_result
+            return _make_popen_mock(exit_code=0)
 
-        with patch("mutmut_win.process.worker.subprocess.run", side_effect=fake_run):
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
         assert len(captured) == 1
@@ -246,10 +253,10 @@ def test_various_exit_codes_forwarded(exit_code: int, expected: int) -> None:
     task_q.put(MutationTask(mutant_name="m1").model_dump())
     task_q.put(None)
 
-    fake_result = MagicMock()
-    fake_result.returncode = exit_code
-
-    with patch("mutmut_win.process.worker.subprocess.run", return_value=fake_result):
+    with patch(
+        "mutmut_win.process.worker.subprocess.Popen",
+        return_value=_make_popen_mock(exit_code=exit_code),
+    ):
         worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
     event_q.get()  # TaskStarted

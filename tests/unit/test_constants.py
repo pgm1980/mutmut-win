@@ -50,6 +50,7 @@ class TestEmojiByStatus:
             "check was interrupted by user",
             "not checked",
             "killed",
+            "killed_by_infinite_loop",  # Sprint 26 / Issue #71
             "segfault",
         }
         assert set(emoji_by_status.keys()) == expected_statuses
