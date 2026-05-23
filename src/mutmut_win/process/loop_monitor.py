@@ -35,6 +35,7 @@ alone-international-state-of-the-art on this dimension.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections import deque
@@ -256,6 +257,22 @@ class ProcessMonitor(threading.Thread):
         # at __init__ time on some platforms. Typed as Any because psutil's
         # type stubs are optional / not installed in our CI matrix.
         self._proc: Any = None
+        # Cache of psutil.Process instances keyed by pid.
+        #
+        # CRITICAL psutil contract: cpu_percent(interval=None) returns a
+        # meaningful value only on the SECOND-and-later call against a given
+        # ``Process`` *instance*. The state lives on the instance, not on the
+        # pid. ``Process.children()`` returns *new* ``Process`` objects on
+        # every call, so re-creating them would reset the cpu_times baseline
+        # on every sample and always return 0.0 — a critical bug that breaks
+        # IL detection for the canonical Windows case where
+        # ``subprocess.Popen([python, "-c", "while True: pass"])`` wraps the
+        # real interpreter as a child (the busy loop lives in the child).
+        #
+        # We therefore cache the ``Process`` instance per pid for the
+        # lifetime of the monitor, re-use it for every sample, and only
+        # discard it when the process disappears.
+        self._proc_cache: dict[int, Any] = {}
 
     # ---------------------------------------------------------------- public
 
@@ -284,6 +301,9 @@ class ProcessMonitor(threading.Thread):
             return
         try:
             self._proc = psutil.Process(self._pid)
+            # Prime the parent — first cpu_percent returns 0.0, see _proc_cache.
+            self._proc.cpu_percent(interval=None)
+            self._proc_cache[self._pid] = self._proc
         except psutil.NoSuchProcess:
             return  # subprocess gone already — nothing to sample
 
@@ -301,12 +321,24 @@ class ProcessMonitor(threading.Thread):
         if self._proc is None or psutil is None:
             return None
         try:
-            # cpu_percent over the interval since the previous call. Sums
-            # process tree so that subprocess + grand-children both count.
-            cpu = float(self._proc.cpu_percent(interval=None))
+            # cpu_percent over the interval since the previous call. We must
+            # accumulate the parent + its full descendant tree because:
+            # 1) Windows wraps subprocess.Popen([python, ...]) in a launcher
+            #    that itself uses 0% CPU; the real Python interpreter (and
+            #    therefore the busy loop we are trying to detect) lives in a
+            #    child process.
+            # 2) pytest's --forked / xdist plugins spawn their own children.
+            cpu = self._cached_cpu_percent(self._proc)
             try:
+                live_pids: set[int] = {self._pid}
                 for child in self._proc.children(recursive=True):
-                    cpu += float(child.cpu_percent(interval=None))
+                    cpu += self._cached_cpu_percent(child)
+                    live_pids.add(child.pid)
+                # Drop cached processes that have exited so the dict doesn't
+                # grow without bound during long runs.
+                self._proc_cache = {
+                    pid: p for pid, p in self._proc_cache.items() if pid in live_pids
+                }
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
             status_value = self._proc.status()
@@ -323,6 +355,38 @@ class ProcessMonitor(threading.Thread):
             output_bytes=output_bytes,
             status=status,
         )
+
+    def _cached_cpu_percent(self, proc: Any) -> float:
+        """Re-use a cached ``Process`` instance for ``proc.pid`` and read its CPU%.
+
+        psutil's ``Process.children()`` returns *new* ``Process`` objects on
+        every call. cpu_percent's comparison baseline lives on the instance,
+        so a fresh instance always returns 0.0 (the documented first-call
+        rule). We therefore look up the pid in ``self._proc_cache`` and:
+
+        - **hit**: reuse the cached instance → ``cpu_percent(interval=None)``
+          returns a real percentage since the previous sample
+        - **miss**: store the new instance, prime it once (cpu_percent returns
+          0.0), and return 0.0 — the next sample for this pid will be real
+        """
+        if psutil is None:  # pragma: no cover - guarded at run()
+            return 0.0
+        try:
+            pid = proc.pid
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return 0.0
+        cached = self._proc_cache.get(pid)
+        if cached is None:
+            # First time we see this pid — prime the instance and return 0.0.
+            self._proc_cache[pid] = proc
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                proc.cpu_percent(interval=None)
+            return 0.0
+        try:
+            return float(cached.cpu_percent(interval=None))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            self._proc_cache.pop(pid, None)
+            return 0.0
 
 
 # ---------------------------------------------------------------------------
