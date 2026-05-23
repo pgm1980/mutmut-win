@@ -93,6 +93,14 @@ class MutmutConfig(BaseModel):
         default_factory=list,
         description="Additional files to copy alongside mutated sources",
     )
+    extra_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sibling directories to copy into mutants/ AND add to the worker's "
+            "PYTHONPATH. Use when tests import from packages outside the wheel "
+            "(e.g. a sibling ``benchmarks/`` directory). See issue #69."
+        ),
+    )
     max_children: int = Field(
         default_factory=_default_max_children,
         ge=1,

@@ -190,7 +190,12 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     ) -> list[str]:
         return [f for f in files if f in skip_dirs]
 
-    for path_str in config.also_copy:
+    # extra_paths (Bug #69) are handled by the same copy mechanism as also_copy.
+    # Their distinguishing trait — being added to the worker's PYTHONPATH — is
+    # implemented in process/worker.py rather than here.
+    paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
+
+    for path_str in paths_to_copy:
         path = Path(path_str)
         # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
         # be mirrored into mutants/ even when the user lists them explicitly.

@@ -92,6 +92,16 @@ def cli() -> None:
         "infinite-loop mutations into TIMEOUT)."
     ),
 )
+@click.option(
+    "--extra-paths-to-copy",
+    multiple=True,
+    type=str,
+    help=(
+        "Sibling directories to copy into mutants/ and add to the worker's "
+        "PYTHONPATH. Use when tests import from packages outside the wheel "
+        "(e.g. benchmarks/). Repeatable. Overrides [tool.mutmut].extra_paths."
+    ),
+)
 @click.argument("mutant_names", nargs=-1)
 def run(
     max_children: int | None,
@@ -107,6 +117,7 @@ def run(
     do_not_mutate: tuple[str, ...],
     force: bool,
     treat_timeout_as_kill: bool,
+    extra_paths_to_copy: tuple[str, ...],
     mutant_names: tuple[str, ...],
 ) -> None:
     """Run mutation testing.
@@ -139,6 +150,8 @@ def run(
         overrides["debug"] = True
     if do_not_mutate:
         overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
+    if extra_paths_to_copy:
+        overrides["extra_paths"] = list(extra_paths_to_copy)
 
     # --since-commit: resolve changed .py files via git
     if since_commit is not None:
