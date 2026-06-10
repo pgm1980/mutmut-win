@@ -12,72 +12,73 @@ tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Refreshed 2026-05-22)
+# Sprint State (Refreshed 2026-06-11)
 
 ## Current Focus
-Post-release stabilization for v2.0.x. The advanced-operators waves
-(Sprints 14–20) and the Hardening v1.0.0 wave (Sprint 21) have all merged
-to main. Active work this sprint is the v2.0.x timeout-diagnostics series
-and bug fixes that surfaced through dogfooding in downstream projects.
+Sprint 26 is **closed** — released as v2.5.0 plus hotfix v2.5.1 on 2026-05-23
+(merge 73bc1a0, hotfix a14e320). No sprint is currently in progress; the next
+sprint has not been planned yet. The repo sits on `main` with all quality
+gates green (re-verified 2026-06-11: 610 passed / 4 skipped) and **0 open
+GitHub issues**.
 
-Sprint 22 closed with v2.1.0 release on 2026-05-22.
+## Recently Completed (Sprints 23–26, all 2026-05-22/23)
+- **Sprint 23 / v2.2.0 — Reliability Wave** (branch `fix/v2.2.0-reliability-wave`,
+  merge 54e42e3): skip `or`-mutations on multi-line BooleanOperations (#68,
+  downstream Bug #1), skip default-parameter mutations (#70, Bug #3),
+  `--treat-timeout-as-kill` flag as Bug-#5 stopgap (#71). Gates: 578/3 skipped.
+- **Sprint 24 / v2.3.0 — Must-Carryover** (branch `feature/v2.3.0-must-carryover`,
+  merge c2a58c1): worker crash recovery (#12), full E2E pipeline validation on
+  simple_lib + my_lib (#38/#49), deterministic Job Object kill-on-close test
+  (#54), dogfooding expanded to full `src/mutmut_win/` (#65). Gates: 585/3.
+- **Sprint 25 / v2.4.0 — Final Cleanup** (branch `feature/v2.4.0-final-cleanup`,
+  merge f4c318b): also_copy skips top-level venv/cache entries (#67, H-05),
+  `--extra-paths-to-copy` + `extra_paths` config for sibling packages (#69,
+  Bug #2), pytest-benchmark suite for mutation generation (#23). Gates: 594/3.
+- **Sprint 26 / v2.5.0 — Polish + True IL Detection** (branch
+  `feature/v2.5.0-polish`, merge 73bc1a0): `--version` single source of truth
+  via importlib.metadata (#72); true infinite-loop detection (#71 re-opened) —
+  `process/loop_monitor.py` with psutil ProcessMonitor thread, triple-check
+  classifier (CPU ≥ 70 % AND output growth < 1 KB AND running_ratio ≥ 0.8 →
+  `killed_by_infinite_loop`, exit code 38), `IlForensics` persisted as JSON,
+  5 new `[tool.mutmut]` keys, 2 new CLI flags, graceful degradation without
+  psutil. Gates: 608/5, semgrep 0 findings (c478c93).
+- **v2.5.1 hotfix** (a14e320): cache psutil.Process instances per pid —
+  fresh instances always returned cpu_percent 0.0, breaking IL detection for
+  the canonical child-process case.
 
-## Recently Completed (since the last state-of-record update)
-- **Sprints 14–20** — all seven advanced mutation operators merged to main:
-  Regex (#55), Math (#56), Return Value (#57), Conditional Expression (#58),
-  Statement Removal (#59), Collection (#60), or-Default (#61).
-- **Sprint 21 / Hardening v1.0.0** — Windows Job Object orphan-process
-  protection (#51–#54), 10 CLI flags Tier 1-3 (#63), hook fixes (#64),
-  worker import fix H-06 (#62).
-- **v2.0.0 release** — test-to-mutant mapping via injected pytest plugin
-  (`fe194c2`), replacing the older subprocess-based stats collection.
-- **v1.0.x bug-fix wave** — repeated-run cache invalidation, WinError 32/206
-  fixes, `.pth` shadowing, package-copy issues, `--dry-run` cache poisoning.
-- **v2.0.x timeout diagnostics** — `subprocess.run` timeouts everywhere,
-  `capture_output=True` → DEVNULL (pipe deadlock fix), temp-file capture
-  replacing DEVNULL, `last_output` persisted to DB for post-mortem inspection.
+## Sprint 26 Backlog (closed)
+- [x] #72 `--version` via importlib.metadata with PackageNotFoundError
+      fallback (34ea930).
+- [x] #71 true IL detection: loop_monitor module, models/db/config/worker/cli
+      integration, unit + integration + graceful-degradation tests (b5246d8).
+- [x] Quality gates: pytest 608 passed / 5 skipped, ruff 0, mypy clean,
+      semgrep 0 findings (c478c93).
+- [x] Release: version bump 2.5.0 (3894805), annotated tags v2.5.0 + v2.5.1,
+      GitHub releases, issues #71/#72 auto-closed via merge commit.
 
-## Sprint 22 Backlog
-- [x] Merge [PR #66](https://github.com/pgm1980/mutmut-win/pull/66) — skip
-      `typing.cast()` first-arg mutations (Bug #4 from critique-model-service).
-      Merged 2026-05-22; 5 new tests; full suite 564 passed / 3 skipped.
-- [x] Sprint-22 quality gates: pytest 564 passed / 3 skipped on `src/` +
-      `tests/`; semgrep `--config auto` 0 findings on `src/` + `tests/unit/` +
-      `tests/integration/` (2026-05-22).
-- [x] Bump `pyproject.toml` to v2.1.0 and sync `uv.lock`; annotated tag
-      `v2.1.0`; GitHub release `v2.1.0` published 2026-05-22.
-- [x] Housekeeping: 42 stale GitHub issues closed, `.sprint/state.md`
-      refreshed, `MEMORY.md` populated, persistent memory entries written.
-
-## Open Items Carried Over (real OPEN issues on GitHub)
-- **#12 Worker crash recovery** (PARTIAL) — detection works, recovery
-  strategy missing. Originally Sprint 3 / Epic 3.
-- **#23 Performance benchmark vs mutmut** (UNCLEAR) — no `benchmarks/`
-  directory yet. Originally Sprint 6 / Epic 6.
-- **#38 End-to-end validation test (full pipeline)** (UNCLEAR) —
-  `tests/e2e_projects/` exists, harness unclear. Originally Sprint 10 /
-  Epic 9.
-- **#49 Sprint-12 full E2E** (UNCLEAR) — same as #38 but with explicit
-  result-comparison against upstream mutmut. Originally Sprint 12 / Epic 11.
-- **#54 Deterministic Job Object kill-on-close test** (UNCLEAR) —
-  Sprint 13 / Epic 12 leftover.
-- **#65 Dogfooding** (PARTIAL) — `[tool.mutmut] paths_to_mutate` narrowed
-  to `regex_mutation.py`. Sprint 21 / Epic 14 leftover.
-- **#67 H-05: also_copy .venv-Symlink review** (NEW) — filed retroactively
-  during 2026-05-22 housekeeping; originally an untracked Sprint 21 task.
+## Open Items
+- **None on GitHub** — issue backlog fully cleared (verified 2026-06-11).
+- Deferred decisions (not tracked as issues):
+  - Deprecation of `--treat-timeout-as-kill` (superseded by true IL
+    detection) — Sprint 27+ candidate.
+  - Hypothesis "shrink-storm" misclassification edge case — threshold tuning
+    only if observed in the wild (Sprint-26 out-of-scope decision).
+  - `_bug_reporting/BUG_REPORT_9.md` lies uncommitted in the worktree
+    (downstream living bug document, v2.4.0 state) — decide commit/move/delete.
 
 ## Housekeeping Notes
-- Sprint nomenclature: Sprint 21 = Hardening v1.0.0 per
-  `_docs/product backlog/product_backlog.md`. This sprint took the next
-  free number (22). The earlier housekeeping pass briefly mislabelled this
-  as "Sprint 21" before the conflict was caught and corrected.
-- `MEMORY.md` was empty before the 2026-05-22 housekeeping pass; it now
-  contains the project snapshot.
-- 42 GitHub issues that had been fully delivered between Sprints 11 and
-  Sprint 21 were left open until the 2026-05-22 housekeeping pass.
-- Backlog docs (`_docs/product backlog/product_backlog.md` and the three
-  `_docs/sprint backlogs/sprint_*_backlog.md` files) were re-synced with
-  reality in this sprint (status columns, velocity, milestones).
-- Branch policy: v1.x/v2.x bug fixes and hook-debugging have landed
-  directly on `main`. Larger feature waves used `feature/<issue>-*`
-  branches with merge commits. Stick to that split going forward.
+- 2026-06-11 documentation-drift pass: MEMORY.md, product_backlog.md (v1.1.0),
+  this file and the sprint-23–26 backlog status fields were re-synced with
+  reality; README test/feature facts refreshed. The frontmatter above was
+  already correct — only document bodies had drifted (they still described
+  Sprint 22 / v2.1.0).
+- Epic numbering conflict resolved in product_backlog v1.1.0: sprint_23 and
+  sprint_26 backlogs both claimed "Epic 16"; Sprint 23 keeps 16 (older),
+  Sprint 26 is Epic 17.
+- Branch policy unchanged: small fixes land on `main`, feature waves use
+  `feature/<version>-*` branches with merge commits. The frontmatter `branch`
+  field still names the *last* sprint branch (`feature/v2.5.0-polish`), which
+  is why the SessionStart hook warns on `main` — expected until the next
+  sprint opens and rewrites the frontmatter.
+- Tooling note: FS MCP server and Serena are not available for this project
+  (see MEMORY.md Conventions) — built-in tools are the documented fallback.

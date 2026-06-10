@@ -5,8 +5,8 @@
 **Sprint-Ziel:** Die letzten drei offenen Carryover-Issues abarbeiten — H-05 also_copy .venv-Skip (#67), sibling packages support (#69), Performance benchmark suite (#23). Release als v2.4.0.
 **Epic(s):** Cross-cutting — addressed leftovers from Epic 14 (Sprint 21 retro), Sprint 23 (deferred #69), Epic 6 (carryover #23).
 **Branch:** `feature/v2.4.0-final-cleanup`
-**Zeitraum:** 2026-05-23 –
-**Status:** 🔲 in progress
+**Zeitraum:** 2026-05-23 – 2026-05-23
+**Status:** ✅ Closed mit v2.4.0 Release (merge f4c318b, alle 3 Items geliefert — 10/10 SP, Velocity 100%)
 
 ---
 
@@ -14,9 +14,9 @@
 
 | # | Issue | Typ | Titel | SP | Priorität | Reihenfolge | Status |
 |---|-------|-----|-------|----|-----------|-------------|--------|
-| 1 | #67 | Fix | H-05 also_copy .venv-Symlink review | 2 | Should | 1 (klein) | 🔲 |
-| 2 | #69 | Bug | sibling packages not copied to mutants/ workdir | 5 | Medium | 2 | 🔲 |
-| 3 | #23 | Feature | Performance benchmark vs mutmut | 3 | Could | 3 | 🔲 |
+| 1 | #67 | Fix | H-05 also_copy .venv-Symlink review | 2 | Should | 1 (klein) | ✅ |
+| 2 | #69 | Bug | sibling packages not copied to mutants/ workdir | 5 | Medium | 2 | ✅ |
+| 3 | #23 | Feature | Performance benchmark vs mutmut | 3 | Could | 3 | ✅ |
 
 **Gesamt geplant:** 10 SP
 
@@ -36,10 +36,10 @@
 `copy_also_copy_files()` in `file_setup.py` muss `.venv/` Verzeichnisse skippen (oder dokumentieren dass der Aufrufer das tun muss). Aktuelle WinError-32-Fixes haben self-copy gelöst, aber Symlink-Behandlung ist nicht explizit getestet.
 
 ### Acceptance Criteria
-- [ ] Code-Audit: `copy_also_copy_files()` Verhalten auf `.venv`-haltige Inputs
-- [ ] Explizite Skip-Logik für `.venv/`, `venv/`, `env/` Verzeichnisse (oder Pattern via config)
-- [ ] Regression-Test mit also_copy auf Projekt mit `.venv/` darin
-- [ ] Ruff + mypy clean
+- [x] Code-Audit: `copy_also_copy_files()` Verhalten auf `.venv`-haltige Inputs
+- [x] Explizite Skip-Logik für `.venv/`, `venv/`, `env/` Verzeichnisse (oder Pattern via config)
+- [x] Regression-Test mit also_copy auf Projekt mit `.venv/` darin
+- [x] Ruff + mypy clean
 
 ---
 
@@ -55,12 +55,12 @@ Aus den drei vorgeschlagenen Optionen (#69 Issue body): Option B "neuer `--extra
 4. Worker setzt PYTHONPATH so dass diese Pfade aufgelöst werden können
 
 ### Acceptance Criteria
-- [ ] Config-Feld `extra_paths` (List[str])
-- [ ] CLI-Flag `--extra-paths-to-copy PATH...`
-- [ ] File-Setup kopiert die Pfade
-- [ ] Worker PYTHONPATH enthält sie
-- [ ] Test: also_copy + extra_paths funktioniert für sibling `benchmarks/`-Layout
-- [ ] Ruff + mypy clean
+- [x] Config-Feld `extra_paths` (List[str])
+- [x] CLI-Flag `--extra-paths-to-copy PATH...`
+- [x] File-Setup kopiert die Pfade
+- [x] Worker PYTHONPATH enthält sie
+- [x] Test: also_copy + extra_paths funktioniert für sibling `benchmarks/`-Layout
+- [x] Ruff + mypy clean
 
 ---
 
@@ -72,10 +72,10 @@ Minimaler `benchmarks/` Ordner mit einem pytest-benchmark-Test, der die Mutation
 Vergleich gegen mutmut 3.5.0 ist out-of-scope für Sprint 25 (würde mutmut als parallel install brauchen) — wir liefern die Infrastruktur + eine Baseline-Messung.
 
 ### Acceptance Criteria
-- [ ] `benchmarks/test_mutation_generation_benchmark.py`
-- [ ] pytest-benchmark misst `mutate_file_contents()` auf my_lib + simple_lib fixtures
-- [ ] Command in pyproject documented: `uv run pytest benchmarks/ --benchmark-only`
-- [ ] Ruff + mypy clean
+- [x] `benchmarks/test_mutation_generation_benchmark.py`
+- [x] pytest-benchmark misst `mutate_file_contents()` auf my_lib + simple_lib fixtures
+- [x] Command in pyproject documented: `uv run pytest benchmarks/ --benchmark-only`
+- [x] Ruff + mypy clean
 
 ---
 
@@ -88,17 +88,19 @@ Vergleich gegen mutmut 3.5.0 ist out-of-scope für Sprint 25 (würde mutmut als 
 | Type Check | `uv run mypy src/` | Keine NEUEN Errors |
 | Security | `semgrep scan --config auto src/ tests/unit/ tests/integration/` | 0 Findings |
 
+**Ergebnis (Sprint-Ende, 8be779a):** pytest 594 passed / 3 skipped, ruff 0 Findings, mypy clean, semgrep 0 Findings.
+
 ---
 
 ## Release v2.4.0
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.4.0 | 🔲 |
-| Annotated Tag v2.4.0 | 🔲 |
-| GitHub Release v2.4.0 mit Changelog seit v2.3.0 | 🔲 |
-| Auto-close Issues #23, #67, #69 | 🔲 |
-| MEMORY.md + product_backlog.md final update | 🔲 |
+| pyproject.toml + uv.lock auf 2.4.0 | ✅ |
+| Annotated Tag v2.4.0 | ✅ |
+| GitHub Release v2.4.0 mit Changelog seit v2.3.0 | ✅ |
+| Auto-close Issues #23, #67, #69 | ✅ |
+| MEMORY.md + product_backlog.md final update | ✅ |
 
 ---
 

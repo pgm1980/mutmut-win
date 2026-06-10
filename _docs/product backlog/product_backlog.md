@@ -1,7 +1,7 @@
 # Product Backlog — mutmut-win
 
-**Version:** 1.0.0
-**Datum:** 2026-05-22
+**Version:** 1.1.0
+**Datum:** 2026-06-11
 **Status:** Active
 
 ---
@@ -19,6 +19,10 @@
 | v2.0.0 | In-Process Test Mapping | (zwischen Sprints) | Done | Test-to-mutant mapping via injected pytest plugin |
 | v2.0.1–v2.0.4 | Timeout Diagnostics | (kontinuierlich) | Done | Subprocess timeouts, DEVNULL-fix, temp-file capture, last_output in DB |
 | v2.1.0 | Stabilization + Bug #4 | Sprint 22 | Done | typing.cast() skip, housekeeping pass, backlog sync |
+| v2.2.0 | Reliability Wave | Sprint 23 | Done | Multi-line-`or`-Skip (#68), Default-Param-Skip (#70), `--treat-timeout-as-kill` (#71) |
+| v2.3.0 | Must-Carryover Cleanup | Sprint 24 | Done | Worker-Crash-Recovery (#12), E2E-Harness (#38/#49), Job-Object-Test (#54), Dogfooding full src (#65) |
+| v2.4.0 | Final Cleanup | Sprint 25 | Done | `--extra-paths-to-copy` (#69), also_copy venv-Skip (#67), Benchmark-Suite (#23) |
+| v2.5.0 / v2.5.1 | Polish + True IL Detection | Sprint 26 | Done | Echte Infinite-Loop-Detection (psutil + Forensics + Confidence, #71), `--version`-Fix (#72); v2.5.1 Hotfix psutil-Process-Caching |
 
 ---
 
@@ -106,14 +110,14 @@
 | #9 | Story | Als User will ich parallele Mutation-Test-Ausführung via Worker-Pool, damit Tests schnell laufen | Must | 8 | Done |
 | #10 | Story | Als User will ich Wall-Clock-Timeouts, damit Endlosschleifen erkannt werden | Must | 5 | Done |
 | #11 | Story | Als User will ich Graceful Shutdown bei Ctrl+C, damit Teilergebnisse gespeichert werden | Must | 3 | Done |
-| #12 | Task | Worker-Recovery bei Crashes implementieren | Must | 3 | **Open (PARTIAL)** |
+| #12 | Task | Worker-Recovery bei Crashes implementieren | Must | 3 | Done (Sprint 24, v2.3.0 — ce0b736) |
 
 **Acceptance Criteria:**
 - [x] SpawnPoolExecutor startet N Worker via multiprocessing.spawn
 - [x] Two-Queue-Architektur (task_queue + event_queue)
 - [x] WallClockTimeout erkennt und killt überfällige Worker
 - [x] Ctrl+C führt zu sauberem Shutdown mit gespeicherten Teilergebnissen
-- [ ] Max 3 Worker-Neustarts pro Slot (PARTIAL — detection done, recovery strategy pending #12)
+- [x] Max 3 Worker-Neustarts pro Slot mit Backoff; Slot-Exhaustion sauber behandelt (Sprint 24, ce0b736)
 
 ---
 
@@ -169,13 +173,13 @@
 | #20 | Story | Als Entwickler will ich E2E-Tests gegen mutmut-Referenzprojekte, damit Korrektheit validiert ist | Must | 8 | Done |
 | #21 | Task | 5 E2E-Testprojekte aus mutmut übernehmen und anpassen | Must | 3 | Done |
 | #22 | Task | Mutation Testing auf eigenen Code (Meta-Test) | Should | 3 | Done (Duplikat von #65) |
-| #23 | Task | Performance-Benchmark gegen mutmut (Linux-Vergleich) | Could | 2 | **Open** |
+| #23 | Task | Performance-Benchmark gegen mutmut (Linux-Vergleich) | Could | 2 | Done (Sprint 25, v2.4.0 — a52322b; benchmarks/-Suite + Baseline, Linux-Vergleich out of scope) |
 
 **Acceptance Criteria:**
 - [x] Alle 5 E2E-Testprojekte laufen erfolgreich
 - [x] Snapshot-Vergleich gegen mutmut-Referenzergebnisse
 - [x] Segfault-Mutant Windows-spezifisch behandelt
-- [ ] mutmut-win läuft auf eigenem Code (PARTIAL — siehe #65)
+- [x] mutmut-win läuft auf eigenem Code (Sprint 24, #65 — paths_to_mutate = full src/mutmut_win/)
 
 ---
 
@@ -240,14 +244,14 @@
 | #35 | Story | Als User will ich get_diff_for_mutant (unified diff), damit ich sehe was ein Mutant verändert | Must | 5 | Done |
 | #36 | Story | Als User will ich apply_mutant (CST-basierter Source-Ersatz), damit ich einen Mutanten in den Quellcode schreiben kann | Must | 5 | Done |
 | #37 | Story | Als User will ich Live-Fortschrittsanzeige (print_stats), damit ich den Lauf-Fortschritt sehe | Should | 3 | Done |
-| #38 | Task | End-to-End-Validierungstest (volle Pipeline auf simple_lib) | Must | 5 | **Open (UNCLEAR — fixtures vorhanden, Harness fehlt)** |
+| #38 | Task | End-to-End-Validierungstest (volle Pipeline auf simple_lib) | Must | 5 | Done (Sprint 24, v2.3.0 — b688f1f) |
 
 **Acceptance Criteria:**
 - [x] `mutant_diff.py` im Application Layer implementiert
 - [x] `mutmut-win show <NAME>` zeigt echten unified diff
 - [x] `mutmut-win apply <NAME>` schreibt CST-basierten mutierten Code in Quelldatei
 - [x] Live-Fortschrittsanzeige während des Laufs aktiv
-- [ ] E2E-Validierungstest auf simple_lib läuft durch (Clean → Mutants → Results) — siehe #38
+- [x] E2E-Validierungstest auf simple_lib läuft durch (Clean → Mutants → Results) — Sprint 24, b688f1f
 
 ---
 
@@ -288,7 +292,7 @@
 | #46 | Story | Als User will ich CLI-Commands tests-for-mutant und time-estimates, damit ich Test-Zuordnung und Zeitschätzungen abrufen kann | Should | 5 | Done |
 | #47 | Story | Als User will ich CI/CD-Stats-Export (save_cicd_stats + CLI), damit ich Mutation-Testing in CI/CD integrieren kann | Should | 5 | Done |
 | #48 | Story | Als Entwickler will ich Type-Checker-Helpers vollständig (MutatedMethodsCollector, MutatedMethodLocation, FailedTypeCheckMutant, group_by_path) | Must | 5 | Done |
-| #49 | Task | Full E2E Validation — mutmut-win run auf simple_lib + my_lib, Ergebnisvergleich mit mutmut-Referenz | Must | 8 | **Open (UNCLEAR — siehe #38)** |
+| #49 | Task | Full E2E Validation — mutmut-win run auf simple_lib + my_lib, Ergebnisvergleich mit mutmut-Referenz | Must | 8 | Done (Sprint 24, v2.3.0 — b688f1f) |
 | #50 | Task | exceptions.py — MutmutProgrammaticFailException, BadTestExecutionCommandsException, InvalidGeneratedSyntaxException | Must | 3 | Done |
 
 **Acceptance Criteria:**
@@ -297,7 +301,7 @@
 - [x] `tests-for-mutant` und `time-estimates` CLI-Commands funktionieren
 - [x] `save_cicd_stats` + CLI-Command `export-cicd-stats` implementiert
 - [x] Alle Type-Checker-Helpers in `type_checking.py` vollständig portiert
-- [ ] E2E-Validierung: mutmut-win-Ergebnisse stimmen mit mutmut-Referenz überein (simple_lib + my_lib) — siehe #49
+- [x] E2E-Validierung: mutmut-win-Ergebnisse stimmen mit mutmut-Referenz überein (simple_lib + my_lib) — Sprint 24, b688f1f
 - [x] `exceptions.py` enthält alle fehlenden Exception-Klassen
 
 ---
@@ -313,14 +317,14 @@
 | #51 | Story | Als User will ich dass Worker-Prozesse automatisch sterben wenn mutmut-win crasht | Must | 5 | Done |
 | #52 | Task | `process/job_object.py` — ctypes Win32 Job Object Wrapper | Must | 3 | Done |
 | #53 | Task | `executor.py` Integration (create/assign/close) + Graceful Degradation | Must | 3 | Done |
-| #54 | Task | Deterministischer Test: Job Object kill-on-close Verhalten | Must | 2 | **Open** |
+| #54 | Task | Deterministischer Test: Job Object kill-on-close Verhalten | Must | 2 | Done (Sprint 24, v2.3.0 — 6df3283) |
 
 **Acceptance Criteria:**
 - [x] `job_object.py` implementiert `create_kill_on_close_job()`, `assign_process_to_job()`, `close_job()`
 - [x] SpawnPoolExecutor erstellt Job Object im `__init__`, weist Worker in `start()` zu, schließt in `shutdown()`
 - [x] Bei Parent-Tod: ALLE Worker + deren pytest-Subprozesse werden vom OS gekillt
 - [x] Graceful Degradation: Warning statt Crash wenn Job Object nicht erstellt werden kann
-- [ ] Deterministischer Test beweist kill-on-close Verhalten (siehe #54)
+- [x] Deterministischer Test beweist kill-on-close Verhalten (Sprint 24, tests/integration — 6df3283)
 - [x] DoD aktualisiert: E2E-Lauf darf keine Orphan-Prozesse hinterlassen
 
 ---
@@ -364,8 +368,8 @@
 | #62 | Bug | H-06: Worker ModuleNotFoundError bei editable install + spawn | Must | 5 | Done |
 | #63 | Feature | H-07: 10 CLI-Flags Tier 1-3 (--paths-to-mutate, --min-score, --output json, --since-commit, etc.) | Must | 8 | Done |
 | #64 | Bug | H-01–H-04: Hooks feuern nicht automatisch in Claude Desktop | Must | 5 | Done |
-| #65 | Task | Dogfooding: mutmut-win auf eigenem Code erfolgreich ausführen | Must | 3 | **Open (PARTIAL)** |
-| #67 | Task | H-05: also_copy .venv-Symlink review (filed retroactively 2026-05-22) | Should | 2 | **Open** |
+| #65 | Task | Dogfooding: mutmut-win auf eigenem Code erfolgreich ausführen | Must | 3 | Done (Sprint 24, v2.3.0 — a0b5f61) |
+| #67 | Task | H-05: also_copy .venv-Symlink review (filed retroactively 2026-05-22) | Should | 2 | Done (Sprint 25, v2.4.0 — f23e150) |
 
 **Acceptance Criteria:**
 - [x] `mutmut-win run --paths-to-mutate src/mutmut_win/regex_mutation.py` funktioniert
@@ -376,7 +380,7 @@
 - [x] Worker-Prozesse können mutmut_win importieren (Dogfooding-Import funktioniert)
 - [x] Alle Hooks manuell verifiziert (SessionStart verifiziert live in Sprint 22)
 - [x] sprint-gate.sh sucht in `_docs/sprint backlogs/` statt `find . -maxdepth 4`
-- [ ] Vollständiger Dogfooding-Lauf auf gesamtem `src/mutmut_win/` (siehe #65)
+- [x] Vollständiger Dogfooding-Lauf auf gesamtem `src/mutmut_win/` (Sprint 24, #65)
 
 ---
 
@@ -403,6 +407,52 @@
 
 ---
 
+### Epic 16: v2.0.x Reliability Wave (Sprint 23)
+
+**Beschreibung:** Drei kritische Bugs aus dem v2.0.4-Dogfooding im Downstream-Projekt critique-model-service (Living-Document-Bug-Report): Multi-line-`or` SyntaxError-Mutanten (Bug #1), Default-Parameter trampoline equivalents (Bug #3), Hypothesis-Timeout-vs-Kill (Bug #5, Stopgap). Der vierte Downstream-Bug (#69, Bug #2 sibling packages) wurde aus Sprint 23 deferred und in Sprint 25 geliefert.
+**Sprint:** 23 (+ #69 in Sprint 25)
+**Release:** v2.2.0 (#69: v2.4.0)
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #68 | Bug | Multi-line `if A or B or C:` produziert unimportable SyntaxError-Mutant (Bug #1) | Must | 8 | Done (fb82914) |
+| #70 | Bug | Default-Parameter trampoline equivalents — skip-the-mutation (Bug #3) | Must | 3 | Done (d74eaba) |
+| #71 | Bug | Hypothesis infinite-loop → TIMEOUT statt KILLED — `--treat-timeout-as-kill` Stopgap (Bug #5) | Must | 5 | Done (770240f; echter Fix in Epic 17) |
+| #69 | Bug | Sibling packages not copied to mutants/ workdir (Bug #2) | Medium | 5 | Done (Sprint 25 — 852a276) |
+
+**Acceptance Criteria:**
+- [x] Mutator skippt `or`-Removal bei multi-line `BooleanOperation`; generierte Mutanten parsen via `ast.parse`
+- [x] `MutationVisitor` skippt Mutationen auf `Param.default`-Subtrees (Body-Mutationen unverändert)
+- [x] CLI-Flag `--treat-timeout-as-kill` passt Score-Berechnung in `run` und `results` an
+- [x] `--extra-paths-to-copy` Flag + `extra_paths` Config-Feld; Pfade werden kopiert und im Worker-PYTHONPATH aufgelöst
+- [x] Sprint-23-Gates: 578 passed / 3 skipped, semgrep 0 findings (ca26e65)
+
+---
+
+### Epic 17: Polish + True Infinite-Loop Detection (Sprint 26)
+
+**Beschreibung:** Echte Infinite-Loop-Detection statt Timeout-Heuristik — endgültiger Fix für Bug #5: psutil-basierter ProcessMonitor-Thread + Triple-Check-Classifier (CPU/Output/Status) + `IlForensics` mit Confidence-Band, als JSON in der DB persistiert. Alleinstellungsmerkmal am Markt (kein anderes Mutation-Tool hat explainable IL-Detection). Plus `--version` Single Source of Truth.
+**Sprint:** 26
+**Release:** v2.5.0 (+ Hotfix v2.5.1)
+**Hinweis:** Im sprint_26_backlog ursprünglich als „Epic 16 (Detection Quality)" angekündigt; die Nummer 16 war bereits durch Sprint 23 vergeben → hier als Epic 17 geführt.
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #71 | Feature | Bug #5 true infinite-loop detection — psutil + forensics + confidence (re-opened) | Must | 13 | Done (b5246d8; Hotfix a14e320) |
+| #72 | Bug | `--version` reportet 2.0.4 statt pyproject — single source of truth via importlib.metadata | Must | 1 | Done (34ea930) |
+
+**Acceptance Criteria:**
+- [x] `process/loop_monitor.py`: `ProcessMonitor`-Thread (0,5-s-Polling, rolling window) + purer `classify_samples()`-Classifier
+- [x] Triple-Check-Rule: mean(CPU) ≥ 70 % AND Output-Growth < 1 KB AND running_ratio ≥ 0,8 → `killed_by_infinite_loop` (exit code 38)
+- [x] `IlForensics`-Pydantic-Model als JSON-Spalte persistiert; gerendert von `mutmut-win show`
+- [x] 5 neue `[tool.mutmut]`-Keys (`infinite_loop_*`) + CLI-Flags `--no-infinite-loop-detection` / `--infinite-loop-cpu-threshold`
+- [x] Graceful Degradation ohne psutil (ImportError → legacy Timeout-Pfad)
+- [x] `__version__` via `importlib.metadata` mit PackageNotFoundError-Fallback für editable installs
+- [x] Sprint-26-Gates: 608 passed / 5 skipped, semgrep 0 findings (c478c93)
+- [x] v2.5.1-Hotfix: psutil.Process-Instanzen pro PID gecacht (frische Instanzen liefern immer cpu_percent = 0.0)
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -417,13 +467,17 @@
 
 | Milestone | Release | Epics | Issues | Status |
 |-----------|---------|-------|--------|--------|
-| MVP | v0.1.0 | Epic 1–6 | #1–#23 | Done (außer #12, #23) |
-| Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Done (außer #38) |
-| Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Done (außer #49) |
-| Hardening v0.5.0 | v0.5.0 | Epic 12 | #51–#54 | Done (außer #54) |
+| MVP | v0.1.0 | Epic 1–6 | #1–#23 | Done (#12/#23 in Sprint 24/25 nachgeliefert) |
+| Pipeline | v0.2.0 | Epic 7–9 | #24–#38 | Done (#38 in Sprint 24 nachgeliefert) |
+| Performance v0.3.0 | v0.3.0 | Epic 10–11 | #39–#50 | Done (#49 in Sprint 24 nachgeliefert) |
+| Hardening v0.5.0 | v0.5.0 | Epic 12 | #51–#54 | Done (#54 in Sprint 24 nachgeliefert) |
 | Advanced Operators v1.0.0 | v1.0.0 | Epic 13 | #55–#61 | Done |
-| Hardening v1.0.0 | v1.0.0 | Epic 14 | #62–#65, #67 | Done (außer #65, #67) |
+| Hardening v1.0.0 | v1.0.0 | Epic 14 | #62–#65, #67 | Done (#65/#67 in Sprint 24/25 nachgeliefert) |
 | Stabilization v2.1.0 | v2.1.0 | Epic 15 | PR #66 | Done |
+| Reliability v2.2.0 | v2.2.0 | Epic 16 | #68, #70, #71 | Done |
+| Must-Carryover v2.3.0 | v2.3.0 | Epic 3/9/11/12/14 (Carryover) | #12, #38, #49, #54, #65 | Done |
+| Final Cleanup v2.4.0 | v2.4.0 | Epic 6/14/16 (Carryover) | #23, #67, #69 | Done |
+| Polish + IL Detection v2.5.0 | v2.5.0 / v2.5.1 | Epic 17 | #71 (re-open), #72 | Done |
 
 ---
 
@@ -452,22 +506,24 @@
 | Sprint 20 | 2 | 2 | 100% | or-Default |
 | Sprint 21 | 23 | 18 | 78% | Hardening v1.0.0 (#65, #67 carryover, 5 SP) |
 | Sprint 22 | 13 | 13 | 100% | v2.0.x Stabilization (PR #66 + Housekeeping + Release) |
+| Sprint 23 | 16 | 16 | 100% | v2.0.x Reliability Wave (#68, #70, #71-Stopgap) |
+| Sprint 24 | 18 | 18 | 100% | Must-Carryover (#12, #38, #49, #54, #65) |
+| Sprint 25 | 10 | 10 | 100% | Final Cleanup (#23, #67, #69) |
+| Sprint 26 | 14 | 14 | 100% | Polish + True IL Detection (#71 re-open, #72) |
 
-**Total geplant:** 306 SP — **Total erledigt:** 281 SP (92%)
+**Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
+
+> Hinweis: Die 25 SP Carryover-Differenz aus den Sprints 3–21 wurde in Sprint 24/25
+> erneut eingeplant und dort erledigt — diese SP erscheinen daher in beiden Zeilen.
 
 ---
 
-## Carryover (echte OPEN Issues, Stand 2026-05-22)
+## Carryover (Stand 2026-06-11)
 
-| Issue | Titel | Originalsprint | Priorität | Status |
-|-------|-------|----------------|-----------|--------|
-| #12 | Worker crash recovery | Sprint 3 | Must | PARTIAL — detection done, recovery strategy pending |
-| #23 | Performance benchmark vs mutmut | Sprint 6 | Could | benchmarks/ Verzeichnis fehlt |
-| #38 | E2E validation test (full pipeline) | Sprint 10 | Must | Fixtures vorhanden, Harness fehlt |
-| #49 | Sprint-12 Full E2E (simple_lib + my_lib) | Sprint 12 | Must | Duplikat-Bereich zu #38 |
-| #54 | Deterministischer Job-Object kill-on-close Test | Sprint 13 | Must | Job Object integriert, dedicated Test fehlt |
-| #65 | Dogfooding: mutmut-win run on own code | Sprint 21 | Must | PARTIAL — pyproject paths_to_mutate auf regex_mutation.py beschränkt |
-| #67 | H-05: also_copy .venv-Symlink review | Sprint 21 (retro) | Should | Neu eröffnet 2026-05-22 |
+**Keine offenen Issues.** Alle sieben Carryover-Items des 2026-05-22-Housekeepings
+(#12, #23, #38, #49, #54, #65, #67) wurden in Sprint 24 (v2.3.0) und Sprint 25
+(v2.4.0) geliefert; die Downstream-Bugs #68–#71 in Sprint 23 (v2.2.0) und
+Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 
 ---
 
@@ -479,3 +535,4 @@
 | 0.2.0 | 2026-03-30 | Claude Code Agent | Epic 7–9 (Sprints 8–10): File Setup Pipeline, Test Mapping + Stats, CLI show/apply + E2E; Release v0.2.0; Issues #24–#38 |
 | 0.3.0 | 2026-03-30 | Claude Code Agent | Epic 10–11 (Sprints 11–12): In-Process Stats + Trampoline Tracking, Feature Completeness + E2E Validation; Release v0.3.0; Issues #39–#50 |
 | 1.0.0 | 2026-05-22 | Claude Code Agent | Backlog-Sync: 59 Issues von Open→Done geflippt; Epic 15 (Sprint 22 v2.0.x Stabilization, PR #66, v2.1.0 Release) ergänzt; Release-Übersicht bis v2.1.0; Velocity-Tracking vollständig befüllt; Carryover-Tabelle ergänzt. Issue #67 (H-05) retroactively erstellt. |
+| 1.1.0 | 2026-06-11 | Claude Code Agent | Doku-Drift-Sync nach Sprints 23–26: Release-Übersicht bis v2.5.1; Epic 16 (Sprint 23 Reliability) + Epic 17 (Sprint 26 IL Detection) ergänzt (Epic-Nummern-Konflikt „16" zwischen sprint_23/sprint_26-Backlog zugunsten von Sprint 23 aufgelöst); 7 Carryover-Issues + #68–#72 auf Done; Milestones, Velocity (Sprints 23–26, Total 364/339 SP) und Carryover-Sektion aktualisiert. |

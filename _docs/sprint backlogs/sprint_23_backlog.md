@@ -5,8 +5,8 @@
 **Sprint-Ziel:** Drei kritische Bugs aus v2.0.4-Dogfooding fixen — `multi-line if/or SyntaxError`, `Hypothesis timeout vs. kill`, `default param trampoline equivalents`. Release als v2.2.0.
 **Epic(s):** Epic 16 (v2.0.x Reliability — neu, retroaktiv im product_backlog ergänzen)
 **Branch:** `fix/v2.2.0-reliability-wave`
-**Zeitraum:** 2026-05-22 –
-**Status:** 🔲 in progress
+**Zeitraum:** 2026-05-22 – 2026-05-22
+**Status:** ✅ Closed mit v2.2.0 Release (merge 54e42e3, alle 3 Bugs geliefert — 16/16 SP, Velocity 100%)
 
 ---
 
@@ -14,9 +14,9 @@
 
 | # | Issue | Typ | Titel | SP | Priorität | Reihenfolge | Status |
 |---|-------|-----|-------|----|-----------|-------------|--------|
-| 1 | #70 | Bug | Default-Parameter trampoline equivalents (Option A: skip-the-mutation) | 3 | Must | 1 (einfachster Fix, Pattern aus Bug #4 bekannt) | 🔲 |
-| 2 | #71 | Bug | Hypothesis infinite-loop → TIMEOUT statt KILLED (sub-status `killed_by_timeout`) | 5 | Must | 2 | 🔲 |
-| 3 | #68 | Bug | Multi-line `if A or B or C:` produziert unimportable SyntaxError-Mutant | 8 | Must | 3 (komplexester AST-Fix) | 🔲 |
+| 1 | #70 | Bug | Default-Parameter trampoline equivalents (Option A: skip-the-mutation) | 3 | Must | 1 (einfachster Fix, Pattern aus Bug #4 bekannt) | ✅ |
+| 2 | #71 | Bug | Hypothesis infinite-loop → TIMEOUT statt KILLED (sub-status `killed_by_timeout`) | 5 | Must | 2 | ✅ |
+| 3 | #68 | Bug | Multi-line `if A or B or C:` produziert unimportable SyntaxError-Mutant | 8 | Must | 3 (komplexester AST-Fix) | ✅ |
 
 **Gesamt geplant:** 16 SP
 
@@ -39,19 +39,19 @@ Mirror des Bug #4 typing.cast() Fix-Patterns. In `MutationVisitor`:
 2. Damit fallen alle Mutationen auf Werte in Default-Argumenten weg (Number/String/Boolean Mutations).
 
 ### Acceptance Criteria
-- [ ] `MutationVisitor` erkennt `cst.Param` und markiert dessen `.default` als no-mutate.
-- [ ] Test: `def f(x: int = 30): return x` → keine Mutation auf `30`, aber Body-Mutationen weiterhin generiert.
-- [ ] Test: String-Default `def f(url: str = "https://..."): ...` → keine String-Mutation auf `"https://..."`.
-- [ ] Test: Body-Mutationen NICHT betroffen (Regression-Schutz).
-- [ ] Full suite weiterhin grün.
+- [x] `MutationVisitor` erkennt `cst.Param` und markiert dessen `.default` als no-mutate.
+- [x] Test: `def f(x: int = 30): return x` → keine Mutation auf `30`, aber Body-Mutationen weiterhin generiert.
+- [x] Test: String-Default `def f(url: str = "https://..."): ...` → keine String-Mutation auf `"https://..."`.
+- [x] Test: Body-Mutationen NICHT betroffen (Regression-Schutz).
+- [x] Full suite weiterhin grün.
 
 ### TDD-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 1.1 | Failing Test in `tests/unit/test_default_param_skip.py` | 🔲 |
-| 1.2 | Implementation: `_skip_subtree_ids` Erweiterung um `Param.default` | 🔲 |
-| 1.3 | Tests grün; full suite check | 🔲 |
-| 1.4 | Ruff + mypy clean auf geänderten Files | 🔲 |
+| 1.1 | Failing Test in `tests/unit/test_default_param_skip.py` | ✅ |
+| 1.2 | Implementation: `_skip_subtree_ids` Erweiterung um `Param.default` | ✅ |
+| 1.3 | Tests grün; full suite check | ✅ |
+| 1.4 | Ruff + mypy clean auf geänderten Files | ✅ |
 
 ---
 
@@ -65,20 +65,20 @@ Zwei Aspekte:
 Echte Infinite-Loop-Detection (CPU pegged, no progress) ist ein größerer Eingriff in `process/executor.py` und wird auf Sprint 24 vertagt. **Sprint 23 liefert nur den User-controlled Switch**.
 
 ### Acceptance Criteria
-- [ ] CLI-Flag `--treat-timeout-as-kill` (Boolean, default False).
-- [ ] Wenn aktiviert: Score-Berechnung in `cli.py results` und `cli.py run` zählt TIMEOUT zur KILLED-Quote.
-- [ ] Result-Tabelle in `results` zeigt eine getrennte Spalte oder Footnote, dass N Mutanten als kill-by-timeout gezählt wurden.
-- [ ] Default-Verhalten (ohne Flag) bleibt unverändert.
-- [ ] Test: Mock-Run mit 5 KILLED + 3 TIMEOUT. Ohne Flag → 5/8 Score. Mit Flag → 8/8 Score.
+- [x] CLI-Flag `--treat-timeout-as-kill` (Boolean, default False).
+- [x] Wenn aktiviert: Score-Berechnung in `cli.py results` und `cli.py run` zählt TIMEOUT zur KILLED-Quote.
+- [x] Result-Tabelle in `results` zeigt eine getrennte Spalte oder Footnote, dass N Mutanten als kill-by-timeout gezählt wurden.
+- [x] Default-Verhalten (ohne Flag) bleibt unverändert.
+- [x] Test: Mock-Run mit 5 KILLED + 3 TIMEOUT. Ohne Flag → 5/8 Score. Mit Flag → 8/8 Score.
 
 ### TDD-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 2.1 | Failing Test in `tests/unit/test_treat_timeout_as_kill.py` | 🔲 |
-| 2.2 | CLI-Flag in `cli.py` + Score-Compute-Helper | 🔲 |
-| 2.3 | Result-View Anpassung (results-Command Output) | 🔲 |
-| 2.4 | Tests grün; full suite check | 🔲 |
-| 2.5 | Ruff + mypy clean | 🔲 |
+| 2.1 | Failing Test in `tests/unit/test_treat_timeout_as_kill.py` | ✅ |
+| 2.2 | CLI-Flag in `cli.py` + Score-Compute-Helper | ✅ |
+| 2.3 | Result-View Anpassung (results-Command Output) | ✅ |
+| 2.4 | Tests grün; full suite check | ✅ |
+| 2.5 | Ruff + mypy clean | ✅ |
 
 ---
 
@@ -91,19 +91,19 @@ In `node_mutation.py` beim `or`-Removal-Operator:
 3. Alternative wäre, beim Generieren der Mutation die hanging continuation lines zu reflowen — komplizierter und fehleranfälliger. Wir nehmen den Skip-Ansatz, analog zu Bug #4/#70.
 
 ### Acceptance Criteria
-- [ ] Mutator skippt `or`-Removal bei multi-line `BooleanOperation`.
-- [ ] Test mit Repro aus Bug Report (`if (\n    A\n    or B\n    or C\n):`) → kein syntaktisch invalider Mutant generiert.
-- [ ] Single-line `if A or B:` → `or`-Mutation weiterhin generiert (Regression-Schutz).
-- [ ] Validierung: jeder generierte Mutant aus dem Repro-File parst als gültiges Python (via `ast.parse` Roundtrip-Check).
-- [ ] Full suite grün.
+- [x] Mutator skippt `or`-Removal bei multi-line `BooleanOperation`.
+- [x] Test mit Repro aus Bug Report (`if (\n    A\n    or B\n    or C\n):`) → kein syntaktisch invalider Mutant generiert.
+- [x] Single-line `if A or B:` → `or`-Mutation weiterhin generiert (Regression-Schutz).
+- [x] Validierung: jeder generierte Mutant aus dem Repro-File parst als gültiges Python (via `ast.parse` Roundtrip-Check).
+- [x] Full suite grün.
 
 ### TDD-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 3.1 | Failing Test in `tests/unit/test_multiline_or_skip.py` mit Repro-Pattern + ast.parse check | 🔲 |
-| 3.2 | Implementation: Multi-line-Detection in `node_mutation.py` | 🔲 |
-| 3.3 | Tests grün; full suite check | 🔲 |
-| 3.4 | Ruff + mypy clean | 🔲 |
+| 3.1 | Failing Test in `tests/unit/test_multiline_or_skip.py` mit Repro-Pattern + ast.parse check | ✅ |
+| 3.2 | Implementation: Multi-line-Detection in `node_mutation.py` | ✅ |
+| 3.3 | Tests grün; full suite check | ✅ |
+| 3.4 | Ruff + mypy clean | ✅ |
 
 ---
 
@@ -117,17 +117,19 @@ In `node_mutation.py` beim `or`-Removal-Operator:
 | Security | `semgrep scan --config auto src/ tests/unit/ tests/integration/` | 0 Findings |
 | Architecture | `uv run lint-imports` | 0 Verletzungen |
 
+**Ergebnis (Sprint-Ende, ca26e65):** pytest 578 passed / 3 skipped, ruff 0 Findings, mypy clean, semgrep 0 Findings.
+
 ---
 
 ## Release v2.2.0
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.2.0 | 🔲 |
-| Annotated Tag v2.2.0 | 🔲 |
-| GitHub Release v2.2.0 mit Changelog seit v2.1.0 | 🔲 |
-| Auto-close Issues #68, #70, #71 via merge commit references | 🔲 |
-| MEMORY.md + product_backlog.md update | 🔲 |
+| pyproject.toml + uv.lock auf 2.2.0 | ✅ |
+| Annotated Tag v2.2.0 | ✅ |
+| GitHub Release v2.2.0 mit Changelog seit v2.1.0 | ✅ |
+| Auto-close Issues #68, #70, #71 via merge commit references | ✅ |
+| MEMORY.md + product_backlog.md update | ✅ |
 
 ---
 

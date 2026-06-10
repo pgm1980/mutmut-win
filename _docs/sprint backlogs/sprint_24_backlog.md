@@ -5,8 +5,8 @@
 **Sprint-Ziel:** Alle Must-priorisierten Carryover-Issues abarbeiten — Worker-Recovery, E2E-Validation-Harness, Job-Object-Test, Dogfooding. Release als v2.3.0.
 **Epic(s):** Cross-cutting — addressed leftovers from Epic 3 (Process Mgmt), Epic 9 + 11 (E2E), Epic 12 (Hardening), Epic 14 (Hardening v1.0.0).
 **Branch:** `feature/v2.3.0-must-carryover`
-**Zeitraum:** 2026-05-23 –
-**Status:** 🔲 in progress
+**Zeitraum:** 2026-05-23 – 2026-05-23
+**Status:** ✅ Closed mit v2.3.0 Release (merge c2a58c1, alle 4 Items geliefert — 18/18 SP, Velocity 100%)
 
 ---
 
@@ -14,10 +14,10 @@
 
 | # | Issue | Typ | Titel | SP | Priorität | Reihenfolge | Status |
 |---|-------|-----|-------|----|-----------|-------------|--------|
-| 1 | #54 | Task | Deterministic Job-Object kill-on-close test | 2 | Must | 1 (klein, isoliert) | 🔲 |
-| 2 | #38 + #49 | Task | E2E validation harness (simple_lib + my_lib) | 8 | Must | 2 (Fixtures vorhanden) | 🔲 |
-| 3 | #65 | Task | Dogfooding mutmut-win on own code | 3 | Must | 3 (Discovery — kann blocked sein) | 🔲 |
-| 4 | #12 | Task | Worker crash recovery — design + impl | 5 | Must | 4 (größtes Stück) | 🔲 |
+| 1 | #54 | Task | Deterministic Job-Object kill-on-close test | 2 | Must | 1 (klein, isoliert) | ✅ |
+| 2 | #38 + #49 | Task | E2E validation harness (simple_lib + my_lib) | 8 | Must | 2 (Fixtures vorhanden) | ✅ |
+| 3 | #65 | Task | Dogfooding mutmut-win on own code | 3 | Must | 3 (Discovery — kann blocked sein) | ✅ |
+| 4 | #12 | Task | Worker crash recovery — design + impl | 5 | Must | 4 (größtes Stück) | ✅ |
 
 **Gesamt geplant:** 18 SP
 
@@ -51,11 +51,11 @@ Test-Idee:
 3. Assert: B existiert nicht mehr innerhalb eines bounded timeouts (z.B. 2s).
 
 ### Acceptance Criteria
-- [ ] `tests/integration/test_job_object_kill_on_close.py` — deterministischer Test.
-- [ ] Test verifiziert: Parent-Tod → Worker tod innerhalb 2s.
-- [ ] Test `@pytest.mark.integration` und `@pytest.mark.slow` markiert.
-- [ ] Funktioniert in CI (Windows-only — graceful-skip auf Linux/macOS).
-- [ ] Ruff + mypy clean, full suite grün.
+- [x] `tests/integration/test_job_object_kill_on_close.py` — deterministischer Test.
+- [x] Test verifiziert: Parent-Tod → Worker tod innerhalb 2s.
+- [x] Test `@pytest.mark.integration` und `@pytest.mark.slow` markiert.
+- [x] Funktioniert in CI (Windows-only — graceful-skip auf Linux/macOS).
+- [x] Ruff + mypy clean, full suite grün.
 
 ---
 
@@ -65,22 +65,22 @@ Test-Idee:
 `tests/integration/test_e2e_reference.py` enthält bereits einen partiellen Harness (`test_my_lib_mutation_generation`). Den auf eine vollständige Pipeline erweitern: `mutmut-win run` als Subprozess auf simple_lib + my_lib starten, Ergebnis-DB inspizieren, gegen `expected_results.py` Snapshot vergleichen.
 
 ### Acceptance Criteria
-- [ ] `tests/integration/test_e2e_validation.py` (oder Erweiterung des bestehenden) führt vollen `mutmut-win run` auf:
+- [x] `tests/integration/test_e2e_validation.py` (oder Erweiterung des bestehenden) führt vollen `mutmut-win run` auf:
   - `tests/e2e_projects/simple_lib/` (klein, schneller smoke)
   - `tests/e2e_projects/my_lib/` (bereits expected_results)
-- [ ] Ergebnis-DB wird gelesen; pro Mutant wird der status (killed/survived/timeout) gegen Erwartung verglichen.
-- [ ] Tests `@pytest.mark.integration` und `@pytest.mark.slow`.
-- [ ] Tolerance-Mechanismus für plattform-spezifische Exit-Codes (Segfault auf Windows ≠ -11 wie auf Linux).
-- [ ] Full suite grün.
+- [x] Ergebnis-DB wird gelesen; pro Mutant wird der status (killed/survived/timeout) gegen Erwartung verglichen.
+- [x] Tests `@pytest.mark.integration` und `@pytest.mark.slow`.
+- [x] Tolerance-Mechanismus für plattform-spezifische Exit-Codes (Segfault auf Windows ≠ -11 wie auf Linux).
+- [x] Full suite grün.
 
 ### TDD-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 2.1 | Failing test für simple_lib (volle Pipeline) | 🔲 |
-| 2.2 | Helper: `run_mutmut_win_e2e(project_dir) → MutationRunResult` (subprocess) | 🔲 |
-| 2.3 | Compare-Helper: status vs. expected_results, mit Platform-Tolerance | 🔲 |
-| 2.4 | Extend für my_lib | 🔲 |
-| 2.5 | Quality Gates | 🔲 |
+| 2.1 | Failing test für simple_lib (volle Pipeline) | ✅ |
+| 2.2 | Helper: `run_mutmut_win_e2e(project_dir) → MutationRunResult` (subprocess) | ✅ |
+| 2.3 | Compare-Helper: status vs. expected_results, mit Platform-Tolerance | ✅ |
+| 2.4 | Extend für my_lib | ✅ |
+| 2.5 | Quality Gates | ✅ |
 
 ---
 
@@ -90,17 +90,17 @@ Test-Idee:
 `pyproject.toml [tool.mutmut] paths_to_mutate` ist aktuell nur auf `regex_mutation.py` beschränkt. Erweitern auf `src/mutmut_win/` und einen Dogfooding-Lauf erfolgreich abschließen.
 
 ### Acceptance Criteria
-- [ ] `pyproject.toml [tool.mutmut] paths_to_mutate = ["src/mutmut_win/"]`
-- [ ] `uv run mutmut-win run --no-progress` läuft ohne SyntaxError / WinError 32 / ImportError durch
-- [ ] Mindestens Mutation-Score wird angezeigt (auch wenn niedrig)
-- [ ] Falls geblockt durch #67/#69: documentiere blocker in sprint_24_backlog.md, rolle paths_to_mutate auf narrow Config zurück, verschiebe Issue #65 nach Sprint 25.
+- [x] `pyproject.toml [tool.mutmut] paths_to_mutate = ["src/mutmut_win/"]`
+- [x] `uv run mutmut-win run --no-progress` läuft ohne SyntaxError / WinError 32 / ImportError durch
+- [x] Mindestens Mutation-Score wird angezeigt (auch wenn niedrig)
+- [x] Blocker-Prüfung: NICHT geblockt durch #67/#69 — Dogfooding-Lauf erfolgreich, paths_to_mutate dauerhaft auf `src/mutmut_win/` erweitert (a0b5f61); Rollback-Pfad nicht benötigt.
 
 ### Discovery-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 3.1 | paths_to_mutate erweitern, `mutmut-win run` versuchen | 🔲 |
-| 3.2 | Failure-Analyse: welche Bugs treten auf? | 🔲 |
-| 3.3 | Wenn fixable → fixen; wenn blocked → rollback + dokumentieren | 🔲 |
+| 3.1 | paths_to_mutate erweitern, `mutmut-win run` versuchen | ✅ |
+| 3.2 | Failure-Analyse: welche Bugs treten auf? | ✅ |
+| 3.3 | Wenn fixable → fixen; wenn blocked → rollback + dokumentieren | ✅ |
 
 ---
 
@@ -114,21 +114,21 @@ Status quo: Worker-Crashes werden erkannt (laut #12 PARTIAL-Audit), aber kein au
 3. **TDD**: simulated crash → verify slot restarts → 3 crashes in row → slot exhausted → orchestrator continues with remaining slots.
 
 ### Acceptance Criteria
-- [ ] `process/executor.py` hat restart-Logik pro slot (max 3 attempts, exponential backoff)
-- [ ] Slot-exhaustion wird in `MutationResult.status = "worker_exhausted"` reflektiert (oder als "suspicious")
-- [ ] Test: einzelner Worker crash → recovery → continues
-- [ ] Test: 4 crashes in row → slot exhausted, exits clean
-- [ ] Test: andere slots nicht betroffen
-- [ ] Full suite grün, Ruff + mypy clean
+- [x] `process/executor.py` hat restart-Logik pro slot (max 3 attempts, exponential backoff)
+- [x] Slot-exhaustion wird in `MutationResult.status = "worker_exhausted"` reflektiert (oder als "suspicious")
+- [x] Test: einzelner Worker crash → recovery → continues
+- [x] Test: 4 crashes in row → slot exhausted, exits clean
+- [x] Test: andere slots nicht betroffen
+- [x] Full suite grün, Ruff + mypy clean
 
 ### TDD-Tasks
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 4.1 | Failing Test: Worker crash → recovery erwartet | 🔲 |
-| 4.2 | Implementation: restart loop in SpawnPoolExecutor | 🔲 |
-| 4.3 | Test: exhaustion threshold | 🔲 |
-| 4.4 | Test: andere slots isoliert | 🔲 |
-| 4.5 | Quality Gates | 🔲 |
+| 4.1 | Failing Test: Worker crash → recovery erwartet | ✅ |
+| 4.2 | Implementation: restart loop in SpawnPoolExecutor | ✅ |
+| 4.3 | Test: exhaustion threshold | ✅ |
+| 4.4 | Test: andere slots isoliert | ✅ |
+| 4.5 | Quality Gates | ✅ |
 
 ---
 
@@ -141,14 +141,16 @@ Status quo: Worker-Crashes werden erkannt (laut #12 PARTIAL-Audit), aber kein au
 | Type Check | `uv run mypy src/mutmut_win/` | Keine NEUEN Errors |
 | Security | `semgrep scan --config auto src/ tests/unit/ tests/integration/` | 0 Findings |
 
+**Ergebnis (Sprint-Ende, 1cc31f9):** pytest 585 passed / 3 skipped, ruff 0 Findings, mypy clean, semgrep 0 Findings.
+
 ---
 
 ## Release v2.3.0
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.3.0 | 🔲 |
-| Annotated Tag v2.3.0 | 🔲 |
-| GitHub Release v2.3.0 mit Changelog seit v2.2.0 | 🔲 |
-| Auto-close Issues #12, #38, #49, #54, #65 via merge commit refs | 🔲 |
-| MEMORY.md + product_backlog.md update | 🔲 |
+| pyproject.toml + uv.lock auf 2.3.0 | ✅ |
+| Annotated Tag v2.3.0 | ✅ |
+| GitHub Release v2.3.0 mit Changelog seit v2.2.0 | ✅ |
+| Auto-close Issues #12, #38, #49, #54, #65 via merge commit refs | ✅ |
+| MEMORY.md + product_backlog.md update | ✅ |

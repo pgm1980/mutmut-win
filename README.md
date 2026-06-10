@@ -20,6 +20,7 @@ mutmut explicitly blocks Windows execution ([issue #397](https://github.com/boxe
 | IPC | `os.wait()` + exit codes | Two-Queue architecture (task + event) |
 | Mutation engine | libcst (CST-based) | libcst (CST-based) - identical |
 | Config format | `[tool.mutmut]` in pyproject.toml | `[tool.mutmut]` in pyproject.toml - compatible |
+| Infinite-loop detection | None (plain timeout) | psutil triple-check classifier with forensics + confidence (v2.5.0) |
 
 ## Installation
 
@@ -60,15 +61,23 @@ mutmut-win results
 ## CLI Commands
 
 ```
-mutmut-win run [--max-children N] [MUTANT_NAMES...]   Run mutation testing
-mutmut-win results [--all]                             Show result summary
-mutmut-win show <MUTANT_NAME>                          Show diff for a mutant
-mutmut-win apply <MUTANT_NAME>                         Apply a mutant to source
-mutmut-win browse [--show-killed]                      TUI result browser
-mutmut-win tests-for-mutant <MUTANT_NAME>              Show tests for a mutant
-mutmut-win time-estimates [MUTANT_NAMES...]             Show time estimates
-mutmut-win export-cicd-stats                           Export CI/CD stats JSON
+mutmut-win run [OPTIONS] [MUTANT_NAMES...]              Run mutation testing
+mutmut-win results [--all] [--name-only]
+                   [--treat-timeout-as-kill]            Show result summary
+mutmut-win show <MUTANT_NAME>                           Show diff (+ IL forensics) for a mutant
+mutmut-win apply <MUTANT_NAME>                          Apply a mutant to source
+mutmut-win browse [--show-killed]                       TUI result browser
+mutmut-win tests-for-mutant <MUTANT_NAME>               Show tests for a mutant
+mutmut-win time-estimates [MUTANT_NAMES...]              Show time estimates
+mutmut-win export-cicd-stats                            Export CI/CD stats JSON
 ```
+
+`run` options (see `mutmut-win run --help` for the full list):
+`--paths-to-mutate`, `--tests-dir`, `--max-children`, `--timeout-multiplier`,
+`--min-score`, `--output json`, `--since-commit`, `--dry-run`, `--force`,
+`--no-progress`, `--debug`, `--do-not-mutate`, `--extra-paths-to-copy`,
+`--treat-timeout-as-kill`, `--no-infinite-loop-detection`,
+`--infinite-loop-cpu-threshold`
 
 ## Configuration
 
@@ -82,8 +91,16 @@ timeout_multiplier = 30          # Wall-clock timeout factor (default: 30)
 max_children = 8                 # Worker processes (default: CPU count)
 do_not_mutate = ["**/migrations/*"]
 also_copy = ["fixtures/"]
+extra_paths = ["benchmarks/"]    # Sibling packages: copied into mutants/ + on worker PYTHONPATH
 mutate_only_covered_lines = false
 type_check_command = ["mypy", "src/"]
+
+# True infinite-loop detection (v2.5.0+, needs psutil — installed by default)
+infinite_loop_detection = true           # reclassify CPU-pegged timeouts as kills
+infinite_loop_cpu_threshold = 70.0       # mean CPU% over the rolling window
+infinite_loop_output_threshold = 1024    # max output growth (bytes) in window
+infinite_loop_running_ratio = 0.8        # min fraction of 'running' samples
+infinite_loop_window_seconds = 10.0      # rolling sample window
 ```
 
 ## Architecture
@@ -94,7 +111,7 @@ mutmut-win uses a 4-layer architecture:
 CLI Layer          cli.py, browser.py
 Application Layer  orchestrator.py, runner.py, stats.py
 Domain Layer       config, models, constants, mutation engine
-Infrastructure     process/ (executor, timeout, worker, job_object)
+Infrastructure     process/ (executor, timeout, worker, job_object, loop_monitor)
 ```
 
 ### Key Design Decisions
@@ -103,6 +120,7 @@ Infrastructure     process/ (executor, timeout, worker, job_object)
 - **Wall-Clock Timeout:** A monitor thread in the main process tracks deadlines and kills workers that exceed them. Generous default multiplier (30x) accounts for wall-clock vs CPU-time differences.
 - **Windows Job Objects:** When the parent process dies unexpectedly, the OS kernel automatically terminates all workers and their pytest subprocesses. Prevents CPU overheating from orphaned processes.
 - **Two-Queue IPC:** `task_queue` (main to workers) + `event_queue` (workers to main). All data is pickle-safe (plain dicts over queues).
+- **True Infinite-Loop Detection (v2.5.0):** A psutil-based monitor thread samples CPU%, output growth, and process status of the test subprocess tree. On timeout, a triple-check classifier separates real infinite loops (`killed_by_infinite_loop`, with persisted forensics and a confidence band, rendered by `show`) from genuinely slow tests. Degrades gracefully to plain timeouts when psutil is unavailable.
 
 ## Development
 
@@ -112,7 +130,7 @@ git clone https://github.com/pgm1980/mutmut-win.git
 cd mutmut-win
 uv sync --extra dev
 
-# Run tests (477 unit + 4 architecture)
+# Run tests (610 passed / 4 skipped as of v2.5.1; unit + integration + architecture)
 uv run pytest
 
 # Lint + format
@@ -153,6 +171,16 @@ mutmut-win supports all 15 mutation operators from mutmut 3.5.0:
 - Argument removal
 - String method swaps (`lower()` to `upper()`)
 - Match/case statement mutations
+
+Plus 7 advanced operators beyond upstream mutmut (since v1.0.0):
+
+- Regex mutations (quantifiers, character classes, anchors)
+- Math method swaps (`ceil` to `floor`, `min` to `max`, `abs(x)` to `x`, `sum` to `0`)
+- Return value replacement (`return expr` to `return None`)
+- Conditional expression (`x if c else y` to `x` / `y`)
+- Statement removal (void calls + `raise` to `pass`)
+- Collection method mutations (`sorted` to identity, filter removal)
+- or-Default (`x or default` to `x` / `default`)
 
 ## License
 

@@ -3,10 +3,10 @@
 **Projekt:** mutmut-win
 **Sprint:** 26
 **Sprint-Ziel:** Polish + Bug #5 true infinite-loop detection — alleinige internationale Spitze in IL-detection. Release v2.5.0.
-**Epic(s):** Epic 16 (Detection Quality) — neu
+**Epic(s):** Epic 17 (Detection Quality) — neu. *Korrektur 2026-06-11: ursprünglich hier als „Epic 16" angekündigt; die Nummer 16 war bereits durch Sprint 23 (v2.0.x Reliability Wave) vergeben — im product_backlog als Epic 17 geführt.*
 **Branch:** `feature/v2.5.0-polish`
-**Zeitraum:** 2026-05-23 –
-**Status:** 🔲 in progress
+**Zeitraum:** 2026-05-23 – 2026-05-23
+**Status:** ✅ Closed mit v2.5.0 Release + v2.5.1 Hotfix (merge 73bc1a0, hotfix a14e320 — 14/14 SP, Velocity 100%)
 
 ---
 
@@ -14,8 +14,8 @@
 
 | # | Issue | Typ | Titel | SP | Priorität | Status |
 |---|-------|-----|-------|----|-----------|--------|
-| 1 | #72 (neu) | Bug | `--version` reportet 2.0.4 statt pyproject — single source of truth via importlib.metadata | 1 | Must | 🔲 |
-| 2 | #71 (re-open) | Feature | Bug #5 true infinite-loop detection — psutil + forensics + confidence | 13 | Must | 🔲 |
+| 1 | #72 (neu) | Bug | `--version` reportet 2.0.4 statt pyproject — single source of truth via importlib.metadata | 1 | Must | ✅ |
+| 2 | #71 (re-open) | Feature | Bug #5 true infinite-loop detection — psutil + forensics + confidence | 13 | Must | ✅ |
 
 **Gesamt:** 14 SP
 
@@ -86,26 +86,26 @@ psutil >= 5.9 als regular dep (mit graceful import fallback im Code: try/except 
 
 | Task | Status |
 |------|--------|
-| 1.1 Failing test: `mutmut-win --version` matches `importlib.metadata.version("mutmut-win")` | 🔲 |
-| 1.2 Refactor `__init__.py`: `__version__ = importlib.metadata.version("mutmut-win")` with PackageNotFoundError fallback for editable installs | 🔲 |
-| 1.3 Verify CLI `--version` reports 2.5.0 after pyproject bump | 🔲 |
-| 1.4 Ruff + mypy clean | 🔲 |
+| 1.1 Failing test: `mutmut-win --version` matches `importlib.metadata.version("mutmut-win")` | ✅ |
+| 1.2 Refactor `__init__.py`: `__version__ = importlib.metadata.version("mutmut-win")` with PackageNotFoundError fallback for editable installs | ✅ |
+| 1.3 Verify CLI `--version` reports 2.5.0 after pyproject bump | ✅ |
+| 1.4 Ruff + mypy clean | ✅ |
 
 ### Item 2: Bug #5 True IL Detection (#71)
 
 | Task | Status |
 |------|--------|
-| 2.1 Add `psutil>=5.9` to `pyproject.toml` dependencies | 🔲 |
-| 2.2 New module `src/mutmut_win/process/loop_monitor.py`: `ProcessMonitor` thread + `LoopClassification` + `IlForensics` | 🔲 |
-| 2.3 `models.py`: extend `MutationResult` with `forensics: IlForensics | None` field | 🔲 |
-| 2.4 `db.py`: schema migration (`forensics` JSON column on mutant table) + load/save | 🔲 |
-| 2.5 `config.py`: 5 new `MutmutConfig` fields with defaults | 🔲 |
-| 2.6 `worker.py` integration: spawn ProcessMonitor in `_process_task`, replace `subprocess.run` with `Popen` + `wait(timeout)`, invoke `monitor.classify()` on TimeoutExpired | 🔲 |
-| 2.7 `cli.py`: `--no-infinite-loop-detection` + `--infinite-loop-cpu-threshold` flags, results-command renders forensics | 🔲 |
-| 2.8 Unit tests (`tests/unit/test_loop_monitor.py`): 5 tests covering Mock-psutil scenarios (CPU pegged, slow test, ambiguous, all-sleeping, edge-thresholds) | 🔲 |
-| 2.9 Integration test (`tests/integration/test_il_detection.py`): real `python -c "while True: pass"` subprocess → classification == infinite_loop with confidence=high | 🔲 |
-| 2.10 graceful degradation test: simulate `import psutil` ImportError → no crash, fallback to plain timeout | 🔲 |
-| 2.11 Full suite + ruff + mypy + semgrep gates | 🔲 |
+| 2.1 Add `psutil>=5.9` to `pyproject.toml` dependencies | ✅ |
+| 2.2 New module `src/mutmut_win/process/loop_monitor.py`: `ProcessMonitor` thread + `LoopClassification` + `IlForensics` | ✅ |
+| 2.3 `models.py`: extend `MutationResult` with `forensics: IlForensics | None` field | ✅ |
+| 2.4 `db.py`: schema migration (`forensics` JSON column on mutant table) + load/save | ✅ |
+| 2.5 `config.py`: 5 new `MutmutConfig` fields with defaults | ✅ |
+| 2.6 `worker.py` integration: spawn ProcessMonitor in `_process_task`, replace `subprocess.run` with `Popen` + `wait(timeout)`, invoke `monitor.classify()` on TimeoutExpired | ✅ |
+| 2.7 `cli.py`: `--no-infinite-loop-detection` + `--infinite-loop-cpu-threshold` flags, results-command renders forensics | ✅ |
+| 2.8 Unit tests (`tests/unit/test_loop_monitor.py`): 5 tests covering Mock-psutil scenarios (CPU pegged, slow test, ambiguous, all-sleeping, edge-thresholds) | ✅ |
+| 2.9 Integration test (`tests/integration/test_il_detection.py`): real `python -c "while True: pass"` subprocess → classification == infinite_loop with confidence=high | ✅ |
+| 2.10 graceful degradation test: simulate `import psutil` ImportError → no crash, fallback to plain timeout | ✅ |
+| 2.11 Full suite + ruff + mypy + semgrep gates | ✅ |
 
 ---
 
@@ -128,17 +128,19 @@ psutil >= 5.9 als regular dep (mit graceful import fallback im Code: try/except 
 | Security | `semgrep scan --config auto src/ tests/unit/ tests/integration/` | 0 Findings |
 | Architecture | `uv run lint-imports` | 0 Verletzungen |
 
+**Ergebnis (Sprint-Ende, c478c93):** pytest 608 passed / 5 skipped, ruff 0 Findings, mypy clean, semgrep 0 Findings. Nach v2.5.1-Hotfix: 610 passed / 4 skipped (re-verifiziert 2026-06-11).
+
 ---
 
 ## Release v2.5.0
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.5.0 | 🔲 |
-| Annotated Tag v2.5.0 | 🔲 |
-| GitHub Release v2.5.0 with detailed changelog incl. IL-detection feature + market positioning | 🔲 |
-| Auto-close #71, #72 via merge commit | 🔲 |
-| MEMORY.md + product_backlog.md update | 🔲 |
+| pyproject.toml + uv.lock auf 2.5.0 | ✅ |
+| Annotated Tag v2.5.0 | ✅ |
+| GitHub Release v2.5.0 with detailed changelog incl. IL-detection feature + market positioning | ✅ |
+| Auto-close #71, #72 via merge commit | ✅ |
+| MEMORY.md + product_backlog.md update | ✅ |
 
 ---
 
