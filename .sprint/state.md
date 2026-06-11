@@ -1,50 +1,48 @@
 ---
-current_sprint: "32"
-sprint_goal: "v2.10.0 Pipeline Hygiene — letzter Audit-Sprint: Runner-Diagnose + Stats-Cache-Wahrheit, DB-Härtung, Staging-Hygiene (Containment/Deletion-Sync/Fingerprint), Config-/CLI-Validierung, reiner JSON-Kanal, Selbst-Hygiene-Gates + Dogfooding-Premiere, C9-Rest-Triage."
-branch: "feature/v2.10.0-pipeline-hygiene"
+current_sprint: "33"
+sprint_goal: "v2.11.0 Maintenance 1: Runtime & Self-Run — Startup-Sockel im Timeout-Modell (DOG-001), no-tests-Producer (QX-007), Trampolin-Importkette entkoppeln (QX-001, Architektur-Skip fliegt); Ziel: Dogfooding-Pilot brutto >= 80 %."
+branch: "feature/v2.11.0-maintenance-1"
 started_at: "2026-06-11"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State (Sprint 32 opened 2026-06-11)
+# Sprint State (Sprint 33 opened 2026-06-11)
 
 ## Current Focus
-Sprint 32 — **v2.10.0 Pipeline Hygiene** — **implementation complete**
-(alle 7 Items, 36/36 SP). Der LETZTE Audit-Sprint; der Zyklus ist mit
-Schlussbilanz im Register beendet. Commits auf
-`feature/v2.10.0-pipeline-hygiene`:
+Sprint 33 — **v2.11.0 Maintenance 1: Runtime & Self-Run** — geplant,
+Implementierung noch nicht gestartet (wartet auf „Go"). Erster
+bedarfsgetriebener Maintenance-Sprint nach dem Audit-Zyklus; Auswahl
+aus dem Maintenance-Backlog nach Schaden/Nutzen, Pool-Rest (20)
+unversprochen. Issues #105–#110. Branch `feature/v2.11.0-maintenance-1`.
 
-| Issue | Commits | Inhalt |
-|-------|---------|--------|
-| #98 | `804e402`+`a92c5fb` (Ph. 1), `06c9c6c`+`4d1e908` (Ph. 2) | Format-Commit isoliert (21 Dateien), pytest-Kanon (conftest — `uv run pytest` nackt), semgrep scannt tests/ real (101 Dateien; 11 Test-Idiome begründet unterdrückt); **Dogfooding-Premiere**: Pilot 5 komplett, 244 Mutanten, 85,5 % über bewertbare (type_checking 96,4 %), 4 Vorlauf-Funde + 2 neue Maintenance-Einträge (DOG-001 Timeout-Startup-Sockel S2, DOG-002 Hint-pro-Worker S4), 1 echte Testlücke gefixt |
-| #99 | `af0b826` | Runner: DEVNULL→Tail-Capture + Exit-Dekodierung, extra_paths im PYTHONPATH (RN-002 ✅✅), Stats-Fehlschlag vergiftet nie den Cache (Plugin-JSON = Wahrheit, heilt Partial-Writes), Obsolete-Cleanup bei Löschung |
-| #100 | `55bc61e` | DB: Lesepfad-Migration (Prä-v2.5 ✅✅), contextlib.closing überall (WinError 32 ✅✅), Race-tolerante Migration, Surrogate-sichere Writes |
-| #101 | `d4a8e87` | Staging: `..`-Containment (#69-Use-Case erhalten), Deletion-Sync inkl. .meta (OS-012 KOMPLETT), Quellen-Fingerprint in .meta (Erstansatz von eigener Suite korrigiert!), Config-Fingerprint fürs Fast-Path-Gating, atomare+tolerante .meta, --force ehrlich |
-| #102 | `c3fe810` | Config/CLI: Override-Re-Validierung (--max-children 0 war Hänger), Typo-Warnung mit difflib, since-commit-returncode+Filter, --debug real |
-| #103 | `ebb1fd9` | CI: json.loads(stdout) funktioniert (Prosa→stderr), kein UnicodeEncodeError auf cp1252 |
-| #104 | `3528022` | Maintenance-Backlog (26 Einträge inkl. 2 Dogfooding-Funde), Audit-Schlussbilanz, QX-001-Skip im Trampolin-Artefakt |
+## Sprint 33 Backlog (31 SP — Must 18, Should 13)
+1. **#105 (Must, 5 SP):** DOG-001 — gemessener Startup-Sockel
+   (clean_wall − Σdurations, geclamps, transparent); Design-CoT ≥8.
+   Dogfooding bewies: 175/244 Pseudo-Timeouts mit fertiger Summary.
+2. **#106 (Must, 5 SP):** QX-007 — no-tests-Producer; Designkern:
+   tests=[] doppeldeutig (Vollsuite-Fallback bleibt für „keine Stats",
+   exit 33 nur bei „gemappt-aber-leer"); à la #93 persistiert.
+3. **#110 (Should, 3 SP):** QX-017/018 (max_stack_depth-0-Falle!),
+   QX-019-Rest, DOG-002 (Hint pro Lauf).
+4. **Zwischengate:** Pilot-Re-Run → brutto ≥ 80 % erwartet.
+5. **#107 (Must, 8 SP):** QX-001+QX-020 — Trampolin-Hit-Recording in
+   Kernel-Modul, Codegen-Zeile, BWC-Re-Export; Design-CoT ≥8;
+   Beweisziel: Architektur-Skip-Marker ENTFERNT.
+6. **#108 (Should, 5 SP):** UI-007 — Browser-Diff aus mutant_diff
+   (Single Source), DB-Fallback-Namensform.
+7. **#109 (Should, 5 SP):** UI-010/011/013/016 Robustheit.
+8. **Abschluss:** Dogfooding-Lauf dokumentiert; Pool gepflegt.
 
-Gates (VERSCHÄRFT, alle ✅): **821 passed / 4 skipped** (nackt), ruff 0,
-**format-check 0** (neu), mypy 20 pre-existing / 0 neue, **semgrep 0 auf
-src+tests** (101 Dateien, neu), lint-imports KEPT, **Mutation-Pilot
-dokumentiert** (erstmals).
+Reihenfolge: 105 → 106 → 110 → Re-Run-Gate → 107 → 108 → 109 →
+Abschluss-Lauf. Scope-Ventil: #108/#109/#110 zurück in den Pool;
+v2.11.0 mit #105–#107 + Re-Run-Beleg release-fähig.
 
-## Release — DONE 2026-06-11
-v2.10.0 released: Merge (closes #98–#104, 0 offene Issues verifiziert),
-Bump `060ea16`, annotated Tag `v2.10.0`, GitHub Release
-https://github.com/pgm1980/mutmut-win/releases/tag/v2.10.0. Suite auf
-gemergtem main erneut 821 passed / 4 skipped. Sprint 32 vollständig
-abgeschlossen — der AUDIT-ZYKLUS ist beendet (Register geschlossen).
-
-## Nach v2.10.0
-Audit-Zyklus formal beendet (Register geschlossen). Weiterarbeit aus dem
-**Maintenance-Backlog** (Product Backlog, severity-sortiert, 26 Einträge)
-— bedarfsgetrieben, Top-Kandidaten: DOG-001 (Timeout-Startup-Sockel, S2),
-UI-007 (TUI-Diff, S2), QX-001 (Trampolin-Importkette, S2; Vorarbeit:
-Architektur-Skip-Marker existiert). pip-audit bleibt umgebungsblockiert.
+## Out of scope (bleibt im Maintenance-Pool, unversprochen)
+RN-006/010/011/012/013, FD-008, QX-005/006/020-Rest/023-Rest,
+UI-012/014/015, OS-012-Restgrenze (dokumentiert). pip-audit (Umgebungs-SSL).

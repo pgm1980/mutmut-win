@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -29,6 +29,7 @@
 | v2.8.0 | IL Detection Honesty | Sprint 30 | Done | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Progress-Veto (#89), Test-Ehrlichkeit (#90) — released 2026-06-11 |
 | v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Done | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding-Premiere (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) — released 2026-06-11; **Audit-Zyklus beendet** |
+| v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Planned | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — Messziel: Pilot brutto >= 80 % |
 
 ---
 
@@ -632,6 +633,35 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 
 ---
 
+### Epic 24: Maintenance 1 — Runtime & Self-Run (Sprint 33)
+
+**Beschreibung:** Erster bedarfsgetriebener Maintenance-Sprint. Leitmotiv:
+die drei S2-Blocker zwischen Projekt und breitem Dogfooding — gemessener
+Startup-Sockel im Timeout-Modell (DOG-001; 175/244 Pseudo-Timeouts im
+Piloten), no-tests-Producer (QX-007; ungemappte Mutanten laufen heute die
+Vollsuite), Trampolin-Importketten-Entkopplung (QX-001; entfernt den
+Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
+≥ 80 % (vorher 24,2 %). Detail: `_docs/sprint backlogs/sprint_33_backlog.md`.
+**Sprint:** 33
+**Release:** v2.11.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #105 | Bug | DOG-001: additiver Startup-Sockel im Timeout-Modell | Must | 5 | Open |
+| #106 | Bug | QX-007: no-tests-Producer (exit 33) statt Vollsuite | Must | 5 | Open |
+| #107 | Bug | QX-001+QX-020: Trampolin-Importkette → Kernel-Modul; Architektur-Skip fliegt | Must | 8 | Open |
+| #108 | Bug | UI-007: Browser-Diff = show-Diff (Single Source) | Should | 5 | Open |
+| #109 | Bug | Browser/CLI-Robustheit (UI-010/011/013/016) | Should | 5 | Open |
+| #110 | Bug | Hygiene-Kleinkram (QX-017/018, QX-019-Rest, DOG-002) | Should | 3 | Open |
+
+**Acceptance Criteria (Sprint-Ebene):**
+- [ ] Dogfooding-Pilot (gleiche Module wie Sprint 32) erreicht brutto ≥ 80 % — Zwischengate nach #105/#106, Abschluss-Lauf dokumentiert
+- [ ] Mutanten ohne gemappte Tests werden als `no tests` verbucht (nie dispatcht); Vollsuite-Fallback nur ohne Stats, weiterhin laut
+- [ ] Der QX-001-Architektur-Skip ist ENTFERNT — lint-imports hält auch im Trampolin-Artefakt
+- [ ] Score-Verschiebungen im Changelog ausgewiesen
+- [ ] Quality Gates: pytest ≥ 840, ruff 0, format-check 0, mypy 0 neue, semgrep 0 (src+tests), lint-imports KEPT überall
+
+---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
 
 > Ergebnis der C9-Rest-Triage (#104, Sprint 32): Die nach fünf
@@ -701,6 +731,7 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 | IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Done |
 | Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
 | Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Done |
+| Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Planned |
 
 ---
 
@@ -739,6 +770,7 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 | Sprint 30 | 25 | 25 | 100% | v2.8.0 IL Detection Honesty (#85–#90) |
 | Sprint 31 | 33 | 33 | 100% | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
 | Sprint 32 | 36 | 36 | 100% | v2.10.0 Pipeline Hygiene (#98–#104) |
+| Sprint 33 | 31 | (offen) | — | v2.11.0 Maintenance 1 (#105–#110) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -774,3 +806,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.8.0 | 2026-06-11 | Claude Code Agent | Sprint 31 geschlossen (Epic 22 Done, v2.9.0 released, Velocity 33/33): C6+C7 komplett — Type-Check-Filter end-to-end repariert (E2E mit echtem mypy), Coverage via Subprozess-Brücke REAKTIVIERT (Spike + 8-Schritt-CoT), Status-/Score-Pipeline lückenlos (Summen-Invariante, Exit-2/NTSTATUS-Kills, Interrupt-Ehrlichkeit, Orphan-Purge, score im JSON). Release mit ⚠-Score-corrections-Sektion. mypy-Baseline 26→20. |
 | 1.9.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geplant: Epic 23 (Pipeline Hygiene, #98–#104, 36 SP) mit 12-Schritt-Planungs-CoT — letzter Audit-Sprint (C8+C9-Top + Neuzugänge + Dogfooding-Premiere); Format-Commit als Sprint-Auftakt, verschärfte Gates als Sprint-Inhalt, C9-Rest-Triage statt Versanden; OS-006/FD-002 am v2.9.0-Stand re-verifiziert. Branch-Aufräumen: 37 lokale + 2 Remote-Branches entfernt. |
 | 2.0.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geschlossen (Epic 23 Done, v2.10.0 released, Velocity 36/36) — **AUDIT-ZYKLUS BEENDET**: C1–C8 komplett + C9-Top über 5 Releases an einem Tag; verschärfte Gates verankert (format-check, nackter pytest, semgrep auf tests/); Dogfooding-Premiere (85,5 % über bewertbare Mutanten, 4 Anläufe = 4 Funde); Maintenance-Backlog (26 Einträge) als einziger Arbeitsvorrat. |
+| 2.1.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geplant: Epic 24 (Maintenance 1: Runtime & Self-Run, #105–#110, 31 SP) per 10-Schritt-CoT — bedarfsgetriebene Pool-Auswahl (3×S2 + Bündel), Messziel Pilot brutto ≥ 80 %, Pool-Rest (20) bewusst unversprochen. |
