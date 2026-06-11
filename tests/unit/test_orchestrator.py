@@ -221,10 +221,13 @@ class TestMutationOrchestratorInit:
 
 
 class TestMutationOrchestratorRunNoMutants:
-    def test_returns_empty_result_when_no_mutants(self, tmp_path: Path) -> None:
+    def test_returns_empty_result_when_no_mutants(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         runner = _make_runner()
         executor = _make_executor()
-        cfg = _config(paths_to_mutate=[str(tmp_path)])
+        cfg = _config(paths_to_mutate=["src"])
         orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         result = orch.run()
         assert result.total_mutants == 0
@@ -238,7 +241,10 @@ class TestMutationOrchestratorRunNoMutants:
 
 
 class TestMutationOrchestratorRunCleanTestFail:
-    def test_raises_clean_test_failed_error(self, tmp_path: Path) -> None:
+    def test_raises_clean_test_failed_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         # Create a real Python file that produces at least one mutant.
         src = tmp_path / "src"
         src.mkdir()
@@ -246,7 +252,7 @@ class TestMutationOrchestratorRunCleanTestFail:
 
         runner = _make_runner(clean_exit=1)
         executor = _make_executor()
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
         orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         with pytest.raises(CleanTestFailedError):
             orch.run()
@@ -258,14 +264,17 @@ class TestMutationOrchestratorRunCleanTestFail:
 
 
 class TestMutationOrchestratorRunForcedFailCheck:
-    def test_raises_forced_fail_error_when_exit_0(self, tmp_path: Path) -> None:
+    def test_raises_forced_fail_error_when_exit_0(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         runner = _make_runner(clean_exit=0, forced_fail_exit=0)
         executor = _make_executor()
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
         orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         with pytest.raises(ForcedFailError):
             orch.run()
@@ -277,13 +286,16 @@ class TestMutationOrchestratorRunForcedFailCheck:
 
 
 class TestMutationOrchestratorRunHappyPath:
-    def test_returns_correct_total_mutants(self, tmp_path: Path) -> None:
+    def test_returns_correct_total_mutants(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         runner = _make_runner(clean_exit=0, forced_fail_exit=1)
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
 
         # Capture tasks passed to executor.start so we can build matching events.
         captured_tasks: list[MutationTask] = []
@@ -309,13 +321,16 @@ class TestMutationOrchestratorRunHappyPath:
         assert result.total_mutants > 0
         assert result.killed == result.total_mutants
 
-    def test_timeout_events_counted(self, tmp_path: Path) -> None:
+    def test_timeout_events_counted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         runner = _make_runner(clean_exit=0, forced_fail_exit=1)
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
 
         captured_tasks: list[MutationTask] = []
 
@@ -337,15 +352,18 @@ class TestMutationOrchestratorRunHappyPath:
         result = orch.run()
         assert result.timeout == result.total_mutants
 
-    def test_results_persisted_to_db(self, tmp_path: Path) -> None:
+    def test_results_persisted_to_db(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from mutmut_win.db import load_results
 
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         runner = _make_runner(clean_exit=0, forced_fail_exit=1)
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
         db_path = tmp_path / "cache.db"
 
         captured_tasks: list[MutationTask] = []
@@ -378,7 +396,10 @@ class TestMutationOrchestratorRunHappyPath:
 
 
 class TestMutationOrchestratorKeyboardInterrupt:
-    def test_shutdown_called_on_keyboard_interrupt(self, tmp_path: Path) -> None:
+    def test_shutdown_called_on_keyboard_interrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
@@ -388,7 +409,7 @@ class TestMutationOrchestratorKeyboardInterrupt:
         executor.start.return_value = None
         executor.get_events.side_effect = KeyboardInterrupt
 
-        cfg = _config(paths_to_mutate=[str(src)])
+        cfg = _config(paths_to_mutate=["src"])
         orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         # KeyboardInterrupt is caught internally; run() should return a result.
         result = orch.run()

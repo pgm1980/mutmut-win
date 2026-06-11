@@ -413,6 +413,19 @@ def create_mutants_for_file(
     """
     collected_warnings: list[warnings.WarningMessage] = []
 
+    # Write guard (issue #75 / A3-CM-001): with absolute paths_to_mutate,
+    # ``Path("mutants") / <abs>`` collapses to ``<abs>`` and *output_path*
+    # becomes the source file itself.  Refuse loudly instead of destroying
+    # the user's code — this also defends callers that bypass the config
+    # validator (e.g. CLI overrides via ``model_copy``).
+    if output_path.resolve() == filename.resolve():
+        msg = (
+            f"Refusing to write mutants into the source file itself "
+            f"({filename}) — paths_to_mutate must be relative to the project "
+            "root (issue #75)."
+        )
+        raise ValueError(msg)
+
     # Fast-path: if the source is unchanged since we last mutated it, reuse
     # the existing mutant names from the .meta file instead of re-generating.
     # This enables repeated runs: the orchestrator gets the task list even

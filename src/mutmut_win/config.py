@@ -202,6 +202,35 @@ class MutmutConfig(BaseModel):
             return [v]
         return v
 
+    @field_validator("paths_to_mutate", mode="after")
+    @classmethod
+    def _reject_absolute_paths(cls, v: list[str]) -> list[str]:
+        """Reject absolute ``paths_to_mutate`` entries (issue #75 / A3-CM-001).
+
+        ``Path("mutants") / <absolute path>`` discards the left operand, so an
+        absolute entry would make the mutation engine write the trampoline
+        code INTO the original source file.  Entries under the current working
+        directory are silently relativized; anything else is an error.
+        """
+        safe: list[str] = []
+        for entry in v:
+            path = Path(entry)
+            if path.is_absolute():
+                try:
+                    path = path.relative_to(Path.cwd())
+                except ValueError as exc:
+                    msg = (
+                        f"paths_to_mutate entry {entry!r} is an absolute path "
+                        "outside the project root — use paths relative to the "
+                        "project root (absolute paths would let the mutants/ "
+                        "staging overwrite the original sources)"
+                    )
+                    raise ValueError(msg) from exc
+                safe.append(str(path))
+            else:
+                safe.append(entry)
+        return safe
+
     @field_validator("type_check_command", "pytest_add_cli_args", mode="before")
     @classmethod
     def _coerce_command_to_list(cls, v: object) -> object:

@@ -7,6 +7,7 @@ on files under the ``mutants/`` staging directory produced by
 
 from __future__ import annotations
 
+import shutil
 from difflib import unified_diff
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -107,6 +108,43 @@ def find_top_level_function_or_method(module: cst.Module, name: str) -> cst.Func
     return None
 
 
+def _find_function_in_scope(
+    module: cst.Module, name: str, class_name: str | None
+) -> cst.FunctionDef | None:
+    """Scope-exact lookup for ``apply`` (issue #75 / A4-UI-001).
+
+    Unlike :func:`find_top_level_function_or_method` (first match in ANY
+    scope — fine for the unique mangled names inside the mutants file), this
+    matches exactly the scope encoded in the mutant name: a top-level
+    function when *class_name* is ``None``, otherwise a method of the
+    top-level class named *class_name*.  Without this, applying
+    ``xǁBǁgreet__mutmut_1`` patched ``A.greet`` when class ``A`` came first.
+
+    Args:
+        module: Parsed ``libcst.Module`` to search.
+        name: Simple function/method name.
+        class_name: Owning class name from the mutant key, or ``None`` for a
+            top-level function.
+
+    Returns:
+        The matching ``cst.FunctionDef`` node, or ``None`` if not found.
+    """
+    for child in module.body:
+        if class_name is None:
+            if isinstance(child, cst.FunctionDef) and child.name.value == name:
+                return child
+            continue
+        if (
+            isinstance(child, cst.ClassDef)
+            and child.name.value == class_name
+            and isinstance(child.body, cst.IndentedBlock)
+        ):
+            for method in child.body.body:
+                if isinstance(method, cst.FunctionDef) and method.name.value == name:
+                    return method
+    return None
+
+
 def read_original_function(module: cst.Module, mutant_name: str) -> cst.FunctionDef:
     """Extract the original function from a mutated module (the ``_orig`` copy).
 
@@ -196,6 +234,13 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     Reads the mutants file to find the mutant function body, then patches the
     original source file so the named function contains the mutated code.
 
+    Safety (issue #75): the lookup is scope-exact (the mutant's class name is
+    honoured, A4-UI-001), reads/writes are byte-exact so the original line
+    endings survive (A4-UI-002), the previous content is backed up next to
+    the source as ``<name>.mutmut-orig.bak`` (overwritten on repeated apply),
+    the write is atomic (temp file + ``os.replace``), and the call refuses to
+    run when the source changed after its mutants were generated (A4-UI-003).
+
     Args:
         mutant_name: Fully qualified mutant identifier.
         config: Active ``MutmutConfig`` instance.
@@ -203,24 +248,41 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     Raises:
         FileNotFoundError: If the mutant or the original function cannot be
             found.
+        RuntimeError: If the source file is newer than its ``mutants/`` copy
+            (stale staging — re-run ``mutmut-win run`` first).
     """
     path = find_mutant(mutant_name, config).path
+    source_path = Path(path)
+    mutants_path = Path("mutants") / path
 
-    orig_function_name, _ = orig_function_and_class_names_from_key(mutant_name)
+    if source_path.stat().st_mtime > mutants_path.stat().st_mtime:
+        msg = (
+            f"{source_path} changed after its mutants were generated — "
+            "re-run 'mutmut-win run' before applying mutants."
+        )
+        raise RuntimeError(msg)
+
+    orig_function_name, class_name = orig_function_and_class_names_from_key(mutant_name)
     orig_function_name = orig_function_name.rpartition(".")[-1]
 
-    orig_module = read_orig_module(path)
-    mutants_module = read_mutants_module(path)
+    # Byte-exact reads: no universal-newline translation, so the patched file
+    # keeps the original line endings.
+    orig_module = cst.parse_module(source_path.read_bytes().decode("utf-8"))
+    mutants_module = cst.parse_module(mutants_path.read_bytes().decode("utf-8"))
 
     mutant_function = read_mutant_function(mutants_module, mutant_name)
     mutant_function = mutant_function.with_changes(name=cst.Name(orig_function_name))
 
-    original_function = find_top_level_function_or_method(orig_module, orig_function_name)
+    original_function = _find_function_in_scope(orig_module, orig_function_name, class_name)
     if not original_function:
         raise FileNotFoundError(f"Could not apply mutant {mutant_name}")
 
     # libcst.deep_replace is typed to return CSTNode; we know the result is Module.
     new_module = cast("cst.Module", orig_module.deep_replace(original_function, mutant_function))
 
-    with Path(path).open("w", encoding="utf-8") as f:
-        f.write(new_module.code)
+    backup_path = source_path.with_name(source_path.name + ".mutmut-orig.bak")
+    shutil.copy2(source_path, backup_path)
+
+    tmp_file = source_path.with_name(source_path.name + ".mutmut-apply.tmp")
+    tmp_file.write_bytes(new_module.bytes)
+    tmp_file.replace(source_path)
