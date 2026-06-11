@@ -30,6 +30,7 @@
 | v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Done | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding-Premiere (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) — released 2026-06-11; **Audit-Zyklus beendet** |
 | v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Done | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — released 2026-06-11; **Pilot 24,2 % → 86,9 % brutto, 0 Timeouts statt 175; Architektur-Skip im Artefakt entfernt** |
+| v2.12.0 | Maintenance 2: Final Sweep | Sprint 34 | Planned | VOLLSTÄNDIGER Pool-Rest (13 Einträge) + Entscheidungsregister: Runner-Wahrheit (#111), Arg-Koerzierung (#112), Sanitiser-Subtables (#113), Exception-Hygiene (#114), CLI-Konsistenz (#115), sitecustomize (#116), Abschluss-Dossier (#117) — danach **Entwicklungspause**; Messziel: Pilot ≥ 80 % halten |
 
 ---
 
@@ -662,6 +663,38 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 - [x] Quality Gates: pytest 868, ruff 0, format-check 0, mypy 0 neue, semgrep 0 (src+tests), lint-imports KEPT überall (inkl. Artefakt)
 
 ---
+
+### Epic 25: Maintenance 2 — Final Sweep (Sprint 34)
+
+**Beschreibung:** Letzter Sprint vor der geplanten Entwicklungspause
+(User-Auftrag 2026-06-11: „alle noch offenen Topics, danach Entwicklung
+vorerst abschließen"). Inhalt: der VOLLSTÄNDIGE Maintenance-Pool-Rest
+(13 Einträge, 7×S3 + 6×S4) plus die vier offenen Entscheidungen aus
+MEMORY.md (--treat-timeout-as-kill, Release-Policy, Shrink-Storm,
+BUG_REPORT_9). Jedes Item endet als „gefixt (Commit-Ref)" oder „formal
+geschlossen (dokumentierte Begründung)". Detail:
+`_docs/sprint backlogs/sprint_34_backlog.md`.
+**Sprint:** 34
+**Release:** v2.12.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #111 | Bug | RN-006 + RN-012: Runner-Phasen-Wahrheit (Forced-Fail, IMPORTMISMATCH) | Must | 5 | Open |
+| #112 | Bug | RN-013: Arg-Koerzierung via shlex (beide Felder, str+list) | Must | 3 | Open |
+| #113 | Bug | FD-008: Sanitiser entfernt `[tool.uv.sources.<pkg>]`-Subtables | Must | 3 | Open |
+| #114 | Bug | QX-005/006/023-Rest: Exception-Hygiene | Must | 5 | Open |
+| #115 | Bug | UI-012/014/015: Resolver, patch-fähige Diffs, Alignment | Should | 5 | Open |
+| #116 | Bug | RN-010/011: sitecustomize-Hygiene | Should | 3 | Open |
+| #117 | Chore | Abschluss-Dossier: Deprecation, Release-Policy, formale Schließungen, Pausenzustand | Must | 3 | Open |
+
+**Acceptance Criteria (Sprint-Ebene):**
+- [ ] Maintenance-Pool-Tabelle = 0 Einträge (13/13 gefixt oder formal geschlossen)
+- [ ] MEMORY.md „Open Decisions" = alle 4 entschieden/geschlossen
+- [ ] Dogfooding-Pilot (gleiche Module) hält brutto ≥ 80 %; `--since-commit`-Lauf dokumentiert
+- [ ] Quality Gates: pytest grün, ruff 0, format-check 0, mypy ≤ 20 Baseline (0 neue), semgrep 0, lint-imports KEPT inkl. Artefakt
+- [ ] Pausenzustand dokumentiert (MEMORY.md, state.md, Release Notes)
+
+---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
 
 > Ergebnis der C9-Rest-Triage (#104, Sprint 32): Die nach fünf
@@ -723,6 +756,7 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 | Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
 | Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Done |
 | Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
+| Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Planned |
 
 ---
 
@@ -800,3 +834,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.1.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geplant: Epic 24 (Maintenance 1: Runtime & Self-Run, #105–#110, 31 SP) per 10-Schritt-CoT — bedarfsgetriebene Pool-Auswahl (3×S2 + Bündel), Messziel Pilot brutto ≥ 80 %, Pool-Rest (20) bewusst unversprochen. |
 | 2.2.0 | 2026-06-11 | Claude Code Agent | Sprint 33 implementiert (Epic 24 Done, Velocity 31/31): Pilot 24,2 % → **86,9 % brutto** (0 Timeouts statt 175), Architektur-Skip im Artefakt entfernt, Maintenance-Pool 26 → 13. Release v2.11.0 ausstehend. |
 | 2.3.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geschlossen (v2.11.0 released, Merge schloss #105–#110 automatisch): annotated Tag + GitHub-Release mit ausgewiesener Score-Verschiebung (no_tests verlässt den Nenner, Vollsuite-Zufallskills den Zähler); Milestone/Epic auf Done, MEMORY.md + state.md synchronisiert. |
+| 2.4.0 | 2026-06-11 | Claude Code Agent | Sprint 34 geplant: Epic 25 (Maintenance 2: Final Sweep, #111–#117, 27 SP) per 11-Schritt-CoT — User-Auftrag „alle offenen Topics, danach Entwicklungspause": kompletter Pool-Rest (13) + MEMORY-Entscheidungsregister (4); kein Auswahl-Ventil, Eskalation nur zu dokumentierter Won't-Fix-Entscheidung; Messziel Pilot ≥ 80 % halten. |
