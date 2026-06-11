@@ -221,6 +221,28 @@ class MutationOrchestrator:
                 "the trampoline mechanism does not appear to work correctly."
             )
             raise ForcedFailError(msg)
+        # Issue #111 / A2-RN-006: the pre-#111 gate accepted ANY non-zero exit
+        # — including a timeout translated into "trampoline works" and
+        # failures from arbitrarily broken tests.
+        if ff_exit == EXIT_CODE_TIMEOUT:
+            msg = (
+                f"Forced-fail verification timed out after "
+                f"{self._config.forced_fail_timeout}s — a hung suite proves "
+                "nothing about the trampoline (configure "
+                "[tool.mutmut].forced_fail_timeout)."
+            )
+            raise ForcedFailError(msg)
+        if not self._runner.last_forced_fail_attributed:
+            msg = (
+                f"Tests failed under the forced-fail run (exit {ff_exit}), but no "
+                "MutmutProgrammaticFailException appeared in the output — the "
+                "failure does not stem from the trampoline and cannot prove "
+                "the mutant switch works."
+            )
+            tail = self._runner.last_diagnostic_output
+            if tail:
+                msg += f"\n--- pytest output (tail) ---\n{tail}"
+            raise ForcedFailError(msg)
 
         # ------------------------------------------------------------------
         # Step 5: Assign specific tests and compute timeouts.

@@ -24,6 +24,12 @@ MUTANT_FAIL_SENTINEL = "fail"
 #: Sentinel value that triggers stats recording in the trampoline.
 MUTANT_STATS_SENTINEL = "stats"
 
+#: The one string the trampoline guarantees in any rendering of its forced
+#: fail (the -rfE short summary, conftest tracebacks, collection errors).
+#: Used to attribute a forced-fail failure to the trampoline (A2-RN-006)
+#: instead of accepting any arbitrary broken test as proof.
+FORCED_FAIL_MARKER = "MutmutProgrammaticFailException"
+
 
 #: Human explanations for pytest exit classes — a failing gate used to say
 #: "Fix tests before mutating" for ALL of them (A2-RN-001), which is plain
@@ -67,6 +73,7 @@ class PytestRunner:
     def __init__(self, config: MutmutConfig) -> None:
         self._config = config
         self._last_diagnostic_output: str | None = None
+        self._forced_fail_attributed: bool | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -81,6 +88,17 @@ class PytestRunner:
         phases used to pipe to DEVNULL, leaving zero output on failure).
         """
         return self._last_diagnostic_output
+
+    @property
+    def last_forced_fail_attributed(self) -> bool | None:
+        """Whether the last forced-fail failure stems from the trampoline.
+
+        ``True`` when :data:`FORCED_FAIL_MARKER` appeared in the captured
+        output of a failing forced-fail run, ``False`` when the run failed
+        for some other reason (or did not fail at all), ``None`` when no
+        verdict exists (timeout — issue #111 / A2-RN-006).
+        """
+        return self._forced_fail_attributed
 
     def run_clean_test(self) -> int:
         """Run pytest without any mutations active (in mutants/ directory).
@@ -205,7 +223,6 @@ class PytestRunner:
 
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
-        env["PY_IGNORE_IMPORTMISMATCH"] = "1"
 
         # Inject the stats-collection pytest plugin into mutants/.
         mutants_abs = Path("mutants").absolute()
@@ -294,20 +311,33 @@ class PytestRunner:
         """Run pytest with ``MUTANT_UNDER_TEST=fail`` in mutants/ directory.
 
         The trampoline raises ``MutmutProgrammaticFailException`` for every
-        function call, so all tests should fail.
+        function call, so the run must fail — and the failure must come from
+        exactly that exception. ``-x`` stops at the first failure (one
+        failure is all the proof there is), ``-rfE`` puts the exception name
+        into the output even with ``--tb=no`` (issue #111 / A2-RN-006; the
+        pre-#111 code ran the FULL suite and converted a timeout into
+        "trampoline works").
 
         Args:
             mutant_name: Mutant identifier (reserved for future test filtering — unused now).
 
         Returns:
-            The pytest exit code (non-zero means tests caught the failure, as expected).
+            The pytest exit code, untranslated (36 = timeout). The
+            attribution verdict is published via
+            :attr:`last_forced_fail_attributed`; the orchestrator owns the
+            gate decision.
         """
-        cmd = [*self._base_pytest_cmd(), "--tb=no", "-q"]
+        # --tb=line (not --tb=no): the one-line traceback carries the
+        # exception name and is never width-truncated; the -rfE summary
+        # alone is cut to terminal width and could lose the marker behind
+        # a long node id. COLUMNS widens that summary as belt and braces.
+        cmd = [*self._base_pytest_cmd(), "--tb=line", "-q", "-x", "-rfE"]
         cmd.extend(self._config.pytest_add_cli_args)
         if self._config.tests_dir:
             cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
+        env["COLUMNS"] = "200"
         exit_code = self._run_phase(
             "forced-fail verification",
             cmd,
@@ -316,13 +346,12 @@ class PytestRunner:
             timeout_hint="forced_fail_timeout",
         )
         if exit_code == 36:
-            # Forced-fail timeout likely means pytest-asyncio event loop corruption.
-            # Return non-zero so the orchestrator treats it as "tests did fail" (correct).
-            print(
-                "Note: treating the forced-fail timeout as 'tests failed' — "
-                "the trampoline did interrupt the suite."
-            )
-            return 1  # non-zero = tests failed = trampoline works
+            # A hung suite proves nothing about the trampoline — no verdict.
+            self._forced_fail_attributed = None
+            return exit_code
+        self._forced_fail_attributed = exit_code != 0 and FORCED_FAIL_MARKER in (
+            self._last_diagnostic_output or ""
+        )
         return exit_code
 
     # ------------------------------------------------------------------
@@ -378,6 +407,13 @@ class PytestRunner:
         # tells uv to use the parent venv instead of creating a new one.
         parent_venv = Path(sys.executable).resolve().parent.parent
         env["UV_PROJECT_ENVIRONMENT"] = str(parent_venv)
+
+        # mutants/ holds copies of the test modules under their original
+        # basenames — pytest's import-mismatch check would reject them when
+        # stale __pycache__ entries point at the originals. Set for EVERY
+        # phase (clean / stats / coverage / forced-fail); the stats run used
+        # to be the only one (issue #111 / A2-RN-012).
+        env["PY_IGNORE_IMPORTMISMATCH"] = "1"
 
         # Disable .pth files from editable installs that shadow mutants/src/.
         # Write a sitecustomize.py into mutants/ that removes the real src/

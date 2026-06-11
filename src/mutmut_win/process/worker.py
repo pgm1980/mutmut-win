@@ -174,6 +174,10 @@ def _process_task(
     # buffering the log's st_size froze at 0 while the suite made progress,
     # blinding the IL classifier's output signal (issue #88 / A2-JT-002).
     env["PYTHONUNBUFFERED"] = "1"
+    # Same env truth as every runner phase (issue #111 / A2-RN-012): the
+    # copied test modules in mutants/ keep their original basenames, and
+    # pytest's import-mismatch check would reject them via stale __pycache__.
+    env["PY_IGNORE_IMPORTMISMATCH"] = "1"
 
     # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
     # - PIPE deadlocks on Windows when grandchild processes inherit handles
