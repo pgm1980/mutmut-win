@@ -175,22 +175,31 @@ class TestRecordTrampolineHit:
         _stats.clear()
 
     def test_get_max_stack_depth_caches_value(self) -> None:
-        """F4: _get_max_stack_depth() caches the config value after first call."""
+        """F4: _get_max_stack_depth() caches the config value after first call.
+
+        Instrumentation-proof (Sprint-34 dogfooding find): the config object
+        is built BEFORE the patch context and the cache reset happens with
+        the mock fully armed. Under ``MUTANT_UNDER_TEST=stats`` in a staging
+        that trampolines config.py, the model construction itself records
+        trampoline hits — those consult ``_get_max_stack_depth`` and would
+        otherwise populate the cache through a half-configured mock.
+        """
         from unittest.mock import patch
 
         from mutmut_win import hit_recording
         from mutmut_win._state import _reset_globals
+        from mutmut_win.config import MutmutConfig
 
-        _reset_globals()
-        with patch("mutmut_win.config.load_config") as mock_load:
-            from mutmut_win.config import MutmutConfig
-
-            mock_load.return_value = MutmutConfig(max_stack_depth=5)
+        cfg = MutmutConfig(max_stack_depth=5)
+        with patch("mutmut_win.config.load_config", return_value=cfg) as mock_load:
+            _reset_globals()
             # First call loads config.
             depth1 = hit_recording._get_max_stack_depth()
-            # Second call must use cache (mock called only once).
+            calls_after_first = mock_load.call_count
+            # Second call must use the cache (no additional load).
             depth2 = hit_recording._get_max_stack_depth()
         assert depth1 == 5
         assert depth2 == 5
-        mock_load.assert_called_once()
+        assert calls_after_first == 1
+        assert mock_load.call_count == calls_after_first
         _reset_globals()
