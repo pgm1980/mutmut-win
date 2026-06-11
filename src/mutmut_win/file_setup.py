@@ -368,7 +368,7 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
 
 
 def _sanitise_mutants_pyproject() -> None:
-    """Remove [tool.uv.sources] from the copied pyproject.toml in mutants/.
+    """Remove uv source tables from the copied pyproject.toml in mutants/.
 
     When mutmut-win copies pyproject.toml into the mutants/ staging directory,
     any ``[tool.uv.sources]`` entries with relative paths (e.g.
@@ -376,8 +376,11 @@ def _sanitise_mutants_pyproject() -> None:
     deeper. Removing the entire section is safe — the mutants/ directory uses
     the parent project's venv via sys.executable, not its own.
 
-    This prevents the "Distribution not found at: file:///..." error on
-    repeated mutation testing runs.
+    Covers the parent table AND the subtable header syntax
+    ``[tool.uv.sources.<pkg>]`` (issue #113 / A3-FD-008 — the subtable form
+    kept the "Distribution not found at: file:///..." error alive). The
+    inline dotted-key form (``sources.pkg = {...}`` inside ``[tool.uv]``)
+    is NOT covered — that would need parse-and-rewrite, not a regex.
     """
     pyproject_path = Path("mutants") / "pyproject.toml"
     if not pyproject_path.exists():
@@ -388,12 +391,13 @@ def _sanitise_mutants_pyproject() -> None:
     except OSError:
         return
 
-    # Remove [tool.uv.sources] section (TOML section until next [section] or EOF).
+    # Remove [tool.uv.sources] / [tool.uv.sources.<pkg>] sections — each
+    # header plus everything until the next section header or EOF (the
+    # final line may lack a trailing newline).
     import re
 
-    # Match [tool.uv.sources] and everything until the next top-level section
     cleaned = re.sub(
-        r"\[tool\.uv\.sources\]\s*\n(?:(?!\[)[^\n]*\n)*",
+        r"\[tool\.uv\.sources(?:\.[^\]]+)?\]\s*\n(?:(?!\[)[^\n]*\n?)*",
         "",
         content,
     )

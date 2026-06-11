@@ -15,18 +15,38 @@ from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
+from mutmut_win.exceptions import MutmutWinError
 from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.runner import PytestRunner
 from mutmut_win.stats import load_stats, save_cicd_stats
-from mutmut_win.test_mapping import mangled_name_from_mutant_name, tests_for_mutant_names
+from mutmut_win.test_mapping import (
+    mangled_name_from_mutant_name,
+    match_mutant_names,
+    tests_for_mutant_names,
+)
 
 
 @click.group()
 @click.version_option(version=__version__)
 def cli() -> None:
     """mutmut-win — Windows-native mutation testing for Python."""
+
+
+def _warn_treat_timeout_as_kill_deprecated() -> None:
+    """Deprecation notice for the Sprint-23 stopgap flag (issue #117).
+
+    Superseded by true infinite-loop detection (v2.5.0, honest since
+    v2.8.0). Decision closed: deprecate now — functional through 2.x —
+    remove in a future major release.
+    """
+    click.echo(
+        "Warning: --treat-timeout-as-kill is deprecated — superseded by "
+        "infinite-loop detection (since v2.5.0). The flag stays functional "
+        "in 2.x and will be removed in a future major release.",
+        err=True,
+    )
 
 
 def _load_config_or_exit() -> MutmutConfig:
@@ -103,9 +123,10 @@ def _load_config_or_exit() -> MutmutConfig:
     is_flag=True,
     default=False,
     help=(
-        "Count TIMEOUT mutants toward the kill bucket for --min-score and "
-        "score reporting. Workaround for Bug #71 (Hypothesis tests turn "
-        "infinite-loop mutations into TIMEOUT)."
+        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "future major release.) Count TIMEOUT mutants toward the kill bucket "
+        "for --min-score and score reporting. Workaround for Bug #71 "
+        "(Hypothesis tests turn infinite-loop mutations into TIMEOUT)."
     ),
 )
 @click.option(
@@ -163,6 +184,9 @@ def run(
 
     Optionally filter to specific MUTANT_NAMES. When omitted, all mutants are tested.
     """
+    if treat_timeout_as_kill:
+        _warn_treat_timeout_as_kill_deprecated()
+
     # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
     if force:
         import shutil
@@ -279,9 +303,12 @@ def run(
                 result = orchestrator.dry_run() if dry_run else orchestrator.run()
         else:
             result = orchestrator.dry_run() if dry_run else orchestrator.run()
-    except Exception as exc:
+    except MutmutWinError as exc:
         # Issue #102 / A4-UI-005: --debug was a dead flag while this except
         # swallowed tracebacks exactly where debug should help.
+        # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
+        # rendering — a foreign exception is a mutmut-win bug and propagates
+        # with its full traceback instead of masquerading as a clean error.
         if debug or config.debug:
             import traceback
 
@@ -336,9 +363,10 @@ def run(
     is_flag=True,
     default=False,
     help=(
-        "Count TIMEOUT mutants toward the kill bucket in the displayed score. "
-        "Workaround for Bug #71 (Hypothesis tests turn infinite-loop mutations "
-        "into TIMEOUT)."
+        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "future major release.) Count TIMEOUT mutants toward the kill bucket "
+        "in the displayed score. Workaround for Bug #71 (Hypothesis tests "
+        "turn infinite-loop mutations into TIMEOUT)."
     ),
 )
 def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
@@ -348,6 +376,9 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     (``results``, ``time-estimates``) exit 0 with an explicit notice; only
     the CI gate (``export-cicd-stats``) fails on an empty result set.
     """
+    if treat_timeout_as_kill:
+        _warn_treat_timeout_as_kill_deprecated()
+
     all_results = load_results(DEFAULT_DB_PATH)
 
     if not all_results:
@@ -376,11 +407,11 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     effective_killed = kill_aggregate + segfault + (timeout if treat_timeout_as_kill else 0)
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
-    click.echo(f"Total:     {total}")
+    click.echo(f"Total:      {total}")
     if il_killed > 0:
-        click.echo(f"Killed:    {kill_aggregate}  (incl. {il_killed} infinite-loop)")
+        click.echo(f"Killed:     {kill_aggregate}  (incl. {il_killed} infinite-loop)")
     else:
-        click.echo(f"Killed:    {kill_aggregate}")
+        click.echo(f"Killed:     {kill_aggregate}")
     # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
     # interrupted and not-checked rows used to count in Total and the score
     # denominator while appearing in no output line). The fixed list keeps
@@ -394,11 +425,17 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         count = counts.get(status, 0)
         if count == 0 and status not in always_shown:
             continue
-        click.echo(f"{status.capitalize() + ':':<11}{count}")
+        # Width 12: the longest standard label ("Suspicious:", 11 chars)
+        # keeps at least one space before its value (issue #115 /
+        # A4-UI-015 — it used to print "Suspicious:1"); legacy labels
+        # wider than the field get a single separating space.
+        label = status.capitalize() + ":"
+        line = f"{label:<12}{count}" if len(label) < 12 else f"{label} {count}"
+        click.echo(line)
     if treat_timeout_as_kill and timeout > 0:
-        click.echo(f"Score:     {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
+        click.echo(f"Score:      {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
     else:
-        click.echo(f"Score:     {score:.1f}%")
+        click.echo(f"Score:      {score:.1f}%")
 
     if show_all:
         click.echo("")
@@ -459,7 +496,12 @@ def _format_ratio(value: object) -> str:
 @cli.command()
 @click.argument("mutant_name")
 def show(mutant_name: str) -> None:
-    """Show the diff for a specific mutant MUTANT_NAME."""
+    """Show the diff for a specific mutant MUTANT_NAME.
+
+    MUTANT_NAME is an exact mutant name or a glob pattern (*, ?, [...])
+    that matches exactly ONE mutant — the same matching rule as `run`;
+    an ambiguous pattern fails and lists the candidates.
+    """
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -468,7 +510,7 @@ def show(mutant_name: str) -> None:
     config = _load_config_or_exit()
     try:
         diff = get_diff_for_mutant(mutant_name, config)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
@@ -489,7 +531,12 @@ def show(mutant_name: str) -> None:
 @cli.command()
 @click.argument("mutant_name")
 def apply(mutant_name: str) -> None:
-    """Apply mutant MUTANT_NAME to the source file on disk."""
+    """Apply mutant MUTANT_NAME to the source file on disk.
+
+    MUTANT_NAME is an exact mutant name or a glob pattern that matches
+    exactly ONE mutant; an ambiguous pattern fails and lists the
+    candidates — apply never applies a set.
+    """
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -498,7 +545,7 @@ def apply(mutant_name: str) -> None:
     config = _load_config_or_exit()
     try:
         apply_mutant(mutant_name, config)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
@@ -549,7 +596,8 @@ def tests_for_mutant_cmd(name: str) -> None:
 def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
     """Show estimated run times for mutants.
 
-    When MUTANT_NAMES are given, only those mutants are shown; otherwise all
+    When MUTANT_NAMES are given (exact names or glob patterns — the same
+    matching rule as `run`), only those mutants are shown; otherwise all
     mutants recorded in the results cache are listed.  Estimates are derived
     from the stats-collected per-test durations.
 
@@ -570,9 +618,11 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
         click.echo("No results found. Run 'mutmut-win run' first.")
         return
 
-    # Filter to requested mutant names (if any).
+    # Filter to requested mutant names (if any) — same exact+glob rule as
+    # `run` and `show`/`apply` (issue #115 / A4-UI-012).
     if mutant_names:
-        filtered = [r for r in all_results if r.mutant_name in mutant_names]
+        matched = set(match_mutant_names(mutant_names, [r.mutant_name for r in all_results]))
+        filtered = [r for r in all_results if r.mutant_name in matched]
         if not filtered:
             click.echo(f"No results found for the given mutant names: {list(mutant_names)}")
             return

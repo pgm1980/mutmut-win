@@ -18,6 +18,7 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mutmut_win.exceptions import WorkerError
 from mutmut_win.process.worker import worker_main
 
 if TYPE_CHECKING:
@@ -209,7 +210,7 @@ class SpawnPoolExecutor:
                 # Fail fast on unknown shapes instead of misparsing them
                 # (issue #81; the #79 finally-shutdown cleans up the pool).
                 msg = f"unknown event shape on the event queue: {sorted(raw)!r}"
-                raise RuntimeError(msg)
+                raise WorkerError(msg)
 
             yield event
 

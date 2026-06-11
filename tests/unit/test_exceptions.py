@@ -4,6 +4,7 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ConfigError,
+    CoverageCollectionError,
     ForcedFailError,
     InvalidConfigValueError,
     InvalidGeneratedSyntaxException,
@@ -11,9 +12,8 @@ from mutmut_win.exceptions import (
     MutationParseError,
     MutmutWinError,
     OrchestratorError,
-    WorkerCrashError,
+    TypeCheckCommandError,
     WorkerError,
-    WorkerInitError,
 )
 
 
@@ -26,9 +26,13 @@ class TestExceptionHierarchy:
         assert issubclass(InvalidConfigValueError, ConfigError)
 
     def test_worker_errors(self) -> None:
+        # WorkerCrashError/WorkerInitError were removed as unproducible —
+        # crash recovery is event-based by design (issue #114 / A4-QX-006).
         assert issubclass(WorkerError, MutmutWinError)
-        assert issubclass(WorkerCrashError, WorkerError)
-        assert issubclass(WorkerInitError, WorkerError)
+
+    def test_tooling_errors(self) -> None:
+        assert issubclass(TypeCheckCommandError, MutmutWinError)
+        assert issubclass(CoverageCollectionError, MutmutWinError)
 
     def test_orchestrator_errors(self) -> None:
         assert issubclass(OrchestratorError, MutmutWinError)
@@ -49,6 +53,10 @@ class TestExceptionHierarchy:
         msg = str(exc)
         assert "pytest" in msg
         assert "--bad" in msg
+
+    def test_bad_test_execution_commands_exception_detail(self) -> None:
+        exc = BadTestExecutionCommandsException(["--bad"], detail="usage: pytest")
+        assert "usage: pytest" in str(exc)
 
     def test_invalid_generated_syntax_exception(self) -> None:
         assert issubclass(InvalidGeneratedSyntaxException, MutmutWinError)

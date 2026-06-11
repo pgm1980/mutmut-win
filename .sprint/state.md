@@ -1,97 +1,59 @@
 ---
-current_sprint: "33"
-sprint_goal: "v2.11.0 Maintenance 1: Runtime & Self-Run — Startup-Sockel im Timeout-Modell (DOG-001), no-tests-Producer (QX-007), Trampolin-Importkette entkoppeln (QX-001, Architektur-Skip fliegt); Ziel: Dogfooding-Pilot brutto >= 80 %."
-branch: "feature/v2.11.0-maintenance-1"
+current_sprint: "34"
+sprint_goal: "v2.12.0 Maintenance 2: Final Sweep — kompletter Pool-Rest (13 Einträge, #111–#117) + MEMORY-Entscheidungsregister; danach Entwicklungspause. Messziel: Pilot brutto >= 80 % halten."
+branch: "feature/v2.12.0-maintenance-2"
 started_at: "2026-06-11"
-housekeeping_done: true
+housekeeping_done: false
 memory_updated: true
-github_issues_closed: true
+github_issues_closed: false
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Sprint 33 opened 2026-06-11)
+# Sprint State (Sprint 34 opened 2026-06-11)
 
 ## Current Focus
-Sprint 33 — **v2.11.0 Maintenance 1: Runtime & Self-Run** —
-**GESCHLOSSEN, v2.11.0 RELEASED 2026-06-11** (User-„Release"; Merge
-`493f120^`, Bump `493f120`, annotated Tag v2.11.0,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.11.0),
-#105–#110 via Merge auto-geschlossen — 0 offene Issues). Gates vor dem
-Merge frisch verifiziert: 868 passed / 4 skipped, ruff/format 0, mypy
-20 = Baseline (0 neue). **Messziel erreicht: Pilot 24,2 % → 86,9 %
-brutto, 0 Timeouts statt 175.** QX-001-Architektur-Skip entfernt —
-Layer-Gate gilt wieder im Artefakt. Maintenance-Pool: 13 Einträge.
-Nächster Schritt: neue Pool-Auswahl (Maintenance 2) oder bewusster
-Stopp — User-Entscheidung.
+Sprint 34 — **v2.12.0 Maintenance 2: Final Sweep** —
+**IMPLEMENTIERUNG KOMPLETT** (alle 7 Issues #111–#117, 27/27 SP,
+Commits `8251509`..`fa590ac`). **Maintenance-Pool 13 → 0,
+Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, 5 stale
+GitHub-Milestones geschlossen.** Gates: 951 passed (+83), ruff/format
+0, semgrep 0 (voller Sweep), lint-imports KEPT inkl. Artefakt;
+Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts im Re-Run 6/6
+gekillt → 87,6 % effektiv; 30 dokumentierte Survivors). pip-audit
+bleibt umgebungsblockiert (TLS-Interception). Bedienungs-Lektion:
+`--since-commit` nach Konfig-Wechsel braucht `--force` (Stats-Cache);
+der #106-Producer verbuchte 7318 unkartierte Mutanten ehrlich als
+`no tests` statt Vollsuite. Abschluss-Vollvermessung (12 Module,
+erstmalig): **7800 Mutanten, 68,3 % brutto** — 2337 Survivors + 45
+Timeouts als ehrliche Pausen-Baseline dokumentiert; 1 Dogfooding-
+Test-Fund gefixt (`6101548`, instrumentierungsfester Depth-Cache-Test).
+Release v2.12.0 wartet auf explizites User-„Release"
+(Merge → Auto-Close #111–#117 → housekeeping_done);
+**danach Entwicklungspause** (Pausenzustand dokumentiert).
 
-## Sprint 33 Backlog (31 SP — Must 18, Should 13)
-1. **#105 (Must, 5 SP):** DOG-001 — gemessener Startup-Sockel
-   (clean_wall − Σdurations, geclamps, transparent); Design-CoT ≥8.
-   Dogfooding bewies: 175/244 Pseudo-Timeouts mit fertiger Summary.
-2. **#106 (Must, 5 SP):** QX-007 — no-tests-Producer; Designkern:
-   tests=[] doppeldeutig (Vollsuite-Fallback bleibt für „keine Stats",
-   exit 33 nur bei „gemappt-aber-leer"); à la #93 persistiert.
-3. **#110 (Should, 3 SP):** QX-017/018 (max_stack_depth-0-Falle!),
-   QX-019-Rest, DOG-002 (Hint pro Lauf).
-4. **Zwischengate:** Pilot-Re-Run → brutto ≥ 80 % erwartet.
-5. **#107 (Must, 8 SP):** QX-001+QX-020 — Trampolin-Hit-Recording in
-   Kernel-Modul, Codegen-Zeile, BWC-Re-Export; Design-CoT ≥8;
-   Beweisziel: Architektur-Skip-Marker ENTFERNT.
-6. **#108 (Should, 5 SP):** UI-007 — Browser-Diff aus mutant_diff
-   (Single Source), DB-Fallback-Namensform.
-7. **#109 (Should, 5 SP):** UI-010/011/013/016 Robustheit.
-8. **Abschluss:** Dogfooding-Lauf dokumentiert; Pool gepflegt.
+## Sprint 34 Backlog (27 SP — Must 19, Should 8)
+1. **#111 (Must, 5 SP):** RN-006+RN-012 — Forced-Fail-Wahrheit
+   (-x, Timeout ≠ Erfolg, Marker-Attribution); PY_IGNORE_IMPORTMISMATCH
+   in allen 4 Phasen.
+2. **#112 (Must, 3 SP):** RN-013 — shlex-Koerzierung beider
+   pytest_add_cli_args-Felder (str+list).
+3. **#113 (Must, 3 SP):** FD-008 — Sanitiser: [tool.uv.sources.<pkg>]-
+   Subtables.
+4. **#114 (Must, 5 SP):** QX-005/006/023-Rest — Exception-Hygiene;
+   mypy-Baseline darf nur sinken.
+5. **#115 (Should, 5 SP):** UI-012/014/015 — Resolver (exakt+Glob,
+   dokumentiert), patch-fähige Diffs, Alignment. NACH #114.
+6. **#116 (Should, 3 SP):** RN-010/011 — sitecustomize-Hygiene.
+7. **#117 (Must, 3 SP):** Abschluss-Dossier — Deprecation
+   --treat-timeout-as-kill, Release-Policy, formale Schließungen
+   (OS-012-Rest, Shrink-Storm, BUG_REPORT_9 moot), 5 stale Milestones
+   schließen, Pausenzustand.
 
-Reihenfolge: 105 → 106 → 110 → Re-Run-Gate → 107 → 108 → 109 →
-Abschluss-Lauf. Scope-Ventil: #108/#109/#110 zurück in den Pool;
-v2.11.0 mit #105–#107 + Re-Run-Beleg release-fähig.
-
-## Out of scope (bleibt im Maintenance-Pool, unversprochen)
-RN-006/010/011/012/013, FD-008, QX-005/006/020-Rest/023-Rest,
-UI-012/014/015, OS-012-Restgrenze (dokumentiert). pip-audit (Umgebungs-SSL).
-
-## Sprint Context (auto-saved before compaction at 2026-06-11T16:44:02Z)
-
-### Current Branch
-feature/v2.11.0-maintenance-1
-
-### Last 10 Commits
-```
-be6858b chore(sprint-33): open v2.11.0 maintenance-1 sprint
-aabfdd7 docs(sprint-32): close sprint - v2.10.0 released, audit cycle ended
-060ea16 chore: bump version to 2.10.0
-95d0da1 merge: Sprint 32 v2.10.0 - Pipeline Hygiene (closes #98, #99, #100, #101, #102, #103, #104)
-e8127da docs(sprint-32): implementation complete - gates recorded, docs synced
-4d1e908 feat: dogfooding premiere - first complete self-run, score documented (closes #98)
-3528022 docs: C9 remainder triage + audit cycle closure (closes #104)
-06c9c6c test: isolate cwd in runner/worker tests - first dogfooding find (refs #98)
-ebb1fd9 fix: CI output discipline - pure JSON stdout, emoji-safe encoding (closes #103)
-c3fe810 fix: config/CLI truth - re-validated overrides, typo warnings, since-commit check, real --debug (closes #102)
-```
-
-### Recently Changed Files
-```
-.semgrepignore
-.sprint/state.md
-MEMORY.md
-_docs/audit/sprint_27_audit_findings.md
-_docs/product backlog/product_backlog.md
-_docs/sprint backlogs/sprint_31_backlog.md
-_docs/sprint backlogs/sprint_32_backlog.md
-_docs/sprint backlogs/sprint_33_backlog.md
-pyproject.toml
-src/mutmut_win/cli.py
-src/mutmut_win/config.py
-src/mutmut_win/db.py
-src/mutmut_win/file_setup.py
-src/mutmut_win/models.py
-src/mutmut_win/mutation.py
-src/mutmut_win/orchestrator.py
-src/mutmut_win/process/worker.py
-src/mutmut_win/runner.py
-src/mutmut_win/stats.py
-tests/conftest.py
-```
+## Out of scope (bewusst, dokumentiert)
+Die 32 akzeptierten Pilot-Survivors (gather_coverage-Fehlertexte,
+type_checking-Report-Toleranzen) — dokumentierte Test-Lücken, kein
+offenes Topic. mypy-Baseline-Abbau über type_checking hinaus. PyPI-
+Publish. Entfernung (statt Deprecation) von --treat-timeout-as-kill.

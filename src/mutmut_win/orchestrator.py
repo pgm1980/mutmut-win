@@ -10,17 +10,20 @@ summarised in a ``MutationRunResult``.
 from __future__ import annotations
 
 import contextlib
-import fnmatch
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mutmut_win.constants import EXIT_CODE_TIMEOUT, EXIT_CODE_TYPE_CHECK, status_by_exit_code
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
-from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError
+from mutmut_win.exceptions import (
+    BadTestExecutionCommandsException,
+    CleanTestFailedError,
+    ForcedFailError,
+)
 from mutmut_win.models import MutationRunResult, MutationTask, SourceFileMutationData
 from mutmut_win.stats import MutmutStats, collect_or_load_stats
-from mutmut_win.test_mapping import tests_for_mutant_names
+from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -176,6 +179,10 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
+        # Explicit staging setup (issue #116 / A2-RN-010): the .pth blocker
+        # is written ONCE here instead of as a side effect of every env
+        # build; it covers all phases and the workers (same staging dir).
+        self._runner.write_pth_blocker()
         print("Running clean test suite…")
         clean_start = time.monotonic()
         clean_exit = self._runner.run_clean_test()
@@ -183,6 +190,17 @@ class MutationOrchestrator:
         if clean_exit != 0:
             from mutmut_win.runner import decode_pytest_exit
 
+            if clean_exit == 4:
+                # pytest usage error — the docstring of this exception promised
+                # a producer since day one (issue #114 / A4-QX-005): bad CLI
+                # args always hit the clean run first, BEFORE any mutant runs.
+                detail = f"pytest: {decode_pytest_exit(clean_exit)}"
+                tail = self._runner.last_diagnostic_output
+                if tail:
+                    detail += f"\n--- pytest output (tail) ---\n{tail}"
+                raise BadTestExecutionCommandsException(
+                    list(self._config.pytest_add_cli_args), detail=detail
+                )
             if clean_exit == EXIT_CODE_TIMEOUT:
                 msg = (
                     f"Clean test run timed out after {self._config.clean_run_timeout}s. "
@@ -220,6 +238,28 @@ class MutationOrchestrator:
                 "Forced-fail check passed with exit code 0 — "
                 "the trampoline mechanism does not appear to work correctly."
             )
+            raise ForcedFailError(msg)
+        # Issue #111 / A2-RN-006: the pre-#111 gate accepted ANY non-zero exit
+        # — including a timeout translated into "trampoline works" and
+        # failures from arbitrarily broken tests.
+        if ff_exit == EXIT_CODE_TIMEOUT:
+            msg = (
+                f"Forced-fail verification timed out after "
+                f"{self._config.forced_fail_timeout}s — a hung suite proves "
+                "nothing about the trampoline (configure "
+                "[tool.mutmut].forced_fail_timeout)."
+            )
+            raise ForcedFailError(msg)
+        if not self._runner.last_forced_fail_attributed:
+            msg = (
+                f"Tests failed under the forced-fail run (exit {ff_exit}), but no "
+                "MutmutProgrammaticFailException appeared in the output — the "
+                "failure does not stem from the trampoline and cannot prove "
+                "the mutant switch works."
+            )
+            tail = self._runner.last_diagnostic_output
+            if tail:
+                msg += f"\n--- pytest output (tail) ---\n{tail}"
             raise ForcedFailError(msg)
 
         # ------------------------------------------------------------------
@@ -580,9 +620,9 @@ def _filter_tasks_by_names(
 ) -> list[MutationTask]:
     """Return only tasks whose ``mutant_name`` matches any of *mutant_names*.
 
-    Supports ``fnmatch`` glob patterns (e.g. ``src.foo.*``).  A task is
-    included if its name is an exact match **or** matches at least one pattern
-    via :func:`fnmatch.fnmatch`.
+    Delegates to :func:`mutmut_win.test_mapping.match_mutant_names` — the
+    one matching rule shared with ``show``/``apply``/``time-estimates``
+    (issue #115 / A4-UI-012).
 
     Args:
         tasks: Full list of mutation tasks.
@@ -591,12 +631,8 @@ def _filter_tasks_by_names(
     Returns:
         Filtered list of tasks (may be empty).
     """
-    filtered: list[MutationTask] = []
-    for task in tasks:
-        key = task.mutant_name
-        if key in mutant_names or any(fnmatch.fnmatch(key, pattern) for pattern in mutant_names):
-            filtered.append(task)
-    return filtered
+    matched = set(match_mutant_names(mutant_names, [task.mutant_name for task in tasks]))
+    return [task for task in tasks if task.mutant_name in matched]
 
 
 def _compute_startup_floor(

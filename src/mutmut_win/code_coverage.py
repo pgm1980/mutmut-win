@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Protocol
 
 import coverage
 
+from mutmut_win.exceptions import CoverageCollectionError
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -85,9 +87,10 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
         Mapping of normcased absolute mutants-paths to covered line sets.
 
     Raises:
-        Exception: If the collection run fails, produces no data file, or
-            measures no coverage in any source file (e.g. subprocess- or
-            xdist-based suites, whose execution the bridge cannot see).
+        CoverageCollectionError: If the collection run fails, produces no
+            data file, or measures no coverage in any source file (e.g.
+            subprocess- or xdist-based suites, whose execution the bridge
+            cannot see). Bare ``Exception`` until issue #114 / A4-QX-023.
     """
     data_file = Path("mutants").absolute() / ".coverage.mutmut"
     if data_file.exists():
@@ -95,13 +98,13 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
 
     exit_code = runner.run_coverage_collection(data_file)
     if exit_code != 0:
-        raise Exception(
+        raise CoverageCollectionError(
             f"coverage collection run failed with exit code {exit_code} — "
             f"the test suite must pass before mutate_only_covered_lines can "
             f"measure it."
         )
     if not data_file.exists():
-        raise Exception(
+        raise CoverageCollectionError(
             "coverage collection produced no data file — coverage did not record anything."
         )
 
@@ -118,7 +121,7 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
         covered_lines[_normalized_key(filename)] = measured.get(_normalized_key(filename), set())
 
     if covered_lines and not any(covered_lines.values()):
-        raise Exception(
+        raise CoverageCollectionError(
             "coverage collection measured no coverage in any source file — "
             "suites that run their code in subprocesses or pytest-xdist "
             "workers are not supported with mutate_only_covered_lines "

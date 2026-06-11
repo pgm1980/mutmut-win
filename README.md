@@ -113,13 +113,21 @@ uv add mutmut-win --dev
 | Command | Purpose |
 |---|---|
 | `mutmut-win run [OPTIONS] [MUTANT_NAMES…]` | Run mutation testing (optionally filtered to names/globs like `src.mod.x_func*`) |
-| `mutmut-win results [--all] [--treat-timeout-as-kill]` | Result summary from the cache DB |
+| `mutmut-win results [--all] [--treat-timeout-as-kill]` | Result summary from the cache DB (`--treat-timeout-as-kill` is **deprecated** — superseded by infinite-loop detection; removal in a future major) |
 | `mutmut-win show <MUTANT>` | Unified diff of one mutant, plus infinite-loop forensics if any |
 | `mutmut-win apply <MUTANT>` | Apply a mutant to the source file (backup + atomic write + staleness check) |
 | `mutmut-win browse [--show-killed]` | TUI result browser (files → mutants → diff) |
 | `mutmut-win tests-for-mutant <MUTANT>` | Tests mapped to a mutant |
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
+
+Mutant name matching is the same everywhere: an argument is either an
+exact mutant name or a glob pattern (`*`, `?`, `[...]`). `run` and
+`time-estimates` accept any number of matches; `show` and `apply`
+operate on a single mutant — a pattern matching more than one fails
+with the candidate list. `show` diffs are patch-capable for top-level
+functions (`a/`–`b/` labels, hunk lines refer to the original file);
+for class methods prefer `mutmut-win apply` over `patch`.
 
 Frequently used `run` options (see `mutmut-win run --help` for all):
 
@@ -283,6 +291,18 @@ uv run lint-imports        # layer contracts
 
 mutmut-win runs its own mutation testing on itself (dogfooding) as part
 of its release gates.
+
+### Release policy
+
+Releases are demand-driven — there is no calendar cadence. A release
+happens only on an explicit maintainer "Release" decision after all
+gates pass (tests, lint, format, types, semgrep, import-linter,
+dogfooding pilot), and follows one fixed sequence: merge to `main` →
+version bump (`pyproject.toml` + `uv.lock`) → annotated tag `vX.Y.Z` →
+GitHub release with notes. PyPI publishing is not part of that
+sequence. Breaking changes wait for a major version; deprecations warn
+for at least one minor release first (current example:
+`--treat-timeout-as-kill`).
 
 ## History (short)
 
