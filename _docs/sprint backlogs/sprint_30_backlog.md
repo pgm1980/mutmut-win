@@ -139,12 +139,16 @@ allein liefern persist + count + render + ehrliche Confidence.
 
 ---
 
-## Release v2.8.0
+## Release v2.8.0 — released 2026-06-11
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.8.0 (`uv lock --system-certs`) | 🔲 |
-| Annotated Tag v2.8.0 | 🔲 |
-| GitHub Release v2.8.0 (Changelog: Forensik sichtbar, Score konsistent, Confidence ehrlich) | 🔲 |
-| Auto-close #85–#90 via Merge-Commit | 🔲 |
-| MEMORY.md + product_backlog.md update | 🔲 |
+| pyproject.toml + uv.lock auf 2.8.0 (`uv lock --system-certs`) | ✅ `78f01cc` (Suite auf gemergtem main erneut grün: 719/4) |
+| Annotated Tag v2.8.0 | ✅ |
+| GitHub Release v2.8.0 (Changelog: Forensik sichtbar, Score konsistent, Confidence ehrlich) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.8.0) |
+| Auto-close #85–#90 via Merge-Commit | ✅ Merge `ba4f545`, 0 offene Issues verifiziert |
+| MEMORY.md + product_backlog.md update | ✅ (Backlog v1.6.0) |
+
+**Nachtrag:** 3 Pipeline-Hygiene-Punkte für C8 vorgemerkt (User-bestätigt):
+repo-weites format-Gate, pytest-Kanon config-verankern, semgrep-tests-Ignore
+— Details im Audit-Register (`342d799`).

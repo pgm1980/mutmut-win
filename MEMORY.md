@@ -23,12 +23,14 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
   [GitHub releases](https://github.com/pgm1980/mutmut-win/releases).
-- **Version**: **v2.7.0** released 2026-06-11
-  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.7.0),
-  merge 7ef982f, bump d46f4db). **All 15 S1 audit findings fixed.**
-  v2.6.0 (same day) closed both W4.11 downstream blockers —
+- **Version**: **v2.8.0** released 2026-06-11
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.8.0),
+  merge ba4f545, bump 78f01cc) — audit cluster **C5 complete**, issues
+  #85–#90 closed, 0 open issues. v2.7.0 (same day): all 15 S1 findings
+  fixed. v2.6.0 (same day) closed both W4.11 downstream blockers —
   nextgen-cot-mcp-server can upgrade its pin and revert the §1.5 genexp
-  workaround.
+  workaround. Pinned for Sprint 32/C8 (user-confirmed): repo-wide format
+  gate, pytest canon in config, semgrep tests-ignore decision.
 - **Sprint**: 30 — *v2.8.0 IL Detection Honesty* — implementation complete
   2026-06-11 (6 items, 25/25 SP, commits dfb9041..787633f on
   `feature/v2.8.0-il-honesty`): forensics persisted (#85) and rendered —
@@ -47,8 +49,8 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   platform-exact integration asserts (win32 medium / POSIX high), sober
   prose. Audit register got a fix-log section. Gates: 719 passed /
   4 skipped (+38), ruff 0, mypy 0 new, semgrep src 0 (tests skipped by
-  semgrep default ignore), lint-imports KEPT. **Release v2.8.0 pending
-  user approval.**
+  semgrep default ignore), lint-imports KEPT. **Released as v2.8.0 on
+  2026-06-11 — sprint fully closed (25/25 SP, 0 open issues).**
 - **Sprint 29** — *v2.7.0 Runtime Reliability* — implementation complete
   2026-06-11 (6 items, 27/27 SP, commits 4257f3c..243206a on
   `feature/v2.7.0-runtime-reliability`): both remaining S1 hangs fixed

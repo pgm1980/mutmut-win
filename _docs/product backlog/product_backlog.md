@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 1.5.0
+**Version:** 1.6.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -26,7 +26,7 @@
 | — | Full Source Audit | Sprint 27 | Done | Analysis-only: 201 Findings (15 S1) über alle 29 Module, 9 Fix-Cluster — `_docs/audit/sprint_27_audit_findings.md` |
 | v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Done | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) — released 2026-06-11 |
 | v2.7.0 | Runtime Reliability | Sprint 29 | Done | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) — released 2026-06-11; **alle 15 S1 geschlossen** |
-| v2.8.0 | IL Detection Honesty | Sprint 30 | Planned | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Spike (#89), Test-Ehrlichkeit (#90) |
+| v2.8.0 | IL Detection Honesty | Sprint 30 | Done | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Progress-Veto (#89), Test-Ehrlichkeit (#90) — released 2026-06-11 |
 | v2.9.0 | Feature Revival & Score Integrity | Sprint 31 | Roadmap | Audit C6+C7: Type-Checker-Filter + Coverage reaktivieren, Summary-/Score-Lücken, Epochen-Invalidierung |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Roadmap | Audit C8+C9-Top: Stats-/DB-/Copy-Hygiene (re-enabled Dogfooding-Gate), Diagnose-UX |
 
@@ -543,20 +543,20 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #85 | Bug | Forensik-Persistenz: save_result erhält event.forensics (JT-004) | Must | 2 | Open |
-| #86 | Bug | CICD-Export: killed_by_infinite_loop-Bucket (OS-002) | Must | 2 | Open |
-| #87 | Bug | Rendering: show-Forensik-Panel + Browser-IL-Awareness (UI-004/008) | Must | 5 | Open |
-| #88 | Bug | Classifier-Ehrlichkeit Windows: Output-Signal, neutraler Status, Confidence-Cap, Guards (JT-001/002/009/010/011/015/018, JT-012/014) | Must | 8 | Open |
-| #89 | Spike | io_counters-Delta als Sleeping-Ersatz (timeboxed, Entscheid-Gate) | Should | 5 | Open |
-| #90 | Bug | Test-/Doku-Ehrlichkeit: Windows-realistische Fixtures, nüchterne Prosa (JT-016) | Should | 3 | Open |
+| #85 | Bug | Forensik-Persistenz: save_result erhält event.forensics (JT-004) | Must | 2 | Done |
+| #86 | Bug | CICD-Export: killed_by_infinite_loop-Bucket (OS-002) | Must | 2 | Done |
+| #87 | Bug | Rendering: show-Forensik-Panel + Browser-IL-Awareness (UI-004/008) | Must | 5 | Done |
+| #88 | Bug | Classifier-Ehrlichkeit Windows: Output-Signal, neutraler Status, Confidence-Cap, Guards (JT-001/002/009/010/011/015/018, JT-012/014) | Must | 8 | Done |
+| #89 | Spike | io_counters-Delta als Sleeping-Ersatz (timeboxed, Entscheid-Gate) | Should | 5 | Done (negativ als Sleeping-Ersatz, eingebaut als Progress-Veto) |
+| #90 | Bug | Test-/Doku-Ehrlichkeit: Windows-realistische Fixtures, nüchterne Prosa (JT-016) | Should | 3 | Done |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] `mutmut-win show <il-mutant>` zeigt das Forensik-Panel (Verdict, Confidence, CPU, Output-Growth, Ratio, Samples, Tail); NULL-Forensik (Prä-v2.8) bleibt sauber
-- [ ] run-Gate, `results` und `export-cicd-stats` melden auf identischer Datenlage EINEN Score (IL-Kills überall gezählt)
-- [ ] Browser zeigt IL-Kills mit Emoji/Spalte, filtert sie als Kills, Detail-Text korrekt
-- [ ] Auf win32 stammt kein „high"-Confidence-Verdict mehr aus einem Zwei-Signal-Check; Forensik weist genutzte Signale + Sampler-Fehler aus
-- [ ] #89-Entscheid dokumentiert (Einbau ODER Negativergebnis im Audit-Doc)
-- [ ] Quality Gates: pytest ≥ 700, ruff 0, mypy 0 neue, semgrep 0, lint-imports KEPT (in-suite)
+- [x] `mutmut-win show <il-mutant>` zeigt das Forensik-Panel (Verdict, Confidence, CPU, Output-Growth, Ratio, Samples, Tail); NULL-Forensik (Prä-v2.8) bleibt sauber
+- [x] run-Gate, `results` und `export-cicd-stats` melden auf identischer Datenlage EINEN Score (IL-Kills überall gezählt)
+- [x] Browser zeigt IL-Kills mit Emoji/Spalte, filtert sie als Kills, Detail-Text korrekt
+- [x] Auf win32 stammt kein „high"-Confidence-Verdict mehr aus einem Zwei-Signal-Check; Forensik weist genutzte Signale + Sampler-Fehler aus
+- [x] #89-Entscheid dokumentiert (Einbau ODER Negativergebnis im Audit-Doc) — BEIDES: Veto eingebaut, Negativergebnis dokumentiert
+- [x] Quality Gates: pytest ≥ 700 (719), ruff 0, mypy 0 neue, semgrep 0, lint-imports KEPT (in-suite)
 
 ---
 
@@ -588,7 +588,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Full Source Audit | — | Epic 18 | — (Findings-Report) | Done |
 | Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Done |
 | Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Done |
-| IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Planned |
+| IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Done |
 
 ---
 
@@ -624,7 +624,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Sprint 27 | — | — | — | Full Source Audit (analysis-only, kein SP-Tracking) |
 | Sprint 28 | 31 | 31 | 100% | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
 | Sprint 29 | 27 | 27 | 100% | v2.7.0 Runtime Reliability (#79–#84) |
-| Sprint 30 | 25 | (offen) | — | v2.8.0 IL Detection Honesty (#85–#90) |
+| Sprint 30 | 25 | 25 | 100% | v2.8.0 IL Detection Honesty (#85–#90) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -655,3 +655,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.3.0 | 2026-06-11 | Claude Code Agent | Sprint 28 geschlossen: Epic 19 Done (Commit-Refs), v2.6.0 released, Velocity 31/31, Gate-Abweichungen (lint-imports vorbestehend, Dogfooding deferred) dokumentiert. |
 | 1.4.0 | 2026-06-11 | Claude Code Agent | Sprint 29 geplant: Epic 20 (Runtime Reliability, #79–#84, 27 SP); Audit-Rest-Roadmap als Release-Zeilen v2.8.0–v2.10.0 (C5, C6+C7, C8+C9) fixiert — Findings-Restbestand ~158 nach Sprint 28. |
 | 1.5.0 | 2026-06-11 | Claude Code Agent | Sprint 29 geschlossen (Epic 20 Done, v2.7.0 released, alle 15 S1 zu, Velocity 27/27); Sprint 30 geplant: Epic 21 (IL Detection Honesty, #85–#90, 25 SP) mit Planungs-CoT (Wertschöpfungskette, Confidence-Cap-Kompatibilitätsfenster, JT-013 obsolet). |
+| 1.6.0 | 2026-06-11 | Claude Code Agent | Sprint 30 geschlossen (Epic 21 Done, v2.8.0 released, Velocity 25/25): C5 komplett — Forensik persistiert+gerendert, Ein-Score-Konsistenz, Classifier plattform-ehrlich (Confidence-Cap medium auf win32), io_counters als Progress-Veto (Sleeping-Ersatz widerlegt+dokumentiert). 3 Pipeline-Hygiene-Neuzugänge für C8 vorgemerkt (format-Gate, pytest-Kanon, semgrep-tests-Ignore). |
