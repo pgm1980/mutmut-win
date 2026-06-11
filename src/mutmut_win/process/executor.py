@@ -22,9 +22,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from mutmut_win.config import MutmutConfig
-    from mutmut_win.models import MutationTask, TaskEvent
+    from mutmut_win.models import MutationTask, TaskCompleted, TaskEvent
 
 logger = logging.getLogger(__name__)
+
+#: Poll interval (seconds) for the event loop.  Every idle tick triggers a
+#: worker-liveness sweep (issue #80 / A2-EW-002); under load ``get`` returns
+#: immediately, so this adds no overhead to a healthy run.
+_EVENT_POLL_SECONDS: float = 1.0
+
+#: Exit code for synthesized completions of tasks whose worker died hard.
+_EXIT_CODE_SUSPICIOUS: int = 35
 
 
 class SpawnPoolExecutor:
@@ -118,30 +126,111 @@ class SpawnPoolExecutor:
     def get_events(self) -> Iterator[TaskEvent]:
         """Yield domain events until all tasks have been reported as done.
 
-        Blocks until each task produces either a ``TaskCompleted`` or
-        ``TaskTimedOut`` event.  ``TaskStarted`` events are yielded
-        immediately as they arrive.
+        ``TaskStarted`` events are yielded immediately as they arrive; the
+        loop ends once every task produced a ``TaskCompleted`` or
+        ``TaskTimedOut``.
+
+        Liveness (issue #80 / A2-EW-002): the queue is polled with a timeout,
+        and every idle tick sweeps the workers.  A worker that died hard can
+        never deliver a completion for its in-flight task — previously this
+        blocked the run forever.  Such tasks are completed synthetically
+        (exit code 35 "suspicious" with an explanatory ``last_output``); a
+        late-flushed REAL completion for an already-synthesized mutant is
+        dropped so every task is counted exactly once.  When the whole pool
+        is dead and tasks were never started, the loop aborts loudly instead
+        of fabricating results for them.
 
         Yields:
             ``TaskStarted``, ``TaskCompleted``, or ``TaskTimedOut`` instances.
         """
+        import queue as queue_module
+
         from mutmut_win.models import TaskCompleted, TaskStarted, TaskTimedOut
 
         finished = 0
+        in_flight: dict[str, int] = {}  # mutant_name -> worker pid
+        synthesized: set[str] = set()
+        handled_dead_pids: set[int] = set()
+
         while finished < self._num_tasks:
-            raw: dict[str, object] = self._event_queue.get()
+            try:
+                raw: dict[str, object] = self._event_queue.get(timeout=_EVENT_POLL_SECONDS)
+            except queue_module.Empty:
+                # Idle tick: everything flushed so far has been consumed, so
+                # the in-flight map is current — sweep worker liveness now
+                # (drain-first ordering prevents double counting, JT-008).
+                for synthetic_event in self._sweep_dead_workers(in_flight, handled_dead_pids):
+                    synthesized.add(synthetic_event.mutant_name)
+                    finished += 1
+                    yield synthetic_event
+                if not any(worker.is_alive() for worker in self._workers):
+                    remaining = self._num_tasks - finished
+                    if remaining > 0:
+                        print(
+                            f"Error: all {len(self._workers)} workers died; "
+                            f"{remaining} task(s) were never started — aborting the run. "
+                            "Their mutants remain unchecked."
+                        )
+                        break
+                continue
 
             # Discriminate on the keys present in the dict.
             if "exit_code" in raw:
                 event: TaskEvent = TaskCompleted.model_validate(raw)
+                if event.mutant_name in synthesized:
+                    # Late flush from a worker we already declared dead —
+                    # drop it to keep the finished-accounting single-counted.
+                    synthesized.discard(event.mutant_name)
+                    in_flight.pop(event.mutant_name, None)
+                    continue
+                in_flight.pop(event.mutant_name, None)
                 finished += 1
             elif "timestamp" in raw:
                 event = TaskStarted.model_validate(raw)
+                in_flight[event.mutant_name] = event.worker_pid
             else:
                 event = TaskTimedOut.model_validate(raw)
                 finished += 1
 
             yield event
+
+    def _sweep_dead_workers(
+        self, in_flight: dict[str, int], handled_dead_pids: set[int]
+    ) -> list[TaskCompleted]:
+        """Synthesize completions for in-flight tasks of newly dead workers."""
+        from mutmut_win.models import TaskCompleted
+
+        synthetic: list[TaskCompleted] = []
+        for worker in self._workers:
+            pid = worker.pid or -1
+            if worker.is_alive() or pid in handled_dead_pids:
+                continue
+            handled_dead_pids.add(pid)
+            orphaned = [name for name, owner in in_flight.items() if owner == pid]
+            for name in orphaned:
+                in_flight.pop(name, None)
+                logger.warning(
+                    "worker pid %d died (exitcode %s) while running %s — "
+                    "synthesizing a 'suspicious' result",
+                    pid,
+                    worker.exitcode,
+                    name,
+                )
+                synthetic.append(
+                    TaskCompleted(
+                        mutant_name=name,
+                        worker_pid=pid,
+                        exit_code=_EXIT_CODE_SUSPICIOUS,
+                        duration=0.0,
+                        last_output=(
+                            f"worker process {pid} died unexpectedly "
+                            f"(exitcode {worker.exitcode}) while running this "
+                            "mutant — result synthesized by the executor "
+                            "(issue #80)"
+                        ),
+                    )
+                )
+        return synthetic
 
     def shutdown(self, timeout: float = 10.0) -> None:
         """Terminate all worker processes and release resources.

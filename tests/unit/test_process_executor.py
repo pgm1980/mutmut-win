@@ -36,8 +36,10 @@ class _FakeQueue:
     def put(self, item: Any) -> None:
         self._q.put(item)
 
-    def get(self) -> Any:
-        return self._q.get()
+    def get(self, timeout: float | None = None) -> Any:
+        # Matches multiprocessing.Queue.get(timeout=...) used by the polling
+        # event loop (issue #80); stdlib Queue raises queue.Empty on timeout.
+        return self._q.get(timeout=timeout)
 
     def empty(self) -> bool:
         return self._q.empty()

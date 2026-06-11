@@ -655,6 +655,17 @@ def _update_summary_and_persist(
     else:
         return False
 
+    if mutant_name == "unknown":
+        # Worker recovery could not extract a task name (issue #80 /
+        # A2-EW-012): keep the finished-accounting intact (the worker DID
+        # consume a task) but do not pollute the DB/meta with a ghost
+        # "unknown" mutant row — the real mutant stays visibly unchecked.
+        print(
+            "Warning: a worker failed before its task name was known — "
+            "one mutant remains unchecked (no result row written)."
+        )
+        return True
+
     # Update summary counters.
     _increment_summary(summary, status)
 
