@@ -3,20 +3,23 @@ current_sprint: "28"
 sprint_goal: "v2.6.0 Source Protection & Codegen Correctness — W4.11-Downstream entblocken (BUG-1 + BUG-2), destruktive Audit-Funde (C1) eliminieren, Clean-Run-Brecher der Codegen-Schicht (C2) strukturell fixen."
 branch: "feature/v2.6.0-source-protection"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Sprint 28 — implementation complete 2026-06-11)
+# Sprint State (Sprint 28 — CLOSED with v2.6.0 release 2026-06-11)
 
 ## Current Focus
-All six Sprint-28 items are implemented and committed on
-`feature/v2.6.0-source-protection` (31/31 SP, six TDD cycles):
+Sprint 28 is **closed**: merged to main (5c93ecc), version bumped
+(fdc2361), annotated tag v2.6.0 pushed, GitHub release published
+(https://github.com/pgm1980/mutmut-win/releases/tag/v2.6.0), issues
+#73–#78 auto-closed (verified: 0 open issues). The six items
+(31/31 SP, six TDD cycles):
 
 | Issue | Commit | Delivered |
 |-------|--------|-----------|
@@ -42,10 +45,10 @@ workaround (§1.5 marker comments) can be reverted downstream after release.
   forces full-suite-per-mutant runs; re-do after the C8 fixes. Compensated
   by the 62 targeted tests + the adversarial compile gate.
 
-## Pending (needs user approval — outward-facing)
-Release v2.6.0: bump pyproject+uv.lock, merge to main (auto-closes
-#73–#78), annotated tag, push, GitHub release with downstream note.
-`housekeeping_done`/`github_issues_closed` stay false until then.
+## Released
+v2.6.0 published 2026-06-11. Downstream (nextgen-cot-mcp-server W4.11)
+is unblocked: BUG-1 + BUG-2 fixed; the genexp workaround (§1.5 markers)
+can be reverted after upgrading the pin.
 
 ## Out of scope (Sprint 29+ from the audit)
 C3 pool robustness, C4 rest (timeout_multiplier semantics), C5 IL-detection

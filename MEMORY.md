@@ -23,17 +23,22 @@ on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
   [GitHub releases](https://github.com/pgm1980/mutmut-win/releases).
+- **Version**: **v2.6.0** released 2026-06-11
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.6.0),
+  merge 5c93ecc, bump fdc2361, tag v2.6.0). **Both W4.11 downstream
+  blockers closed** — nextgen-cot-mcp-server can upgrade its pin and
+  revert the §1.5 genexp workaround.
 - **Sprint**: 28 — *v2.6.0 Source Protection & Codegen Correctness* —
-  implementation complete 2026-06-11 (all 6 items, 31/31 SP, commits
-  bbe59d2..5031032 on `feature/v2.6.0-source-protection`): BUG-2
-  clean_run_timeout config (#74), validate-then-write safety net +
-  crash guards (#78), source protection incl. class-aware apply (#75),
-  safe-unwrap for the parenless-yield class = BUG-1 (#73), mutants dict
-  at module level (#77), wrapper codegen fixes (#76). **Both W4.11
-  downstream blockers closed.** Gates: 672 passed / 4 skipped, ruff 0,
-  mypy 0 new, semgrep 0; lint-imports pre-existing broken (6 violations,
-  verified pre-sprint — Sprint-29 item); dogfooding deferred until C8.
-  Release v2.6.0 (merge/tag/push) pending user approval.
+  closed 2026-06-11 (all 6 items, 31/31 SP): BUG-2 clean_run_timeout
+  config (#74), validate-then-write safety net + crash guards (#78),
+  source protection incl. class-aware apply (#75), safe-unwrap for the
+  parenless-yield class = BUG-1 (#73), mutants dict at module level
+  (#77), wrapper codegen fixes (#76). Gates: 672 passed / 4 skipped,
+  ruff 0, mypy 0 new, semgrep 0; lint-imports pre-existing broken
+  (6 violations, verified pre-sprint — Sprint-29 item); dogfooding
+  deferred until audit-C8 fixes. Note: environment SSL breaks pypi.org
+  (pip-audit impossible; `uv lock`/`uv run` need `--system-certs` after
+  version bumps).
 - **Sprint 27** — *Full Source Audit (analysis-only)* — closed 2026-06-11.
   Deliverable: `_docs/audit/sprint_27_audit_findings.md` — **201 raw /
   ~180 unique findings, 15 × S1**, across all 29 src-modules, organized in

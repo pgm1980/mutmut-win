@@ -24,7 +24,7 @@
 | v2.4.0 | Final Cleanup | Sprint 25 | Done | `--extra-paths-to-copy` (#69), also_copy venv-Skip (#67), Benchmark-Suite (#23) |
 | v2.5.0 / v2.5.1 | Polish + True IL Detection | Sprint 26 | Done | Echte Infinite-Loop-Detection (psutil + Forensics + Confidence, #71), `--version`-Fix (#72); v2.5.1 Hotfix psutil-Process-Caching |
 | — | Full Source Audit | Sprint 27 | Done | Analysis-only: 201 Findings (15 S1) über alle 29 Module, 9 Fix-Cluster — `_docs/audit/sprint_27_audit_findings.md` |
-| v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Planned | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) |
+| v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Done | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) — released 2026-06-11 |
 
 ---
 
@@ -489,20 +489,20 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #74 | Bug | BUG-2: clean_run_timeout-Config-Feld + präzise Fehlermeldung | Must | 2 | Open |
-| #78 | Bug | Sicherheitsnetz scharf schalten (validate-then-write) + Operator-Crash-Guards | Must | 3 | Open |
-| #75 | Bug | Quell-Schutz: Absolutpfad-Guard + apply class-aware/Backup/atomar/newline | Must | 5 | Open |
-| #73 | Bug | Parenless-yield-Klasse: Safe-Unwrap-Helper für 5 Operatoren (BUG-1) | Must | 8 | Open |
-| #77 | Bug | Mutants-Dict auf Modulebene (Enum/NamedTuple Clean-Run-Brecher) | Should | 5 | Open |
-| #76 | Bug | Wrapper-Codegen: self/args/kwargs/*args/async-gen | Should | 8 | Open |
+| #74 | Bug | BUG-2: clean_run_timeout-Config-Feld + präzise Fehlermeldung | Must | 2 | Done (bbe59d2) |
+| #78 | Bug | Sicherheitsnetz scharf schalten (validate-then-write) + Operator-Crash-Guards | Must | 3 | Done (af7a431) |
+| #75 | Bug | Quell-Schutz: Absolutpfad-Guard + apply class-aware/Backup/atomar/newline | Must | 5 | Done (07b29fe) |
+| #73 | Bug | Parenless-yield-Klasse: Safe-Unwrap-Helper für 5 Operatoren (BUG-1) | Must | 8 | Done (2a14182) |
+| #77 | Bug | Mutants-Dict auf Modulebene (Enum/NamedTuple Clean-Run-Brecher) | Should | 5 | Done (5dc8c48) |
+| #76 | Bug | Wrapper-Codegen: self/args/kwargs/*args/async-gen | Should | 8 | Done (5031032) |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] Adversarial-Fixture-Gate: jede generierte Mutanten-Datei kompiliert; Fixture-Clean-Run grün
-- [ ] W4.11-Repro-Formen (§1.2/§1.3) erzeugen keine invaliden Mutanten mehr
-- [ ] `clean_run_timeout = 900` wirkt nachweislich (Config-Roundtrip-Test)
-- [ ] Absolute paths_to_mutate können keine Quelldatei mehr überschreiben
-- [ ] apply patcht die korrekte Klasse, mit Backup + atomarem Write + Newline-Erhalt
-- [ ] Quality Gates: pytest ≥ 630 passed, ruff 0, mypy clean, semgrep 0, lint-imports 0, Mutation-Score ≥ 80 % auf geänderten Modulen
+- [x] Adversarial-Fixture-Gate: jede generierte Mutanten-Datei kompiliert; Fixture-Clean-Run grün
+- [x] W4.11-Repro-Formen (§1.2/§1.3) erzeugen keine invaliden Mutanten mehr
+- [x] `clean_run_timeout = 900` wirkt nachweislich (Config-Roundtrip-Test)
+- [x] Absolute paths_to_mutate können keine Quelldatei mehr überschreiben
+- [x] apply patcht die korrekte Klasse, mit Backup + atomarem Write + Newline-Erhalt
+- [x] Quality Gates: pytest 672 passed (≥ 630 ✓), ruff 0, mypy 0 neue, semgrep 0 — **Abweichungen dokumentiert:** lint-imports vorbestehend rot (gegen Sprint-Start-Stand verifiziert → Sprint 29); Mutation-Score-Gate deferred bis C8-Fix (Backlog-Gates-Tabelle)
 
 ---
 
@@ -532,7 +532,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Final Cleanup v2.4.0 | v2.4.0 | Epic 6/14/16 (Carryover) | #23, #67, #69 | Done |
 | Polish + IL Detection v2.5.0 | v2.5.0 / v2.5.1 | Epic 17 | #71 (re-open), #72 | Done |
 | Full Source Audit | — | Epic 18 | — (Findings-Report) | Done |
-| Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Planned |
+| Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Done |
 
 ---
 
@@ -566,7 +566,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Sprint 25 | 10 | 10 | 100% | Final Cleanup (#23, #67, #69) |
 | Sprint 26 | 14 | 14 | 100% | Polish + True IL Detection (#71 re-open, #72) |
 | Sprint 27 | — | — | — | Full Source Audit (analysis-only, kein SP-Tracking) |
-| Sprint 28 | 31 | (offen) | — | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
+| Sprint 28 | 31 | 31 | 100% | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 

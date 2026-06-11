@@ -6,7 +6,7 @@
 **Epic(s):** Epic 19 (Source Protection & Codegen Correctness) — neu
 **Branch:** `feature/v2.6.0-source-protection`
 **Zeitraum:** 2026-06-11 – 2026-06-11
-**Status:** ✅ Implementierung abgeschlossen (alle 6 Items, 31/31 SP) — Release v2.6.0 pending User-Freigabe (Merge/Tag/Push)
+**Status:** ✅ Closed mit v2.6.0 Release (merge 5c93ecc, bump fdc2361, Tag v2.6.0 — alle 6 Items, 31/31 SP, Velocity 100 %; Issues #73–#78 auto-closed)
 
 **Grundlage:** Sprint-27-Audit (`_docs/audit/sprint_27_audit_findings.md`),
 Fix-Cluster C1 + C2 + BUG-2-Quick-Win aus C4. Alle Finding-IDs unten
@@ -155,8 +155,8 @@ eliminieren alles Destruktive. Velocity-Referenz: Sprints 23–26 liefen mit
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.6.0 | 🔲 (pending User-Freigabe) |
-| Annotated Tag v2.6.0 | 🔲 (pending User-Freigabe) |
-| GitHub Release v2.6.0 (Changelog: W4.11-Blocker geschlossen, Quell-Schutz, Codegen-Korrektheit; Hinweis an Downstream: Genexp-Workaround §1.5 rückbaubar) | 🔲 (pending User-Freigabe) |
-| Auto-close #73, #74, #75, #76, #77, #78 via Merge-Commit | 🔲 (pending User-Freigabe) |
+| pyproject.toml + uv.lock auf 2.6.0 | ✅ fdc2361 (`mutmut-win --version` → 2.6.0 verifiziert; uv lock via `--system-certs` wegen Umgebungs-SSL) |
+| Annotated Tag v2.6.0 | ✅ |
+| GitHub Release v2.6.0 (Changelog: W4.11-Blocker geschlossen, Quell-Schutz, Codegen-Korrektheit; Hinweis an Downstream: Genexp-Workaround §1.5 rückbaubar) | ✅ https://github.com/pgm1980/mutmut-win/releases/tag/v2.6.0 |
+| Auto-close #73, #74, #75, #76, #77, #78 via Merge-Commit | ✅ verifiziert: 0 offene Issues |
 | MEMORY.md + product_backlog.md update | ✅ |
