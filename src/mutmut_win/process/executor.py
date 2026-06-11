@@ -8,12 +8,14 @@ is unavailable.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import multiprocessing
 import multiprocessing.queues
 import sys
 import time
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.process.worker import worker_main
@@ -33,6 +35,21 @@ _EVENT_POLL_SECONDS: float = 1.0
 
 #: Exit code for synthesized completions of tasks whose worker died hard.
 _EXIT_CODE_SUSPICIOUS: int = 35
+
+
+def _sweep_stale_artifacts(mutants_dir: Path) -> None:
+    """Delete leftover worker artifacts from aborted runs (issue #82 / A2-EW-007).
+
+    Kill paths can leak ``mutmut_out_*.log`` / ``mutmut_tests_*.txt`` into the
+    ``mutants/`` staging (the audit found four orphaned logs in a real tree);
+    every fresh pool start begins with a clean slate instead.
+    """
+    if not mutants_dir.is_dir():
+        return
+    for pattern in ("mutmut_out_*.log", "mutmut_tests_*.txt"):
+        for stale in mutants_dir.glob(pattern):
+            with contextlib.suppress(OSError):
+                stale.unlink()
 
 
 class SpawnPoolExecutor:
@@ -92,6 +109,7 @@ class SpawnPoolExecutor:
         Args:
             tasks: List of mutation tasks to distribute among workers.
         """
+        _sweep_stale_artifacts(Path("mutants"))
         self._num_tasks = len(tasks)
 
         # Enqueue tasks as plain dicts for pickle safety.
