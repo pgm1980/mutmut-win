@@ -3,9 +3,9 @@ current_sprint: "32"
 sprint_goal: "v2.10.0 Pipeline Hygiene — letzter Audit-Sprint: Runner-Diagnose + Stats-Cache-Wahrheit, DB-Härtung, Staging-Hygiene (Containment/Deletion-Sync/Fingerprint), Config-/CLI-Validierung, reiner JSON-Kanal, Selbst-Hygiene-Gates + Dogfooding-Premiere, C9-Rest-Triage."
 branch: "feature/v2.10.0-pipeline-hygiene"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -35,11 +35,12 @@ Gates (VERSCHÄRFT, alle ✅): **821 passed / 4 skipped** (nackt), ruff 0,
 src+tests** (101 Dateien, neu), lint-imports KEPT, **Mutation-Pilot
 dokumentiert** (erstmals).
 
-## Nächster Schritt
-**Warten auf User-„Release"**: Merge auf main, Bump 2.10.0
-(`uv lock --system-certs`!), Tag, GitHub Release (Changelog:
-Audit-Zyklus-Abschluss, Hygiene-Gates, Dogfooding-Premiere mit
-4-Anläufe-Geschichte), Issues #98–#104 via Merge.
+## Release — DONE 2026-06-11
+v2.10.0 released: Merge (closes #98–#104, 0 offene Issues verifiziert),
+Bump `060ea16`, annotated Tag `v2.10.0`, GitHub Release
+https://github.com/pgm1980/mutmut-win/releases/tag/v2.10.0. Suite auf
+gemergtem main erneut 821 passed / 4 skipped. Sprint 32 vollständig
+abgeschlossen — der AUDIT-ZYKLUS ist beendet (Register geschlossen).
 
 ## Nach v2.10.0
 Audit-Zyklus formal beendet (Register geschlossen). Weiterarbeit aus dem

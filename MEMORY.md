@@ -23,17 +23,16 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
   [GitHub releases](https://github.com/pgm1980/mutmut-win/releases).
-- **Version**: **v2.9.0** released 2026-06-11
-  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.9.0),
-  merge 87a0271, bump e02bb34) — audit clusters **C6+C7 complete**,
-  issues #91–#97 closed, 0 open issues. Release notes carry a prominent
-  "score corrections" section (CI gates may flip: phantom catches out,
-  collection/crash kills in, interrupt denominator fixed). Earlier same
-  day: v2.8.0 (C5), v2.7.0 (all 15 S1), v2.6.0 (W4.11 blockers —
-  nextgen-cot-mcp-server can upgrade its pin and revert the §1.5 genexp
-  workaround). Pinned for Sprint 32/C8 (user-confirmed): repo-wide
-  format gate, pytest canon in config, semgrep tests-ignore decision,
-  OS-012 remainders (mtime invalidation, orphaned .meta files).
+- **Version**: **v2.10.0** released 2026-06-11
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.10.0),
+  bump 060ea16) — **THE AUDIT CYCLE IS CLOSED**: C1–C8 complete + C9
+  top, 31 issues (#73–#103+#104), all 15 S1 fixed across
+  v2.6.0–v2.10.0 (five releases, one day). 0 open issues. Remainders
+  live in the severity-sorted **maintenance backlog** (product backlog,
+  26 entries incl. dogfooding finds DOG-001/002). Earlier same day:
+  v2.9.0 (C6+C7, "score corrections"), v2.8.0 (C5), v2.7.0 (all S1),
+  v2.6.0 (W4.11 blockers — nextgen-cot-mcp-server can upgrade its pin
+  and revert the §1.5 genexp workaround).
 - **Sprint**: 32 — *v2.10.0 Pipeline Hygiene* — implementation complete
   2026-06-11 (7 items, 36/36 SP, commits 804e402..4d1e908 on
   `feature/v2.10.0-pipeline-hygiene`): THE LAST AUDIT SPRINT — cycle
@@ -65,7 +64,8 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   fixed. Gates (TIGHTENED, all green): 821 passed bare, ruff 0,
   format-check 0 (new), mypy 0 new (baseline 20), semgrep 0 on
   src+tests (new), lint-imports KEPT, mutation pilot documented
-  (first ever). **Release v2.10.0 pending user approval.**
+  (first ever). **Released as v2.10.0 on 2026-06-11 — sprint fully
+  closed (36/36 SP, 0 open issues); audit cycle formally ended.**
 - **Sprint**: 31 — *v2.9.0 Feature Truth & Score Integrity* —
   implementation complete 2026-06-11 (7 items, 33/33 SP, commits
   33c2c98..09c6cd7 on `feature/v2.9.0-score-integrity`): status truth

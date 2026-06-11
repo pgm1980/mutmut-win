@@ -231,12 +231,12 @@ Funde — jede neue Diagnose-Schicht aus #99–#102 hat dabei geliefert:
 
 ---
 
-## Release v2.10.0 (nur auf explizites User-„Release")
+## Release v2.10.0 — released 2026-06-11
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.10.0 (`uv lock --system-certs`) | 🔲 |
-| Annotated Tag v2.10.0 | 🔲 |
-| GitHub Release v2.10.0 (Changelog: Audit-Zyklus-Abschluss, Hygiene-Gates, Dogfooding-Premiere) | 🔲 |
-| Auto-close #98–#104 via Merge-Commit | 🔲 |
-| MEMORY.md + product_backlog.md update (inkl. Maintenance-Abschnitt aus #104) | 🔲 |
+| pyproject.toml + uv.lock auf 2.10.0 (`uv lock --system-certs`) | ✅ `060ea16` (Suite auf gemergtem main erneut grün: 821/4) |
+| Annotated Tag v2.10.0 | ✅ |
+| GitHub Release v2.10.0 (Changelog: Audit-Zyklus-Abschluss, Hygiene-Gates, Dogfooding-Premiere) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.10.0) |
+| Auto-close #98–#104 via Merge-Commit | ✅ Merge, 0 offene Issues verifiziert |
+| MEMORY.md + product_backlog.md update (inkl. Maintenance-Abschnitt aus #104) | ✅ (Backlog v2.0.0) |
