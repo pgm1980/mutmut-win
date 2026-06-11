@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
-from mutmut_win.exceptions import ConfigError
+from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 
 
 def _default_max_children() -> int:
@@ -466,6 +466,8 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         config = MutmutConfig.model_validate(normalized)
     except Exception as e:
         msg = f"Invalid [tool.mutmut] configuration: {e}"
-        raise ConfigError(msg) from e
+        # Value-level failure → the specific subclass (issue #114 /
+        # A4-QX-006); still a ConfigError for every existing handler.
+        raise InvalidConfigValueError(msg) from e
 
     return _apply_default_also_copy(config, project_dir)

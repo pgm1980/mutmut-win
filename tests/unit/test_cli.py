@@ -88,10 +88,15 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert captured["max_children"] == 4
 
-    def test_run_exits_nonzero_on_exception(self) -> None:
+    def test_run_exits_nonzero_on_domain_error(self) -> None:
+        """Domain errors render as a one-liner; foreign exceptions propagate
+        as real bugs instead (issue #114 / A4-QX-006 — the dedicated
+        contract tests live in test_exception_hygiene_114.py)."""
+        from mutmut_win.exceptions import CleanTestFailedError
+
         runner = CliRunner()
         mock_orchestrator = MagicMock()
-        mock_orchestrator.run.side_effect = RuntimeError("clean test failed")
+        mock_orchestrator.run.side_effect = CleanTestFailedError("clean test failed")
 
         with (
             patch("mutmut_win.cli.load_config") as mock_load_config,

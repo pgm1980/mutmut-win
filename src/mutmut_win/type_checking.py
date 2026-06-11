@@ -4,7 +4,9 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any
+
+from mutmut_win.exceptions import TypeCheckCommandError
 
 #: Wall-clock budget for one type-checker invocation. A hung checker used to
 #: hang the whole mutation run (A3-CM-010); 300 s comfortably covers cold
@@ -52,9 +54,11 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
         A list of TypeCheckingError instances parsed from the command output.
 
     Raises:
-        Exception: If the checker times out, exits with a non-finding status
-            (anything but 0/1 — e.g. mypy 2 = fatal, pyright 3/4 = config or
-            usage error), or does not return valid JSON output.
+        TypeCheckCommandError: If the checker times out, exits with a
+            non-finding status (anything but 0/1 — e.g. mypy 2 = fatal,
+            pyright 3/4 = config or usage error), or does not return valid
+            JSON output (issue #114 / A4-QX-023 — these were bare
+            ``Exception`` raises).
     """
     try:
         # S603: type_check_command is a trusted list supplied by the mutmut
@@ -67,7 +71,7 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
             timeout=TYPE_CHECK_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
-        raise Exception(
+        raise TypeCheckCommandError(
             f"type check command timed out after {TYPE_CHECK_TIMEOUT_SECONDS}s: "
             f"{type_check_command}"
         ) from exc
@@ -76,7 +80,7 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
     # checker FAILURE — e.g. mypy exit 2 leaves stdout empty, which the old
     # code happily parsed into "zero errors": a silent no-op filter.
     if completed_process.returncode not in (0, 1):
-        raise Exception(
+        raise TypeCheckCommandError(
             f"type check command failed with exit code "
             f"{completed_process.returncode}. stderr: {completed_process.stderr}"
         )
@@ -84,34 +88,35 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
     checker = _detect_checker(type_check_command)
 
     try:
-        if checker == "mypy":
-            report = [json.loads(line) for line in completed_process.stdout.splitlines()]
-        else:
-            report = json.loads(completed_process.stdout)
+        report: Any = (
+            [json.loads(line) for line in completed_process.stdout.splitlines()]
+            if checker == "mypy"
+            else json.loads(completed_process.stdout)
+        )
     except json.JSONDecodeError as exc:
-        raise Exception(
+        raise TypeCheckCommandError(
             f"type check command did not return JSON. "
             f"Got: {completed_process.stdout} (stderr: {completed_process.stderr})"
         ) from exc
 
     if checker == "pyrefly":
-        return parse_pyrefly_report(cast("dict", report))
+        return parse_pyrefly_report(report)
     if checker == "mypy":
         return parse_mypy_report(report)
     if checker == "ty":
         return parse_ty_report(report)
     # Unknown checkers fall through to the pyright parser (historic default).
-    return parse_pyright_report(cast("dict", report))
+    return parse_pyright_report(report)
 
 
-def parse_pyright_report(result: dict) -> list[TypeCheckingError]:
+def parse_pyright_report(result: dict[str, Any]) -> list[TypeCheckingError]:
     """Parse a pyright JSON report into a list of TypeCheckingError instances.
 
     Only ``severity == "error"`` diagnostics count (A3-CM-011): pyright emits
     ``error | warning | information``, and warnings must not kill mutants.
     """
     if "generalDiagnostics" not in result:
-        raise Exception(
+        raise TypeCheckCommandError(
             f'Invalid pyright report. Could not find key "generalDiagnostics". '
             f"Found: {set(result.keys())}"
         )
@@ -127,10 +132,10 @@ def parse_pyright_report(result: dict) -> list[TypeCheckingError]:
     ]
 
 
-def parse_pyrefly_report(result: dict) -> list[TypeCheckingError]:
+def parse_pyrefly_report(result: dict[str, Any]) -> list[TypeCheckingError]:
     """Parse a pyrefly JSON report into a list of TypeCheckingError instances."""
     if "errors" not in result:
-        raise Exception(
+        raise TypeCheckCommandError(
             f'Invalid pyrefly report. Could not find key "errors". Found: {set(result.keys())}'
         )
 
@@ -144,7 +149,7 @@ def parse_pyrefly_report(result: dict) -> list[TypeCheckingError]:
     ]
 
 
-def parse_mypy_report(result: list[dict]) -> list[TypeCheckingError]:
+def parse_mypy_report(result: list[dict[str, Any]]) -> list[TypeCheckingError]:
     """Parse a mypy JSON report into a list of TypeCheckingError instances."""
     return [
         TypeCheckingError(
@@ -157,7 +162,7 @@ def parse_mypy_report(result: list[dict]) -> list[TypeCheckingError]:
     ]
 
 
-def parse_ty_report(result: list[dict]) -> list[TypeCheckingError]:
+def parse_ty_report(result: list[dict[str, Any]]) -> list[TypeCheckingError]:
     """Parse a 'ty' type checker report into a list of TypeCheckingError instances."""
     # assuming the gitlab code quality report format, these severities seem okay
     # https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format

@@ -122,9 +122,13 @@ class TestTailRead:
 
 class TestUnknownEventShapeFailsFast:
     def test_unknown_event_dict_raises(self) -> None:
+        # WorkerError since issue #114 / A4-QX-006 (was a RuntimeError
+        # placeholder) — the wired producer for worker-communication errors.
+        from mutmut_win.exceptions import WorkerError
+
         executor = SpawnPoolExecutor(max_workers=1, config=MutmutConfig())
         executor._num_tasks = 1
         executor._event_queue.put({"weird": 1})
 
-        with pytest.raises(RuntimeError, match="event"):
+        with pytest.raises(WorkerError, match="event"):
             list(executor.get_events())

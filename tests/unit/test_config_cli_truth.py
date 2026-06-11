@@ -145,14 +145,21 @@ class TestSinceCommitTruth:
 
 
 class TestDebugIsReal:
+    # Since issue #114 / A4-QX-006 the run-level except only handles DOMAIN
+    # errors (MutmutWinError) — a foreign RuntimeError propagates with its
+    # full traceback regardless of --debug (covered in
+    # test_exception_hygiene_114.py). The --debug contract from A4-UI-005
+    # therefore pins a domain error here.
     def test_debug_shows_the_traceback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A4-UI-005: --debug was a dead flag (zero reads) and the run-level
         # except swallowed tracebacks exactly where debug should help.
+        from mutmut_win.exceptions import CleanTestFailedError
+
         monkeypatch.chdir(tmp_path)
         exit_code, output = _invoke_run(
-            "--debug", orchestrator_error=RuntimeError("kaboom in step 3")
+            "--debug", orchestrator_error=CleanTestFailedError("kaboom in step 3")
         )
         assert exit_code != 0
         assert "Traceback" in output
@@ -161,8 +168,10 @@ class TestDebugIsReal:
     def test_without_debug_the_one_liner_stays(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from mutmut_win.exceptions import CleanTestFailedError
+
         monkeypatch.chdir(tmp_path)
-        exit_code, output = _invoke_run(orchestrator_error=RuntimeError("kaboom"))
+        exit_code, output = _invoke_run(orchestrator_error=CleanTestFailedError("kaboom"))
         assert exit_code != 0
         assert "kaboom" in output
         assert "Traceback" not in output

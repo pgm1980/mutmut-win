@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 
 from mutmut_win.constants import EXIT_CODE_TIMEOUT, EXIT_CODE_TYPE_CHECK, status_by_exit_code
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
-from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError
+from mutmut_win.exceptions import (
+    BadTestExecutionCommandsException,
+    CleanTestFailedError,
+    ForcedFailError,
+)
 from mutmut_win.models import MutationRunResult, MutationTask, SourceFileMutationData
 from mutmut_win.stats import MutmutStats, collect_or_load_stats
 from mutmut_win.test_mapping import tests_for_mutant_names
@@ -183,6 +187,17 @@ class MutationOrchestrator:
         if clean_exit != 0:
             from mutmut_win.runner import decode_pytest_exit
 
+            if clean_exit == 4:
+                # pytest usage error — the docstring of this exception promised
+                # a producer since day one (issue #114 / A4-QX-005): bad CLI
+                # args always hit the clean run first, BEFORE any mutant runs.
+                detail = f"pytest: {decode_pytest_exit(clean_exit)}"
+                tail = self._runner.last_diagnostic_output
+                if tail:
+                    detail += f"\n--- pytest output (tail) ---\n{tail}"
+                raise BadTestExecutionCommandsException(
+                    list(self._config.pytest_add_cli_args), detail=detail
+                )
             if clean_exit == EXIT_CODE_TIMEOUT:
                 msg = (
                     f"Clean test run timed out after {self._config.clean_run_timeout}s. "

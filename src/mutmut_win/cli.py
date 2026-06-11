@@ -15,6 +15,7 @@ from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
+from mutmut_win.exceptions import MutmutWinError
 from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
@@ -279,9 +280,12 @@ def run(
                 result = orchestrator.dry_run() if dry_run else orchestrator.run()
         else:
             result = orchestrator.dry_run() if dry_run else orchestrator.run()
-    except Exception as exc:
+    except MutmutWinError as exc:
         # Issue #102 / A4-UI-005: --debug was a dead flag while this except
         # swallowed tracebacks exactly where debug should help.
+        # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
+        # rendering — a foreign exception is a mutmut-win bug and propagates
+        # with its full traceback instead of masquerading as a clean error.
         if debug or config.debug:
             import traceback
 
@@ -468,7 +472,7 @@ def show(mutant_name: str) -> None:
     config = _load_config_or_exit()
     try:
         diff = get_diff_for_mutant(mutant_name, config)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
@@ -498,7 +502,7 @@ def apply(mutant_name: str) -> None:
     config = _load_config_or_exit()
     try:
         apply_mutant(mutant_name, config)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 

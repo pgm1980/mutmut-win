@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 import libcst as cst
 
+from mutmut_win.exceptions import MutationParseError
 from mutmut_win.file_setup import walk_source_files
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.test_mapping import (
@@ -64,9 +65,19 @@ def read_mutants_module(path: Path | str) -> cst.Module:
 
     Returns:
         Parsed ``libcst.Module`` for the corresponding mutants file.
+
+    Raises:
+        MutationParseError: If the staged file is not parseable Python
+            (issue #114 / A4-QX-006 — used to leak raw libcst errors).
     """
-    with (Path("mutants") / path).open(encoding="utf-8") as f:
-        return cst.parse_module(f.read())
+    target = Path("mutants") / path
+    with target.open(encoding="utf-8") as f:
+        source = f.read()
+    try:
+        return cst.parse_module(source)
+    except cst.ParserSyntaxError as exc:
+        msg = f"cannot parse staged file {target}: {exc}"
+        raise MutationParseError(msg) from exc
 
 
 def read_orig_module(path: Path | str) -> cst.Module:
@@ -77,9 +88,18 @@ def read_orig_module(path: Path | str) -> cst.Module:
 
     Returns:
         Parsed ``libcst.Module`` for the original (un-mutated) source.
+
+    Raises:
+        MutationParseError: If the source file is not parseable Python
+            (issue #114 / A4-QX-006).
     """
     with Path(path).open(encoding="utf-8") as f:
-        return cst.parse_module(f.read())
+        source = f.read()
+    try:
+        return cst.parse_module(source)
+    except cst.ParserSyntaxError as exc:
+        msg = f"cannot parse source file {path}: {exc}"
+        raise MutationParseError(msg) from exc
 
 
 def find_top_level_function_or_method(module: cst.Module, name: str) -> cst.FunctionDef | None:
