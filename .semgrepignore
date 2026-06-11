@@ -1,0 +1,34 @@
+# Explicit semgrep ignore list (issue #98).
+#
+# DECISION: tests/ IS scanned. Semgrep's built-in default ignore list
+# excludes tests/ entirely, which made the documented "semgrep on tests"
+# gate factually empty (0 files scanned, verified in sprint 30). Test code
+# handles subprocesses, temp files and fixtures — exactly the API surface
+# the security rules cover. Ruff's S-rules (bandit) already run on tests
+# with S101 (assert) exempted; semgrep complements them here.
+#
+# This file REPLACES semgrep's defaults, so everything to skip must be
+# listed explicitly.
+
+# Virtual envs / caches / build artifacts
+.venv/
+.git/
+.mutmut-cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+dist/
+build/
+
+# Mutation staging area (generated copies, never reviewed source)
+mutants/
+
+# Reference fixture projects from mutmut 3.5.0 — third-party style fixtures,
+# not our code (mirrors the ruff exclude and the pytest collect_ignore).
+tests/e2e_projects/
+
+# Gitignored scratchpad for one-off verification scripts
+_issues/
+
+# Local tooling/config
+.claude/

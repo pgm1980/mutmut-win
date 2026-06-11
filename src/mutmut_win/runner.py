@@ -6,6 +6,7 @@ forced-fail verification to ensure the trampoline mechanism works.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,32 @@ MUTANT_FAIL_SENTINEL = "fail"
 MUTANT_STATS_SENTINEL = "stats"
 
 
+#: Human explanations for pytest exit classes — a failing gate used to say
+#: "Fix tests before mutating" for ALL of them (A2-RN-001), which is plain
+#: wrong for usage errors (4) or empty collection (5).
+_EXIT_EXPLANATIONS: dict[int, str] = {
+    0: "ok",
+    1: "tests failed",
+    2: "interrupted / collection errors",
+    3: "internal pytest error",
+    4: "pytest usage error (check pytest_add_cli_args)",
+    5: "no tests collected (check tests_dir / test selection)",
+    36: "timed out (configure [tool.mutmut].clean_run_timeout)",
+}
+
+
+def decode_pytest_exit(exit_code: int) -> str:
+    """Return a short human explanation for a pytest exit code.
+
+    Args:
+        exit_code: The raw pytest (or mutmut-win timeout) exit code.
+
+    Returns:
+        A non-empty explanation string.
+    """
+    return _EXIT_EXPLANATIONS.get(exit_code, f"unrecognised exit code {exit_code}")
+
+
 class PytestRunner:
     """Abstracts pytest execution for the mutation testing pipeline.
 
@@ -39,10 +66,21 @@ class PytestRunner:
 
     def __init__(self, config: MutmutConfig) -> None:
         self._config = config
+        self._last_diagnostic_output: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def last_diagnostic_output(self) -> str | None:
+        """Tail of the pytest output from the last FAILED phase run.
+
+        ``None`` after a successful phase. The diagnostic channel for the
+        orchestrator's gate error messages (issue #99 / A2-RN-001 — the
+        phases used to pipe to DEVNULL, leaving zero output on failure).
+        """
+        return self._last_diagnostic_output
 
     def run_clean_test(self) -> int:
         """Run pytest without any mutations active (in mutants/ directory).
@@ -61,23 +99,66 @@ class PytestRunner:
             cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
+        return self._run_phase("clean test suite", cmd, env)
+
+    def _run_phase(
+        self,
+        phase_name: str,
+        cmd: list[str],
+        env: dict[str, str],
+        timeout: int | None = None,
+        timeout_hint: str = "clean_run_timeout",
+    ) -> int:
+        """Run one pytest phase with tail capture (issue #99 / A2-RN-001).
+
+        Captures stdout+stderr into a temp file (the worker's deadlock-safe
+        pattern — PIPE deadlocks on Windows when grandchildren inherit
+        handles) and keeps the tail in :attr:`last_diagnostic_output` when
+        the phase fails, so gate errors can finally show WHY.
+
+        Args:
+            phase_name: Human-readable phase name for the timeout warning.
+            cmd: Full command list.
+            env: Environment for the subprocess.
+            timeout: Wall-clock budget; defaults to ``clean_run_timeout``.
+            timeout_hint: Config key named in the timeout warning.
+
+        Returns:
+            The exit code (36 on timeout, mirroring the worker convention).
+        """
+        import os
+        import tempfile
+
+        from mutmut_win.process.worker import _MAX_DIAGNOSTIC_LINES, _read_last_lines
+
+        budget = timeout if timeout is not None else self._config.clean_run_timeout
+        self._last_diagnostic_output = None
+        log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="mutmut_phase_", text=True)
+        log_path = Path(log_path_str)
         try:
-            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd="mutants",
-                env=env,
-                timeout=self._config.clean_run_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            print(
-                f"Warning: clean test suite timed out after "
-                f"{self._config.clean_run_timeout}s "
-                "(configure [tool.mutmut].clean_run_timeout)"
-            )
-            return 36  # timeout exit code
-        return result.returncode
+            try:
+                result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+                    cmd,
+                    stdout=log_fd,
+                    stderr=subprocess.STDOUT,
+                    cwd="mutants",
+                    env=env,
+                    timeout=budget,
+                )
+                exit_code = result.returncode
+            except subprocess.TimeoutExpired:
+                print(
+                    f"Warning: {phase_name} timed out after {budget}s "
+                    f"(configure [tool.mutmut].{timeout_hint})"
+                )
+                exit_code = 36  # timeout exit code
+        finally:
+            os.close(log_fd)
+        if exit_code != 0:
+            self._last_diagnostic_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+        with contextlib.suppress(OSError):
+            log_path.unlink()
+        return exit_code
 
     def collect_tests(self) -> list[str]:
         """Collect test node IDs via ``pytest --collect-only``.
@@ -102,20 +183,21 @@ class PytestRunner:
                 tests.append(line)
         return sorted(tests)
 
-    def run_stats(self) -> None:
-        """Run pytest as subprocess with MUTANT_UNDER_TEST=stats to collect timing data.
+    def run_stats(self) -> int:
+        """Run pytest as a subprocess with MUTANT_UNDER_TEST=stats.
 
         Injects a pytest plugin (``_mutmut_stats_plugin.py``) into
         ``mutants/`` that captures per-test trampoline hits and durations.
         The plugin writes the mapping to ``mutants/mutmut-stats.json``
-        at session end, which the parent reads after the subprocess exits.
+        at session end; the parent reads that file after the subprocess
+        exits — the plugin JSON is the single source of truth (issue #99 /
+        A2-RN-009: pre-rewrite "in-process" docs survived here for a while).
 
-        Uses subprocess instead of in-process ``pytest.main()`` to avoid
-        hangs caused by pytest-asyncio, hypothesis, or other plugins that
-        don't clean up properly in embedded pytest runs.
+        Returns:
+            The subprocess exit code (36 on timeout). Callers must treat a
+            non-zero exit as a failed collection — the JSON may be partial
+            and ``_state`` stays empty (issue #99 / A2-RN-003).
         """
-        import os
-
         from mutmut_win import _state
         from mutmut_win.stats import load_stats
 
@@ -135,29 +217,13 @@ class PytestRunner:
         if self._config.tests_dir:
             cmd.extend(self._config.tests_dir)
 
-        try:
-            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd="mutants",
-                env=env,
-                timeout=self._config.clean_run_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            print(
-                f"Warning: stats collection timed out after "
-                f"{self._config.clean_run_timeout}s "
-                "(configure [tool.mutmut].clean_run_timeout)"
-            )
-            os.environ[MUTANT_ENV_VAR] = ""
-            return
-
-        os.environ[MUTANT_ENV_VAR] = ""
-
-        exit_code = result.returncode
+        exit_code = self._run_phase("stats collection", cmd, env)
         if exit_code != 0:
-            print(f"Warning: stats collection returned exit code {exit_code}")
+            print(
+                f"Warning: stats collection failed — "
+                f"{decode_pytest_exit(exit_code)} (exit {exit_code})"
+            )
+            return exit_code
 
         # Read the JSON file written by the plugin in the subprocess.
         stats = load_stats(mutants_abs)
@@ -171,6 +237,7 @@ class PytestRunner:
             print(
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
             )
+        return exit_code
 
     def run_coverage_collection(self, data_file: Path) -> int:
         """Run the clean suite under ``coverage run`` inside ``mutants/``.
@@ -241,25 +308,22 @@ class PytestRunner:
             cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
-        try:
-            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd="mutants",
-                env=env,
-                timeout=self._config.forced_fail_timeout,
-            )
-        except subprocess.TimeoutExpired:
+        exit_code = self._run_phase(
+            "forced-fail verification",
+            cmd,
+            env,
+            timeout=self._config.forced_fail_timeout,
+            timeout_hint="forced_fail_timeout",
+        )
+        if exit_code == 36:
             # Forced-fail timeout likely means pytest-asyncio event loop corruption.
             # Return non-zero so the orchestrator treats it as "tests did fail" (correct).
             print(
-                f"Warning: forced-fail verification timed out after "
-                f"{self._config.forced_fail_timeout}s "
-                "(configure [tool.mutmut].forced_fail_timeout)"
+                "Note: treating the forced-fail timeout as 'tests failed' — "
+                "the trampoline did interrupt the suite."
             )
             return 1  # non-zero = tests failed = trampoline works
-        return result.returncode
+        return exit_code
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -295,9 +359,12 @@ class PytestRunner:
 
         env = os.environ.copy()
         mutants_abs = Path("mutants").absolute()
-        # Same paths as setup_source_paths: src, source, .
+        # Same paths as setup_source_paths: src, source, . — PLUS the
+        # configured extra_paths (Bug #69). Only the worker had them before
+        # (issue #99 / A2-RN-002): affected projects failed the clean gate
+        # with an ImportError nobody could see.
         extra_paths = []
-        for subdir in ["src", "source", "."]:
+        for subdir in ["src", "source", ".", *self._config.extra_paths]:
             candidate = mutants_abs / subdir
             if candidate.exists():
                 extra_paths.append(str(candidate))

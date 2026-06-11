@@ -90,8 +90,7 @@ def worker_main(
             # arrive. Emit a synthetic completion so progress can be made, and
             # continue the loop.
             print(
-                f"WORKER RECOVERY (#12): uncaught {type(exc).__name__} on "
-                f"{fallback_name}: {exc}",
+                f"WORKER RECOVERY (#12): uncaught {type(exc).__name__} on {fallback_name}: {exc}",
                 flush=True,
             )
             event_queue.put(
@@ -173,9 +172,7 @@ def _process_task(
                 pythonpath_dirs.append(str(extra_path.absolute()))
     if pythonpath_dirs:
         existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = os.pathsep.join(
-            pythonpath_dirs + ([existing] if existing else [])
-        )
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs + ([existing] if existing else []))
     env[MUTANT_ENV_VAR] = task.mutant_name
     # Unbuffered stdout/stderr for the whole subprocess tree: with block
     # buffering the log's st_size froze at 0 while the suite made progress,
@@ -187,7 +184,10 @@ def _process_task(
     # - DEVNULL loses diagnostic output needed for timeout investigation
     # - Temp files: no deadlock (no pipe EOF semantics), output preserved
     log_fd, log_path_str = tempfile.mkstemp(
-        suffix=".log", prefix="mutmut_out_", dir="mutants", text=True,
+        suffix=".log",
+        prefix="mutmut_out_",
+        dir="mutants",
+        text=True,
     )
     log_path = Path(log_path_str)
     last_output: str | None = None

@@ -63,23 +63,30 @@ class TestRunCommand:
         mock_orchestrator.run.assert_called_once()
 
     def test_run_with_max_children_option(self) -> None:
+        # Changed in v2.10.0 (#102 / A3-CM-004): overrides go through a full
+        # MutmutConfig re-validation instead of constraint-bypassing
+        # model_copy — the orchestrator must receive the validated value.
+        from mutmut_win.config import MutmutConfig
+
         runner = CliRunner()
         mock_orchestrator = MagicMock()
         mock_orchestrator.run.return_value = MutationRunResult()
-        mock_config = MagicMock()
-        mock_config.max_children = 4
-        mock_config.model_copy.return_value = mock_config
+        captured: dict[str, int] = {}
+
+        def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
+            captured["max_children"] = config.max_children
+            return mock_orchestrator
 
         with (
-            patch("mutmut_win.cli.load_config", return_value=mock_config),
-            patch("mutmut_win.cli.MutationOrchestrator", return_value=mock_orchestrator),
+            patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=capture_config),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
         ):
             result = runner.invoke(cli, ["run", "--max-children", "4"])
 
         assert result.exit_code == 0
-        mock_config.model_copy.assert_called_once_with(update={"max_children": 4})
+        assert captured["max_children"] == 4
 
     def test_run_exits_nonzero_on_exception(self) -> None:
         runner = CliRunner()

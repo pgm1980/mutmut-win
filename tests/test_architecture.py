@@ -6,10 +6,13 @@ and that the import-linter layer contracts are satisfied.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
+
+import pytest
 
 
 def test_all_modules_importable() -> None:
@@ -34,6 +37,8 @@ def test_all_modules_importable() -> None:
         "mutmut_win.process.worker",
     ]
     for module_name in modules:
+        # Iterates our own src/ module list — no external input is imported.
+        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
         imported = import_module(module_name)
         assert imported is not None, f"Failed to import {module_name}"
 
@@ -64,6 +69,16 @@ def test_architecture_contracts() -> None:
     import_module("mutmut_win.process.worker")
 
 
+@pytest.mark.skipif(
+    os.environ.get("MUTANT_UNDER_TEST") is not None,
+    reason=(
+        "architecture contracts apply to src/, not to the trampolined build "
+        "artifact: generated mutants import mutmut_win.__main__ for the "
+        "trampoline hit recording, which statically pulls the CLI chain "
+        "across layers (maintenance finding QX-001) — found live by the "
+        "first dogfooding run (#98)"
+    ),
+)
 def test_import_linter_contracts_hold() -> None:
     """Execute the REAL import-linter gate inside the suite (issue #84).
 
@@ -73,10 +88,7 @@ def test_import_linter_contracts_hold() -> None:
     repo root because several tests chdir into tmp directories.
     """
     project_root = Path(__file__).resolve().parent.parent
-    script = (
-        "from importlinter.cli import lint_imports;"
-        "import sys; sys.exit(lint_imports())"
-    )
+    script = "from importlinter.cli import lint_imports;import sys; sys.exit(lint_imports())"
     result = subprocess.run(  # noqa: S603 — fully controlled command
         [sys.executable, "-c", script],
         capture_output=True,

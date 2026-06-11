@@ -221,6 +221,7 @@ class TestSpawnPoolExecutorGetEvents:
         assert isinstance(events[0], TaskStarted)
         assert isinstance(events[1], TaskCompleted)
 
+
 class TestSpawnPoolExecutorShutdown:
     def test_shutdown_kills_alive_workers(self) -> None:
         """shutdown() must kill any still-alive workers."""

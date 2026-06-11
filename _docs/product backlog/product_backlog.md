@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 1.8.0
+**Version:** 1.9.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -28,7 +28,7 @@
 | v2.7.0 | Runtime Reliability | Sprint 29 | Done | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) — released 2026-06-11; **alle 15 S1 geschlossen** |
 | v2.8.0 | IL Detection Honesty | Sprint 30 | Done | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Progress-Veto (#89), Test-Ehrlichkeit (#90) — released 2026-06-11 |
 | v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
-| v2.10.0 | Pipeline Hygiene | Sprint 32 | Roadmap | Audit C8+C9-Top: Stats-/DB-/Copy-Hygiene (re-enabled Dogfooding-Gate), Diagnose-UX |
+| v2.10.0 | Pipeline Hygiene | Sprint 32 | Planned | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) |
 
 ---
 
@@ -595,6 +595,81 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 
 ---
 
+### Epic 23: Pipeline Hygiene (Sprint 32)
+
+**Beschreibung:** Letzter Fixing-Sprint des Audit-Zyklus (Cluster C8 +
+C9-Top + 4 user-bestätigte Neuzugänge + Dogfooding-Gate): Runner-Fehlschläge
+zeigen Output und vergiften nie den Stats-Cache; die DB übersteht
+Upgrades/Races/Exceptions; das Staging kann weder via `..` entkommen noch
+vergeistern (Deletion-Sync inkl. .meta-Orphans = OS-012 komplett,
+Fingerprint-Invalidierung); Config/CLI validieren ehrlich; der JSON-Kanal
+ist rein; das Projekt wendet seine eigenen Regeln auf sich an (Format-Gate,
+pytest-Kanon, semgrep auf tests/, erstes echtes Dogfooding mit
+Mutation-Score). Abschluss: C9-Rest-Triage in einen kuratierten
+Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
+**Sprint:** 32
+**Release:** v2.10.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #98 | Hygiene+Gate | Selbst-Hygiene-Fundament (Format/pytest-Kanon/semgrep) + Dogfooding-Pilot — zweiphasig | Must | 5 | Open |
+| #99 | Bug | Runner-Diagnose & Stats-Wahrheit (RN-001/002/003, OS-006/007) | Must | 8 | Open |
+| #100 | Bug | DB-Härtung: Lesepfad-Migration, Connection-Close, Race, Surrogates (FD-001/006/007/011) | Must | 5 | Open |
+| #101 | Bug | Staging-Hygiene: Containment, Deletion-Sync, Fingerprint, atomare .meta (FD-002/003/004/005/009, OS-008, CM-009) | Must | 8 | Open |
+| #102 | Bug | Config-/CLI-Wahrheit (CM-004/005/006, UI-005) | Must | 5 | Open |
+| #103 | Bug | CI-Output-Disziplin (UI-006, QX-003) | Must | 3 | Open |
+| #104 | Doku | C9-Rest-Triage + Audit-Schlussstrich | Should | 2 | Open |
+
+**Acceptance Criteria (Sprint-Ebene):**
+- [ ] Fehlgeschlagene Runner-Phasen zeigen pytest-Output + dekodierten Exit; der Stats-Cache wird bei Fehlschlag NIE überschrieben oder stale geladen
+- [ ] Prä-v2.5-Caches crashen results/browse nicht; keine gelockte DB unter Exception (WinError 32); Migrations-Race tolerant
+- [ ] `..`-Einträge können mutants/ nicht verlassen; gelöschte Quellen verschwinden aus Staging samt .meta (OS-012 komplett); Restore/Config-Wechsel invalidieren; --force meldet ehrlich; korrupte .meta blockt keine Läufe mehr
+- [ ] `--max-children 0` ist Validierungsfehler; Config-Typos warnen mit Vorschlag; ungültige --since-commit-Ref bricht ab statt Exit 0; --debug zeigt Tracebacks
+- [ ] `json.loads(stdout)` funktioniert bei --output json; kein UnicodeEncodeError auf cp1252
+- [ ] Hygiene-Gates verankert: ruff format --check, pytest ohne Flag, semgrep inkl. tests/; Dogfooding-Pilot gelaufen, Score dokumentiert
+- [ ] Audit-Zyklus formal beendet: C9-Rest als kuratierter Maintenance-Abschnitt, Register mit Schlussbilanz
+- [ ] Quality Gates: pytest ≥ 800, ruff 0, format-check 0, mypy 0 neue, semgrep 0 blocking, lint-imports KEPT
+
+---
+
+## Maintenance-Backlog (Audit-Reste, epic-los)
+
+> Ergebnis der C9-Rest-Triage (#104, Sprint 32): Die nach fünf
+> Fixing-Sprints (28–32) bewusst nicht behobenen Findings — nichts davon
+> korrumpiert Daten, blockiert Läufe oder belügt CI. Severity-sortiert;
+> Kandidatenpool für bedarfsgetriebene Maintenance, KEIN Sprint-Versprechen.
+
+| Sev | Finding | Modul | Real-Schaden |
+|-----|---------|-------|--------------|
+| S2 | DOG-001 (neu) | orchestrator.py | Timeout-Modell ohne additiven Startup-Sockel: Interpreter+Collection (10–15 s bei großen Suiten) sprengen `max(5 s, estimated×mult)` — Dogfooding: 175/244 Pseudo-Timeouts MIT fertiger pytest-Summary im Tail (Mutant detektiert, Uhr riss) |
+| S2 | UI-007 | browser.py | TUI-Diff ist Ganzdatei-Diff (Trampolin + alle Mutanten, identisch je Mutant); DB-Fallback zeigt immer „mutant not found" |
+| S2 | QX-001 | __main__.py | Erster Stats-Trampolin-Hit importiert die komplette CLI-Kette (click+textual+rich, ~1,4 s gemessen) in den User-Testprozess |
+| S3 | QX-007 | worker.py, constants | Exit 33/34 ohne Producer: Mutanten ohne zugeordnete Tests laufen die VOLLE Suite statt „no tests" — Laufzeitverlust vs. mutmut-Design |
+| S3 | RN-006 | runner.py | Forced-Fail beweist nur „≥1 Failure irgendwo"; ohne `-x` läuft die volle Suite (Laufzeit) |
+| S3 | UI-011 | cli.py | Korrupte pyproject → rohe Tracebacks in show/apply/browse (run hat seit #102 den --debug-Pfad; .meta-Toleranz seit #101) |
+| S3 | UI-012 | cli.py, orchestrator | mutant_names-Matching inkonsistent über 5 Commands (run: exakt+Glob; show/apply: nur exakt) — undokumentiert |
+| S3 | UI-013 | cli.py | Exit-Code-Inkonsistenz bei leerer DB: results 0, export-cicd 1, time-estimates 0 |
+| S3 | UI-010 | browser.py | Browser-Aktionen crashen bei leerer Mutanten-Tabelle (RowDoesNotExist) |
+| S3 | RN-012 | runner.py | PY_IGNORE_IMPORTMISMATCH nur im Stats-Run gesetzt — Clean/Forced-Fail/Worker inkonsistent |
+| S3 | RN-013 | config.py | Arg-Koerzierung: `'-m "not slow"'` → naives split() zerlegt falsch; test_selection akzeptiert keine Strings |
+| S3 | FD-008 | file_setup.py | pyproject-Sanitiser übersieht `[tool.uv.sources.<pkg>]`-Subtables → „Distribution not found" für diese Syntax |
+| S3 | QX-005 | exceptions.py | BadTestExecutionCommandsException tot (kein Producer); Worker-Exit-4 fällt still in „suspicious" |
+| S3 | QX-006 | exceptions.py, cli | 6 tote Exception-Klassen; cli fängt `Exception` statt `MutmutWinError` |
+| S4 | UI-014 | mutant_diff.py | show-Diff: Hunk-Header funktionsrelativ, from/to identisch → nicht patch-fähig |
+| S4 | UI-015 | cli.py | „Suspicious:1" ohne Leerzeichen (Alignment, Format ist test-verdrahtet) |
+| S4 | UI-016 | cli.py | --no-progress unterdrückt auch die End-Summary — leiser Lauf endet ohne jedes Ergebnis |
+| S4 | QX-017 | _state.py | _reset_globals deckt _cached_max_stack_depth nicht ab |
+| S4 | QX-018 | config.py | max_stack_depth ohne ge=-1: Wert 0 verwirft alle Stats-Hits → Vollsuite je Mutant |
+| S4 | QX-019 | 5 Module | Konstanten-Drift: MUTANT_UNDER_TEST 3× definiert; vereinzelte Exit-Code-Literale |
+| S4 | QX-020 | __main__.py | Per-Hit-Import in record_trampoline_hit (Hot Path) |
+| S4 | QX-023-Rest | type_checking.py | raised nackte `Exception` statt domänenspezifischer Klasse (cli-Seite seit #102 mit --debug) |
+| S4 | RN-010 | runner.py | _mutants_env schreibt Dateien (sitecustomize) — Dogfooding-Pilot bestätigte es live; Test-Seite seit Sprint 32 isoliert (autouse-CWD-Fixture), die schreibende Produktionsseite bleibt |
+| S4 | RN-011 | runner.py | sitecustomize-Blocker matcht sys.path exakt-string (kein normcase/realpath) |
+| S4 | DOG-002 (neu) | worker.py | JT-018-Window-Hint feuert einmal PRO Worker — bei N Workern N-fach im Log (kosmetisch) |
+| S4 | OS-012-Restgrenze | file_setup.py | Deletion-Sync deckt src/source-Wurzeln; Flat-Layout („.") bewusst ausgenommen (dokumentiert in #101) |
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -625,6 +700,7 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 | Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Done |
 | IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Done |
 | Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
+| Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Planned |
 
 ---
 
@@ -662,6 +738,7 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 | Sprint 29 | 27 | 27 | 100% | v2.7.0 Runtime Reliability (#79–#84) |
 | Sprint 30 | 25 | 25 | 100% | v2.8.0 IL Detection Honesty (#85–#90) |
 | Sprint 31 | 33 | 33 | 100% | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
+| Sprint 32 | 36 | (offen) | — | v2.10.0 Pipeline Hygiene (#98–#104) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -695,3 +772,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.6.0 | 2026-06-11 | Claude Code Agent | Sprint 30 geschlossen (Epic 21 Done, v2.8.0 released, Velocity 25/25): C5 komplett — Forensik persistiert+gerendert, Ein-Score-Konsistenz, Classifier plattform-ehrlich (Confidence-Cap medium auf win32), io_counters als Progress-Veto (Sleeping-Ersatz widerlegt+dokumentiert). 3 Pipeline-Hygiene-Neuzugänge für C8 vorgemerkt (format-Gate, pytest-Kanon, semgrep-tests-Ignore). |
 | 1.7.0 | 2026-06-11 | Claude Code Agent | Sprint 31 geplant: Epic 22 (Feature Truth & Score Integrity, #91–#97, 33 SP) mit 12-Schritt-Planungs-CoT — C6/C7-Befunde am v2.8.0-Stand re-verifiziert; Kette Map→Härtung→E2E→Abbruch→Entscheide; Exit-2-Default „killed"; Coverage als timeboxed Entscheid (Zeilen-Referenzsystem-Frage); Scope-Ventil #96/#97. |
 | 1.8.0 | 2026-06-11 | Claude Code Agent | Sprint 31 geschlossen (Epic 22 Done, v2.9.0 released, Velocity 33/33): C6+C7 komplett — Type-Check-Filter end-to-end repariert (E2E mit echtem mypy), Coverage via Subprozess-Brücke REAKTIVIERT (Spike + 8-Schritt-CoT), Status-/Score-Pipeline lückenlos (Summen-Invariante, Exit-2/NTSTATUS-Kills, Interrupt-Ehrlichkeit, Orphan-Purge, score im JSON). Release mit ⚠-Score-corrections-Sektion. mypy-Baseline 26→20. |
+| 1.9.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geplant: Epic 23 (Pipeline Hygiene, #98–#104, 36 SP) mit 12-Schritt-Planungs-CoT — letzter Audit-Sprint (C8+C9-Top + Neuzugänge + Dogfooding-Premiere); Format-Commit als Sprint-Auftakt, verschärfte Gates als Sprint-Inhalt, C9-Rest-Triage statt Versanden; OS-006/FD-002 am v2.9.0-Stand re-verifiziert. Branch-Aufräumen: 37 lokale + 2 Remote-Branches entfernt. |

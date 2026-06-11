@@ -140,8 +140,7 @@ def test_worker_survives_unexpected_exception_in_subprocess_layer() -> None:
     # if the worker silently drops one.
     assert len(completed_events) == 2, (
         f"Worker died on the first task — orchestrator would hang. "
-        f"Got {len(completed_events)} completed events:\n"
-        + "\n".join(f"  {e}" for e in events)
+        f"Got {len(completed_events)} completed events:\n" + "\n".join(f"  {e}" for e in events)
     )
 
     names = {c.mutant_name for c in completed_events}

@@ -517,12 +517,16 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
 
-**OS-012-Reststand nach Sprint 31/#96 (→ C8):** Der Orphan-Teil ist
-behoben (Purge-bei-Voll-Lauf). Offen bleiben: (a) mtime-only-Invalidierung
-in file_setup übersieht Restores mit altem Timestamp (Hash-basierte
-Invalidierung wäre der Fix — Cache-Hygiene); (b) verwaiste
-`.meta`-Dateien gelöschter Quelldateien (Datei-Lifecycle, der Browser
-liest sie weiter).
+**OS-012: KOMPLETT geschlossen mit Sprint 32/#101.** Sprint 31/#96
+behob den DB-Orphan-Teil (Purge-bei-Voll-Lauf); #101 schloss die Reste:
+(a) Restore-Erkennung über den Quellen-Fingerprint (mtime+size,
+GLEICHHEIT statt Ordnung) in der .meta — der Generierungs-Fast-Path
+regeneriert bei zurückgedrehten Timestamps (FD-004); (b) Deletion-Sync
+entfernt Staging-Spiegel UND verwaiste `.meta`-Dateien gelöschter
+Quellen (FD-003). Dokumentierte Grenze: Der Deletion-Sync deckt die
+expliziten Spiegel-Wurzeln src/source — im Flat-Layout (".") ist die
+Erwartungsmenge nicht sauber von also_copy-Spiegeln und generierten
+Artefakten trennbar.
 
 **Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
 1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
@@ -578,6 +582,29 @@ Fehlerpfaden statt stillem „0 Mutanten"; tote Kompat-API
 Dokumentierte Grenze: Code, der nur in test-gespawnten Subprozessen/
 xdist-Workern läuft, ist unmessbar → Leerheits-Guard wirft mit Hinweis.
 CM-003 ✅, CM-013 ✅, OS-011 ✅.
+
+---
+
+---
+
+## Schlussstrich: Audit-Zyklus abgeschlossen (Sprint 32, 2026-06-11)
+
+Fünf Fixing-Sprints (28–32, Releases v2.6.0–v2.10.0) haben die neun
+Fix-Cluster abgearbeitet:
+
+| Bilanz | Umfang |
+|--------|--------|
+| **Behoben** | C1–C8 vollständig + C9-Top — 31 GitHub-Issues (#73–#103), darunter alle 15 S1 (Sprint 29) und sämtliche S2 der Cluster C1–C8; zusätzlich miterledigt ohne eigene Issue-Nummer: RN-007 (vestigiales os.environ-Schreiben, fiel mit dem #99-run_stats-Umbau), RN-008/009 (Slices in #99), JT-013 (obsolet durch timeout.py-Löschung) |
+| **Überführt** | 24 bewusst nicht behobene Reste (2×S2, 11×S3, 11×S4) → severity-sortierter **Maintenance-Backlog** im Product Backlog (#104) — nichts davon korrumpiert Daten, blockiert Läufe oder belügt CI |
+| **Dokumentierte Grenzen** | Deletion-Sync deckt src/source-Wurzeln (Flat-Layout/also_copy-Spiegel ausgenommen — der Dogfooding-Pilot bestätigte die Grenze live: Geister-Tests in einem Alt-Staging, per `--force` bereinigbar); Coverage-Brücke sieht keine Subprozess-/xdist-Ausführung; mtime+size-Fingerprint blind für mtime-manipulierte Gleichgrößen |
+| **Umgebungsbedingt offen** | pip-audit-Baseline (SSL zu pypi.org gebrochen) |
+
+Der Zyklus begann mit dem W4.11-Downstream-Report (2 Bugs), wuchs über das
+201-Finding-Audit (Sprint 27) und endet mit einem Werkzeug, das seine
+eigenen Regeln auf sich anwendet: Format-Gate, nackter pytest-Kanon,
+semgrep inkl. tests/, erstes echtes Dogfooding mit Mutation-Score
+(Sprint-32-Backlog). Weitere Funde laufen als reguläre Issues in den
+Maintenance-Backlog — dieses Register wird nicht mehr fortgeschrieben.
 
 ---
 

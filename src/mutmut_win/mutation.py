@@ -416,15 +416,11 @@ def create_trampoline_wrapper(
     self_name = named_params[0].name.value if class_name is not None else None
 
     forwarded_params = named_params[1:] if class_name is not None else named_params
-    args: list[cst.Element | cst.StarredElement] = [
-        cst.Element(p.name) for p in forwarded_params
-    ]
+    args: list[cst.Element | cst.StarredElement] = [cst.Element(p.name) for p in forwarded_params]
     if isinstance(function.params.star_arg, cst.Param):
         args.append(cst.StarredElement(function.params.star_arg.name))
 
-    args_assignemnt = cst.Assign(
-        [cst.AssignTarget(cst.Name(value="_mutmut_args"))], cst.List(args)
-    )
+    args_assignemnt = cst.Assign([cst.AssignTarget(cst.Name(value="_mutmut_args"))], cst.List(args))
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
         cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)

@@ -30,7 +30,7 @@ pytest.importorskip("mypy", reason="mypy not installed in the test environment")
 #: A trampolined module the way file_setup writes it into mutants/:
 #: mutant 1 introduces a type error (str + int), mutant 2 is type-clean.
 _MUTATED_MODULE = textwrap.dedent(
-    '''
+    """
     def x_join__mutmut_orig(value: str) -> str:
         return value + "!"
 
@@ -41,7 +41,7 @@ _MUTATED_MODULE = textwrap.dedent(
 
     def x_join__mutmut_2(value: str) -> str:
         return value + "?"
-    '''
+    """
 ).lstrip()
 
 

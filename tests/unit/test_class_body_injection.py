@@ -24,7 +24,7 @@ def _exec_clean(source: str) -> dict[str, Any]:
     old = os.environ.get("MUTANT_UNDER_TEST")
     os.environ["MUTANT_UNDER_TEST"] = ""
     try:
-        exec(compile(code, "m", "exec"), namespace)  # noqa: S102
+        exec(compile(code, "m", "exec"), namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected — executing our own codegen output IS the test purpose
     finally:
         if old is None:
             del os.environ["MUTANT_UNDER_TEST"]
@@ -85,7 +85,7 @@ class TestDispatchRegression:
         old = os.environ.get("MUTANT_UNDER_TEST")
         os.environ["MUTANT_UNDER_TEST"] = f"m.{target}"
         try:
-            exec(compile(code, "m", "exec"), namespace)  # noqa: S102
+            exec(compile(code, "m", "exec"), namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected — executing our own codegen output IS the test purpose
             result = namespace["C"]().m()
         finally:
             if old is None:

@@ -27,7 +27,7 @@ def _exec_clean(source: str) -> tuple[dict[str, Any], list[str]]:
     old = os.environ.get("MUTANT_UNDER_TEST")
     os.environ["MUTANT_UNDER_TEST"] = ""
     try:
-        exec(compile(code, "m", "exec"), namespace)  # noqa: S102
+        exec(compile(code, "m", "exec"), namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected — executing our own codegen output IS the test purpose
     finally:
         if old is None:
             del os.environ["MUTANT_UNDER_TEST"]
@@ -42,12 +42,11 @@ class TestFirstParamName:
         # ``object.__getattribute__`` cannot dispatch through a class's MRO,
         # so implicit classmethods are excluded from mutation entirely
         # (same treatment as ``__new__``).
-        source = (
-            "class A:\n"
-            "    def __init_subclass__(cls, **kwargs):\n"
-            "        cls.marker = 1 + 1\n"
-        )
+        source = "class A:\n    def __init_subclass__(cls, **kwargs):\n        cls.marker = 1 + 1\n"
         ns, names = _exec_clean(source)
+        # Literal snippet in a codegen regression test; the next line is a
+        # semgrep suppression directive, not commented-out code (ERA001 FP).
+        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected  # noqa: ERA001
         exec("class B(A):\n    pass", ns)  # noqa: S102  # used to raise NameError
         assert ns["B"].marker == 2
         assert not any("__init_subclass__" in n for n in names)
@@ -93,11 +92,7 @@ class TestStarArgsMethods:
 class TestAsyncGeneratorProtocol:
     def test_asend_values_reach_the_generator(self) -> None:
         # A1-MT-006: the ``async for`` wrapper swallowed asend() values.
-        source = (
-            "async def agen():\n"
-            "    x = yield 1 + 1\n"
-            "    yield x\n"
-        )
+        source = "async def agen():\n    x = yield 1 + 1\n    yield x\n"
         ns, _names = _exec_clean(source)
 
         async def drive() -> tuple[Any, Any]:

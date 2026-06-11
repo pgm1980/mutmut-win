@@ -155,7 +155,17 @@ def run(
             p = Path(dirname)
             if p.exists():
                 shutil.rmtree(p, ignore_errors=True)
-                click.echo(f"Removed {dirname}/")
+                # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
+                # unconditional success message sold a PARTIAL deletion
+                # (files locked by another process) as a clean slate.
+                if p.exists():
+                    click.echo(
+                        f"Warning: could not fully remove {dirname}/ "
+                        f"(files in use?) — the run may see stale state.",
+                        err=True,
+                    )
+                else:
+                    click.echo(f"Removed {dirname}/")
 
     config = load_config()
 
@@ -190,14 +200,44 @@ def run(
             capture_output=True,
             encoding="utf-8",
         )
-        changed_py = [f for f in git_result.stdout.strip().split("\n") if f.endswith(".py") and f]
+        # Issue #102 / A3-CM-006: the returncode was never checked — an
+        # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
+        if git_result.returncode != 0:
+            click.echo(
+                f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}",
+                err=True,
+            )
+            sys.exit(2)
+        tests_dirs = tuple(d.strip("/").strip("\\") for d in config.tests_dir)
+
+        def _is_mutation_target(name: str) -> bool:
+            # Deleted files and test files used to become mutation targets.
+            if not name.endswith(".py") or not Path(name).exists():
+                return False
+            parts = Path(name).parts
+            return all(parts[0] != td for td in tests_dirs)
+
+        changed_py = [
+            f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)
+        ]
         if not changed_py:
             click.echo("No .py files changed since the given commit.", err=True)
             sys.exit(0)
         overrides["paths_to_mutate"] = changed_py
 
     if overrides:
-        config = config.model_copy(update=overrides)
+        # Issue #102 / A3-CM-004: model_copy(update=...) bypasses ALL pydantic
+        # constraints — '--max-children 0' was an accepted hang. Re-validate
+        # the merged config so the field constraints apply to CLI input too.
+        from pydantic import ValidationError
+
+        from mutmut_win.config import MutmutConfig
+
+        try:
+            config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
+        except ValidationError as exc:
+            click.echo(f"Invalid option value:\n{exc}", err=True)
+            sys.exit(2)
 
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
@@ -214,8 +254,24 @@ def run(
     )
 
     try:
-        result = orchestrator.dry_run() if dry_run else orchestrator.run()
+        if output == "json":
+            # Issue #103 / A4-UI-006: stdout used to carry step headers,
+            # warnings and the summary BEFORE the JSON — json.loads(stdout)
+            # failed for every real CI consumer. With --output json the
+            # run's prose goes to stderr; stdout carries EXACTLY the JSON.
+            import contextlib
+
+            with contextlib.redirect_stdout(sys.stderr):
+                result = orchestrator.dry_run() if dry_run else orchestrator.run()
+        else:
+            result = orchestrator.dry_run() if dry_run else orchestrator.run()
     except Exception as exc:
+        # Issue #102 / A4-UI-005: --debug was a dead flag while this except
+        # swallowed tracebacks exactly where debug should help.
+        if debug or config.debug:
+            import traceback
+
+            click.echo(traceback.format_exc(), err=True)
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 

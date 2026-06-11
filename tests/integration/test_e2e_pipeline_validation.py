@@ -128,9 +128,7 @@ def test_simple_lib_pipeline_no_survived_mutants(tmp_path: Path) -> None:
     )
 
     statuses = _read_mutant_statuses(project_dir)
-    assert statuses, (
-        f"No mutants in cache DB.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert statuses, f"No mutants in cache DB.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
     survived = [name for name, status in statuses.items() if status == "survived"]
     assert not survived, (

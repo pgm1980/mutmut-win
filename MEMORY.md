@@ -34,6 +34,38 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   workaround). Pinned for Sprint 32/C8 (user-confirmed): repo-wide
   format gate, pytest canon in config, semgrep tests-ignore decision,
   OS-012 remainders (mtime invalidation, orphaned .meta files).
+- **Sprint**: 32 — *v2.10.0 Pipeline Hygiene* — implementation complete
+  2026-06-11 (7 items, 36/36 SP, commits 804e402..4d1e908 on
+  `feature/v2.10.0-pipeline-hygiene`): THE LAST AUDIT SPRINT — cycle
+  formally closed with a final tally in the register. Self-hygiene
+  (#98.1: isolated repo-wide format commit, bare-pytest canon via
+  conftest, semgrep really scans tests/ now — 101 files, 11 test
+  idioms suppressed with reasons); runner diagnostics + stats truth
+  (#99: DEVNULL->tail capture with exit decoding, extra_paths on the
+  runner PYTHONPATH, a failed stats run can never poison the cache —
+  the plugin JSON is the single source of truth); DB hardening (#100:
+  read-path migration for pre-v2.5 caches, contextlib.closing
+  everywhere, race-tolerant migrations, surrogate-safe writes);
+  staging hygiene (#101: '..' containment keeping the Bug-#69 sibling
+  case, deletion sync incl. .meta orphans = OS-012 fully closed,
+  source fingerprint in .meta — the first inequality-based attempt
+  was caught by our own suite, config fingerprint gates the fast
+  path, atomic+tolerant .meta, honest --force); config/CLI truth
+  (#102: re-validated overrides — '--max-children 0' was an accepted
+  hang, difflib typo warnings, since-commit returncode+filtering,
+  real --debug); CI output discipline (#103: json.loads(stdout) works,
+  prose to stderr; no UnicodeEncodeError on cp1252); C9 triage (#104:
+  26-entry severity-sorted maintenance backlog, audit register closed).
+  **DOGFOODING PREMIERE (#98.2)**: pilot 5 ran complete (244 mutants,
+  85.5% over assessable, type_checking 96.4%); pilots 1-4 were finds
+  themselves (stale-staging ghosts, 42 cwd-dependent tests = RN-010
+  live, QX-001 caught by our own architecture gate, an obsolete env
+  pin) — plus two new maintenance entries (DOG-001 timeout startup
+  floor S2, DOG-002 per-worker hint spam S4) and one real test gap
+  fixed. Gates (TIGHTENED, all green): 821 passed bare, ruff 0,
+  format-check 0 (new), mypy 0 new (baseline 20), semgrep 0 on
+  src+tests (new), lint-imports KEPT, mutation pilot documented
+  (first ever). **Release v2.10.0 pending user approval.**
 - **Sprint**: 31 — *v2.9.0 Feature Truth & Score Integrity* —
   implementation complete 2026-06-11 (7 items, 33/33 SP, commits
   33c2c98..09c6cd7 on `feature/v2.9.0-score-integrity`): status truth

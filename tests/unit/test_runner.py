@@ -17,6 +17,21 @@ from mutmut_win.runner import (
     PytestRunner,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run in a temp cwd with a mutants/ dir.
+
+    These tests exercise code that resolves 'mutants' RELATIVE TO THE CWD
+    (sitecustomize writes, temp log files). They only passed from the repo
+    root because a real mutants/ happened to exist there — and they wrote
+    artifacts into it (A2-RN-010). Under dogfooding (#98) the suite itself
+    runs INSIDE mutants/, where 'mutants/mutants' does not exist.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mutants").mkdir(exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -84,17 +99,19 @@ class TestRunCleanTest:
         assert "--timeout=10" in cmd
         assert "-x" in cmd
 
-    def test_output_redirected_to_devnull(self) -> None:
-        """stdout/stderr must go to DEVNULL, not PIPE — PIPE can deadlock on Windows
-        when grandchild processes (hypothesis, pytest-asyncio) inherit pipe handles."""
+    def test_output_captured_to_file_not_pipe(self) -> None:
+        """Issue #99 / A2-RN-001: stdout goes to a temp FILE (worker pattern —
+        PIPE deadlocks on Windows when grandchildren inherit handles, DEVNULL
+        left zero diagnostics on failure); stderr is folded into stdout."""
         import subprocess as _subprocess
 
         runner = PytestRunner(_config())
         with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
             runner.run_clean_test()
         kwargs = mock_run.call_args[1]
-        assert kwargs.get("stdout") == _subprocess.DEVNULL
-        assert kwargs.get("stderr") == _subprocess.DEVNULL
+        assert isinstance(kwargs.get("stdout"), int)  # a real file descriptor
+        assert kwargs.get("stdout") != _subprocess.DEVNULL
+        assert kwargs.get("stderr") == _subprocess.STDOUT
 
 
 # ---------------------------------------------------------------------------
@@ -169,13 +186,14 @@ class TestCollectTests:
 class TestRunStats:
     """Tests for run_stats (subprocess-based stats collection with injected plugin)."""
 
-    def test_returns_none(self) -> None:
-        """run_stats is a side-effect function — it must return None."""
+    def test_returns_the_exit_code(self) -> None:
+        """Issue #99 / A2-RN-003: callers must be able to detect a failed
+        collection — run_stats returns the subprocess exit code now."""
         runner = PytestRunner(_config())
         run_result = MagicMock(stdout="", returncode=0)
         with patch("subprocess.run", return_value=run_result):
             result = runner.run_stats()
-        assert result is None
+        assert result == 0
 
     def test_calls_subprocess_once(self) -> None:
         """run_stats calls subprocess.run once with the stats plugin."""
@@ -208,15 +226,20 @@ class TestRunStats:
             assert "pytest_sessionfinish" in content
             assert "mutmut-stats.json" in content
 
-    def test_clears_mutant_env_after_run(self) -> None:
-        """MUTANT_UNDER_TEST must be cleared after stats collection."""
+    def test_does_not_touch_the_process_env(self) -> None:
+        """Issue #99 / A2-RN-007: the vestigial os.environ write is gone —
+        the stats sentinel travels via the SUBPROCESS env parameter only.
+        The parent process env must stay untouched, whatever it carries
+        (under dogfooding it legitimately holds 'stats'; the old pin on
+        '== ""' broke exactly there, found by the second self-run)."""
         import os
 
+        before = os.environ.get(MUTANT_ENV_VAR)
         runner = PytestRunner(_config())
         run_result = MagicMock(stdout="", returncode=0)
         with patch("subprocess.run", return_value=run_result):
             runner.run_stats()
-        assert os.environ.get(MUTANT_ENV_VAR, "") == ""
+        assert os.environ.get(MUTANT_ENV_VAR) == before
 
     def test_tests_dir_forwarded(self) -> None:
         """tests_dir config should be included in the pytest command."""
@@ -256,16 +279,16 @@ class TestRunForcedFail:
         assert len(captured_envs) == 1
         assert captured_envs[0][MUTANT_ENV_VAR] == MUTANT_FAIL_SENTINEL
 
-    def test_output_redirected_to_devnull(self) -> None:
-        """stdout/stderr must go to DEVNULL to avoid pipe deadlocks on Windows."""
+    def test_output_captured_to_file_not_pipe(self) -> None:
+        """Issue #99 / A2-RN-001: same capture pattern as the clean phase."""
         import subprocess as _subprocess
 
         runner = PytestRunner(_config())
         with patch("subprocess.run", return_value=_make_completed_process(1)) as mock_run:
             runner.run_forced_fail("m1")
         kwargs = mock_run.call_args[1]
-        assert kwargs.get("stdout") == _subprocess.DEVNULL
-        assert kwargs.get("stderr") == _subprocess.DEVNULL
+        assert isinstance(kwargs.get("stdout"), int)
+        assert kwargs.get("stderr") == _subprocess.STDOUT
 
     def test_returns_zero_when_all_tests_pass(self) -> None:
         """Edge case: if forced-fail somehow returns 0, runner faithfully reports it."""

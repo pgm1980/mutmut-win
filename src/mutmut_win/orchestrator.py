@@ -9,6 +9,7 @@ summarised in a ``MutationRunResult``.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import time
 from pathlib import Path
@@ -109,6 +110,7 @@ class MutationOrchestrator:
         # sees no progress for minutes.
         if not sys.stdout.line_buffering:
             sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+        _ensure_tolerant_stdout()
 
         wall_start = time.monotonic()
 
@@ -175,6 +177,8 @@ class MutationOrchestrator:
         print("Running clean test suite…")
         clean_exit = self._runner.run_clean_test()
         if clean_exit != 0:
+            from mutmut_win.runner import decode_pytest_exit
+
             if clean_exit == EXIT_CODE_TIMEOUT:
                 msg = (
                     f"Clean test run timed out after {self._config.clean_run_timeout}s. "
@@ -182,10 +186,16 @@ class MutationOrchestrator:
                     "suite — raise [tool.mutmut].clean_run_timeout in pyproject.toml."
                 )
             else:
+                # Issue #99 / A2-RN-001: decode the exit class instead of the
+                # blanket "Fix tests" (plain wrong for usage errors or empty
+                # collection) and show the captured pytest tail.
                 msg = (
-                    f"Clean test run failed with exit code {clean_exit}. "
-                    "Fix tests before mutating."
+                    f"Clean test run failed with exit code {clean_exit} "
+                    f"({decode_pytest_exit(clean_exit)})."
                 )
+            tail = self._runner.last_diagnostic_output
+            if tail:
+                msg += f"\n--- pytest output (tail) ---\n{tail}"
             raise CleanTestFailedError(msg)
 
         # ------------------------------------------------------------------
@@ -355,8 +365,17 @@ class MutationOrchestrator:
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}
 
+        # The generation fast path may only run when the mutant universe is
+        # unchanged — a config edit (paths/do_not_mutate/coverage gating)
+        # used to leave stale mutants in place (issue #101 / A3-OS-008).
+        from mutmut_win.file_setup import config_fingerprint_matches
+
+        allow_fast_path = config_fingerprint_matches(self._config)
+        if not allow_fast_path:
+            print("Configuration changed — regenerating all mutants.")
+
         # Build per-file args for the pool worker.
-        file_args: list[tuple[str, Path, Path, set[int] | None]] = []
+        file_args: list[tuple[str, Path, Path, set[int] | None, bool]] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
             file_covered: set[int] | None = None
@@ -364,7 +383,7 @@ class MutationOrchestrator:
                 from mutmut_win.code_coverage import get_covered_lines_for_file
 
                 file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
-            file_args.append((rel_path, src_file, output_path, file_covered))
+            file_args.append((rel_path, src_file, output_path, file_covered, allow_fast_path))
 
         # Step 5: Generate per-file mutants.
         # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0)
@@ -457,7 +476,7 @@ class MutationOrchestrator:
 
 
 def _create_mutants_worker(
-    args: tuple[str, Path, Path, set[int] | None],
+    args: tuple[str, Path, Path, set[int] | None, bool],
 ) -> tuple[str, list[str], Exception | None, list[str]]:
     """Top-level picklable worker for parallel mutant generation.
 
@@ -466,8 +485,9 @@ def _create_mutants_worker(
     back so the parent can correlate results despite unordered delivery.
 
     Args:
-        args: A tuple of ``(rel_path, filename, output_path, covered_lines)``
-              where ``rel_path`` is the string path relative to the project root.
+        args: A tuple of ``(rel_path, filename, output_path, covered_lines,
+              allow_fast_path)`` where ``rel_path`` is the string path
+              relative to the project root.
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages)`` where
@@ -475,9 +495,11 @@ def _create_mutants_worker(
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
-    rel_path, filename, output_path, covered_lines = args
+    rel_path, filename, output_path, covered_lines, allow_fast_path = args
     try:
-        mutant_names, warns = create_mutants_for_file(filename, output_path, covered_lines)
+        mutant_names, warns = create_mutants_for_file(
+            filename, output_path, covered_lines, allow_fast_path=allow_fast_path
+        )
         warn_msgs = [str(w.message) for w in warns]
         return rel_path, mutant_names, None, warn_msgs
     except Exception as exc:  # broad catch: pool workers must not crash the parent
@@ -689,6 +711,23 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _ensure_tolerant_stdout() -> None:
+    """Make stdout survive emoji on narrow encodings (issue #103 / A4-QX-003).
+
+    The progress line and the browser print emoji; on a cp1252 console (the
+    Windows default for redirected output without ``PYTHONUTF8``) a strict
+    stream raised ``UnicodeEncodeError`` and ABORTED the run. Decorative
+    output must never kill a mutation run — non-UTF-8 streams degrade to
+    ``errors="replace"``; UTF-8 streams are left untouched.
+    """
+    import sys
+
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if encoding != "utf8":
+        with contextlib.suppress(AttributeError, OSError):
+            sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
 
 
 def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
