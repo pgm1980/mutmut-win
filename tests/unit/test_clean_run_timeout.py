@@ -23,6 +23,21 @@ from mutmut_win.exceptions import CleanTestFailedError
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.runner import PytestRunner
 
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run in a temp cwd with a mutants/ dir.
+
+    These tests exercise code that resolves 'mutants' RELATIVE TO THE CWD
+    (sitecustomize writes, temp log files). They only passed from the repo
+    root because a real mutants/ happened to exist there — and they wrote
+    artifacts into it (A2-RN-010). Under dogfooding (#98) the suite itself
+    runs INSIDE mutants/, where 'mutants/mutants' does not exist.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mutants").mkdir(exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -91,11 +106,9 @@ class TestRunnerUsesConfiguredTimeouts:
         assert mock_run.call_args[1]["timeout"] == 300
 
     def test_stats_run_uses_configured_timeout(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
     ) -> None:
-        # chdir into tmp so the plugin/sitecustomize writes stay out of the repo.
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "mutants").mkdir()
+        # The module-level _isolated_cwd fixture provides the tmp cwd + mutants/.
         runner = PytestRunner(MutmutConfig(clean_run_timeout=900))
         with patch("subprocess.run", return_value=_completed(0)) as mock_run:
             runner.run_stats()

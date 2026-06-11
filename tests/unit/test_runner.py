@@ -17,6 +17,21 @@ from mutmut_win.runner import (
     PytestRunner,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run in a temp cwd with a mutants/ dir.
+
+    These tests exercise code that resolves 'mutants' RELATIVE TO THE CWD
+    (sitecustomize writes, temp log files). They only passed from the repo
+    root because a real mutants/ happened to exist there — and they wrote
+    artifacts into it (A2-RN-010). Under dogfooding (#98) the suite itself
+    runs INSIDE mutants/, where 'mutants/mutants' does not exist.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mutants").mkdir(exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

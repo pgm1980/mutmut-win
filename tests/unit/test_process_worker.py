@@ -6,10 +6,13 @@ import os
 import subprocess
 import sys
 from queue import Queue
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import mutmut_win.process.worker as worker_module
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
@@ -22,6 +25,20 @@ def _no_real_task_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assigned to such a PID could capture a FOREIGN process (issue #82).
     Unit tests must never create real job objects."""
     monkeypatch.setattr(worker_module, "_create_task_job", lambda _pid: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run in a temp cwd with a mutants/ dir.
+
+    These tests exercise code that resolves 'mutants' RELATIVE TO THE CWD
+    (sitecustomize writes, temp log files). They only passed from the repo
+    root because a real mutants/ happened to exist there — and they wrote
+    artifacts into it (A2-RN-010). Under dogfooding (#98) the suite itself
+    runs INSIDE mutants/, where 'mutants/mutants' does not exist.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mutants").mkdir(exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
