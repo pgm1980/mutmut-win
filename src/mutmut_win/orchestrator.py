@@ -179,6 +179,10 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
+        # Explicit staging setup (issue #116 / A2-RN-010): the .pth blocker
+        # is written ONCE here instead of as a side effect of every env
+        # build; it covers all phases and the workers (same staging dir).
+        self._runner.write_pth_blocker()
         print("Running clean test suite…")
         clean_start = time.monotonic()
         clean_exit = self._runner.run_clean_test()
