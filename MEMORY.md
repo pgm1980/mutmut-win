@@ -184,18 +184,16 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   BUG-1) → C3 pool robustness / C4 timeout architecture (incl. BUG-2).
 
 ## Open Decisions / Open Items
-- **`--treat-timeout-as-kill` deprecation** — the Sprint-23 stopgap flag is
-  superseded by true IL detection (v2.5.0). Deprecation explicitly deferred
-  to Sprint 27+ (see sprint_26_backlog Out-of-Scope).
-- **Hypothesis "shrink-storm" edge case** — pathological shrinking could be
-  misclassified as infinite loop; threshold tuning only if observed in the
-  wild (Sprint-26 Out-of-Scope decision).
-- **`_bug_reporting/BUG_REPORT_9.md`** — uncommitted copy of the downstream
-  critique-model-service living bug document (documents Bugs #1–#5 at
-  v2.4.0 state). Decide: commit, move to gitignored `_issues/`, or delete.
-- **Release cadence** — v2.2.0 → v2.5.1 shipped within two days
-  (2026-05-22/23). Still no documented release policy; commit log + GitHub
-  releases are the record.
+**NONE — register closed by Sprint 34 / #117 (2026-06-11):**
+- `--treat-timeout-as-kill` → deprecated now (warning on use, marked in
+  help/README), functional through 2.x, removal in a future major.
+- Hypothesis "shrink-storm" → monitor-only confirmed; never observed
+  since Sprint 26, threshold tuning only on a real occurrence.
+- `_bug_reporting/BUG_REPORT_9.md` → moot; the file no longer exists
+  (verified 2026-06-11), its bugs were fixed in v2.2.0–v2.4.0.
+- Release cadence → documented in the README ("Release policy"):
+  demand-driven, gates → merge → bump → annotated tag → GitHub release,
+  triggered only by an explicit user "Release"; no PyPI step.
 
 ## Architecture Cheatsheet
 - `cli.py` / `browser.py` — UI layer (click + textual).

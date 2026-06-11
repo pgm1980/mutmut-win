@@ -704,23 +704,27 @@ geschlossen (dokumentierte Begründung)". Detail:
 >
 > **Sprint 33 (v2.11.0) hat 13 Einträge abgeräumt** (DOG-001, QX-007,
 > QX-001, QX-020, QX-017, QX-018, QX-019, DOG-002, UI-007, UI-010,
-> UI-011, UI-013, UI-016 → Issues #105–#110). Verbleibender Pool: 13.
+> UI-011, UI-013, UI-016 → Issues #105–#110).
+>
+> **Sprint 34 (v2.12.0, „Final Sweep") hat den Rest-Pool geleert: 0
+> Einträge.** Verbleib der 13 letzten Einträge:
+> RN-006 + RN-012 → #111 · RN-013 → #112 · FD-008 → #113 ·
+> QX-005 + QX-006 + QX-023-Rest → #114 · UI-012 + UI-014 + UI-015 →
+> #115 · RN-010 + RN-011 → #116. **OS-012-Restgrenze → formal
+> geschlossen (#117):** Die Deletion-Sync-Grenze (Flat-Layout „." bewusst
+> ausgenommen) ist seit #101 dokumentiertes Verhalten und bleibt es —
+> kein Code-Defekt, Won't-Fix mit Begründung.
 
-| Sev | Finding | Modul | Real-Schaden |
-|-----|---------|-------|--------------|
-| S3 | RN-006 | runner.py | Forced-Fail beweist nur „≥1 Failure irgendwo"; ohne `-x` läuft die volle Suite (Laufzeit) |
-| S3 | UI-012 | cli.py, orchestrator | mutant_names-Matching inkonsistent über 5 Commands (run: exakt+Glob; show/apply: nur exakt) — undokumentiert |
-| S3 | RN-012 | runner.py | PY_IGNORE_IMPORTMISMATCH nur im Stats-Run gesetzt — Clean/Forced-Fail/Worker inkonsistent |
-| S3 | RN-013 | config.py | Arg-Koerzierung: `'-m "not slow"'` → naives split() zerlegt falsch; test_selection akzeptiert keine Strings |
-| S3 | FD-008 | file_setup.py | pyproject-Sanitiser übersieht `[tool.uv.sources.<pkg>]`-Subtables → „Distribution not found" für diese Syntax |
-| S3 | QX-005 | exceptions.py | BadTestExecutionCommandsException tot (kein Producer); Worker-Exit-4 fällt still in „suspicious" |
-| S3 | QX-006 | exceptions.py, cli | 6 tote Exception-Klassen; cli fängt `Exception` statt `MutmutWinError` |
-| S4 | UI-014 | mutant_diff.py | show-Diff: Hunk-Header funktionsrelativ, from/to identisch → nicht patch-fähig |
-| S4 | UI-015 | cli.py | „Suspicious:1" ohne Leerzeichen (Alignment, Format ist test-verdrahtet) |
-| S4 | QX-023-Rest | type_checking.py | raised nackte `Exception` statt domänenspezifischer Klasse (cli-Seite seit #102 mit --debug) |
-| S4 | RN-010 | runner.py | _mutants_env schreibt Dateien (sitecustomize) — Dogfooding-Pilot bestätigte es live; Test-Seite seit Sprint 32 isoliert (autouse-CWD-Fixture), die schreibende Produktionsseite bleibt |
-| S4 | RN-011 | runner.py | sitecustomize-Blocker matcht sys.path exakt-string (kein normcase/realpath) |
-| S4 | OS-012-Restgrenze | file_setup.py | Deletion-Sync deckt src/source-Wurzeln; Flat-Layout („.") bewusst ausgenommen (dokumentiert in #101) |
+### Geschlossenes Entscheidungsregister (Sprint 34, #117)
+
+Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
+
+| Entscheidung | Ausgang |
+|--------------|---------|
+| `--treat-timeout-as-kill`-Deprecation | **Deprecate-now, remove-in-v3**: Warnung bei Nutzung (run + results), Help/README markiert, funktional in 2.x — echte IL-Detection (v2.5.0/v2.8.0) ersetzt den Stopgap |
+| Hypothesis „Shrink-Storm" | **Monitor-only bestätigt**: seit Sprint 26 nie beobachtet (kein Issue, kein Dogfooding-Fund); Schwellen-Tuning nur bei realem Auftreten |
+| `_bug_reporting/BUG_REPORT_9.md` | **Gegenstandslos**: Datei existiert nicht mehr im Working Tree (verifiziert 2026-06-11); dokumentierte Bugs #1–#5 sind seit v2.2.0–v2.4.0 behoben |
+| Release-Policy | **Dokumentiert** (README „Release policy"): bedarfsgetrieben, fester Ablauf Gates → Merge → Bump → Tag → GitHub-Release, nur auf explizites User-„Release"; kein PyPI-Schritt |
 
 ---
 

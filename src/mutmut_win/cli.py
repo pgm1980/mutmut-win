@@ -34,6 +34,21 @@ def cli() -> None:
     """mutmut-win — Windows-native mutation testing for Python."""
 
 
+def _warn_treat_timeout_as_kill_deprecated() -> None:
+    """Deprecation notice for the Sprint-23 stopgap flag (issue #117).
+
+    Superseded by true infinite-loop detection (v2.5.0, honest since
+    v2.8.0). Decision closed: deprecate now — functional through 2.x —
+    remove in a future major release.
+    """
+    click.echo(
+        "Warning: --treat-timeout-as-kill is deprecated — superseded by "
+        "infinite-loop detection (since v2.5.0). The flag stays functional "
+        "in 2.x and will be removed in a future major release.",
+        err=True,
+    )
+
+
 def _load_config_or_exit() -> MutmutConfig:
     """Load the project config; exit 2 with the message on ConfigError.
 
@@ -108,9 +123,10 @@ def _load_config_or_exit() -> MutmutConfig:
     is_flag=True,
     default=False,
     help=(
-        "Count TIMEOUT mutants toward the kill bucket for --min-score and "
-        "score reporting. Workaround for Bug #71 (Hypothesis tests turn "
-        "infinite-loop mutations into TIMEOUT)."
+        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "future major release.) Count TIMEOUT mutants toward the kill bucket "
+        "for --min-score and score reporting. Workaround for Bug #71 "
+        "(Hypothesis tests turn infinite-loop mutations into TIMEOUT)."
     ),
 )
 @click.option(
@@ -168,6 +184,9 @@ def run(
 
     Optionally filter to specific MUTANT_NAMES. When omitted, all mutants are tested.
     """
+    if treat_timeout_as_kill:
+        _warn_treat_timeout_as_kill_deprecated()
+
     # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
     if force:
         import shutil
@@ -344,9 +363,10 @@ def run(
     is_flag=True,
     default=False,
     help=(
-        "Count TIMEOUT mutants toward the kill bucket in the displayed score. "
-        "Workaround for Bug #71 (Hypothesis tests turn infinite-loop mutations "
-        "into TIMEOUT)."
+        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "future major release.) Count TIMEOUT mutants toward the kill bucket "
+        "in the displayed score. Workaround for Bug #71 (Hypothesis tests "
+        "turn infinite-loop mutations into TIMEOUT)."
     ),
 )
 def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
@@ -356,6 +376,9 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     (``results``, ``time-estimates``) exit 0 with an explicit notice; only
     the CI gate (``export-cicd-stats``) fails on an empty result set.
     """
+    if treat_timeout_as_kill:
+        _warn_treat_timeout_as_kill_deprecated()
+
     all_results = load_results(DEFAULT_DB_PATH)
 
     if not all_results:
