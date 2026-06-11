@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 
 if TYPE_CHECKING:
@@ -27,6 +28,10 @@ MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
 
 #: Maximum number of pytest output lines to capture on timeout/suspicious.
 _MAX_DIAGNOSTIC_LINES: int = 50
+
+#: One-shot guard for the window-vs-timeout configuration hint (A2-JT-018).
+#: Per worker process, so a long run prints it once per worker, not per task.
+_window_hint_emitted: bool = False
 
 
 def worker_main(
@@ -166,6 +171,10 @@ def _process_task(
             pythonpath_dirs + ([existing] if existing else [])
         )
     env[MUTANT_ENV_VAR] = task.mutant_name
+    # Unbuffered stdout/stderr for the whole subprocess tree: with block
+    # buffering the log's st_size froze at 0 while the suite made progress,
+    # blinding the IL classifier's output signal (issue #88 / A2-JT-002).
+    env["PYTHONUNBUFFERED"] = "1"
 
     # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
     # - PIPE deadlocks on Windows when grandchild processes inherit handles
@@ -183,6 +192,17 @@ def _process_task(
     il_enabled = bool(config_data.get("infinite_loop_detection", True))
     il_thresholds = _build_il_thresholds(config_data)
     monitor: Any = None  # ProcessMonitor or None — Any avoids loop_monitor import
+    global _window_hint_emitted  # one-shot hint per worker process
+    window_covers_half = il_thresholds.window_seconds >= timeout_seconds / 2
+    if il_enabled and not _window_hint_emitted and window_covers_half:
+        _window_hint_emitted = True
+        print(
+            f"IL-MONITOR HINT: IL window covers >=50% of the task timeout "
+            f"({il_thresholds.window_seconds:.0f}s window vs {timeout_seconds:.0f}s timeout). "
+            f"First-sample CPU priming may dilute the mean; consider a smaller "
+            f"infinite_loop_window_seconds.",
+            flush=True,
+        )
 
     start = time.monotonic()
     proc: subprocess.Popen[bytes] | None = None
@@ -214,24 +234,32 @@ def _process_task(
             # classifier sees the final state of the rolling window.
             _kill_proc_tree(proc, task_job_handle)
             task_job_handle = None  # consumed (closed) by the kill
+            # Snapshot BEFORE the log read (A2-JT-014): the snapshot is a pure
+            # deque copy, while the tail read can take long enough to matter.
+            samples = monitor.take_samples_snapshot() if monitor is not None else []
             os.close(log_fd)
             log_fd = -1
             last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
             if monitor is not None:
-                samples = monitor.take_samples_snapshot()
-                classification = _classify_with_monitor(samples, il_thresholds, last_output)
+                classification = _classify_with_monitor(
+                    samples,
+                    il_thresholds,
+                    last_output,
+                    status_signal_available=sys.platform != "win32",
+                    sampler_errors=monitor.sampler_errors,
+                )
                 if classification.verdict == "killed_by_infinite_loop":
-                    exit_code = 38  # EXIT_CODE_INFINITE_LOOP — kill-bucket
+                    exit_code = EXIT_CODE_INFINITE_LOOP
                     forensics_dict = classification.forensics.model_dump()
                     forensics_dict["confidence"] = classification.confidence
                 else:
-                    exit_code = 36  # timeout
+                    exit_code = EXIT_CODE_TIMEOUT
                     # Persist forensics even on plain timeout so the user can see
                     # why the classifier said "not IL".
                     forensics_dict = classification.forensics.model_dump()
                     forensics_dict["confidence"] = classification.confidence
             else:
-                exit_code = 36  # timeout (no detection available)
+                exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
         exit_code = 35  # suspicious
@@ -364,11 +392,20 @@ def _classify_with_monitor(
     samples: Any,
     thresholds: Any,
     last_output: str | None,
+    *,
+    status_signal_available: bool = True,
+    sampler_errors: int = 0,
 ) -> Any:
     """Lazy-import classifier indirection — keeps loop_monitor optional in tests."""
     from mutmut_win.process.loop_monitor import classify_samples
 
-    return classify_samples(samples, thresholds, last_output_tail=last_output)  # type: ignore[arg-type,unused-ignore]
+    return classify_samples(  # type: ignore[arg-type,unused-ignore]
+        samples,
+        thresholds,
+        last_output_tail=last_output,
+        status_signal_available=status_signal_available,
+        sampler_errors=sampler_errors,
+    )
 
 
 def _pytest_base_cmd() -> list[str]:

@@ -648,6 +648,7 @@ def _update_summary_and_persist(
         duration: float | None = event.duration
         status = status_by_exit_code[exit_code]
         last_output = event.last_output
+        forensics = event.forensics
     else:
         return False
 
@@ -665,8 +666,9 @@ def _update_summary_and_persist(
     # Update summary counters.
     _increment_summary(summary, status)
 
-    # Persist to SQLite.
-    save_result(db_path, mutant_name, status, exit_code, duration, last_output)
+    # Persist to SQLite — including the IL forensics snapshot, which was
+    # silently dropped here before issue #85 / A2-JT-004 (column always NULL).
+    save_result(db_path, mutant_name, status, exit_code, duration, last_output, forensics)
 
     # Update in-memory SourceFileMutationData.
     _update_source_data(mutant_name, exit_code, duration, source_data_by_file)

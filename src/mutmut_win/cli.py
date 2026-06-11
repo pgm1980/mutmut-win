@@ -300,6 +300,52 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
                 click.echo(f"  {result.mutant_name}")
 
 
+def _format_forensics_panel(
+    status: str | None, forensics: dict[str, object] | None
+) -> str | None:
+    """Render the IL forensics panel for ``show``, or None for non-IL mutants.
+
+    NULL-safe in two ways: rows written before v2.8.0 have no forensics at
+    all (column is NULL), and a recorded dict may lack individual keys.
+
+    Args:
+        status: The mutant's persisted status, or ``None`` if unknown.
+        forensics: The persisted forensics snapshot, or ``None``.
+
+    Returns:
+        The panel text, or ``None`` if *status* is not an IL kill.
+    """
+    if status != "killed_by_infinite_loop":
+        return None
+    confidence = forensics.get("confidence", "unknown") if forensics else "unknown"
+    lines = ["", f"Infinite-loop verdict — confidence: {confidence}"]
+    if forensics is None:
+        lines.append("  No forensics recorded (run predates v2.8.0).")
+        return "\n".join(lines)
+    lines.extend(
+        [
+            f"  CPU:           {forensics.get('cpu_pct_mean', '?')} % mean / "
+            f"{forensics.get('cpu_pct_max', '?')} % max",
+            f"  Output growth: {forensics.get('output_growth_bytes', '?')} bytes "
+            f"over {forensics.get('window_seconds', '?')} s window",
+            f"  Running ratio: {_format_ratio(forensics.get('running_ratio'))} "
+            f"({forensics.get('samples_collected', '?')} samples)",
+        ]
+    )
+    tail = forensics.get("last_output_tail")
+    if tail:
+        lines.append("  Last output tail:")
+        lines.extend(f"    {tail_line}" for tail_line in str(tail).splitlines())
+    return "\n".join(lines)
+
+
+def _format_ratio(value: object) -> str:
+    """Format a running ratio as e.g. ``1.00``, or ``?`` if absent/non-numeric."""
+    if isinstance(value, int | float):
+        return f"{value:.2f}"
+    return "?"
+
+
 @cli.command()
 @click.argument("mutant_name")
 def show(mutant_name: str) -> None:
@@ -321,6 +367,13 @@ def show(mutant_name: str) -> None:
         click.echo(diff)
     else:
         click.echo(f"No diff found for '{mutant_name}'.")
+
+    if DEFAULT_DB_PATH.exists():
+        row = next((r for r in load_results(DEFAULT_DB_PATH) if r.mutant_name == mutant_name), None)
+        if row is not None:
+            panel = _format_forensics_panel(row.status, row.forensics)
+            if panel is not None:
+                click.echo(panel)
 
 
 @cli.command()
