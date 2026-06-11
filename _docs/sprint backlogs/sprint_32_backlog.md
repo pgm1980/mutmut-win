@@ -34,7 +34,7 @@ Dogfooding als Schlussstein, C9-Rest als kuratierte Triage statt Versanden.
 | 4 | [#101](https://github.com/pgm1980/mutmut-win/issues/101) | Bug | Staging-Hygiene: Containment, Deletion-Sync inkl. .meta-Orphans, Invalidierungs-Fingerprint, atomare .meta | FD-002/003 (S2), FD-004+OS-008, FD-005/009, CM-009≡FD-010 + OS-012-Reste | 8 | Must | 4 (schließt OS-012 KOMPLETT) | ✅ `d4a8e87` (+Erstversuch von der eigenen Suite korrigiert: Quellen-Fingerprint statt Copy-Ungleichheit) |
 | 5 | [#102](https://github.com/pgm1980/mutmut-win/issues/102) | Bug | Config-/CLI-Wahrheit: Override-Re-Validierung, Typo-Warnung, since-commit-Check, --debug real | CM-004/005/006 (S2), UI-005 (S2) + QX-023-Slice | 5 | Must | 5 | ✅ `c3fe810` |
 | 6 | [#103](https://github.com/pgm1980/mutmut-win/issues/103) | Bug | CI-Output-Disziplin: reines JSON auf stdout, kein UnicodeEncodeError auf cp1252 | UI-006 (S2), QX-003 (S2) | 3 | Must | 6 (nach #102 — beide cli.py) | ✅ `ebb1fd9` |
-| 7 | [#104](https://github.com/pgm1980/mutmut-win/issues/104) | Doku | C9-Rest-Triage: kuratierter Maintenance-Backlog + Audit-Schlussstrich | UI-007, QX-001/007, UI-010…016, QX-005/006/017–024, RN-006/007/010–013, FD-008 | 2 | Should | 8 (ZULETZT — dokumentiert den realen Endstand) | 🔲 |
+| 7 | [#104](https://github.com/pgm1980/mutmut-win/issues/104) | Doku | C9-Rest-Triage: kuratierter Maintenance-Backlog + Audit-Schlussstrich | UI-007, QX-001/007, UI-010…016, QX-005/006/017–024, RN-006/007/010–013, FD-008 | 2 | Should | 8 (ZULETZT — dokumentiert den realen Endstand) | ✅ `3528022` |
 
 **Gesamt geplant:** 36 SP (Must 34, Should 2)
 
@@ -164,9 +164,9 @@ v2.10.0 ist auch mit #98–#102 release-fähig.
 
 | Task | Beschreibung | Status |
 |------|-------------|--------|
-| 7.1 | Verbleibende offene Findings inventarisieren (inkl. allem, was Sprint 32 doch noch liegen ließ + Dogfooding-Funde) | 🔲 |
-| 7.2 | Kuratierter Maintenance-Abschnitt im Product Backlog: severity-sortiert, je 1 Zeile Real-Schaden + Modul | 🔲 |
-| 7.3 | Audit-Register: Schlussstrich-Sektion (Bilanz: behoben vs. überführt; Zyklus formal beendet) | 🔲 |
+| 7.1 | Verbleibende offene Findings inventarisieren (inkl. allem, was Sprint 32 doch noch liegen ließ + Dogfooding-Funde) | ✅ |
+| 7.2 | Kuratierter Maintenance-Abschnitt im Product Backlog: severity-sortiert, je 1 Zeile Real-Schaden + Modul | ✅ |
+| 7.3 | Audit-Register: Schlussstrich-Sektion (Bilanz: behoben vs. überführt; Zyklus formal beendet) | ✅ |
 
 ---
 
@@ -219,15 +219,15 @@ Funde — jede neue Diagnose-Schicht aus #99–#102 hat dabei geliefert:
 
 ## Quality Gates Sprint-Ende (VERSCHÄRFT — Teil des Sprint-Inhalts)
 
-| Gate | Befehl | Erwartung |
-|------|--------|-----------|
-| Tests | `uv run pytest` (**NEU: ohne --ignore-Flag**, Kanon in conftest) | 773 + neue ≥ 800 passed |
-| Linting | `uv run ruff check src/ tests/` | 0 Findings |
-| Format | `uv run ruff format --check src/ tests/` (**NEUES GATE**) | 0 zu formatieren |
-| Type Check | `uv run mypy src/mutmut_win/` | keine NEUEN Errors (Baseline 20) |
-| Security | `semgrep scan --config auto src/mutmut_win/ tests/` (**NEU: tests/ real gescannt**) | 0 blocking Findings |
-| Architecture | lint-imports (läuft in der Suite) | KEPT |
-| Mutation Testing | Dogfooding-Pilot (#98.2) | Lauf komplett; ≥ 80 % auf Piloten ODER surviving Mutants dokumentiert |
+| Gate | Befehl | Erwartung | Ergebnis |
+|------|--------|-----------|----------|
+| Tests | `uv run pytest` (**NEU: ohne --ignore-Flag**, Kanon in conftest) | 773 + neue ≥ 800 passed | ✅ **821 passed / 4 skipped**, nackt gesammelt (777→825 collected) |
+| Linting | `uv run ruff check src/ tests/` | 0 Findings | ✅ All checks passed |
+| Format | `uv run ruff format --check src/ tests/` (**NEUES GATE**) | 0 zu formatieren | ✅ 99 files already formatted |
+| Type Check | `uv run mypy src/mutmut_win/` | keine NEUEN Errors (Baseline 20) | ✅ 20 pre-existing, 0 neue |
+| Security | `semgrep scan --config auto src/mutmut_win/ tests/` (**NEU: tests/ real gescannt**) | 0 blocking Findings | ✅ 0 Findings (290 Regeln, **101 Dateien** — tests/ real dabei; 11 Test-Idiome einzeln begründet unterdrückt) |
+| Architecture | lint-imports (läuft in der Suite) | KEPT | ✅ KEPT (im Trampolin-Artefakt begründet geskippt — QX-001) |
+| Mutation Testing | Dogfooding-Pilot (#98.2) | Lauf komplett; ≥ 80 % auf Piloten ODER surviving Mutants dokumentiert | ✅ Lauf komplett (244 Mutanten); 85,5 % über bewertbare (type_checking 96,4 %); Survivors qualifiziert + 1 echte Lücke gefixt; Timeout-Verzerrung als DOG-001 dokumentiert |
 
 ---
 
