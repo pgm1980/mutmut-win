@@ -89,9 +89,7 @@ class TestWalkAllFiles:
 
 
 class TestWalkSourceFiles:
-    def test_yields_only_py_files(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_yields_only_py_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "a.py").write_text("", encoding="utf-8")
         (tmp_path / "b.txt").write_text("", encoding="utf-8")
@@ -104,9 +102,7 @@ class TestWalkSourceFiles:
         assert "b.txt" not in names
         assert "c.pyi" not in names
 
-    def test_returns_path_objects(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_path_objects(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "x.py").write_text("", encoding="utf-8")
         cfg = _config(paths_to_mutate=["."])
@@ -228,8 +224,7 @@ class TestCopyAlsoCopyFiles:
             cfg = _config(also_copy=[".venv"])
             copy_also_copy_files(cfg)
             assert not (tmp_path / "mutants" / ".venv").exists(), (
-                "Top-level .venv in also_copy was mirrored into mutants/ — "
-                "Bug #67 regression."
+                "Top-level .venv in also_copy was mirrored into mutants/ — Bug #67 regression."
             )
         finally:
             os.chdir(original_cwd)
@@ -253,8 +248,7 @@ class TestCopyAlsoCopyFiles:
             copy_also_copy_files(cfg)
             assert (tmp_path / "mutants" / "project" / "main.py").exists()
             assert not (tmp_path / "mutants" / "project" / ".venv").exists(), (
-                "Nested .venv under a copied directory was mirrored — "
-                "Bug #67 regression."
+                "Nested .venv under a copied directory was mirrored — Bug #67 regression."
             )
         finally:
             os.chdir(original_cwd)

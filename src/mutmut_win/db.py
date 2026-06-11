@@ -45,8 +45,7 @@ VALUES (?, ?, ?, ?, ?, ?)
 
 #: SELECT statement for load_results.
 _SELECT_ALL_SQL = (
-    "SELECT mutant_name, status, exit_code, duration, last_output, forensics "
-    "FROM mutant"
+    "SELECT mutant_name, status, exit_code, duration, last_output, forensics FROM mutant"
 )
 
 

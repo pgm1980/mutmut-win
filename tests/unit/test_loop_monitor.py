@@ -81,8 +81,7 @@ def test_classify_slow_io_test_is_timeout_not_loop() -> None:
     result = classify_samples(samples, IlThresholds())
 
     assert result.verdict == "timeout", (
-        f"Slow I/O test wrongly classified as IL — false positive. "
-        f"Forensics: {result.forensics}"
+        f"Slow I/O test wrongly classified as IL — false positive. Forensics: {result.forensics}"
     )
     assert result.confidence == "low"
 
@@ -150,9 +149,8 @@ def test_classify_running_ratio_below_threshold_blocks_il_verdict() -> None:
     """
     # 12 running + 8 sleeping = ratio 0.6, below the default 0.8 threshold;
     # cpu=95 throughout → cpu_ok and output_ok both hold.
-    samples = (
-        _make_samples(n=12, cpu=95.0, status="running")
-        + _make_samples(n=8, cpu=95.0, status="sleeping")
+    samples = _make_samples(n=12, cpu=95.0, status="running") + _make_samples(
+        n=8, cpu=95.0, status="sleeping"
     )
     result = classify_samples(samples, IlThresholds())
 

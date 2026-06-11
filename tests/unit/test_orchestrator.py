@@ -320,9 +320,7 @@ class TestMutationOrchestratorRunHappyPath:
         assert result.total_mutants > 0
         assert result.killed == result.total_mutants
 
-    def test_timeout_events_counted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_timeout_events_counted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         src = tmp_path / "src"
         src.mkdir()
@@ -354,9 +352,7 @@ class TestMutationOrchestratorRunHappyPath:
         result = orch.run()
         assert result.timeout == result.total_mutants
 
-    def test_results_persisted_to_db(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_results_persisted_to_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from mutmut_win.db import load_results
 
         monkeypatch.chdir(tmp_path)

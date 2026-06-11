@@ -183,8 +183,7 @@ class MutationOrchestrator:
                 )
             else:
                 msg = (
-                    f"Clean test run failed with exit code {clean_exit}. "
-                    "Fix tests before mutating."
+                    f"Clean test run failed with exit code {clean_exit}. Fix tests before mutating."
                 )
             raise CleanTestFailedError(msg)
 

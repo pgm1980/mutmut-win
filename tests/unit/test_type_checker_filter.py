@@ -59,6 +59,7 @@ class TestToMutantsRelative:
         result = to_mutants_relative(sloppy, mutants)
         assert result == Path("src/mod.py")
 
+
 # ---------------------------------------------------------------------------
 # is_mutated_method_name
 # ---------------------------------------------------------------------------

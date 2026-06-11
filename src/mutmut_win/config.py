@@ -125,8 +125,7 @@ class MutmutConfig(BaseModel):
         default=120,
         gt=0,
         description=(
-            "Timeout (seconds) for the forced-fail trampoline verification "
-            "run. See issue #74."
+            "Timeout (seconds) for the forced-fail trampoline verification run. See issue #74."
         ),
     )
     max_stack_depth: int = Field(

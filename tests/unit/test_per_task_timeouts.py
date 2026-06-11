@@ -98,9 +98,7 @@ class TestMonitorWindowWiring:
 class TestTailRead:
     def test_returns_last_n_lines_of_large_file(self, tmp_path: Path) -> None:
         log = tmp_path / "big.log"
-        log.write_text(
-            "\n".join(f"line{i}" for i in range(50_000)) + "\n", encoding="utf-8"
-        )
+        log.write_text("\n".join(f"line{i}" for i in range(50_000)) + "\n", encoding="utf-8")
         result = _read_last_lines(log, 5)
         assert result is not None
         lines = result.split("\n")

@@ -105,9 +105,7 @@ class TestOrchestratorAlwaysShutsDown:
         executor.get_events.side_effect = RuntimeError("boom in event loop")
 
         cfg = MutmutConfig(paths_to_mutate=["src"])
-        orch = MutationOrchestrator(
-            cfg, runner=runner, executor=executor, db_path=tmp_path / "db"
-        )
+        orch = MutationOrchestrator(cfg, runner=runner, executor=executor, db_path=tmp_path / "db")
         with pytest.raises(RuntimeError, match="boom in event loop"):
             orch.run()
         executor.shutdown.assert_called_once()

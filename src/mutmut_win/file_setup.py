@@ -107,7 +107,7 @@ def _copy_with_retry(
             return
         except OSError:
             if attempt < max_attempts - 1:
-                time.sleep(0.1 * (2 ** attempt))
+                time.sleep(0.1 * (2**attempt))
     # Final attempt — let the exception propagate if it still fails.
     if is_tree:
         shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
@@ -133,8 +133,18 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
     Args:
         config: Active ``MutmutConfig`` instance.
     """
-    skip_dirs = {".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
-                 ".ruff_cache", ".git", ".hypothesis", "mutants", ".mutmut-cache"}
+    skip_dirs = {
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".git",
+        ".hypothesis",
+        "mutants",
+        ".mutmut-cache",
+    }
 
     for source_root_name in ["src", "source", "."]:
         source_root = Path(source_root_name)
@@ -221,8 +231,9 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         if path.is_file():
             _copy_with_retry(path, destination)
         else:
-            _copy_with_retry(path, destination, is_tree=True,
-                             dirs_exist_ok=True, ignore=_ignore_venvs)
+            _copy_with_retry(
+                path, destination, is_tree=True, dirs_exist_ok=True, ignore=_ignore_venvs
+            )
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
     # that contain relative paths. These paths are relative to the original
@@ -256,15 +267,15 @@ def _sanitise_mutants_pyproject() -> None:
 
     # Match [tool.uv.sources] and everything until the next top-level section
     cleaned = re.sub(
-        r'\[tool\.uv\.sources\]\s*\n(?:(?!\[)[^\n]*\n)*',
-        '',
+        r"\[tool\.uv\.sources\]\s*\n(?:(?!\[)[^\n]*\n)*",
+        "",
         content,
     )
 
     # Also remove [tool.uv] if it only contained sources (now empty)
     cleaned = re.sub(
-        r'\[tool\.uv\]\s*\n(?=\[|\Z)',
-        '',
+        r"\[tool\.uv\]\s*\n(?=\[|\Z)",
+        "",
         cleaned,
     )
 
@@ -275,7 +286,7 @@ def _sanitise_mutants_pyproject() -> None:
                 break
             except OSError:
                 if attempt < 4:
-                    time.sleep(0.1 * (2 ** attempt))
+                    time.sleep(0.1 * (2**attempt))
                 # Last attempt failed — continue silently, sanitisation is best-effort
 
 

@@ -154,8 +154,7 @@ class TestExtraPathsPythonPath:
 
             python_path = captured_env.get("PYTHONPATH", "")
             assert "benchmarks" in python_path, (
-                f"Worker PYTHONPATH must include extra_paths under mutants/. "
-                f"Got: {python_path!r}"
+                f"Worker PYTHONPATH must include extra_paths under mutants/. Got: {python_path!r}"
             )
         finally:
             os.chdir(original_cwd)

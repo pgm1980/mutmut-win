@@ -42,11 +42,7 @@ class TestFirstParamName:
         # ``object.__getattribute__`` cannot dispatch through a class's MRO,
         # so implicit classmethods are excluded from mutation entirely
         # (same treatment as ``__new__``).
-        source = (
-            "class A:\n"
-            "    def __init_subclass__(cls, **kwargs):\n"
-            "        cls.marker = 1 + 1\n"
-        )
+        source = "class A:\n    def __init_subclass__(cls, **kwargs):\n        cls.marker = 1 + 1\n"
         ns, names = _exec_clean(source)
         exec("class B(A):\n    pass", ns)  # noqa: S102  # used to raise NameError
         assert ns["B"].marker == 2
@@ -93,11 +89,7 @@ class TestStarArgsMethods:
 class TestAsyncGeneratorProtocol:
     def test_asend_values_reach_the_generator(self) -> None:
         # A1-MT-006: the ``async for`` wrapper swallowed asend() values.
-        source = (
-            "async def agen():\n"
-            "    x = yield 1 + 1\n"
-            "    yield x\n"
-        )
+        source = "async def agen():\n    x = yield 1 + 1\n    yield x\n"
         ns, _names = _exec_clean(source)
 
         async def drive() -> tuple[Any, Any]:

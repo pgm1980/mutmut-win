@@ -23,6 +23,7 @@ def _no_real_task_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     Unit tests must never create real job objects."""
     monkeypatch.setattr(worker_module, "_create_task_job", lambda _pid: None)
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

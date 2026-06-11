@@ -73,10 +73,7 @@ def test_import_linter_contracts_hold() -> None:
     repo root because several tests chdir into tmp directories.
     """
     project_root = Path(__file__).resolve().parent.parent
-    script = (
-        "from importlinter.cli import lint_imports;"
-        "import sys; sys.exit(lint_imports())"
-    )
+    script = "from importlinter.cli import lint_imports;import sys; sys.exit(lint_imports())"
     result = subprocess.run(  # noqa: S603 — fully controlled command
         [sys.executable, "-c", script],
         capture_output=True,
