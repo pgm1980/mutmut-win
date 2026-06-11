@@ -266,7 +266,8 @@ class CicdStats:
     """Aggregated mutation run statistics for CI/CD export.
 
     Attributes:
-        killed: Number of mutants killed by tests.
+        killed: Number of mutants killed by tests, including infinite-loop
+            kills (matching the run gate and the ``results`` command).
         survived: Number of surviving (un-killed) mutants.
         total: Total number of mutants generated.
         no_tests: Number of mutants with no covering tests.
@@ -276,6 +277,8 @@ class CicdStats:
         check_was_interrupted_by_user: Number of mutants interrupted by the user.
         segfault: Number of mutants that caused a segfault.
         caught_by_type_check: Number of mutants caught by the type checker.
+        killed_by_infinite_loop: Subset of ``killed`` that was classified as
+            an infinite loop by the IL detector.
         score: Mutation score as a percentage (0.0-100.0).
     """
 
@@ -289,6 +292,7 @@ class CicdStats:
     check_was_interrupted_by_user: int = 0
     segfault: int = 0
     caught_by_type_check: int = 0
+    killed_by_infinite_loop: int = 0
 
     @property
     def score(self) -> float:
@@ -319,6 +323,11 @@ def compute_cicd_stats(results: list[tuple[str, str | None]]) -> CicdStats:
         match status:
             case "killed":
                 stats.killed += 1
+            case "killed_by_infinite_loop":
+                # An IL kill IS a kill — the run gate and `results` already
+                # count it that way; before #86 it silently deflated the score.
+                stats.killed += 1
+                stats.killed_by_infinite_loop += 1
             case "survived":
                 stats.survived += 1
             case "no tests":
@@ -370,6 +379,7 @@ def save_cicd_stats(
         "check_was_interrupted_by_user": stats.check_was_interrupted_by_user,
         "segfault": stats.segfault,
         "caught_by_type_check": stats.caught_by_type_check,
+        "killed_by_infinite_loop": stats.killed_by_infinite_loop,
         "score": stats.score,
     }
     with cicd_path.open("w", encoding="utf-8") as f:
