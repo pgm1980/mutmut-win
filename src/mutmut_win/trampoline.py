@@ -75,10 +75,10 @@ def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None): 
         result = orig(*call_args, **call_kwargs) # type: ignore
         return result # type: ignore
     if mutant_under_test == 'fail': # type: ignore
-        from mutmut_win.__main__ import MutmutProgrammaticFailException # type: ignore
+        from mutmut_win.exceptions import MutmutProgrammaticFailException # type: ignore
         raise MutmutProgrammaticFailException('Failed programmatically')       # type: ignore
     elif mutant_under_test == 'stats': # type: ignore
-        from mutmut_win.__main__ import record_trampoline_hit # type: ignore
+        from mutmut_win.hit_recording import record_trampoline_hit # type: ignore
         record_trampoline_hit(orig.__module__ + '.' + orig.__name__) # type: ignore
         # (for class methods, orig is bound and thus does not need the explicit self argument)
         result = orig(*call_args, **call_kwargs) # type: ignore
