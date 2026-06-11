@@ -70,14 +70,23 @@ Confidence = Literal["high", "medium", "low"]
 #: classifier, not a tuning knob.
 MIN_SAMPLES_FOR_VERDICT: int = 5
 
+#: io_counters delta above which the process tree is demonstrably making
+#: syscalls — vetoing an IL verdict (spike #89). A pure spin measures EXACTLY
+#: 0 ops over a 5 s window while real I/O work measures thousands (14k for a
+#: writing loop), so 100 is an order-of-magnitude margin against stray ticks.
+#: Veto-only: io activity can prevent an IL verdict, never create one.
+#: Like MIN_SAMPLES_FOR_VERDICT, a correctness floor — not a tuning knob.
+IO_OPS_PROGRESS_THRESHOLD: int = 100
+
 
 class IlSample(NamedTuple):
     """A single point-in-time observation of the monitored subprocess."""
 
-    timestamp: float          # time.monotonic() at sample
-    cpu_pct: float            # 0.0 to 100.0 * N_cores (process-tree sum)
+    timestamp: float  # time.monotonic() at sample
+    cpu_pct: float  # 0.0 to 100.0 * N_cores (process-tree sum)
     output_bytes: int | None  # cumulative log size; None if stat() failed
-    status: str               # psutil status string ("running", "sleeping", …)
+    status: str  # psutil status string ("running", "sleeping", …)
+    io_ops: int | None = None  # cumulative tree io_counters ops; None if unavailable
 
 
 class IlThresholds(BaseModel):
@@ -109,8 +118,11 @@ class IlForensics(BaseModel):
     window_seconds: float
     last_output_tail: str | None = None  # last few lines of pytest output
     # New in v2.8.0 (#88) — defaults keep rows persisted by v2.6-v2.7 parseable.
-    status_signal_used: bool = True   # False when the platform can't report it
-    sampler_errors: int = 0           # exceptions survived by the sampler thread
+    status_signal_used: bool = True  # False when the platform can't report it
+    sampler_errors: int = 0  # exceptions survived by the sampler thread
+    # New in v2.8.0 (#89): io_counters ops delta over the window; None when
+    # the signal was unavailable (macOS, AccessDenied).
+    io_ops_delta: int | None = None
 
 
 class LoopClassification(BaseModel):
@@ -143,9 +155,13 @@ def classify_samples(
     over the rolling window of ``samples``:
 
     - mean(cpu_pct) >= ``thresholds.cpu_threshold``
-    - output_growth_in_window < ``thresholds.output_threshold``, computed over
-      samples with a *measurable* ``output_bytes`` — samples where ``stat()``
-      failed carry ``None`` and never argue for a kill (A2-JT-015)
+    - no observable progress: output_growth_in_window <
+      ``thresholds.output_threshold`` (computed over samples with a
+      *measurable* ``output_bytes`` — samples where ``stat()`` failed carry
+      ``None`` and never argue for a kill, A2-JT-015) AND the tree's
+      io_counters delta stays at :data:`IO_OPS_PROGRESS_THRESHOLD` or below
+      (spike #89: a pure spin makes zero syscalls; io activity is progress
+      the captured log cannot see — veto-only, unmeasurable io is neutral)
     - running_ratio >= ``thresholds.running_ratio`` — only if
       ``status_signal_available``
 
@@ -196,6 +212,8 @@ def classify_samples(
     # data, not "the log stagnated" (the old clamp-to-0 was a pro-IL bias).
     measurable = [s.output_bytes for s in samples if s.output_bytes is not None]
     output_growth = max(0, measurable[-1] - measurable[0]) if measurable else 0
+    measurable_io = [s.io_ops for s in samples if s.io_ops is not None]
+    io_ops_delta = max(0, measurable_io[-1] - measurable_io[0]) if measurable_io else None
     running_ratio = sum(1 for s in samples if s.status == "running") / len(samples)
 
     forensics = IlForensics(
@@ -208,15 +226,17 @@ def classify_samples(
         last_output_tail=last_output_tail,
         status_signal_used=status_signal_available,
         sampler_errors=sampler_errors,
+        io_ops_delta=io_ops_delta,
     )
 
     cpu_ok = cpu_mean >= thresholds.cpu_threshold
-    output_ok = bool(measurable) and output_growth < thresholds.output_threshold
+    # Demonstrated syscall activity is progress the captured log cannot see
+    # (spike #89) — it vetoes IL. Unmeasurable io (None) is neutral.
+    io_active = io_ops_delta is not None and io_ops_delta > IO_OPS_PROGRESS_THRESHOLD
+    output_ok = bool(measurable) and output_growth < thresholds.output_threshold and not io_active
     # A dead status signal is excluded from the verdict, not vacuously passed
     # off as evidence — the confidence cap below accounts for the gap.
-    running_ok = (
-        running_ratio >= thresholds.running_ratio if status_signal_available else True
-    )
+    running_ok = running_ratio >= thresholds.running_ratio if status_signal_available else True
 
     if cpu_ok and output_ok and running_ok:
         # Margin-based confidence: how far past each threshold are we?
@@ -390,10 +410,14 @@ class ProcessMonitor(threading.Thread):
             #    child process.
             # 2) pytest's --forked / xdist plugins spawn their own children.
             cpu = self._cached_cpu_percent(self._proc)
+            io_ops = self._io_ops(self._proc)
             try:
                 live_pids: set[int] = {self._pid}
                 for child in self._proc.children(recursive=True):
                     cpu += self._cached_cpu_percent(child)
+                    child_io = self._io_ops(child)
+                    if child_io is not None:
+                        io_ops = child_io if io_ops is None else io_ops + child_io
                     live_pids.add(child.pid)
                 # Drop cached processes that have exited so the dict doesn't
                 # grow without bound during long runs.
@@ -417,7 +441,25 @@ class ProcessMonitor(threading.Thread):
             cpu_pct=cpu,
             output_bytes=output_bytes,
             status=status,
+            io_ops=io_ops,
         )
+
+    @staticmethod
+    def _io_ops(proc: Any) -> int | None:
+        """Total io_counters operations for *proc*, or ``None`` if unavailable.
+
+        io_counters is stateless (unlike cpu_percent — no instance caching
+        needed) but platform-limited: absent on macOS, and individual reads
+        can fail with AccessDenied. Missing data stays ``None`` so the
+        classifier treats it as neutral (spike #89).
+        """
+        if psutil is None:  # pragma: no cover - guarded at run()
+            return None
+        try:
+            io = proc.io_counters()
+        except (psutil.Error, AttributeError, NotImplementedError, OSError):
+            return None
+        return int(io.read_count + io.write_count + getattr(io, "other_count", 0))
 
     def _cached_cpu_percent(self, proc: Any) -> float:
         """Re-use a cached ``Process`` instance for ``proc.pid`` and read its CPU%.

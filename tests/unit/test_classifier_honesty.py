@@ -21,6 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from mutmut_win.process.loop_monitor import (
+    IO_OPS_PROGRESS_THRESHOLD,
     MIN_SAMPLES_FOR_VERDICT,
     IlForensics,
     IlSample,
@@ -133,6 +134,54 @@ class TestThresholdValidation:
         # (growth < 0 can never hold).  Fail fast instead.
         with pytest.raises(ValidationError):
             IlThresholds(output_threshold=0)
+
+
+def _io_samples(n: int, io_ops_per_sample: int) -> list[IlSample]:
+    """CPU pegged, stdout silent — io activity is the only varying signal."""
+    base = time.monotonic()
+    return [
+        IlSample(
+            timestamp=base + i * 0.5,
+            cpu_pct=99.0,
+            output_bytes=0,
+            status="running",
+            io_ops=1000 + i * io_ops_per_sample,
+        )
+        for i in range(n)
+    ]
+
+
+class TestIoProgressVeto:
+    """Spike #89: a pure spin makes ZERO syscalls (measured: 0 deltas over 5 s
+    for busy loops, 14k ops for a writing loop).  io activity therefore vetoes
+    an IL verdict — it widens "observable progress" beyond the captured log to
+    every handle the test touches.  Veto-only: it can never CREATE a verdict.
+    """
+
+    def test_io_activity_vetoes_il_despite_cpu_and_silent_stdout(self) -> None:
+        samples = _io_samples(20, io_ops_per_sample=500)
+        result = classify_samples(samples, IlThresholds())
+        assert result.verdict == "timeout"
+        assert result.forensics.io_ops_delta == 19 * 500
+
+    def test_frozen_io_does_not_veto(self) -> None:
+        result = classify_samples(_io_samples(20, io_ops_per_sample=0), IlThresholds())
+        assert result.verdict == "killed_by_infinite_loop"
+        assert result.forensics.io_ops_delta == 0
+
+    def test_unmeasurable_io_is_neutral(self) -> None:
+        # macOS has no io_counters; AccessDenied can hit individual reads.
+        # Missing data neither vetoes nor argues for a kill.
+        result = classify_samples(_samples(20), IlThresholds())  # io_ops=None default
+        assert result.verdict == "killed_by_infinite_loop"
+        assert result.forensics.io_ops_delta is None
+
+    def test_delta_at_threshold_does_not_veto(self) -> None:
+        # The veto needs delta STRICTLY above the threshold — an order-of-
+        # magnitude margin against stray ticks, not a hair trigger.
+        per_sample = IO_OPS_PROGRESS_THRESHOLD // 19  # total stays <= threshold
+        result = classify_samples(_io_samples(20, per_sample), IlThresholds())
+        assert result.verdict == "killed_by_infinite_loop"
 
 
 @pytest.mark.skipif(not has_psutil(), reason="psutil not installed")

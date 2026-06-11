@@ -511,10 +511,34 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 |------------------|---------|------------------------|
 | 28 / v2.6.0 | C1 + C2 | CM-001, UI-001/002/003; MT-001…007, NM-001…007/009, RX-001 (Details: `sprint_28_backlog.md`) |
 | 29 / v2.7.0 | C3 + C4 | EW-001/002/007/008, JT-005, QX-008; JT-003 (≡EW-003/QX-002), EW-009, BUG-2, RN-005b, JT-008/JT-013 (timeout.py gelöscht) (Details: `sprint_29_backlog.md`) |
-| 30 / v2.8.0 | C5 | **#85**: JT-004 (Forensik-Persistenz). **#86**: OS-002 (CICD-IL-Bucket, Drei-Kanal-Konsistenz). **#87**: UI-004 (`show`-Forensik-Panel, NULL-safe), UI-008 (Browser-IL: Emoji-Map = constants-Alias, Kill-Filter, match-Case). **#88**: JT-001/EW-010 (running_ratio via `status_signal_available` vom Aufrufer deklariert, win32 → False), JT-002 (PYTHONUNBUFFERED=1 + Output-Growth nur über messbare Samples), JT-009 (`MIN_SAMPLES_FOR_VERDICT=5`), JT-010 (`output_threshold gt=0`, config + IlThresholds), JT-011 (run()-Catch-All + `sampler_errors`-Forensikfeld), JT-012 (daemon via `super().__init__`), JT-014 (Snapshot-Cutoff relativ zum letzten Sample), JT-015 (stat-Fehler → `output_bytes=None` statt 0), JT-018-Residual (window≥timeout/2-Hinweis, einmalig pro Worker). Neue Confidence-Semantik: 2-Signal-Verdicts auf „medium" gekappt — monoton verschärfend, non-breaking da Forensik vor #85 nie persistiert wurde. |
+| 30 / v2.8.0 | C5 | **#85**: JT-004 (Forensik-Persistenz). **#86**: OS-002 (CICD-IL-Bucket, Drei-Kanal-Konsistenz). **#87**: UI-004 (`show`-Forensik-Panel, NULL-safe), UI-008 (Browser-IL: Emoji-Map = constants-Alias, Kill-Filter, match-Case). **#88**: JT-001/EW-010 (running_ratio via `status_signal_available` vom Aufrufer deklariert, win32 → False), JT-002 (PYTHONUNBUFFERED=1 + Output-Growth nur über messbare Samples), JT-009 (`MIN_SAMPLES_FOR_VERDICT=5`), JT-010 (`output_threshold gt=0`, config + IlThresholds), JT-011 (run()-Catch-All + `sampler_errors`-Forensikfeld), JT-012 (daemon via `super().__init__`), JT-014 (Snapshot-Cutoff relativ zum letzten Sample), JT-015 (stat-Fehler → `output_bytes=None` statt 0), JT-018-Residual (window≥timeout/2-Hinweis, einmalig pro Worker). Neue Confidence-Semantik: 2-Signal-Verdicts auf „medium" gekappt — monoton verschärfend, non-breaking da Forensik vor #85 nie persistiert wurde. **#89**: io_counters-Progress-Veto (Spike-Ergebnis unten; `IlSample.io_ops`, `IO_OPS_PROGRESS_THRESHOLD=100`, Forensik `io_ops_delta`). |
 
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
+
+### Spike-Ergebnis #89: io_counters (2026-06-11, win32, psutil 7.2.2)
+
+Messung (`_issues/spike_io_counters.py`, 5-s-Fenster, Tree-Aggregation):
+
+| Szenario | CPU mean | Δ io-ops (read+write+other) |
+|----------|----------|------------------------------|
+| sleep-wait (`time.sleep`) | 0,0 % | 0 |
+| busy-loop (`while True: pass`) | 99,1 % | 0 |
+| schreibender Loop (write+flush+fsync) | 51,7 % | 28 743 |
+| busy-loop hinter Launcher-Kind | 98,6 % | 0 |
+
+**Negativergebnis (Original-Hypothese):** io_counters taugt NICHT als
+Ersatz für das auf win32 tote Sleeping-Signal — sleep-wait und busy-loop
+sind auf io-Ebene identisch (beide Δ=0). Die Unterscheidung „wartet vs.
+spinnt" leistet weiterhin nur das CPU-Signal.
+
+**Positivergebnis (umdefinierte Rolle, eingebaut):** Ein purer Spin macht
+exakt 0 Syscalls; jede reale I/O-Arbeit liegt um Größenordnungen darüber.
+io-Aktivität ist damit ein einseitiges **Progress-Veto**: Δ io-ops >
+`IO_OPS_PROGRESS_THRESHOLD` (100) blockiert ein IL-Verdict (Fortschritt,
+den das st_size-Signal nicht sieht — Tests, die in Dateien/Sockets statt
+stdout schreiben). Veto-only: kann IL nur verhindern, nie erzeugen;
+unmessbar (macOS, AccessDenied) = neutral. Forensik: `io_ops_delta`.
 
 ---
 
