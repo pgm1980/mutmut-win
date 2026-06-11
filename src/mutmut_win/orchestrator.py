@@ -9,6 +9,7 @@ summarised in a ``MutationRunResult``.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import time
 from pathlib import Path
@@ -109,6 +110,7 @@ class MutationOrchestrator:
         # sees no progress for minutes.
         if not sys.stdout.line_buffering:
             sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+        _ensure_tolerant_stdout()
 
         wall_start = time.monotonic()
 
@@ -709,6 +711,23 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _ensure_tolerant_stdout() -> None:
+    """Make stdout survive emoji on narrow encodings (issue #103 / A4-QX-003).
+
+    The progress line and the browser print emoji; on a cp1252 console (the
+    Windows default for redirected output without ``PYTHONUTF8``) a strict
+    stream raised ``UnicodeEncodeError`` and ABORTED the run. Decorative
+    output must never kill a mutation run — non-UTF-8 streams degrade to
+    ``errors="replace"``; UTF-8 streams are left untouched.
+    """
+    import sys
+
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if encoding != "utf8":
+        with contextlib.suppress(AttributeError, OSError):
+            sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
 
 
 def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:

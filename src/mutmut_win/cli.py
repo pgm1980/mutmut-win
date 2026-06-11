@@ -254,7 +254,17 @@ def run(
     )
 
     try:
-        result = orchestrator.dry_run() if dry_run else orchestrator.run()
+        if output == "json":
+            # Issue #103 / A4-UI-006: stdout used to carry step headers,
+            # warnings and the summary BEFORE the JSON — json.loads(stdout)
+            # failed for every real CI consumer. With --output json the
+            # run's prose goes to stderr; stdout carries EXACTLY the JSON.
+            import contextlib
+
+            with contextlib.redirect_stdout(sys.stderr):
+                result = orchestrator.dry_run() if dry_run else orchestrator.run()
+        else:
+            result = orchestrator.dry_run() if dry_run else orchestrator.run()
     except Exception as exc:
         # Issue #102 / A4-UI-005: --debug was a dead flag while this except
         # swallowed tracebacks exactly where debug should help.
