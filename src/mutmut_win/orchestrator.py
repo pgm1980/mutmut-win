@@ -28,10 +28,13 @@ if TYPE_CHECKING:
     from mutmut_win.process.executor import SpawnPoolExecutor
     from mutmut_win.runner import PytestRunner
 
-#: Minimum timeout in seconds for any single mutation task.
+#: Minimum timeout in seconds for any single mutation task — also the lower
+#: clamp bound of the measured startup floor (issue #105).
 _MIN_TIMEOUT: float = 5.0
 
-#: Default multiplier applied to the estimated time when no stats are available.
+#: Lower bound of the full-suite fallback budget when no stats are available
+#: (the budget scales with the measured clean-run wall time above this) —
+#: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
 
 
@@ -167,15 +170,16 @@ class MutationOrchestrator:
                 duration_seconds=time.monotonic() - wall_start,
             )
             print(f"All {len(type_checked_names)} mutants caught by the type checker.")
-            if not self._no_progress:
-                _print_summary(summary)
+            _print_summary(summary)
             return summary
 
         # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
         print("Running clean test suite…")
+        clean_start = time.monotonic()
         clean_exit = self._runner.run_clean_test()
+        clean_wall_seconds = time.monotonic() - clean_start
         if clean_exit != 0:
             from mutmut_win.runner import decode_pytest_exit
 
@@ -222,11 +226,70 @@ class MutationOrchestrator:
         # Step 5: Assign specific tests and compute timeouts.
         # ------------------------------------------------------------------
         all_tasks = _assign_tests_to_tasks(all_tasks, mutmut_stats)
+
+        # Issue #106 / A4-QX-007: a mapped-but-uncovered mutant must never be
+        # dispatched — its task would run the FULL suite (no node-id args),
+        # burning the suite runtime per mutant and producing random
+        # full-suite kills. The honest verdict is "no tests" (exit 33).
+        all_tasks, no_test_names = _split_no_test_tasks(all_tasks, mutmut_stats)
+        if no_test_names:
+            print(
+                f"{len(no_test_names)} mutants have no covering tests — "
+                f"recorded as 'no tests', not dispatched."
+            )
+        if not all_tasks:
+            # Everything was verdicted without dispatch (no tests and/or
+            # type-check kills) — a legitimate, successful run (cf. #93).
+            create_db(self._db_path)
+            self._maybe_purge_stale(all_generated_names)
+            _persist_type_check_kills(self._db_path, type_checked_names)
+            _persist_no_test_mutants(self._db_path, no_test_names, source_data_by_file)
+            for sfd in source_data_by_file.values():
+                sfd.save()
+            summary = MutationRunResult(
+                total_mutants=len(no_test_names) + len(type_checked_names),
+                type_check_caught=len(type_checked_names),
+                no_tests=len(no_test_names),
+                duration_seconds=time.monotonic() - wall_start,
+            )
+            _print_summary(summary)
+            return summary
+
         multiplier = self._config.timeout_multiplier
-        tasks_with_timeouts = _apply_timeouts(all_tasks, mutmut_stats.duration_by_test, multiplier)
+        startup_floor = _compute_startup_floor(clean_wall_seconds, mutmut_stats.duration_by_test)
+        # Issue #105 / DOG-001: the timeout model must not be a black box —
+        # the measured floor decides over timeout-vs-killed for every task.
+        total_test_time = sum(mutmut_stats.duration_by_test.values())
+        print(
+            f"Timeout model: startup floor {startup_floor:.1f}s + test time x {multiplier} "
+            f"(clean run {clean_wall_seconds:.1f}s - measured test time {total_test_time:.1f}s)"
+        )
+        tasks_with_timeouts = _apply_timeouts(
+            all_tasks,
+            mutmut_stats.duration_by_test,
+            multiplier,
+            startup_floor=startup_floor,
+            clean_wall_seconds=clean_wall_seconds,
+        )
 
         # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
         tasks_with_timeouts.sort(key=lambda t: t.estimated_time)
+
+        # Issue #110 / DOG-002: the window-vs-timeout hint (A2-JT-018) is
+        # emitted here, ONCE per run — the previous per-worker guard meant
+        # N-fold spam on N worker processes. Compared against the SMALLEST
+        # budget: the most at-risk task — if the window doesn't cover half
+        # of that one, it covers half of none.
+        if self._config.infinite_loop_detection and tasks_with_timeouts:
+            window = self._config.infinite_loop_window_seconds
+            smallest_budget = min(t.timeout_seconds for t in tasks_with_timeouts)
+            if window >= smallest_budget / 2:
+                print(
+                    f"IL-MONITOR HINT: IL window covers >=50% of the smallest task "
+                    f"timeout ({window:.0f}s window vs {smallest_budget:.0f}s timeout). "
+                    f"First-sample CPU priming may dilute the mean; consider a smaller "
+                    f"infinite_loop_window_seconds."
+                )
 
         # ------------------------------------------------------------------
         # Step 6 + 7: Run mutation tests via the pool executor.
@@ -239,9 +302,11 @@ class MutationOrchestrator:
         # bucket — the score formula counts the kill class, buckets stay
         # disjoint (#91).
         _persist_type_check_kills(self._db_path, type_checked_names)
+        _persist_no_test_mutants(self._db_path, no_test_names, source_data_by_file)
         summary = MutationRunResult(
-            total_mutants=len(tasks_with_timeouts) + len(type_checked_names),
+            total_mutants=len(tasks_with_timeouts) + len(type_checked_names) + len(no_test_names),
             type_check_caught=len(type_checked_names),
+            no_tests=len(no_test_names),
         )
         completed = 0
         total = len(tasks_with_timeouts)
@@ -281,8 +346,11 @@ class MutationOrchestrator:
             sfd.save()
 
         summary.duration_seconds = time.monotonic() - wall_start
-        if not self._no_progress:
-            _print_summary(summary)
+        # Issue #109 / A4-UI-016: the summary ALWAYS prints — --no-progress
+        # suppresses only the live lines. A quiet run that ends without any
+        # result output at all was seen live in the Sprint 33 dogfooding
+        # mid-gate (exit 0, no numbers).
+        _print_summary(summary)
         return summary
 
     def dry_run(self) -> MutationRunResult:
@@ -531,20 +599,72 @@ def _filter_tasks_by_names(
     return filtered
 
 
+def _compute_startup_floor(
+    clean_wall_seconds: float,
+    duration_by_test: dict[str, float],
+) -> float:
+    """Return the measured per-process startup overhead, clamped to [5s, 60s].
+
+    Issue #105 / DOG-001: every task subprocess pays a constant overhead
+    (interpreter start, suite imports, pytest collection) BEFORE the first
+    test runs — 16.5s wall for 0.86s of tests in the dogfooding pilot.  The
+    clean run over the full suite happens in the same trampolined
+    environment as the workers, so ``clean_wall - sum(test durations)`` is a
+    self-calibrating, project-specific measurement of that overhead (a
+    slightly conservative upper bound: workers collect fewer node IDs).
+
+    The clamp guards degenerate measurements: stale cached durations can
+    exceed a fresh, faster clean run (negative difference), and empty stats
+    degenerate the difference to the full wall time.  Bounds reuse the two
+    existing documented constants — no new magic numbers.
+
+    Trade-off (issue #105 worst-case accounting): a truly hanging mutant now
+    lives up to ``floor`` seconds longer before the timeout fires.  IL
+    detection verdicts on its own window well before that, and #106 removes
+    the unmapped full-suite hang pool entirely — while WITHOUT the floor,
+    72% of the pilot's mutants were unassessable pseudo-timeouts.
+
+    Args:
+        clean_wall_seconds: Measured wall time of the clean run (step 2).
+        duration_by_test: Per-test durations from the stats plugin.
+
+    Returns:
+        The startup floor in seconds, within ``[_MIN_TIMEOUT, _FALLBACK_TIMEOUT]``.
+    """
+    raw = clean_wall_seconds - sum(duration_by_test.values())
+    return min(_FALLBACK_TIMEOUT, max(_MIN_TIMEOUT, raw))
+
+
 def _apply_timeouts(
     tasks: list[MutationTask],
     stats: dict[str, float],
     multiplier: float,
+    *,
+    startup_floor: float,
+    clean_wall_seconds: float,
 ) -> list[MutationTask]:
     """Return a copy of *tasks* with ``timeout_seconds`` computed from *stats*.
 
-    The timeout for a task is ``max(_MIN_TIMEOUT, estimated_time * multiplier)``.
-    If no timing data is available for a task's tests, ``_FALLBACK_TIMEOUT`` is used.
+    The budget for a task with timing data is
+    ``max(_MIN_TIMEOUT, startup_floor + estimated_time * multiplier)`` —
+    the additive floor covers the constant process overhead the multiplier
+    cannot scale (issue #105 / DOG-001: 175/244 pilot mutants timed out
+    with FINISHED pytest summaries in their tails).
+
+    Without any timing data the task runs the full suite, so its budget is
+    ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)`` — the
+    measured wall time of exactly such a run; a flat 60s would pseudo-
+    timeout every suite that takes longer than a minute.
+
+    ``estimated_time`` stays free of the floor: it means "estimated TEST
+    runtime" and feeds the fast-first sort.
 
     Args:
         tasks: Original mutation tasks (not mutated in-place).
-        stats: Per-test duration mapping from ``PytestRunner.run_stats()``.
+        stats: Per-test duration mapping from the stats plugin.
         multiplier: Timeout multiplier from ``MutmutConfig.timeout_multiplier``.
+        startup_floor: Measured startup overhead from :func:`_compute_startup_floor`.
+        clean_wall_seconds: Measured wall time of the clean run (step 2).
 
     Returns:
         New list of ``MutationTask`` instances with updated timeout values.
@@ -559,7 +679,10 @@ def _apply_timeouts(
         else:
             estimated = 0.0
 
-        timeout = max(_MIN_TIMEOUT, estimated * multiplier) if estimated > 0 else _FALLBACK_TIMEOUT
+        if estimated > 0:
+            timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
+        else:
+            timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
 
         updated.append(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})
@@ -739,6 +862,62 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
     """
     for name in sorted(caught_names):
         save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
+
+
+def _split_no_test_tasks(
+    tasks: list[MutationTask],
+    stats: MutmutStats,
+) -> tuple[list[MutationTask], set[str]]:
+    """Split off mutants whose test mapping is present but empty (issue #106).
+
+    A4-QX-007: a task with ``tests=[]`` was dispatched without node-id
+    arguments, so pytest ran the FULL suite for that one mutant — per
+    unmapped mutant. The honest verdict for "the mapping knows this suite
+    and no test hits this mutant" is ``no tests``, produced here and never
+    dispatched.
+
+    The split applies only when a mapping EXISTS: an empty mapping means the
+    stats collection failed or recorded nothing (possibly a broken
+    hit-recording, QX-017/018) — there the full-suite fallback remains the
+    safe choice (loud since #99), because "no tests for everything" would
+    misreport a broken stats run as untested code.
+
+    Args:
+        tasks: Tasks after :func:`_assign_tests_to_tasks`.
+        stats: Stats whose ``tests_by_mangled_function_name`` decides whether
+            a mapping exists at all.
+
+    Returns:
+        ``(dispatchable_tasks, no_test_mutant_names)``
+    """
+    if not stats.tests_by_mangled_function_name:
+        return tasks, set()
+    dispatchable = [t for t in tasks if t.tests]
+    no_tests = {t.mutant_name for t in tasks if not t.tests}
+    return dispatchable, no_tests
+
+
+def _persist_no_test_mutants(
+    db_path: Path,
+    no_test_names: set[str],
+    source_data_by_file: dict[str, SourceFileMutationData],
+) -> None:
+    """Write one ``no tests`` row (exit 33) per uncovered mutant (issue #106).
+
+    Mirrors the #93 pattern for type-check kills: the verdict must reach the
+    DB (``results``/CICD read it) and the ``.meta`` files, not only the
+    in-memory summary.
+
+    Args:
+        db_path: Path to the SQLite result cache (must already exist).
+        no_test_names: Mutants the mapping covers with zero tests.
+        source_data_by_file: Meta-file records, updated with exit code 33.
+    """
+    from mutmut_win.constants import EXIT_CODE_NO_TESTS
+
+    for name in sorted(no_test_names):
+        save_result(db_path, name, "no tests", EXIT_CODE_NO_TESTS, None)
+        _update_source_data(name, EXIT_CODE_NO_TESTS, None, source_data_by_file)
 
 
 def _update_summary_and_persist(

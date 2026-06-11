@@ -130,6 +130,10 @@ class MutmutConfig(BaseModel):
     )
     max_stack_depth: int = Field(
         default=-1,
+        # ge=-1: values below the sentinel walked the frame stack with a
+        # truthy-negative counter (issue #110 / A4-QX-018). 0 is rejected
+        # separately below — it would discard EVERY stats hit.
+        ge=-1,
         description="Maximum stack depth for mutations (-1 = unlimited)",
     )
     debug: bool = Field(
@@ -201,6 +205,24 @@ class MutmutConfig(BaseModel):
         """Accept a single string and wrap it into a list."""
         if isinstance(v, str):
             return [v]
+        return v
+
+    @field_validator("max_stack_depth", mode="after")
+    @classmethod
+    def _reject_zero_stack_depth(cls, v: int) -> int:
+        """Reject ``max_stack_depth=0`` loudly (issue #110 / A4-QX-018).
+
+        0 exhausts the frame-walk budget before the first frame, so EVERY
+        stats hit is silently discarded — every mutant then runs the full
+        suite. Nobody means that; -1 is the documented "unlimited" sentinel.
+        """
+        if v == 0:
+            msg = (
+                "max_stack_depth=0 would discard every stats hit "
+                "(every mutant would run the full suite) — use -1 for "
+                "unlimited or a positive depth."
+            )
+            raise ValueError(msg)
         return v
 
     @field_validator("paths_to_mutate", mode="after")

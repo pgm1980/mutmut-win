@@ -132,5 +132,5 @@ layers = [
     "mutmut_win.orchestrator : mutmut_win.runner : mutmut_win.stats : mutmut_win.mutant_diff",
     "mutmut_win.file_setup : mutmut_win.mutation : mutmut_win.node_mutation : mutmut_win.regex_mutation : mutmut_win.trampoline : mutmut_win.test_mapping : mutmut_win.db : mutmut_win.type_checking : mutmut_win.type_checker_filter : mutmut_win.code_coverage",
     "mutmut_win.process",
-    "mutmut_win.config : mutmut_win.models : mutmut_win.constants : mutmut_win.exceptions : mutmut_win._state",
+    "mutmut_win.config : mutmut_win.models : mutmut_win.constants : mutmut_win.exceptions : mutmut_win._state : mutmut_win.hit_recording",
 ]

@@ -12,11 +12,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# Explicit re-export for BWC — single source of truth: constants (#110).
+from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
+
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
-
-#: Environment variable used by the trampoline to select the active mutant.
-MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
 
 #: Sentinel value that triggers a programmatic fail in the trampoline.
 MUTANT_FAIL_SENTINEL = "fail"

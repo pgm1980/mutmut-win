@@ -125,6 +125,9 @@ class TestTrampolineImpl:
 
 
 # --- record_trampoline_hit (F4: max_stack_depth) --------------------------------
+# Issue #107: the recording moved to the hit_recording kernel module —
+# patches target THAT module now (record_trampoline_hit resolves its
+# module-local _get_max_stack_depth, not the __main__ BWC re-export).
 
 
 class TestRecordTrampolineHit:
@@ -132,15 +135,14 @@ class TestRecordTrampolineHit:
         """F4: with max_stack_depth=-1, every hit is recorded."""
         from unittest.mock import patch
 
-        import mutmut_win.__main__ as _main
-        from mutmut_win._state import _stats
+        from mutmut_win import hit_recording
+        from mutmut_win._state import _reset_globals, _stats
 
-        # Reset the cache to force config reload.
-        _main._cached_max_stack_depth = None
-
-        _stats.clear()
-        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=-1):
-            _main.record_trampoline_hit("x_my_func")
+        # Issue #110 / QX-017: the depth cache lives in _state and resets
+        # with the rest — no manual cache poking anymore.
+        _reset_globals()
+        with patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=-1):
+            hit_recording.record_trampoline_hit("x_my_func")
         assert "x_my_func" in _stats
         _stats.clear()
 
@@ -148,13 +150,13 @@ class TestRecordTrampolineHit:
         """F4: when max_stack_depth is 0 (already exhausted), hit is discarded."""
         from unittest.mock import patch
 
-        import mutmut_win.__main__ as _main
+        from mutmut_win import hit_recording
         from mutmut_win._state import _stats
 
         _stats.clear()
         # max_depth=1 but no pytest/unittest frame in stack → depth exhausted → discard
-        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=1):
-            _main.record_trampoline_hit("x_should_be_discarded")
+        with patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=1):
+            hit_recording.record_trampoline_hit("x_should_be_discarded")
         # The name should NOT be in _stats because no pytest frame was found within 1 frame
         # (result depends on call stack; at minimum the function must not raise)
         _stats.clear()
@@ -163,12 +165,12 @@ class TestRecordTrampolineHit:
         """F4: -1 means unlimited — name is always added."""
         from unittest.mock import patch
 
-        import mutmut_win.__main__ as _main
+        from mutmut_win import hit_recording
         from mutmut_win._state import _stats
 
         _stats.clear()
-        with patch("mutmut_win.__main__._get_max_stack_depth", return_value=-1):
-            _main.record_trampoline_hit("x_unlimited_hit")
+        with patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=-1):
+            hit_recording.record_trampoline_hit("x_unlimited_hit")
         assert "x_unlimited_hit" in _stats
         _stats.clear()
 
@@ -176,19 +178,19 @@ class TestRecordTrampolineHit:
         """F4: _get_max_stack_depth() caches the config value after first call."""
         from unittest.mock import patch
 
-        import mutmut_win.__main__ as _main
+        from mutmut_win import hit_recording
+        from mutmut_win._state import _reset_globals
 
-        _main._cached_max_stack_depth = None
+        _reset_globals()
         with patch("mutmut_win.config.load_config") as mock_load:
             from mutmut_win.config import MutmutConfig
 
             mock_load.return_value = MutmutConfig(max_stack_depth=5)
             # First call loads config.
-            depth1 = _main._get_max_stack_depth()
+            depth1 = hit_recording._get_max_stack_depth()
             # Second call must use cache (mock called only once).
-            depth2 = _main._get_max_stack_depth()
+            depth2 = hit_recording._get_max_stack_depth()
         assert depth1 == 5
         assert depth2 == 5
         mock_load.assert_called_once()
-        # Reset cache.
-        _main._cached_max_stack_depth = None
+        _reset_globals()
