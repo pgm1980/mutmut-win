@@ -4,57 +4,52 @@ sprint_goal: "v2.6.0 Source Protection & Codegen Correctness — W4.11-Downstrea
 branch: "feature/v2.6.0-source-protection"
 started_at: "2026-06-11"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
-# Sprint State (Sprint 28 opened 2026-06-11)
+# Sprint State (Sprint 28 — implementation complete 2026-06-11)
 
 ## Current Focus
-Sprint 28 — **v2.6.0 Source Protection & Codegen Correctness** — planned,
-implementation not yet started. Basis: Sprint-27 audit
-(`_docs/audit/sprint_27_audit_findings.md`), fix clusters C1 + C2 plus the
-BUG-2 quick win from C4. Issues #73–#78 created on GitHub. Branch
-`feature/v2.6.0-source-protection` exists.
+All six Sprint-28 items are implemented and committed on
+`feature/v2.6.0-source-protection` (31/31 SP, six TDD cycles):
 
-## Sprint 28 Backlog (31 SP — Must 18, Should 13)
-1. **#74 (Must, 2 SP):** BUG-2 — `clean_run_timeout` + `forced_fail_timeout`
-   config fields, precise timeout error message (incl. setup.cfg fallback).
-2. **#78 (Must, 3 SP):** Arm the safety net — validate-then-write in
-   file_setup + crash guards (NM-007 inf-float, RX-001 OverflowError,
-   MT-011 ǁ-identifier, NM-009 duplicate keyword). Ordered BEFORE the
-   operator fixes so no invalid mutant can ever block a file again.
-3. **#75 (Must, 5 SP):** Source protection — reject/relativize absolute
-   paths_to_mutate; apply: class-aware lookup, backup, atomic write,
-   newline preservation.
-4. **#73 (Must, 8 SP):** Safe-unwrap helper for the parenless-yield class
-   (NM-001…006) — closes downstream BUG-1.
-5. **#77 (Should, 5 SP):** Mutants dict to module level (Enum/NamedTuple
-   clean-run breakers MT-004/005).
-6. **#76 (Should, 8 SP):** Wrapper codegen (hardcoded self, args/kwargs
-   collisions, *args methods, async-gen protocol — MT-001/002/003/006).
+| Issue | Commit | Delivered |
+|-------|--------|-----------|
+| #74 BUG-2 | bbe59d2 | clean_run_timeout + forced_fail_timeout config fields, precise timeout messages, setup.cfg fallback |
+| #78 safety net | af7a431 | validate-then-write (contains the whole Bug-#68/BUG-1 class) + 4 operator crash guards |
+| #75 source protection | 07b29fe | absolute-paths validator + write guard; apply: class-aware, byte-exact, backup, atomic, staleness check |
+| #73 BUG-1 | 2a14182 | _safe_unwrap for 5 operators; Bug-#68 skip guard replaced by parenthesizing (MORE valid mutants) |
+| #77 Enum/NamedTuple | 5dc8c48 | mutants dict emitted at module level after the class |
+| #76 wrapper codegen | 5031032 | real first-param name, _mutmut_args/_mutmut_kwargs, *args forwarding, sync wrapper for async generators, __init_subclass__/__class_getitem__ in NEVER_MUTATE |
 
-Scope valve: #76/#77 slip to Sprint 29 on mid-sprint blowup; Must items
-alone fully unblock the W4.11 downstream and remove everything destructive.
+**Both W4.11 downstream blockers (BUG-1 + BUG-2) are closed.** The genexp
+workaround (§1.5 marker comments) can be reverted downstream after release.
 
-## New test asset (cross-item)
-Adversarial fixture module from the audit verification snippets +
-gate test: every generated mutant file must compile AND the fixture's
-clean run must stay green (W4.11 reporter proposal §1.4).
+## Gates (sprint end, 2026-06-11)
+- pytest: **672 passed / 4 skipped** (62 new tests; was 610 at sprint start)
+- ruff: clean; mypy: 0 NEW errors (26 pre-existing audit-known)
+- semgrep `--config auto src/ tests/unit/ tests/integration/`: 0 findings
+- lint-imports: **pre-existing broken** (6 violations, identical on the
+  sprint-start tree — verified against 015cf32; contracts have not matched
+  code reality for sprints and the gate evidently never ran in sprints
+  23–26). New audit follow-up → Sprint 29.
+- mutation-testing dogfooding: deferred — empty test mapping (audit C8)
+  forces full-suite-per-mutant runs; re-do after the C8 fixes. Compensated
+  by the 62 targeted tests + the adversarial compile gate.
 
-## Out of scope (Sprint 29+)
-C3 pool robustness (EW-001/002), C4 rest (timeout_multiplier semantics,
-task.timeout_seconds wiring), C5 IL detection honesty (forensics
-persistence/rendering, Windows realism), C6 dead features (type-checker
-filter, coverage-guided), C7–C9. pip-audit baseline still outstanding
+## Pending (needs user approval — outward-facing)
+Release v2.6.0: bump pyproject+uv.lock, merge to main (auto-closes
+#73–#78), annotated tag, push, GitHub release with downstream note.
+`housekeeping_done`/`github_issues_closed` stay false until then.
+
+## Out of scope (Sprint 29+ from the audit)
+C3 pool robustness, C4 rest (timeout_multiplier semantics), C5 IL-detection
+honesty, C6 dead features (type-checker filter, coverage), C7 score
+integrity, C8 pipeline hygiene (incl. stats-mapping fixes that unblock the
+dogfooding gate), lint-imports contract realignment, pip-audit baseline
 (environment SSL issue).
-
-## Process reminders
-- TDD per item: failing test first; commit per issue.
-- Dogfooding gate: mutation testing on changed engine modules, score ≥ 80%.
-- Release v2.6.0 at sprint end: merge to main, bump, tag, GitHub release
-  with downstream note (genexp workaround §1.5 can be reverted).
