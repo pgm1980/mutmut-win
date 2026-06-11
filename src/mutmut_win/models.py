@@ -184,6 +184,12 @@ class MutationRunResult(BaseModel):
     # without any bucket. Buckets are DISJOINT — kill-class aggregation
     # happens in the score formula, never by folding buckets into each other.
     segfault: int = 0
+    # New in v2.9.0 (#94, A3-OS-005): an interrupted run used to end exactly
+    # like a complete one. `was_interrupted` marks the RUN; `unchecked` keeps
+    # the sum invariant (buckets + unchecked == total) and is excluded from
+    # the score denominator — a partial run is scored over what it checked.
+    was_interrupted: bool = False
+    unchecked: int = 0
     duration_seconds: float = 0.0
 
     @property
@@ -205,7 +211,7 @@ class MutationRunResult(BaseModel):
         where Hypothesis tests turn infinite-loop mutations into TIMEOUT
         instead of KILLED, deflating the reported score.
         """
-        denominator = self.total_mutants - self.skipped - self.no_tests
+        denominator = self.total_mutants - self.skipped - self.no_tests - self.unchecked
         if denominator <= 0:
             return 0.0
         kill_class = self.killed + self.type_check_caught + self.segfault

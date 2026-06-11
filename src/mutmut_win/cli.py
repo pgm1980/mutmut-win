@@ -219,6 +219,20 @@ def run(
     if output == "json":
         click.echo(result.model_dump_json(indent=2))
 
+    # --- Interrupt honesty (issue #94 / A3-OS-005) ---
+    if result.was_interrupted:
+        # A partial score is misleading in both directions — the gate is
+        # skipped, and CI can detect the abort via the conventional SIGINT
+        # exit code.
+        if min_score is not None:
+            click.echo("Run was interrupted — score gate skipped.", err=True)
+        click.echo(
+            f"Run interrupted: checked "
+            f"{result.total_mutants - result.unchecked} of {result.total_mutants} mutants.",
+            err=True,
+        )
+        sys.exit(130)
+
     # --- Score gate ---
     if min_score is not None:
         gate_score = result.compute_score(treat_timeout_as_kill=treat_timeout_as_kill)

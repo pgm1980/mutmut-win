@@ -244,6 +244,12 @@ class MutationOrchestrator:
             # alive, hanging the interpreter at exit.
             executor.shutdown(timeout=5.0 if interrupted else 10.0)
 
+        # Issue #94 / A3-OS-005: an aborted run must say so. The unprocessed
+        # remainder is excluded from the score denominator (a partial run is
+        # scored over what it checked) and keeps the sum invariant.
+        summary.was_interrupted = interrupted
+        summary.unchecked = max(0, total - completed)
+
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
         # ------------------------------------------------------------------
@@ -819,12 +825,21 @@ def _print_summary(result: MutationRunResult) -> None:
         result: Completed ``MutationRunResult`` to display.
     """
     print("\n--- Mutation Testing Summary ---")
+    if result.was_interrupted:
+        checked = result.total_mutants - result.unchecked
+        print(f"INTERRUPTED   : checked {checked} of {result.total_mutants} mutants")
     print(f"Total mutants : {result.total_mutants}")
     print(f"Killed        : {result.killed}")
+    if result.type_check_caught:
+        print(f"Type-check    : {result.type_check_caught}")
+    if result.segfault:
+        print(f"Segfault      : {result.segfault}")
     print(f"Survived      : {result.survived}")
     print(f"Timeout       : {result.timeout}")
     print(f"Suspicious    : {result.suspicious}")
     print(f"Skipped       : {result.skipped}")
     print(f"No tests      : {result.no_tests}")
+    if result.unchecked:
+        print(f"Unchecked     : {result.unchecked}")
     print(f"Score         : {result.score:.1f}%")
     print(f"Duration      : {result.duration_seconds:.1f}s")

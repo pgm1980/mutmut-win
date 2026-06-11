@@ -515,6 +515,60 @@ class TestMutationOrchestratorKeyboardInterrupt:
         executor.shutdown.assert_called_once()
         assert isinstance(result, MutationRunResult)
 
+    def test_interrupted_run_reports_honestly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Issue #94 / A3-OS-005: Ctrl-C used to end as a regular completion —
+        # full denominator (deflated score), no marker, exit 0.
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        captured_tasks: list[MutationTask] = []
+        executor = MagicMock()
+        executor.start.side_effect = captured_tasks.extend
+
+        def one_kill_then_interrupt() -> Any:
+            pid = os.getpid()
+            task = captured_tasks[0]
+            yield TaskStarted(mutant_name=task.mutant_name, worker_pid=pid)
+            yield TaskCompleted(
+                mutant_name=task.mutant_name, worker_pid=pid, exit_code=1, duration=0.01
+            )
+            raise KeyboardInterrupt
+
+        executor.get_events.side_effect = one_kill_then_interrupt
+
+        orch = MutationOrchestrator(
+            _config(paths_to_mutate=["src"]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "db",
+        )
+        result = orch.run()
+
+        assert result.was_interrupted is True
+        assert result.killed == 1
+        assert result.unchecked == result.total_mutants - 1
+        # The score must be computed over the CHECKED mutants only:
+        # 1 kill of 1 checked = 100%, not 1/total.
+        assert result.score == pytest.approx(100.0)
+
+    def test_complete_run_has_no_unchecked_and_no_interrupt_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+        executor, _ = _executor_yielding_kills()
+        orch = MutationOrchestrator(
+            _config(paths_to_mutate=["src"]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "db",
+        )
+        result = orch.run()
+        assert result.was_interrupted is False
+        assert result.unchecked == 0
+
 
 # ---------------------------------------------------------------------------
 # _update_summary_and_persist — event routing
