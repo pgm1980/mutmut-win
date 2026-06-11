@@ -195,22 +195,26 @@ def read_mutant_function(module: cst.Module, mutant_name: str) -> cst.FunctionDe
     return result.with_changes(name=cst.Name(orig_function_name))
 
 
-def get_diff_for_mutant(mutant_name: str, config: MutmutConfig) -> str:
-    """Generate unified diff between original and mutant function.
+def render_function_diff(path: Path | str, mutant_name: str) -> str:
+    """Render the per-mutant function diff from a known mutants file.
 
-    Reads the mutants file, extracts both the ``_orig`` copy and the numbered
-    mutant variant, and returns a unified diff string suitable for display.
+    The single diff renderer (issue #108 / A4-UI-007): ``show`` reaches it
+    via :func:`get_diff_for_mutant`, the TUI browser calls it directly —
+    only the path DISCOVERY differs between the two consumers.
 
     Args:
+        path: Source file path relative to the project root (the mutants
+            copy is read from ``mutants/<path>``).
         mutant_name: Fully qualified mutant identifier.
-        config: Active ``MutmutConfig`` instance.
 
     Returns:
         A unified diff string (possibly empty if no difference is detected).
-    """
-    m = find_mutant(mutant_name, config)
-    path = m.path
 
+    Raises:
+        FileNotFoundError: If the ``_orig`` copy or the mutant function is
+            missing from the mutants file.
+        OSError: If the mutants file cannot be read.
+    """
     module = read_mutants_module(path)
     orig_code = cst.Module([read_original_function(module, mutant_name)]).code.strip()
     mutant_code = cst.Module([read_mutant_function(module, mutant_name)]).code.strip()
@@ -226,6 +230,23 @@ def get_diff_for_mutant(mutant_name: str, config: MutmutConfig) -> str:
             lineterm="",
         )
     )
+
+
+def get_diff_for_mutant(mutant_name: str, config: MutmutConfig) -> str:
+    """Generate unified diff between original and mutant function.
+
+    Reads the mutants file, extracts both the ``_orig`` copy and the numbered
+    mutant variant, and returns a unified diff string suitable for display.
+
+    Args:
+        mutant_name: Fully qualified mutant identifier.
+        config: Active ``MutmutConfig`` instance.
+
+    Returns:
+        A unified diff string (possibly empty if no difference is detected).
+    """
+    m = find_mutant(mutant_name, config)
+    return render_function_diff(m.path, mutant_name)
 
 
 def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:

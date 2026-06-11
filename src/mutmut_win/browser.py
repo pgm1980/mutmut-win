@@ -108,52 +108,51 @@ def _describe_mutant(
 
 
 def _get_diff_for_mutant(mutant_name: str, path: Path | None = None) -> str:
-    """Return a unified diff string for *mutant_name*.
+    """Return the per-mutant function diff for *mutant_name*.
+
+    Single source (issue #108 / A4-UI-007): the rendering is
+    ``mutant_diff.render_function_diff`` — the same diff ``show`` prints.
+    The previous implementation diffed the WHOLE file (trampoline plus all
+    mutant variants, identical output for every mutant), and the DB
+    fallback searched file contents for the QUALIFIED name, which never
+    appears there — only path discovery differs per case now:
+
+    * known *path* (meta-backed): render directly,
+    * unknown: resolve via the config walk (``get_diff_for_mutant``),
+    * meta files absent (DB-only fallback): scan for the LOCAL definition
+      name (``def <name>``), then render.
 
     Args:
         mutant_name: Unique mutant identifier.
-        path: Source file path. If ``None``, it is resolved from the mutants/ directory.
+        path: Source file path. If ``None``, it is resolved from the
+            mutants/ directory.
 
     Returns:
-        Unified diff as a string, or an empty string if no diff is found.
+        Unified diff as a string, or a ``<...>`` marker line on failure.
     """
-    import difflib
+    from mutmut_win import mutant_diff
 
+    if path is not None:
+        return mutant_diff.render_function_diff(path, mutant_name)
+
+    from mutmut_win.config import load_config
+
+    try:
+        return mutant_diff.get_diff_for_mutant(mutant_name, load_config())
+    except FileNotFoundError:
+        pass  # no meta files (DB-only state) — fall through to the scan
+
+    local_name = mutant_name.rpartition(".")[-1]
     mutants_dir = Path("mutants")
+    for py_file in mutants_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if f"def {local_name}" in content:
+            return mutant_diff.render_function_diff(py_file.relative_to(mutants_dir), mutant_name)
 
-    if path is None:
-        for py_file in mutants_dir.rglob("*.py"):
-            try:
-                content = py_file.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if mutant_name in content:
-                path = py_file.relative_to(mutants_dir)
-                break
-
-    if path is None:
-        return f"<mutant '{mutant_name}' not found>"
-
-    mutant_file = mutants_dir / path
-    orig_file = Path(path)
-
-    if not mutant_file.exists():
-        return f"<mutant file '{mutant_file}' not found>"
-    if not orig_file.exists():
-        return f"<original file '{orig_file}' not found>"
-
-    orig_lines = orig_file.read_text(encoding="utf-8").splitlines(keepends=True)
-    mutant_lines = mutant_file.read_text(encoding="utf-8").splitlines(keepends=True)
-
-    diff = list(
-        difflib.unified_diff(
-            orig_lines,
-            mutant_lines,
-            fromfile=str(orig_file),
-            tofile=str(mutant_file),
-        )
-    )
-    return "".join(diff) if diff else "<no diff>"
+    return f"<mutant '{mutant_name}' not found>"
 
 
 def _load_source_file_data() -> dict[str, tuple[SourceFileMutationData, dict[str, int]]]:
