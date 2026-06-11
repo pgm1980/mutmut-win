@@ -4,54 +4,39 @@ sprint_goal: "v2.8.0 IL Detection Honesty — Forensik persistieren + rendern, C
 branch: "feature/v2.8.0-il-honesty"
 started_at: "2026-06-11"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State (Sprint 30 opened 2026-06-11)
 
 ## Current Focus
-Sprint 30 — **v2.8.0 IL Detection Honesty** — planned, implementation not
-started. Basis: audit cluster **C5**. The v2.5 flagship feature finally
-delivers: forensics get persisted AND rendered, the CICD export counts IL
-kills, and the Windows-degenerate triple check becomes honest. Issues
-#85–#90 created. Branch `feature/v2.8.0-il-honesty`.
+Sprint 30 — **v2.8.0 IL Detection Honesty** — **implementation complete**
+(all 6 items, 25/25 SP). Commits on `feature/v2.8.0-il-honesty`:
 
-## Sprint 30 Backlog (25 SP — Must 17, Should 8)
-1. **#85 (Must, 2 SP):** persist forensics — save_result gets
-   event.forensics (JT-004, main-session verified); 38-literal → constant.
-2. **#86 (Must, 2 SP):** CICD export learns the IL bucket (OS-002,
-   verified 33.3% vs 66.7%); one score across run gate / results / export.
-3. **#87 (Must, 5 SP):** rendering — `show` forensics panel (NULL-safe for
-   pre-v2.8 rows) + browser IL awareness derived from constants.py
-   (UI-004/008).
-4. **#88 (Must, 8 SP):** classifier honesty — PYTHONUNBUFFERED output
-   signal, running_ratio neutral on win32, confidence capped 'medium' on
-   two-signal verdicts, all guards (min-sample floor, gt=0 threshold,
-   run() catch-all + sampler_errors field, stat-unknown, window hint) and
-   hygiene (daemon super().__init__, snapshot-before-tail-read) in ONE
-   pass. Detail design via MANDATORY ≥10-step CoT before implementation;
-   Context7 for psutil specifics.
-5. **#89 (Should, 5 SP):** timeboxed spike — io_counters deltas as the
-   Windows substitute for the sleeping signal; explicit decide gate,
-   negative results documented in the audit doc.
-6. **#90 (Should, 3 SP):** test/doc honesty LAST — Windows-realistic
-   fixtures mirroring the FINAL semantics, sober prose.
+| Issue | Commit | Inhalt |
+|-------|--------|--------|
+| #85 | `dfb9041` | Forensik-Persistenz (orchestrator → save_result) + Exit-Code-Konstanten |
+| #86 | `5764d5d` | CICD-IL-Bucket + Drei-Kanal-Konsistenz (66,7 % statt 33,3 %) |
+| #87 | `b038edc` | `show`-Forensik-Panel (NULL-safe) + Browser-IL (Map = constants-Alias, `_KILL_STATUSES`, `_describe_mutant`) |
+| #88 | `519d014` | Classifier-Ehrlichkeit (12-Schritt-CoT): `status_signal_available`, Confidence-Cap medium, PYTHONUNBUFFERED, Sample-Floor 5, None-Output, Sampler-Catch-All, gt=0, Hygiene |
+| #89 | `cf11a57` | io_counters: als Sleeping-Ersatz widerlegt, als Progress-Veto eingebaut (Spike-Daten im Audit-Doc) |
+| #90 | `787633f` | Test-/Doku-Ehrlichkeit: ratio isoliert, plattform-exakte Asserts, Marketing-Prosa entfernt |
 
-Scope valve: #89/#90 slip to Sprint 31 on blowup.
+Gates: **719 passed / 4 skipped** (+38 neue), ruff 0, mypy 26 pre-existing /
+0 neue, semgrep src 0 Findings (tests von Semgrep-Default-Ignore
+übersprungen — vermerkt), lint-imports KEPT (in-suite).
 
-## Planning insights (sequential-thinking session)
-- Value chain ordering: persist → count → render → be-honest; classifier
-  changes come AFTER the forensics pipeline works so behaviour is
-  debuggable through visible data.
-- The confidence cap is only non-breaking NOW: forensics were never
-  persisted, so no consumer can depend on old confidence values.
-- JT-013 is obsolete (timeout.py removed in Sprint 29).
+## Nächster Schritt
+**Warten auf User-„Release"**: Merge auf main, Version-Bump 2.8.0
+(`uv lock --system-certs`!), annotated Tag, GitHub Release, Issues #85–#90
+schließen sich via Merge, danach `github_issues_closed: true` +
+`housekeeping_done: true`.
 
-## Out of scope (roadmap unchanged)
-C6+C7 (Sprint 31 / v2.9.0), C8+C9-top (Sprint 32 / v2.10.0), OS-014
-(json score — C7), pip-audit baseline (environment SSL).
+## Out of scope (Roadmap unverändert)
+C6+C7 (Sprint 31 / v2.9.0), C8+C9-Top (Sprint 32 / v2.10.0), OS-014
+(json score — C7), pip-audit-Baseline (Umgebungs-SSL).

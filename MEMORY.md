@@ -8,9 +8,9 @@
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
 adapted to Windows: native subprocess + Job Object orphan-protection, no POSIX
 fork dependency, in-process pytest stats collection, libcst-based mutation
-generation. Since v2.5.0: true infinite-loop detection (psutil-based
-triple-check classifier with forensics + confidence) — no other mutation tool
-on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
+generation. Since v2.5.0 (made honest in v2.8.0): infinite-loop detection —
+a psutil-based sampling classifier (CPU + progress signals, process status on
+POSIX only) with persisted forensics and a platform-aware confidence band.
 
 - Python 3.12 – 3.14
 - Stack: click (CLI), libcst (mutations), pydantic v2 (config), textual (TUI),
@@ -29,7 +29,27 @@ on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
   v2.6.0 (same day) closed both W4.11 downstream blockers —
   nextgen-cot-mcp-server can upgrade its pin and revert the §1.5 genexp
   workaround.
-- **Sprint**: 29 — *v2.7.0 Runtime Reliability* — implementation complete
+- **Sprint**: 30 — *v2.8.0 IL Detection Honesty* — implementation complete
+  2026-06-11 (6 items, 25/25 SP, commits dfb9041..787633f on
+  `feature/v2.8.0-il-honesty`): forensics persisted (#85) and rendered —
+  `show` panel + browser IL awareness from constants (#87); CICD export
+  counts IL kills, one score across run gate / results / export (#86);
+  classifier honesty (#88, 12-step CoT + Context7): caller-declared
+  `status_signal_available` (win32 → False), confidence capped `medium`
+  on two-signal verdicts, PYTHONUNBUFFERED output signal,
+  MIN_SAMPLES_FOR_VERDICT=5, output `None`-semantics on stat failure,
+  sampler catch-all + `sampler_errors`/`status_signal_used` forensics,
+  `output_threshold gt=0`, daemon/snapshot-cutoff/window-hint hygiene;
+  io_counters spike (#89): REFUTED as sleeping substitute (sleep-wait ≡
+  busy-loop at io level), BUILT as progress veto
+  (`IO_OPS_PROGRESS_THRESHOLD=100`, veto-only, None-neutral); test/doc
+  honesty (#90): running_ratio isolated for the first time,
+  platform-exact integration asserts (win32 medium / POSIX high), sober
+  prose. Audit register got a fix-log section. Gates: 719 passed /
+  4 skipped (+38), ruff 0, mypy 0 new, semgrep src 0 (tests skipped by
+  semgrep default ignore), lint-imports KEPT. **Release v2.8.0 pending
+  user approval.**
+- **Sprint 29** — *v2.7.0 Runtime Reliability* — implementation complete
   2026-06-11 (6 items, 27/27 SP, commits 4257f3c..243206a on
   `feature/v2.7.0-runtime-reliability`): both remaining S1 hangs fixed
   (#79 queue shutdown, #80 worker liveness) → **all 15 S1 audit findings
