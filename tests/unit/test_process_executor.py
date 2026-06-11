@@ -36,8 +36,10 @@ class _FakeQueue:
     def put(self, item: Any) -> None:
         self._q.put(item)
 
-    def get(self) -> Any:
-        return self._q.get()
+    def get(self, timeout: float | None = None) -> Any:
+        # Matches multiprocessing.Queue.get(timeout=...) used by the polling
+        # event loop (issue #80); stdlib Queue raises queue.Empty on timeout.
+        return self._q.get(timeout=timeout)
 
     def empty(self) -> bool:
         return self._q.empty()
@@ -218,26 +220,6 @@ class TestSpawnPoolExecutorGetEvents:
         events = list(executor.get_events())
         assert isinstance(events[0], TaskStarted)
         assert isinstance(events[1], TaskCompleted)
-
-    def test_timed_out_event_counted_as_finished(self) -> None:
-        """A TaskTimedOut in the queue must count toward the finished tally."""
-        from mutmut_win.models import TaskTimedOut
-
-        task_q: _FakeQueue = _FakeQueue()
-        event_q: _FakeQueue = _FakeQueue()
-
-        executor = SpawnPoolExecutor(max_workers=1, config=_config())
-        executor._task_queue = task_q  # type: ignore[assignment]
-        executor._event_queue = event_q  # type: ignore[assignment]
-        executor._num_tasks = 1
-
-        event_q.put(TaskStarted(mutant_name="m1", worker_pid=os.getpid()).model_dump())
-        event_q.put(TaskTimedOut(mutant_name="m1", worker_pid=os.getpid()).model_dump())
-
-        events = list(executor.get_events())
-        assert len(events) == 2
-        assert isinstance(events[1], TaskTimedOut)
-
 
 class TestSpawnPoolExecutorShutdown:
     def test_shutdown_kills_alive_workers(self) -> None:

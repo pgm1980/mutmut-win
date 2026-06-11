@@ -5,10 +5,13 @@ These tests verify that:
 2. A subprocess can be assigned to a Job Object
 3. Closing the Job handle kills all assigned processes (deterministic, no timing)
 4. Graceful degradation works on non-Windows platforms
+5. Win32 diagnostics are accurate: real error codes (use_last_error), explicit
+   argtypes/restype signatures, least-privilege OpenProcess access mask
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 
@@ -139,6 +142,87 @@ class TestJobObjectWindows:
         close_job(job)
         # Second close — should not raise (CloseHandle on invalid handle is a no-op).
         close_job(job)
+
+    def test_open_process_failure_reports_real_win32_error_code(self) -> None:
+        """A failed OpenProcess must report the real Win32 error code, not 0.
+
+        PID 0 is the System Idle Process, which can never be opened; Windows
+        fails deterministically with ERROR_INVALID_PARAMETER (87). Regression
+        test for audit finding A2-JT-005: ``ctypes.windll.kernel32`` was loaded
+        without ``use_last_error=True``, so ``ctypes.get_last_error()`` always
+        reported 0 in the OSError message.
+        """
+        from mutmut_win.process.job_object import (
+            assign_process_to_job,
+            close_job,
+            create_kill_on_close_job,
+        )
+
+        job = create_kill_on_close_job()
+        try:
+            with pytest.raises(OSError, match=r"OpenProcess\(0\) failed") as exc_info:
+                assign_process_to_job(job, 0)
+        finally:
+            close_job(job)
+
+        code_match = re.search(r"error (\d+)", str(exc_info.value))
+        assert code_match is not None, f"no error code in message: {exc_info.value}"
+        assert int(code_match.group(1)) != 0, "Win32 error code must not be 0"
+
+    def test_kernel32_signatures_declared(self) -> None:
+        """All kernel32 bindings must declare argtypes/restype explicitly.
+
+        Regression test for audit finding A2-JT-006: without declarations
+        ctypes defaults everything to ``c_int``, silently truncating 64-bit
+        HANDLE values on Win64.
+        """
+        from ctypes import c_int, wintypes
+
+        from mutmut_win.process import job_object
+
+        k32 = job_object._kernel32
+
+        assert k32.CreateJobObjectW.restype is wintypes.HANDLE
+        assert tuple(k32.CreateJobObjectW.argtypes or ()) == (
+            wintypes.LPVOID,
+            wintypes.LPCWSTR,
+        )
+
+        assert k32.SetInformationJobObject.restype is wintypes.BOOL
+        assert tuple(k32.SetInformationJobObject.argtypes or ()) == (
+            wintypes.HANDLE,
+            c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        )
+
+        assert k32.AssignProcessToJobObject.restype is wintypes.BOOL
+        assert tuple(k32.AssignProcessToJobObject.argtypes or ()) == (
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        )
+
+        assert k32.OpenProcess.restype is wintypes.HANDLE
+        assert tuple(k32.OpenProcess.argtypes or ()) == (
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        )
+
+        assert k32.CloseHandle.restype is wintypes.BOOL
+        assert tuple(k32.CloseHandle.argtypes or ()) == (wintypes.HANDLE,)
+
+    def test_open_process_uses_least_privilege_mask(self) -> None:
+        """OpenProcess must request only SET_QUOTA | TERMINATE, not ALL_ACCESS.
+
+        Regression test for audit finding A2-JT-017: ``AssignProcessToJobObject``
+        only requires PROCESS_SET_QUOTA (0x0100) | PROCESS_TERMINATE (0x0001);
+        the previous PROCESS_ALL_ACCESS (0x1F0FFF) was over-privileged.
+        """
+        from mutmut_win.process import job_object
+
+        assert job_object._PROCESS_ASSIGN_ACCESS == 0x0101
+        assert not hasattr(job_object, "_PROCESS_ALL_ACCESS")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Tests non-Windows fallback")

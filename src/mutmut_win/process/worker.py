@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -54,12 +55,6 @@ def worker_main(
     if isinstance(raw_extra, list):
         pytest_extra_args = [str(a) for a in raw_extra]
 
-    # Per-mutant timeout: generous default (60s), prevents hung pytest processes
-    # (e.g. pytest-asyncio event loop corruption) from blocking the pool forever.
-    raw_timeout = config_data.get("timeout_multiplier", 30.0)
-    timeout_val = float(raw_timeout) if isinstance(raw_timeout, (int, float)) else 60.0
-    worker_timeout = max(60.0, timeout_val)
-
     while True:
         raw_item = task_queue.get()
         if raw_item is None:
@@ -75,9 +70,7 @@ def worker_main(
                 fallback_name = raw_name
 
         try:
-            _process_task(
-                raw_item, event_queue, pid, pytest_extra_args, config_data, worker_timeout
-            )
+            _process_task(raw_item, event_queue, pid, pytest_extra_args, config_data)
         except Exception as exc:  # Bug #12 recovery: keep the worker alive
             # Any uncaught exception (Pydantic ValidationError, RuntimeError from
             # the subprocess layer, libcst hiccup, transient FS error, …) would
@@ -107,7 +100,6 @@ def _process_task(
     pid: int,
     pytest_extra_args: list[str],
     config_data: dict[str, object],
-    worker_timeout: float,
 ) -> None:
     """Process a single mutation task.
 
@@ -115,12 +107,17 @@ def _process_task(
     that bubbles up from here and synthesise a recovery event (Bug #12).
     """
     task = MutationTask.model_validate(raw_item)
+    # Per-task budget computed by the orchestrator (estimated runtime of the
+    # assigned tests times timeout_multiplier, floor 5 s).  Before issue #81 /
+    # A2-JT-003 the worker ignored it and used max(60, timeout_multiplier) —
+    # the MULTIPLIER acted as flat absolute seconds for every task.
+    timeout_seconds = task.timeout_seconds
 
     # Notify main process that work has started.
     event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
 
     # Build the pytest command.
-    cmd: list[str] = ["pytest", "--tb=no", "-q"]
+    cmd: list[str] = _pytest_base_cmd()
     cmd.extend(pytest_extra_args)
 
     # Always use pytest's @file syntax for test arguments.
@@ -189,6 +186,7 @@ def _process_task(
 
     start = time.monotonic()
     proc: subprocess.Popen[bytes] | None = None
+    task_job_handle: int | None = None
     try:
         # Popen + wait(timeout) so we can attach the monitor against a live PID
         # and run our classifier on timeout. (subprocess.run cannot expose the
@@ -200,14 +198,22 @@ def _process_task(
             stderr=subprocess.STDOUT,
             cwd="mutants",
         )
-        monitor = _maybe_start_loop_monitor(il_enabled, proc.pid, log_path)
+        # Per-task kill-on-close job (issue #82 / A2-EW-008): descendants
+        # inherit membership at creation, so closing the handle reaps the
+        # whole pytest tree — even across already-dead intermediates, which
+        # a live-pid sweep cannot bridge (uv launcher chains showed exactly
+        # that).
+        task_job_handle = _create_task_job(proc.pid)
+        monitor = _maybe_start_loop_monitor(
+            il_enabled, proc.pid, log_path, window_seconds=il_thresholds.window_seconds
+        )
         try:
-            exit_code = proc.wait(timeout=worker_timeout)
+            exit_code = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            # Kill the still-running subprocess (and its children via Job Object
-            # if available) before sampling so the classifier sees the final
-            # state of the rolling window.
-            _kill_proc_tree(proc)
+            # Kill the still-running subprocess tree before sampling so the
+            # classifier sees the final state of the rolling window.
+            _kill_proc_tree(proc, task_job_handle)
+            task_job_handle = None  # consumed (closed) by the kill
             os.close(log_fd)
             log_fd = -1
             last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
@@ -230,6 +236,13 @@ def _process_task(
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
         exit_code = 35  # suspicious
     finally:
+        if task_job_handle is not None:
+            # Normal completion: closing the kill-on-close job reaps any
+            # background processes the tests left behind (issue #82).
+            with contextlib.suppress(Exception):
+                from mutmut_win.process.job_object import close_job
+
+                close_job(task_job_handle)
         if monitor is not None:
             with contextlib.suppress(Exception):
                 monitor.shutdown()
@@ -258,13 +271,28 @@ def _process_task(
     )
 
 
+#: Tail block size for diagnostic log reads — generously covers
+#: ``_MAX_DIAGNOSTIC_LINES`` even with very long lines.
+_TAIL_READ_BYTES: int = 64 * 1024
+
+
 def _read_last_lines(path: Path, n: int) -> str | None:
-    """Read the last *n* lines from *path*, returning None on failure."""
+    """Tail-read the last *n* lines from *path*, returning None on failure.
+
+    Reads only the final block of the file (issue #81 / A2-EW-014):
+    ``read_text`` loaded output-runaway mutant logs fully into memory,
+    risking MemoryError right inside the diagnostic path.
+    """
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = min(size, _TAIL_READ_BYTES)
+            f.seek(size - block)
+            data = f.read(block)
     except OSError:
         return None
-    lines = content.splitlines()
+    lines = data.decode("utf-8", errors="replace").splitlines()
     return "\n".join(lines[-n:]) if lines else None
 
 
@@ -274,13 +302,18 @@ def _read_last_lines(path: Path, n: int) -> str | None:
 
 
 def _maybe_start_loop_monitor(
-    enabled: bool, pid: int, log_path: Path
+    enabled: bool, pid: int, log_path: Path, window_seconds: float = 10.0
 ) -> Any:
     """Try to spawn an IL-detection monitor; return ``None`` on opt-out / failure.
 
     Failures here MUST NEVER take down the worker — IL detection is best-effort
     enhancement. psutil missing, permission denied on the PID, or any other
     error degrades gracefully to "no detection, plain timeout".
+
+    *window_seconds* carries the configured ``infinite_loop_window_seconds``
+    through to the sampler — previously the monitor was hard-wired to its
+    10 s default while the forensics claimed the configured value
+    (issue #81 / A2-EW-009).
     """
     if not enabled:
         return None
@@ -289,7 +322,7 @@ def _maybe_start_loop_monitor(
 
         if not has_psutil():
             return None
-        monitor = ProcessMonitor(pid=pid, log_path=log_path)
+        monitor = ProcessMonitor(pid=pid, log_path=log_path, window_seconds=window_seconds)
         monitor.start()
     except Exception as exc:  # graceful degradation: never poison the run
         print(f"WORKER MONITOR start failed: {exc}", flush=True)
@@ -338,25 +371,115 @@ def _classify_with_monitor(
     return classify_samples(samples, thresholds, last_output_tail=last_output)  # type: ignore[arg-type,unused-ignore]
 
 
-def _kill_proc_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Terminate the subprocess (and its child tree if psutil is around)."""
-    if proc.poll() is not None:
-        return
+def _pytest_base_cmd() -> list[str]:
+    """Pytest invocation pinned to the running interpreter (issue #82 / A4-QX-008).
+
+    Bare ``"pytest"`` resolved via PATH could hit a different interpreter
+    than the venv the clean gate validated (a non-activated venv produced
+    exit-35 floods despite a green clean run); ``sys.executable -m pytest``
+    matches what the runner phases use.
+    """
+    return [sys.executable, "-m", "pytest", "--tb=no", "-q"]
+
+
+def _create_task_job(pid: int) -> int | None:
+    """Best-effort per-task Windows Job Object (issue #82 / A2-EW-008).
+
+    Returns the job handle with *pid* assigned, or ``None`` off-win32 or
+    when creation/assignment fails (graceful degradation to the psutil
+    sweep).  The micro window between ``Popen`` and assignment is the
+    documented EW-018 race — pytest does not spawn children that fast.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        from mutmut_win.process.job_object import (
+            assign_process_to_job,
+            close_job,
+            create_kill_on_close_job,
+        )
+
+        handle = create_kill_on_close_job()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        assign_process_to_job(handle, pid)
+    except (OSError, RuntimeError):
+        with contextlib.suppress(Exception):
+            close_job(handle)
+        return None
+    return handle
+
+
+def _iter_descendants(root_pid: int) -> list[Any]:
+    """Collect live descendant processes of *root_pid* by walking ppids.
+
+    Unlike ``psutil.Process(root_pid).children(recursive=True)`` this also
+    works when the root itself ALREADY EXITED (issue #82 / A2-EW-008):
+    Windows does not re-parent orphans, so their recorded ppid keeps
+    pointing at the dead pid.  Minor caveat: if the dead pid is recycled
+    very quickly, an unrelated process tree could match — the window is
+    milliseconds wide and the previous behaviour (orphans surviving until
+    job-object close) was strictly worse.
+    """
+    import psutil  # type: ignore[import-untyped,unused-ignore]
+
+    children_by_ppid: dict[int, list[Any]] = {}
+    for proc in psutil.process_iter(["pid", "ppid"]):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            children_by_ppid.setdefault(proc.info["ppid"], []).append(proc)
+
+    descendants: list[Any] = []
+    pending = [root_pid]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        for child in children_by_ppid.get(current, []):
+            if child.pid in seen:
+                continue
+            seen.add(child.pid)
+            descendants.append(child)
+            pending.append(child.pid)
+    return descendants
+
+
+def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None) -> None:
+    """Terminate the subprocess AND its descendant tree.
+
+    Primary mechanism (win32): closing the per-task kill-on-close
+    *job_handle* makes the kernel reap the whole tree atomically — including
+    across already-dead intermediate processes, which no live-pid scan can
+    bridge (issue #82 / A2-EW-008).  The psutil ppid sweep below remains as
+    belt-and-suspenders for non-win32 platforms and job failures; it runs
+    even when the direct child already exited (the old code returned early
+    and orphaned the grandchildren until the END of the whole run).  Two
+    sweeps narrow the TOCTOU window for processes spawned mid-kill.
+    """
+    if job_handle is not None:
+        with contextlib.suppress(Exception):
+            from mutmut_win.process.job_object import close_job
+
+            close_job(job_handle)
+
+    use_psutil = False
     try:
         from mutmut_win.process.loop_monitor import has_psutil
 
-        if has_psutil():
-            import psutil  # type: ignore[import-untyped,unused-ignore]
-
-            try:
-                parent = psutil.Process(proc.pid)
-                for child in parent.children(recursive=True):
-                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-                        child.kill()
-            except psutil.NoSuchProcess:
-                pass
+        use_psutil = has_psutil()
     except ImportError:
         pass
+
+    if use_psutil:
+        import psutil  # type: ignore[import-untyped,unused-ignore]
+
+        for _sweep in range(2):
+            for child in _iter_descendants(proc.pid):
+                with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                    child.kill()
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+
     with contextlib.suppress(Exception):
         proc.kill()
     with contextlib.suppress(Exception):

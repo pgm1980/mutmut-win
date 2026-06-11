@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 1.2.0
+**Version:** 1.4.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -25,6 +25,10 @@
 | v2.5.0 / v2.5.1 | Polish + True IL Detection | Sprint 26 | Done | Echte Infinite-Loop-Detection (psutil + Forensics + Confidence, #71), `--version`-Fix (#72); v2.5.1 Hotfix psutil-Process-Caching |
 | — | Full Source Audit | Sprint 27 | Done | Analysis-only: 201 Findings (15 S1) über alle 29 Module, 9 Fix-Cluster — `_docs/audit/sprint_27_audit_findings.md` |
 | v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Done | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) — released 2026-06-11 |
+| v2.7.0 | Runtime Reliability | Sprint 29 | Planned | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) |
+| v2.8.0 | IL Detection Honesty | Sprint 30 | Roadmap | Audit C5: Forensik-Persistenz + Rendering, Windows-Realismus des Triple-Checks, CICD-IL-Bucket |
+| v2.9.0 | Feature Revival & Score Integrity | Sprint 31 | Roadmap | Audit C6+C7: Type-Checker-Filter + Coverage reaktivieren, Summary-/Score-Lücken, Epochen-Invalidierung |
+| v2.10.0 | Pipeline Hygiene | Sprint 32 | Roadmap | Audit C8+C9-Top: Stats-/DB-/Copy-Hygiene (re-enabled Dogfooding-Gate), Diagnose-UX |
 
 ---
 
@@ -506,6 +510,31 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 
 ---
 
+### Epic 20: Runtime Reliability (Sprint 29)
+
+**Beschreibung:** Fixing-Sprint 2 aus dem Audit (Cluster C3 + C4 + lint-imports-Nachtrag): die letzten beiden S1-Findings — beide Abbruch-/Fehlerpfad-Hänger (Queue-Shutdown, Worker-Tod) —, die dreifach gebrochene Timeout-Architektur (Multiplier als absolute Sekunden, ungelesene per-Task-Budgets, toter Monitor), Prozess-Hygiene und die seit Sprints nicht zur Realität passenden import-linter-Contracts (ADR). Detail: `_docs/sprint backlogs/sprint_29_backlog.md`.
+**Sprint:** 29
+**Release:** v2.7.0
+
+| Issue | Typ | Titel | Priorität | SP | Status |
+|-------|-----|-------|-----------|-----|--------|
+| #79 | Bug | Shutdown-Hänger: Queues schließen + finally um Event-Loop (EW-001 S1) | Must | 3 | Open |
+| #80 | Bug | Worker-Liveness in get_events + synthetisches Completion (EW-002 S1) | Must | 5 | Open |
+| #82 | Bug | Prozess-Hygiene: kill-tree, Log-Sweep, sys.executable-Worker | Must | 5 | Open |
+| #81 | Bug | Per-Task-Timeouts end-to-end; toten Timeout-Monitor entfernen; IL-Fenster durchreichen | Must | 8 | Open |
+| #83 | Bug | Job-Object-Polish: use_last_error, argtypes, Least-Privilege | Should | 3 | Open |
+| #84 | Task | import-linter-Contracts per ADR an reale Architektur angleichen | Should | 3 | Open |
+
+**Acceptance Criteria (Sprint-Ebene):**
+- [ ] Abbruch (Ctrl+C/Crash) mit gefüllter Task-Queue → Prozess endet binnen Frist, keine Orphans (Watchdog-Integration-Test)
+- [ ] Hart gekillter Worker → Lauf endet regulär, betroffene Tasks als „suspicious/worker died", Rest abgearbeitet
+- [ ] `timeout_multiplier` wirkt nachweislich multiplikativ pro Task (`task.timeout_seconds` wird im Worker gelesen)
+- [ ] `WallClockTimeout`/`TaskTimedOut` entfernt; README-Architektur-Sektion korrigiert
+- [ ] `uv run lint-imports` → 0 Verletzungen mit ADR-begründeten Contracts; Gate läuft real im Sprint-Abschluss
+- [ ] Nach Sprint 29: alle 15 S1-Audit-Findings geschlossen
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |
@@ -533,6 +562,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Polish + IL Detection v2.5.0 | v2.5.0 / v2.5.1 | Epic 17 | #71 (re-open), #72 | Done |
 | Full Source Audit | — | Epic 18 | — (Findings-Report) | Done |
 | Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Done |
+| Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Planned |
 
 ---
 
@@ -567,6 +597,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Sprint 26 | 14 | 14 | 100% | Polish + True IL Detection (#71 re-open, #72) |
 | Sprint 27 | — | — | — | Full Source Audit (analysis-only, kein SP-Tracking) |
 | Sprint 28 | 31 | 31 | 100% | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
+| Sprint 29 | 27 | (offen) | — | v2.7.0 Runtime Reliability (#79–#84) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -594,3 +625,5 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.0.0 | 2026-05-22 | Claude Code Agent | Backlog-Sync: 59 Issues von Open→Done geflippt; Epic 15 (Sprint 22 v2.0.x Stabilization, PR #66, v2.1.0 Release) ergänzt; Release-Übersicht bis v2.1.0; Velocity-Tracking vollständig befüllt; Carryover-Tabelle ergänzt. Issue #67 (H-05) retroactively erstellt. |
 | 1.1.0 | 2026-06-11 | Claude Code Agent | Doku-Drift-Sync nach Sprints 23–26: Release-Übersicht bis v2.5.1; Epic 16 (Sprint 23 Reliability) + Epic 17 (Sprint 26 IL Detection) ergänzt (Epic-Nummern-Konflikt „16" zwischen sprint_23/sprint_26-Backlog zugunsten von Sprint 23 aufgelöst); 7 Carryover-Issues + #68–#72 auf Done; Milestones, Velocity (Sprints 23–26, Total 364/339 SP) und Carryover-Sektion aktualisiert. |
 | 1.2.0 | 2026-06-11 | Claude Code Agent | Sprint-27-Audit eingearbeitet: Epic 18 (Full Source Audit, Done) + Epic 19 (Sprint 28 v2.6.0, Planned, #73–#78); Audit-Korrekturen an Epic-3-AC (#12 Restart-Logik nie implementiert) und Epic-17-AC (Forensics-Rendering nie erfüllt); Release-Übersicht, Milestones, Velocity ergänzt. |
+| 1.3.0 | 2026-06-11 | Claude Code Agent | Sprint 28 geschlossen: Epic 19 Done (Commit-Refs), v2.6.0 released, Velocity 31/31, Gate-Abweichungen (lint-imports vorbestehend, Dogfooding deferred) dokumentiert. |
+| 1.4.0 | 2026-06-11 | Claude Code Agent | Sprint 29 geplant: Epic 20 (Runtime Reliability, #79–#84, 27 SP); Audit-Rest-Roadmap als Release-Zeilen v2.8.0–v2.10.0 (C5, C6+C7, C8+C9) fixiert — Findings-Restbestand ~158 nach Sprint 28. |

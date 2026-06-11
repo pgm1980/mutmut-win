@@ -15,7 +15,7 @@ mutmut explicitly blocks Windows execution ([issue #397](https://github.com/boxe
 | Feature | mutmut (Unix) | mutmut-win (Windows) |
 |---------|---------------|---------------------|
 | Process creation | `os.fork()` | `multiprocessing.spawn` + Worker Pool |
-| Timeout mechanism | `RLIMIT_CPU` + `SIGXCPU` | Wall-clock timeout via monitor thread |
+| Timeout mechanism | `RLIMIT_CPU` + `SIGXCPU` | Per-task wall-clock timeout (worker-side `wait`) + job-object tree reaping |
 | Orphan protection | None (children adopted by init) | Windows Job Objects (kernel-level) |
 | IPC | `os.wait()` + exit codes | Two-Queue architecture (task + event) |
 | Mutation engine | libcst (CST-based) | libcst (CST-based) - identical |
@@ -119,7 +119,7 @@ Infrastructure     process/ (executor, timeout, worker, job_object, loop_monitor
 ### Key Design Decisions
 
 - **Spawn + Worker Pool:** N long-lived workers (via `multiprocessing.spawn`) initialize pytest once and consume tasks from a queue. This amortizes the spawn overhead across all mutants.
-- **Wall-Clock Timeout:** A monitor thread in the main process tracks deadlines and kills workers that exceed them. Generous default multiplier (30x) accounts for wall-clock vs CPU-time differences.
+- **Per-Task Wall-Clock Timeouts (v2.7.0):** Each task carries its own budget (estimated runtime of its assigned tests × `timeout_multiplier`, floor 5 s); the worker enforces it via `proc.wait(timeout=…)` and reaps the whole pytest tree through a per-task kill-on-close job object on expiry. The generous default multiplier (30x) accounts for wall-clock vs CPU-time differences.
 - **Windows Job Objects:** When the parent process dies unexpectedly, the OS kernel automatically terminates all workers and their pytest subprocesses. Prevents CPU overheating from orphaned processes.
 - **Two-Queue IPC:** `task_queue` (main to workers) + `event_queue` (workers to main). All data is pickle-safe (plain dicts over queues).
 - **True Infinite-Loop Detection (v2.5.0):** A psutil-based monitor thread samples CPU%, output growth, and process status of the test subprocess tree. On timeout, a triple-check classifier separates real infinite loops (`killed_by_infinite_loop`, with persisted forensics and a confidence band, rendered by `show`) from genuinely slow tests. Degrades gracefully to plain timeouts when psutil is unavailable.

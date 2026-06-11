@@ -202,6 +202,7 @@ class MutationOrchestrator:
         total = len(tasks_with_timeouts)
 
         executor = self._get_executor()
+        interrupted = False
         try:
             executor.start(tasks_with_timeouts)
             for event in executor.get_events():
@@ -214,10 +215,13 @@ class MutationOrchestrator:
                     if not self._no_progress:
                         _print_live_progress(completed, total, summary)
         except KeyboardInterrupt:
+            interrupted = True
             print("\nInterrupted — shutting down workers…")
-            executor.shutdown(timeout=5.0)
-        else:
-            executor.shutdown()
+        finally:
+            # Issue #79 / A2-EW-001: shutdown must run on EVERY exit path —
+            # any other exception used to leave workers and the queue feeder
+            # alive, hanging the interpreter at exit.
+            executor.shutdown(timeout=5.0 if interrupted else 10.0)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
@@ -622,34 +626,41 @@ def _update_summary_and_persist(
     """Update *summary* counters and persist the result for a finished event.
 
     Args:
-        event: A ``TaskCompleted`` or ``TaskTimedOut`` event (``TaskStarted`` is ignored).
+        event: A ``TaskCompleted`` event (``TaskStarted`` is ignored; worker
+            timeouts arrive as completions with exit code 36/38).
         summary: Mutable summary object to update in-place.
         db_path: Path to the SQLite result cache.
         source_data_by_file: Mapping of file path to ``SourceFileMutationData``.
 
     Returns:
-        ``True`` if the event represents a completed/timed-out mutant
-        (i.e. a progress-relevant event), ``False`` for ``TaskStarted``.
+        ``True`` if the event represents a completed mutant (i.e. a
+        progress-relevant event), ``False`` for ``TaskStarted``.
     """
-    from mutmut_win.models import TaskCompleted, TaskStarted, TaskTimedOut
+    from mutmut_win.models import TaskCompleted, TaskStarted
 
     if isinstance(event, TaskStarted):
         return False
 
     last_output: str | None = None
-    if isinstance(event, TaskTimedOut):
+    if isinstance(event, TaskCompleted):
         mutant_name = event.mutant_name
-        status = status_by_exit_code[EXIT_CODE_TIMEOUT]
-        exit_code: int | None = EXIT_CODE_TIMEOUT
-        duration: float | None = None
-    elif isinstance(event, TaskCompleted):
-        mutant_name = event.mutant_name
-        exit_code = event.exit_code
-        duration = event.duration
+        exit_code: int | None = event.exit_code
+        duration: float | None = event.duration
         status = status_by_exit_code[exit_code]
         last_output = event.last_output
     else:
         return False
+
+    if mutant_name == "unknown":
+        # Worker recovery could not extract a task name (issue #80 /
+        # A2-EW-012): keep the finished-accounting intact (the worker DID
+        # consume a task) but do not pollute the DB/meta with a ghost
+        # "unknown" mutant row — the real mutant stays visibly unchecked.
+        print(
+            "Warning: a worker failed before its task name was known — "
+            "one mutant remains unchecked (no result row written)."
+        )
+        return True
 
     # Update summary counters.
     _increment_summary(summary, status)

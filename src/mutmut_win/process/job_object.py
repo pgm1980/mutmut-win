@@ -4,8 +4,8 @@ When the parent process dies unexpectedly (crash, Task Manager kill, IDE close),
 all worker processes and their subprocess children are automatically terminated
 by the OS kernel — preventing CPU overheating from orphaned pytest processes.
 
-Uses ``ctypes.windll.kernel32`` to call the Win32 Job Object API directly.
-No external dependencies required.
+Uses a private ``ctypes.WinDLL("kernel32", use_last_error=True)`` instance to
+call the Win32 Job Object API directly. No external dependencies required.
 
 Graceful degradation: if Job Objects are unavailable (e.g. restricted security
 policies), ``create_kill_on_close_job()`` raises ``OSError`` and the caller
@@ -23,12 +23,20 @@ logger = logging.getLogger(__name__)
 
 # Only define the Win32 bindings on Windows.
 if sys.platform == "win32":
-    _kernel32 = ctypes.windll.kernel32
+    # A private WinDLL instance with use_last_error=True: ctypes then captures
+    # GetLastError() into a thread-local copy immediately after every foreign
+    # call, so ``ctypes.get_last_error()`` reports the real Win32 error code.
+    # The shared ``ctypes.windll.kernel32`` lacks this flag and always reported
+    # 0 in our OSError messages (audit finding A2-JT-005).
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     # Constants from the Windows SDK.
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: int = 0x2000
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: int = 9
-    _PROCESS_ALL_ACCESS: int = 0x1F0FFF
+    # Least-privilege access mask for AssignProcessToJobObject, which only
+    # requires PROCESS_SET_QUOTA (0x0100) | PROCESS_TERMINATE (0x0001). The
+    # previous PROCESS_ALL_ACCESS (0x1F0FFF) was over-privileged (A2-JT-017).
+    _PROCESS_ASSIGN_ACCESS: int = 0x0100 | 0x0001
 
     class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
         """Win32 JOBOBJECT_BASIC_LIMIT_INFORMATION structure."""
@@ -69,6 +77,40 @@ if sys.platform == "win32":
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    # Explicit C signatures (audit finding A2-JT-006). Without argtypes/restype
+    # ctypes defaults every parameter and return value to c_int, silently
+    # truncating 64-bit HANDLE values on Win64. With HANDLE as restype, a NULL
+    # result is returned as ``None`` (hence the ``int | None`` locals below).
+    _kernel32.CreateJobObjectW.argtypes = [
+        ctypes.wintypes.LPVOID,  # lpJobAttributes (LPSECURITY_ATTRIBUTES)
+        ctypes.wintypes.LPCWSTR,  # lpName
+    ]
+    _kernel32.CreateJobObjectW.restype = ctypes.wintypes.HANDLE
+
+    _kernel32.SetInformationJobObject.argtypes = [
+        ctypes.wintypes.HANDLE,  # hJob
+        ctypes.c_int,  # JobObjectInformationClass (JOBOBJECTINFOCLASS enum)
+        ctypes.wintypes.LPVOID,  # lpJobObjectInformation
+        ctypes.wintypes.DWORD,  # cbJobObjectInformationLength
+    ]
+    _kernel32.SetInformationJobObject.restype = ctypes.wintypes.BOOL
+
+    _kernel32.AssignProcessToJobObject.argtypes = [
+        ctypes.wintypes.HANDLE,  # hJob
+        ctypes.wintypes.HANDLE,  # hProcess
+    ]
+    _kernel32.AssignProcessToJobObject.restype = ctypes.wintypes.BOOL
+
+    _kernel32.OpenProcess.argtypes = [
+        ctypes.wintypes.DWORD,  # dwDesiredAccess
+        ctypes.wintypes.BOOL,  # bInheritHandle
+        ctypes.wintypes.DWORD,  # dwProcessId
+    ]
+    _kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+
+    _kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]  # hObject
+    _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
 
 def create_kill_on_close_job() -> int:
     """Create a Windows Job Object that kills all assigned processes on close.
@@ -89,7 +131,7 @@ def create_kill_on_close_job() -> int:
         msg = "Job Objects are only available on Windows"
         raise RuntimeError(msg)
 
-    handle: int = _kernel32.CreateJobObjectW(None, None)
+    handle: int | None = _kernel32.CreateJobObjectW(None, None)
     if not handle:
         msg = f"CreateJobObjectW failed (error {ctypes.get_last_error()})"
         raise OSError(msg)
@@ -114,8 +156,19 @@ def create_kill_on_close_job() -> int:
 def assign_process_to_job(job_handle: int, pid: int) -> None:
     """Add a process (by PID) to the Job Object.
 
-    Opens the process with full access, assigns it to the job, then closes
-    the process handle (the job keeps its own reference).
+    Opens the process with the least-privilege access mask required by
+    ``AssignProcessToJobObject`` (``PROCESS_SET_QUOTA | PROCESS_TERMINATE``),
+    assigns it to the job, then closes the process handle (the job keeps
+    its own reference).
+
+    Note:
+        Assignment happens *after* the child process has already started —
+        there is no ``CREATE_SUSPENDED`` handshake. Between process start and
+        this call the child can spawn processes that are not yet covered by
+        this job (micro orphan window, audit EW-018/JT-007). In practice the
+        uv launcher child compensates: it places its own children in its own
+        kill-on-close job. Documented behavior; a ``CREATE_SUSPENDED``-based
+        rework is explicitly out of scope.
 
     Args:
         job_handle: Handle returned by ``create_kill_on_close_job()``.
@@ -123,12 +176,13 @@ def assign_process_to_job(job_handle: int, pid: int) -> None:
 
     Raises:
         OSError: If the process could not be opened or assigned.
+        RuntimeError: If called on a non-Windows platform.
     """
     if sys.platform != "win32":
         msg = "Job Objects are only available on Windows"
         raise RuntimeError(msg)
 
-    process_handle: int = _kernel32.OpenProcess(_PROCESS_ALL_ACCESS, False, pid)
+    process_handle: int | None = _kernel32.OpenProcess(_PROCESS_ASSIGN_ACCESS, False, pid)
     if not process_handle:
         msg = f"OpenProcess({pid}) failed (error {ctypes.get_last_error()})"
         raise OSError(msg)

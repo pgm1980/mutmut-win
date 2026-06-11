@@ -6,7 +6,10 @@ and that the import-linter layer contracts are satisfied.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from importlib import import_module
+from pathlib import Path
 
 
 def test_all_modules_importable() -> None:
@@ -28,7 +31,6 @@ def test_all_modules_importable() -> None:
         "mutmut_win.type_checking",
         "mutmut_win.process",
         "mutmut_win.process.executor",
-        "mutmut_win.process.timeout",
         "mutmut_win.process.worker",
     ]
     for module_name in modules:
@@ -59,8 +61,34 @@ def test_architecture_contracts() -> None:
 
     # Layer 4 — infrastructure / process
     import_module("mutmut_win.process.executor")
-    import_module("mutmut_win.process.timeout")
     import_module("mutmut_win.process.worker")
+
+
+def test_import_linter_contracts_hold() -> None:
+    """Execute the REAL import-linter gate inside the suite (issue #84).
+
+    The layer contract was 'green by absence' for sprints 23-26 because
+    nothing ever executed it; running it from pytest makes every
+    ``uv run pytest`` invocation enforce the architecture.  Anchored to the
+    repo root because several tests chdir into tmp directories.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    script = (
+        "from importlinter.cli import lint_imports;"
+        "import sys; sys.exit(lint_imports())"
+    )
+    result = subprocess.run(  # noqa: S603 — fully controlled command
+        [sys.executable, "-c", script],
+        capture_output=True,
+        encoding="utf-8",
+        cwd=project_root,
+        timeout=120,
+    )
+    assert result.returncode == 0, (
+        "import-linter layer contract broken "
+        "(see _docs/architecture spec/adr_layer_contracts_v2.md):\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
 
 
 def test_no_upward_import_from_process() -> None:
@@ -71,10 +99,9 @@ def test_no_upward_import_from_process() -> None:
     import-linter; this test validates successful loading.
     """
     executor = import_module("mutmut_win.process.executor")
-    timeout = import_module("mutmut_win.process.timeout")
     worker = import_module("mutmut_win.process.worker")
 
-    for mod in (executor, timeout, worker):
+    for mod in (executor, worker):
         assert mod.__spec__ is not None, f"{mod.__name__} has no __spec__"
 
 

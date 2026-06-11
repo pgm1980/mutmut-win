@@ -15,7 +15,6 @@ from mutmut_win.models import (
     MutationTask,
     TaskCompleted,
     TaskStarted,
-    TaskTimedOut,
 )
 from mutmut_win.orchestrator import (
     MutationOrchestrator,
@@ -344,7 +343,10 @@ class TestMutationOrchestratorRunHappyPath:
             pid = os.getpid()
             for task in captured_tasks:
                 yield TaskStarted(mutant_name=task.mutant_name, worker_pid=pid)
-                yield TaskTimedOut(mutant_name=task.mutant_name, worker_pid=pid)
+                # Worker-side timeout: TaskCompleted with exit code 36 (#81).
+                yield TaskCompleted(
+                    mutant_name=task.mutant_name, worker_pid=pid, exit_code=36, duration=60.0
+                )
 
         executor.get_events.side_effect = fake_get_events
 
@@ -443,12 +445,14 @@ class TestUpdateSummaryAndPersist:
         results = load_results(db)
         assert results[0].status == "killed"
 
-    def test_task_timed_out(self, tmp_path: Path) -> None:
+    def test_worker_reported_timeout(self, tmp_path: Path) -> None:
+        """Timeouts arrive as TaskCompleted with exit code 36 since the dead
+        WallClockTimeout monitor was removed (issue #81)."""
         from mutmut_win.db import load_results
 
         db = tmp_path / "db.sqlite"
         summary = MutationRunResult(total_mutants=1)
-        event = TaskTimedOut(mutant_name="m1", worker_pid=1)
+        event = TaskCompleted(mutant_name="m1", worker_pid=1, exit_code=36, duration=60.0)
         _update_summary_and_persist(event, summary, db, {})
         assert summary.timeout == 1
         results = load_results(db)

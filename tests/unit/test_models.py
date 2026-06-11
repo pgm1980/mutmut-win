@@ -15,7 +15,6 @@ from mutmut_win.models import (
     MutationTask,
     TaskCompleted,
     TaskStarted,
-    TaskTimedOut,
 )
 
 
@@ -63,10 +62,6 @@ class TestTaskEvents:
         event = TaskCompleted(mutant_name="m1", worker_pid=1234, exit_code=0, duration=1.5)
         assert event.exit_code == 0
         assert event.duration == 1.5
-
-    def test_task_timed_out(self) -> None:
-        event = TaskTimedOut(mutant_name="m1", worker_pid=1234)
-        assert event.mutant_name == "m1"
 
     @given(st.integers(min_value=0, max_value=255))
     def test_completed_pickle_roundtrip(self, exit_code: int) -> None:

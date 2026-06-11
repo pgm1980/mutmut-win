@@ -9,8 +9,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import mutmut_win.process.worker as worker_module
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.worker import MUTANT_ENV_VAR, worker_main
+
+
+@pytest.fixture(autouse=True)
+def _no_real_task_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mocked Popen objects carry fake PIDs — a real kill-on-close job
+    assigned to such a PID could capture a FOREIGN process (issue #82).
+    Unit tests must never create real job objects."""
+    monkeypatch.setattr(worker_module, "_create_task_job", lambda _pid: None)
 
 # ---------------------------------------------------------------------------
 # Helpers
