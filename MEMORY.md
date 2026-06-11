@@ -23,13 +23,20 @@ on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
   [GitHub releases](https://github.com/pgm1980/mutmut-win/releases).
-- **Sprint**: 26 — *Polish + True IL Detection* (closed with v2.5.0/v2.5.1).
-  Sprints 23–26 all ran 2026-05-22/23 as a single wave; see
-  `_docs/sprint backlogs/` for details.
+- **Sprint**: 27 — *Full Source Audit (analysis-only)* — closed 2026-06-11.
+  Deliverable: `_docs/audit/sprint_27_audit_findings.md` — **201 raw /
+  ~180 unique findings, 15 × S1**, across all 29 src-modules, organized in
+  fix clusters C1–C9. No source changes (analysis-only mandate). Trigger
+  was the W4.11 downstream report (BUG-1 sole-genexp, BUG-2 300s-timeout —
+  both verified, both NOT yet fixed).
 - **GitHub Issues**: **0 open** — backlog fully cleared (verified 2026-06-11).
-- **Tests**: 610 passed / 4 skipped (verified 2026-06-11,
-  `uv run pytest --ignore=tests/e2e_projects`).
-- **In flight**: nothing. Next sprint not yet planned.
+- **Tests**: 610 passed / 4 skipped (verified 2026-06-11); semgrep 0
+  findings; pip-audit baseline NOT obtained (SSL error towards pypi.org).
+- **In flight**: fixing sprints (28+) pending user prioritization.
+  Recommended order: C1 source-protection (destructive: absolute
+  paths_to_mutate overwrite sources; apply patches wrong function) →
+  C2 codegen correctness (clean-run breakers, parenless-yield class incl.
+  BUG-1) → C3 pool robustness / C4 timeout architecture (incl. BUG-2).
 
 ## Open Decisions / Open Items
 - **`--treat-timeout-as-kill` deprecation** — the Sprint-23 stopgap flag is

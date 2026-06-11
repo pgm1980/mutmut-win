@@ -117,7 +117,7 @@
 - [x] Two-Queue-Architektur (task_queue + event_queue)
 - [x] WallClockTimeout erkennt und killt überfällige Worker
 - [x] Ctrl+C führt zu sauberem Shutdown mit gespeicherten Teilergebnissen
-- [x] Max 3 Worker-Neustarts pro Slot mit Backoff; Slot-Exhaustion sauber behandelt (Sprint 24, ce0b736)
+- [x] Worker überlebt unbehandelte Exceptions pro Task (Sprint 24, ce0b736) — **Korrektur 2026-06-11 (Sprint-27-Audit A2-EW-002):** die ursprünglich spezifizierte Slot-Restart-Logik (max 3 Neustarts, Backoff, Exhaustion) wurde NICHT implementiert; harter Worker-Tod (OS-Kill, nativer Crash) hängt den Lauf weiterhin. Siehe `_docs/audit/sprint_27_audit_findings.md`, Fix-Cluster C3.
 
 ---
 
