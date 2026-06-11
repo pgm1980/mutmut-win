@@ -380,7 +380,23 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     normalized: dict[str, object] = {}
     for key, value in tool_config.items():
         normalized_key = key.replace("-", "_")
+        if normalized_key in normalized:
+            print(
+                f"Warning: [tool.mutmut] declares '{normalized_key}' twice "
+                f"(hyphen/underscore twins) — the last one wins."
+            )
         normalized[normalized_key] = value
+
+    # Issue #102 / A3-CM-005: extra='ignore' swallowed typos silently —
+    # 'paths_to_mutat' fell back to the default guess and mutated the wrong
+    # tree unnoticed. Warn (non-breaking) with a close-match suggestion.
+    import difflib
+
+    known_keys = set(MutmutConfig.model_fields)
+    for unknown in sorted(set(normalized) - known_keys):
+        matches = difflib.get_close_matches(unknown, sorted(known_keys), n=1)
+        hint = f" — did you mean '{matches[0]}'?" if matches else ""
+        print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}")
 
     try:
         config = MutmutConfig.model_validate(normalized)
