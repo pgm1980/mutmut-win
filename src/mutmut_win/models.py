@@ -10,7 +10,7 @@ import datetime
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class MutationTask(BaseModel):
@@ -89,9 +89,7 @@ class MutationResult(BaseModel):
 
     mutant_name: str
     status: str = Field(
-        description=(
-            "survived, killed, timeout, killed_by_infinite_loop, suspicious, etc."
-        )
+        description=("survived, killed, timeout, killed_by_infinite_loop, suspicious, etc.")
     )
     exit_code: int | None = None
     duration: float | None = Field(default=None, ge=0.0)
@@ -180,11 +178,30 @@ class MutationRunResult(BaseModel):
     skipped: int = 0
     no_tests: int = 0
     type_check_caught: int = 0
+    # New in v2.9.0 (#91, A2-EW-004): crashes used to count in the denominator
+    # without any bucket. Buckets are DISJOINT — kill-class aggregation
+    # happens in the score formula, never by folding buckets into each other.
+    segfault: int = 0
+    # New in v2.9.0 (#94, A3-OS-005): an interrupted run used to end exactly
+    # like a complete one. `was_interrupted` marks the RUN; `unchecked` keeps
+    # the sum invariant (buckets + unchecked == total) and is excluded from
+    # the score denominator — a partial run is scored over what it checked.
+    was_interrupted: bool = False
+    unchecked: int = 0
     duration_seconds: float = 0.0
 
+    # Serialized into model_dump()/JSON (issue #97 / A3-OS-014: the CI
+    # channel was blind on the one number it gates on). Additive only —
+    # the JSON is a CI contract.
+    @computed_field  # type: ignore[prop-decorator]  # documented pydantic v2 pattern for serialized properties
     @property
     def score(self) -> float:
-        """Mutation score as percentage (killed / (total - skipped - no_tests))."""
+        """Mutation score as percentage (kill class / (total - skipped - no_tests)).
+
+        The kill class is ``killed + type_check_caught + segfault``: a suite
+        that crashes under a mutant has detected it just as surely as a
+        failing assertion (issue #91).
+        """
         return self.compute_score(treat_timeout_as_kill=False)
 
     def compute_score(self, treat_timeout_as_kill: bool = False) -> float:
@@ -196,8 +213,9 @@ class MutationRunResult(BaseModel):
         where Hypothesis tests turn infinite-loop mutations into TIMEOUT
         instead of KILLED, deflating the reported score.
         """
-        denominator = self.total_mutants - self.skipped - self.no_tests
+        denominator = self.total_mutants - self.skipped - self.no_tests - self.unchecked
         if denominator <= 0:
             return 0.0
-        effective_killed = self.killed + (self.timeout if treat_timeout_as_kill else 0)
+        kill_class = self.killed + self.type_check_caught + self.segfault
+        effective_killed = kill_class + (self.timeout if treat_timeout_as_kill else 0)
         return (effective_killed / denominator) * 100.0

@@ -31,7 +31,32 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   nextgen-cot-mcp-server can upgrade its pin and revert the §1.5 genexp
   workaround. Pinned for Sprint 32/C8 (user-confirmed): repo-wide format
   gate, pytest canon in config, semgrep tests-ignore decision.
-- **Sprint**: 30 — *v2.8.0 IL Detection Honesty* — implementation complete
+- **Sprint**: 31 — *v2.9.0 Feature Truth & Score Integrity* —
+  implementation complete 2026-06-11 (7 items, 33/33 SP, commits
+  33c2c98..09c6cd7 on `feature/v2.9.0-score-integrity`): status truth
+  (#91: exit-code map fixed — dead -24 duplicate, NTSTATUS crashes →
+  segfault, exit 2 = collection kill per design CoT; complete buckets +
+  loud catch-all + sum-invariant test; kill-class score formula in all
+  three channels; generic results rendering; worker captures log tail
+  for every anomalous exit); type checking hardened (#92: basename
+  detection — mypy.exe/uv-run forms used to ABORT runs; timeout/
+  returncode/encoding — mypy exit 2 was a silent no-op filter; pyright
+  severity filter; Context7 + empirically verified) and end-to-end
+  (#93: to_mutants_relative canonical matching — the filter NEVER hit
+  before; task intersection; DB persistence into its own bucket;
+  100%-caught guard; E2E with real mypy); Ctrl-C honesty (#94:
+  was_interrupted + unchecked, score over checked, exit 130, gate
+  skip); **coverage gating REACTIVATED** (#95: spike + 8-step CoT —
+  subprocess bridge, line reference system consistent by construction,
+  normcase keying = CM-013, loud failure modes, dead compat API
+  removed, mypy baseline 26→20); DB orphan purge on full runs (#96:
+  safe default polarity, CLI wires the full-run fact, executemany —
+  semgrep clean); CI channel (#97: score as computed_field in JSON,
+  communicated zero-mutant gate). Gates: 773 passed / 4 skipped (+54),
+  ruff 0, mypy 0 new, semgrep 0, lint-imports KEPT. **Release v2.9.0
+  pending user approval — changelog needs a "score corrections"
+  section (CI gates may flip).**
+- **Sprint 30** — *v2.8.0 IL Detection Honesty* — implementation complete
   2026-06-11 (6 items, 25/25 SP, commits dfb9041..787633f on
   `feature/v2.8.0-il-honesty`): forensics persisted (#85) and rendered —
   `show` panel + browser IL awareness from constants (#87); CICD export

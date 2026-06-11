@@ -25,6 +25,34 @@ from libcst.metadata import PositionProvider
 from mutmut_win.type_checking import TypeCheckingError
 
 
+def to_mutants_relative(path: Path, mutants_dir: Path) -> Path | None:
+    """Normalize a checker-reported path to the mutants-relative form.
+
+    Checker-reported paths arrive in several shapes (issue #93 / A3-CM-002):
+    mutants-relative from mypy run with ``cwd=mutants/``, absolute from
+    pyright, or absolute bound to the mutants cwd by the report parsers.
+    The mutant NAME, however, is derived from the mutants-relative path —
+    so every shape must be folded onto that one canonical form before
+    :func:`mutmut_win.file_setup.get_mutant_name` can produce names that
+    match the task names.
+
+    Args:
+        path: The path as reported by the type checker.
+        mutants_dir: The ``mutants/`` directory (relative or absolute).
+
+    Returns:
+        The path relative to ``mutants_dir``, or ``None`` if *path* lies
+        outside of it (such errors cannot belong to a mutant).
+    """
+    candidate = path if path.is_absolute() else mutants_dir / path
+    try:
+        # resolve() reconciles drive-letter case, 8.3 short names and
+        # symlinks on both sides before the containment check.
+        return candidate.resolve().relative_to(mutants_dir.resolve())
+    except (ValueError, OSError):
+        return None
+
+
 def is_mutated_method_name(name: str) -> bool:
     """Return ``True`` if *name* is a trampoline-generated mutated method name.
 

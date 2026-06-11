@@ -1,72 +1,124 @@
-"""Unit tests for mutmut_win.code_coverage."""
+"""Unit tests for the reactivated coverage gating (Issue #95, audit A3-CM-003/013).
 
-import sys
-from pathlib import Path
+``mutate_only_covered_lines`` was dead since the subprocess rewrite: the old
+``gather_coverage`` collected in the PARENT while pytest ran in a subprocess,
+so ``lines()`` returned nothing, every mutant was filtered, and the run ended
+with an uncaused "No mutants generated."  The rework runs coverage as a
+subprocess bridge and loads the data file in the parent — with normcase path
+keying (spike-verified: a case-deviating key returns None from ``lines()``)
+and LOUD failure modes instead of silent emptiness.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-from mutmut_win.code_coverage import (
-    _unload_modules_not_in,
-    get_covered_lines_for_file,
-)
+import coverage
+import pytest
 
-# --- get_covered_lines_for_file -----------------------------------------------
+from mutmut_win.code_coverage import gather_coverage, get_covered_lines_for_file
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestGetCoveredLinesForFile:
-    def test_none_covered_lines_returns_none(self) -> None:
-        result = get_covered_lines_for_file("foo.py", None)  # type: ignore[arg-type]
-        assert result is None
+    def test_none_mapping_means_feature_disabled(self) -> None:
+        assert get_covered_lines_for_file("src/mod.py", None) is None
 
     def test_none_filename_returns_none(self) -> None:
-        result = get_covered_lines_for_file(None, {})  # type: ignore[arg-type]
-        assert result is None
+        assert get_covered_lines_for_file(None, {}) is None  # type: ignore[arg-type]
 
-    def test_file_not_in_covered_lines_returns_empty_set(self) -> None:
-        result = get_covered_lines_for_file("missing.py", {})
-        assert result == set()
+    def test_exact_key_hit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        key = os.path.normcase(str((tmp_path / "mutants" / "src" / "mod.py").absolute()))
+        covered = {key: {1, 2, 5}}
+        assert get_covered_lines_for_file("src/mod.py", covered) == {1, 2, 5}
 
-    def test_file_in_covered_lines_returns_lines(self) -> None:
-        # Build the expected absolute path the same way the function does
-        abs_path = str((Path("mutants") / "foo.py").absolute())
-        covered = {abs_path: {1, 2, 3}}
-        result = get_covered_lines_for_file("foo.py", covered)
-        assert result == {1, 2, 3}
+    def test_case_deviating_lookup_still_hits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A3-CM-013: coverage stores the FS case form; the constructed lookup
+        # key may differ in drive-letter or directory case on Windows.
+        monkeypatch.chdir(tmp_path)
+        raw = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+        covered = {os.path.normcase(raw.upper()): {3}}
+        assert get_covered_lines_for_file("src/mod.py", covered) == {3}
 
-    def test_empty_line_set_in_covered_lines_returns_empty_set(self) -> None:
-        abs_path = str((Path("mutants") / "bar.py").absolute())
-        covered = {abs_path: set()}
-        result = get_covered_lines_for_file("bar.py", covered)
-        # falsy empty set -> falls back to set()
-        assert result == set()
+    def test_unmeasured_file_yields_empty_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert get_covered_lines_for_file("src/other.py", {}) == set()
 
 
-# --- _unload_modules_not_in ---------------------------------------------------
+class TestGatherCoverage:
+    def _write_data_file(self, data_file: Path, measured: dict[str, list[int]]) -> None:
+        cov = coverage.Coverage(data_file=str(data_file))
+        data = cov.get_data()
+        data.add_lines(dict(measured.items()))
+        data.write()
 
+    def test_happy_path_returns_normcased_mapping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
 
-class TestUnloadModulesNotIn:
-    def test_does_not_unload_mutmut_win_code_coverage(self) -> None:
-        """The code_coverage module itself must not be unloaded."""
-        # Snapshot: only keep modules already present
-        original_modules = dict(sys.modules)
+        runner = MagicMock()
 
-        # Add a fake module
-        fake_module_name = "_test_fake_module_xyz"
-        sys.modules[fake_module_name] = MagicMock()
+        def fake_collection(data_file: Path) -> int:
+            self._write_data_file(data_file, {measured_path: [1, 2, 5]})
+            return 0
 
-        try:
-            _unload_modules_not_in(original_modules)
-            # Fake module should have been removed
-            assert fake_module_name not in sys.modules
-        finally:
-            # Cleanup
-            sys.modules.pop(fake_module_name, None)
+        runner.run_coverage_collection.side_effect = fake_collection
 
-    def test_preserves_modules_in_snapshot(self) -> None:
-        """Modules present at snapshot time should NOT be unloaded."""
-        snapshot = dict(sys.modules)
-        # Run unload - nothing new was added
-        _unload_modules_not_in(snapshot)
-        # sys.modules should still contain all original modules
-        for key in snapshot:
-            if key != "mutmut_win.code_coverage":
-                assert key in sys.modules
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered[os.path.normcase(measured_path)] == {1, 2, 5}
+        assert get_covered_lines_for_file("src/mod.py", covered) == {1, 2, 5}
+
+    def test_nonzero_exit_raises_loudly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The old code turned ANY failure into "0 covered lines" and the run
+        # ended with an uncaused "No mutants generated." (A3-CM-003).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        runner = MagicMock()
+        runner.run_coverage_collection.return_value = 1
+        with pytest.raises(Exception, match="coverage"):
+            gather_coverage(runner, ["src/mod.py"])
+
+    def test_missing_data_file_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        runner = MagicMock()
+        runner.run_coverage_collection.return_value = 0  # but writes nothing
+        with pytest.raises(Exception, match="data file"):
+            gather_coverage(runner, ["src/mod.py"])
+
+    def test_empty_measurement_raises_with_subprocess_hint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # xdist / subprocess-spawning suites execute the code outside the
+        # measured process: every source file would look uncovered and EVERY
+        # mutant would be silently filtered. Fail loudly instead.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        unrelated = str((tmp_path / "mutants" / "tests" / "test_x.py").absolute())
+
+        runner = MagicMock()
+
+        def fake_collection(data_file: Path) -> int:
+            self._write_data_file(data_file, {unrelated: [1]})
+            return 0
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        with pytest.raises(Exception, match="no coverage"):
+            gather_coverage(runner, ["src/mod.py"])

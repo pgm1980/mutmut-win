@@ -217,6 +217,45 @@ class TestWorkerMain:
         out = capsys.readouterr().out
         assert out.count("IL window covers") == 1  # once per worker, not per task
 
+    def test_anomalous_exit_captures_the_log_tail(self) -> None:
+        """Issue #91 / A4-QX-025: exit 2 (collection error caused by the
+        mutant) is a kill — its forensics are the pytest output.  The worker
+        must capture the log tail for every anomalous exit, not only for
+        timeout (36/38) and suspicious (35)."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            os.write(kwargs["stdout"], b"!!! Interrupted: 1 error during collection !!!\n")
+            return _make_popen_mock(exit_code=2)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        event_q.get()  # TaskStarted
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 2
+        assert completed.last_output is not None
+        assert "error during collection" in completed.last_output
+
+    def test_clean_exit_does_not_capture_output(self) -> None:
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            return_value=_make_popen_mock(exit_code=1),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        event_q.get()  # TaskStarted
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.last_output is None  # a plain kill needs no forensics
+
     def test_timeout_path_declares_the_platform_status_signal(self) -> None:
         """Issue #90 / A2-JT-016: the worker must tell the classifier whether
         the status signal is real on this platform (False on win32, where

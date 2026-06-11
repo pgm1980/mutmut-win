@@ -105,6 +105,39 @@ def save_result(
         conn.commit()
 
 
+def delete_results_not_in(path: Path, valid_names: set[str]) -> int:
+    """Delete rows whose mutant is not in *valid_names* (issue #96).
+
+    Stale rows of mutants that no longer exist (renamed/edited sources)
+    used to survive forever, so ``results`` reported the union of all runs
+    ever (A3-OS-012).  Called by the orchestrator on FULL runs only — a
+    subset run knows just a slice of the valid set and must never purge.
+
+    The orphan set is computed in Python (DB names minus *valid_names*) and
+    deleted via ``executemany`` with a fixed one-parameter statement — no
+    dynamic SQL, no SQLite bound-parameter limit, one transaction.
+
+    Args:
+        path: Filesystem path to the SQLite database file.
+        valid_names: The complete set of currently generated mutant names.
+
+    Returns:
+        Number of deleted rows.
+    """
+    if not path.exists():
+        return 0
+
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute("SELECT mutant_name FROM mutant").fetchall()
+        orphans = sorted({row[0] for row in rows} - valid_names)
+        conn.executemany(
+            "DELETE FROM mutant WHERE mutant_name = ?",
+            [(name,) for name in orphans],
+        )
+        conn.commit()
+    return len(orphans)
+
+
 def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
     """Load all mutation results from the database.
 

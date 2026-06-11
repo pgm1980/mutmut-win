@@ -201,12 +201,16 @@ def run(
 
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
+    # Only a FULL run may purge stale DB rows (issue #96): subset runs know
+    # just a slice of the valid mutant set and must never delete history.
+    is_full_run = not mutant_names and since_commit is None
     orchestrator = MutationOrchestrator(
         config,
         runner=runner,
         executor=executor,
         mutant_names=mutant_names if mutant_names else None,
         no_progress=no_progress,
+        purge_stale_results=is_full_run,
     )
 
     try:
@@ -219,14 +223,37 @@ def run(
     if output == "json":
         click.echo(result.model_dump_json(indent=2))
 
+    # --- Interrupt honesty (issue #94 / A3-OS-005) ---
+    if result.was_interrupted:
+        # A partial score is misleading in both directions — the gate is
+        # skipped, and CI can detect the abort via the conventional SIGINT
+        # exit code.
+        if min_score is not None:
+            click.echo("Run was interrupted — score gate skipped.", err=True)
+        click.echo(
+            f"Run interrupted: checked "
+            f"{result.total_mutants - result.unchecked} of {result.total_mutants} mutants.",
+            err=True,
+        )
+        sys.exit(130)
+
     # --- Score gate ---
     if min_score is not None:
+        testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
+        if testable <= 0:
+            # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
+            # below threshold' blamed a score that never existed.
+            click.echo(
+                "No testable mutants — score gate failed closed "
+                "(nothing was measured, so nothing can pass).",
+                err=True,
+            )
+            sys.exit(1)
         gate_score = result.compute_score(treat_timeout_as_kill=treat_timeout_as_kill)
         if gate_score < min_score:
             qualifier = " (timeouts counted as kills)" if treat_timeout_as_kill else ""
             click.echo(
-                f"Mutation score {gate_score:.1f}%{qualifier} is below threshold "
-                f"{min_score}%",
+                f"Mutation score {gate_score:.1f}%{qualifier} is below threshold {min_score}%",
                 err=True,
             )
             sys.exit(1)
@@ -257,32 +284,42 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         counts[result.status] = counts.get(result.status, 0) + 1
 
     total = len(all_results)
-    killed = (
+    kill_aggregate = (
         counts.get("killed", 0)
         + counts.get("caught by type check", 0)
         + counts.get("killed_by_infinite_loop", 0)  # Issue #71 — IL classification
     )
     il_killed = counts.get("killed_by_infinite_loop", 0)
-    survived = counts.get("survived", 0)
+    segfault = counts.get("segfault", 0)
     timeout = counts.get("timeout", 0)
     skipped = counts.get("skipped", 0)
     no_tests = counts.get("no tests", 0)
-    suspicious = counts.get("suspicious", 0)
 
     denominator = total - skipped - no_tests
-    effective_killed = killed + (timeout if treat_timeout_as_kill else 0)
+    # Kill class mirrors MutationRunResult.score / CicdStats.score (#91):
+    # a crash under a mutant is a detection.
+    effective_killed = kill_aggregate + segfault + (timeout if treat_timeout_as_kill else 0)
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
     click.echo(f"Total:     {total}")
     if il_killed > 0:
-        click.echo(f"Killed:    {killed}  (incl. {il_killed} infinite-loop)")
+        click.echo(f"Killed:    {kill_aggregate}  (incl. {il_killed} infinite-loop)")
     else:
-        click.echo(f"Killed:    {killed}")
-    click.echo(f"Survived:  {survived}")
-    click.echo(f"Timeout:   {timeout}")
-    click.echo(f"Suspicious:{suspicious}")
-    click.echo(f"Skipped:   {skipped}")
-    click.echo(f"No tests:  {no_tests}")
+        click.echo(f"Killed:    {kill_aggregate}")
+    # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
+    # interrupted and not-checked rows used to count in Total and the score
+    # denominator while appearing in no output line). The fixed list keeps
+    # the established order and zero-lines; legacy/unknown statuses from
+    # older DBs follow generically when present.
+    aggregated = {"killed", "caught by type check", "killed_by_infinite_loop"}
+    preferred_order = ["survived", "timeout", "suspicious", "skipped", "no tests", "segfault"]
+    always_shown = {"survived", "timeout", "suspicious", "skipped", "no tests"}
+    remaining = sorted(s for s in counts if s not in aggregated and s not in preferred_order)
+    for status in [*preferred_order, *remaining]:
+        count = counts.get(status, 0)
+        if count == 0 and status not in always_shown:
+            continue
+        click.echo(f"{status.capitalize() + ':':<11}{count}")
     if treat_timeout_as_kill and timeout > 0:
         click.echo(f"Score:     {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
     else:
@@ -300,9 +337,7 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
                 click.echo(f"  {result.mutant_name}")
 
 
-def _format_forensics_panel(
-    status: str | None, forensics: dict[str, object] | None
-) -> str | None:
+def _format_forensics_panel(status: str | None, forensics: dict[str, object] | None) -> str | None:
     """Render the IL forensics panel for ``show``, or None for non-IL mutants.
 
     NULL-safe in two ways: rows written before v2.8.0 have no forensics at

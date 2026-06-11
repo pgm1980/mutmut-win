@@ -63,11 +63,18 @@ class MutationOrchestrator:
         db_path: Path = DEFAULT_DB_PATH,
         mutant_names: tuple[str, ...] | None = None,
         no_progress: bool = False,
+        purge_stale_results: bool = False,
     ) -> None:
         self._config = config
         self._db_path = db_path
         self._mutant_names: tuple[str, ...] | None = mutant_names
         self._no_progress = no_progress
+        # Issue #96 / A3-OS-012: on FULL runs the CLI opts in to purging DB
+        # rows of mutants that are no longer generated. Default False — the
+        # safe polarity for a destructive operation: subset runs
+        # (--mutant-names/--since-commit) know only a slice of the valid set
+        # and must never purge.
+        self._purge_stale_results = purge_stale_results
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -117,6 +124,11 @@ class MutationOrchestrator:
                 duration_seconds=time.monotonic() - wall_start,
             )
 
+        # The COMPLETE generation set, captured before any filtering — the
+        # purge reference for full runs (issue #96): filtered-out mutants
+        # still exist as valid mutants and must never be treated as stale.
+        all_generated_names = {t.mutant_name for t in all_tasks}
+
         # ------------------------------------------------------------------
         # Step 1a: Filter to specific mutant names if requested (fnmatch supported).
         # ------------------------------------------------------------------
@@ -139,6 +151,23 @@ class MutationOrchestrator:
                 source_data_by_file,
                 self._config.type_check_command,
             )
+        if not all_tasks:
+            # Every mutant was caught by the type checker — a legitimate,
+            # successful run, not an IndexError (issue #93 / A3-OS-010).
+            create_db(self._db_path)
+            self._maybe_purge_stale(all_generated_names)
+            _persist_type_check_kills(self._db_path, type_checked_names)
+            for sfd in source_data_by_file.values():
+                sfd.save()
+            summary = MutationRunResult(
+                total_mutants=len(type_checked_names),
+                type_check_caught=len(type_checked_names),
+                duration_seconds=time.monotonic() - wall_start,
+            )
+            print(f"All {len(type_checked_names)} mutants caught by the type checker.")
+            if not self._no_progress:
+                _print_summary(summary)
+            return summary
 
         # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
@@ -193,10 +222,16 @@ class MutationOrchestrator:
         # Step 6 + 7: Run mutation tests via the pool executor.
         # ------------------------------------------------------------------
         create_db(self._db_path)
-        # Total includes the type-checker-caught mutants (already counted).
+        self._maybe_purge_stale(all_generated_names)
+        # Type-check kills go to the DB (issue #93 / A3-OS-003: they only
+        # ever flowed into the in-memory summary, so `results` and the CICD
+        # export diverged from the run gate forever) and into their OWN
+        # bucket — the score formula counts the kill class, buckets stay
+        # disjoint (#91).
+        _persist_type_check_kills(self._db_path, type_checked_names)
         summary = MutationRunResult(
             total_mutants=len(tasks_with_timeouts) + len(type_checked_names),
-            killed=len(type_checked_names),
+            type_check_caught=len(type_checked_names),
         )
         completed = 0
         total = len(tasks_with_timeouts)
@@ -222,6 +257,12 @@ class MutationOrchestrator:
             # any other exception used to leave workers and the queue feeder
             # alive, hanging the interpreter at exit.
             executor.shutdown(timeout=5.0 if interrupted else 10.0)
+
+        # Issue #94 / A3-OS-005: an aborted run must say so. The unprocessed
+        # remainder is excluded from the score denominator (a partial run is
+        # scored over what it checked) and keeps the sum invariant.
+        summary.was_interrupted = interrupted
+        summary.unchecked = max(0, total - completed)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
@@ -363,6 +404,23 @@ class MutationOrchestrator:
             )
 
         return all_tasks, source_data
+
+    def _maybe_purge_stale(self, all_generated_names: set[str]) -> None:
+        """Purge DB rows of mutants outside the current generation set.
+
+        Only acts when the CLI opted in (full run, issue #96 / A3-OS-012);
+        logs the deleted count so the cleanup is visible, never silent.
+
+        Args:
+            all_generated_names: The complete, unfiltered generation set.
+        """
+        if not self._purge_stale_results:
+            return
+        from mutmut_win.db import delete_results_not_in
+
+        deleted = delete_results_not_in(self._db_path, all_generated_names)
+        if deleted:
+            print(f"Purged {deleted} stale result rows (mutants no longer generated).")
 
     def _gather_coverage(
         self,
@@ -544,8 +602,9 @@ def _filter_with_type_checker(
         FailedTypeCheckMutant,
         MutatedMethodsCollector,
         group_by_path,
+        to_mutants_relative,
     )
-    from mutmut_win.type_checking import run_type_checker
+    from mutmut_win.type_checking import TypeCheckingError, run_type_checker
 
     caught: set[str] = set()
 
@@ -563,7 +622,24 @@ def _filter_with_type_checker(
     if not errors:
         return tasks, caught
 
-    errors_by_path = group_by_path(errors)
+    # Normalize every checker-reported path to the mutants-relative form
+    # BEFORE grouping — mypy reports relative-to-mutants, pyright absolute,
+    # and the parsers bind some paths to the mutants cwd. Without this the
+    # derived names never matched the task names (issue #93 / A3-CM-002).
+    normalized: list[TypeCheckingError] = []
+    for error in errors:
+        mutants_rel = to_mutants_relative(error.file_path, mutants_dir)
+        if mutants_rel is None:
+            continue  # error outside mutants/ cannot belong to a mutant
+        normalized.append(
+            TypeCheckingError(
+                file_path=mutants_rel,
+                line_number=error.line_number,
+                error_description=error.error_description,
+            )
+        )
+
+    errors_by_path = group_by_path(normalized)
     mutants_to_skip: dict[str, FailedTypeCheckMutant] = {}
 
     for path, errors_of_file in errors_by_path.items():
@@ -591,20 +667,18 @@ def _filter_with_type_checker(
                 # Error outside any mutated method — skip (don't crash)
                 continue
 
-            try:
-                rel_path = path.relative_to(Path().absolute())
-            except ValueError:
-                rel_path = path
-            mutant_name = get_mutant_name(rel_path, mutant.function_name)
-
+            mutant_name = get_mutant_name(path, mutant.function_name)
             mutants_to_skip[mutant_name] = FailedTypeCheckMutant(
                 method_location=mutant,
                 name=mutant_name,
                 error=error,
             )
 
-    # Remove caught mutants from tasks and update source_data.
-    caught = set(mutants_to_skip.keys())
+    # Only mutants that are part of THIS run count as caught — without the
+    # intersection, subset runs (--mutant-names/--since-commit) booked
+    # foreign mutants into their score (issue #93 / A3-OS-009).
+    task_names = {t.mutant_name for t in tasks}
+    caught = set(mutants_to_skip.keys()) & task_names
     remaining = [t for t in tasks if t.mutant_name not in caught]
     for mutant_name in caught:
         _update_source_data(
@@ -615,6 +689,17 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
+    """Write one ``caught by type check`` row per caught mutant (issue #93).
+
+    Args:
+        db_path: Path to the SQLite result cache (must already exist).
+        caught_names: Fully qualified names of the caught mutants.
+    """
+    for name in sorted(caught_names):
+        save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
 
 
 def _update_summary_and_persist(
@@ -697,6 +782,18 @@ def _increment_summary(summary: MutationRunResult, status: str) -> None:
             summary.skipped += 1
         case "no tests":
             summary.no_tests += 1
+        case "segfault":
+            summary.segfault += 1
+        case _:
+            # Issue #91 / A2-EW-004: no status may ever count toward the
+            # total without a visible bucket again. Unknown statuses land
+            # in suspicious — loudly, not silently.
+            summary.suspicious += 1
+            print(
+                f"Warning: unknown mutant status {status!r} counted as "
+                f"suspicious — the status map and the summary buckets have "
+                f"drifted apart."
+            )
 
 
 def _update_source_data(
@@ -759,12 +856,21 @@ def _print_summary(result: MutationRunResult) -> None:
         result: Completed ``MutationRunResult`` to display.
     """
     print("\n--- Mutation Testing Summary ---")
+    if result.was_interrupted:
+        checked = result.total_mutants - result.unchecked
+        print(f"INTERRUPTED   : checked {checked} of {result.total_mutants} mutants")
     print(f"Total mutants : {result.total_mutants}")
     print(f"Killed        : {result.killed}")
+    if result.type_check_caught:
+        print(f"Type-check    : {result.type_check_caught}")
+    if result.segfault:
+        print(f"Segfault      : {result.segfault}")
     print(f"Survived      : {result.survived}")
     print(f"Timeout       : {result.timeout}")
     print(f"Suspicious    : {result.suspicious}")
     print(f"Skipped       : {result.skipped}")
     print(f"No tests      : {result.no_tests}")
+    if result.unchecked:
+        print(f"Unchecked     : {result.unchecked}")
     print(f"Score         : {result.score:.1f}%")
     print(f"Duration      : {result.duration_seconds:.1f}s")

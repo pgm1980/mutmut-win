@@ -33,6 +33,12 @@ _MAX_DIAGNOSTIC_LINES: int = 50
 #: Per worker process, so a long run prints it once per worker, not per task.
 _window_hint_emitted: bool = False
 
+#: Exit codes whose outcome needs no diagnostic log tail: clean survive (0),
+#: regular kill (1), no tests (5/33), skipped (34). Everything else —
+#: collection errors (2), pytest internal errors (3), suspicious (35),
+#: crashes (NTSTATUS) — gets its last output captured (issue #91).
+_QUIET_EXIT_CODES: frozenset[int] = frozenset({0, 1, 5, 33, 34})
+
 
 def worker_main(
     task_queue: multiprocessing.queues.Queue[dict[str, object] | None],
@@ -276,8 +282,12 @@ def _process_task(
                 monitor.shutdown()
         if log_fd >= 0:
             os.close(log_fd)
-        # Read diagnostics for suspicious exits (if not already read).
-        if exit_code == 35 and last_output is None:
+        # Read diagnostics for every anomalous exit (if not already read by
+        # the timeout path). Issue #91: exit 2 is a collection-error kill and
+        # NTSTATUS codes are crashes — their forensics ARE the pytest output;
+        # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
+        # diagnostic value.
+        if exit_code not in _QUIET_EXIT_CODES and last_output is None:
             last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
         with contextlib.suppress(OSError):
             log_path.unlink()

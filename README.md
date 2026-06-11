@@ -94,6 +94,10 @@ max_children = 8                 # Worker processes (default: CPU count)
 do_not_mutate = ["**/migrations/*"]
 also_copy = ["fixtures/"]
 extra_paths = ["benchmarks/"]    # Sibling packages: copied into mutants/ + on worker PYTHONPATH
+# Only mutate lines your tests execute (reactivated in v2.9.0 via a subprocess
+# coverage bridge). Limit: code exercised only in test-spawned subprocesses or
+# pytest-xdist workers is invisible to the measurement — the run fails loudly
+# instead of silently filtering everything.
 mutate_only_covered_lines = false
 type_check_command = ["mypy", "src/"]
 

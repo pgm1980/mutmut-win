@@ -512,9 +512,17 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 | 28 / v2.6.0 | C1 + C2 | CM-001, UI-001/002/003; MT-001…007, NM-001…007/009, RX-001 (Details: `sprint_28_backlog.md`) |
 | 29 / v2.7.0 | C3 + C4 | EW-001/002/007/008, JT-005, QX-008; JT-003 (≡EW-003/QX-002), EW-009, BUG-2, RN-005b, JT-008/JT-013 (timeout.py gelöscht) (Details: `sprint_29_backlog.md`) |
 | 30 / v2.8.0 | C5 | **#85**: JT-004 (Forensik-Persistenz). **#86**: OS-002 (CICD-IL-Bucket, Drei-Kanal-Konsistenz). **#87**: UI-004 (`show`-Forensik-Panel, NULL-safe), UI-008 (Browser-IL: Emoji-Map = constants-Alias, Kill-Filter, match-Case). **#88**: JT-001/EW-010 (running_ratio via `status_signal_available` vom Aufrufer deklariert, win32 → False), JT-002 (PYTHONUNBUFFERED=1 + Output-Growth nur über messbare Samples), JT-009 (`MIN_SAMPLES_FOR_VERDICT=5`), JT-010 (`output_threshold gt=0`, config + IlThresholds), JT-011 (run()-Catch-All + `sampler_errors`-Forensikfeld), JT-012 (daemon via `super().__init__`), JT-014 (Snapshot-Cutoff relativ zum letzten Sample), JT-015 (stat-Fehler → `output_bytes=None` statt 0), JT-018-Residual (window≥timeout/2-Hinweis, einmalig pro Worker). Neue Confidence-Semantik: 2-Signal-Verdicts auf „medium" gekappt — monoton verschärfend, non-breaking da Forensik vor #85 nie persistiert wurde. **#89**: io_counters-Progress-Veto (Spike-Ergebnis unten; `IlSample.io_ops`, `IO_OPS_PROGRESS_THRESHOLD=100`, Forensik `io_ops_delta`). |
+| 31 / v2.9.0 | C6 + C7 | **#91**: EW-020 (−24-Dublette aufgelöst → timeout; 0xC0000005/0xC00000FD/0xC0000409 → segfault; AST-Dubletten-Test), QX-025 (Exit 2 → killed, Design-CoT; Worker captured Log-Tail für ALLE anomalen Exits), EW-004 (segfault-Bucket, Catch-All laut, Summen-Invarianten-Test; Score-Formel = Kill-Klasse killed+type_check_caught+segfault in allen drei Kanälen), UI-009 (results rendert generisch jeden vorkommenden Status). **#92**: CM-008 (Basename-Erkennung — mypy.exe/uv run mypy brachen den Lauf ab), CM-010 (timeout 300s, returncode-Prüfung — mypy-Exit-2 ließ stdout leer = stiller 0-Filter, errors=replace), CM-011 (pyright-Severity-Filter). **#93**: CM-002 (kanonische `to_mutants_relative`-Normalisierung — Matching traf vorher NIE), OS-009 (caught ∩ Task-Menge), OS-003 (Type-Check-Kills persistiert, eigenes type_check_caught-Bucket), OS-010 (100 %-caught = legitimer Erfolgslauf), E2E mit echtem mypy. **#94**: OS-005 (was_interrupted + unchecked, Score über Geprüfte, Exit 130, Gate-Skip). **#95**: CM-003/OS-011 (Coverage reaktiviert via Subprozess-Brücke, laute Fehlerpfade), CM-013 (normcase-Keying; Spike unten). **#96**: OS-012-Orphan-Teil (Purge-bei-Voll-Lauf, sichere Default-Polarität; Reste → C8). **#97**: OS-014 (score als computed_field im JSON), OS-026 (0-Mutanten-Gate kommuniziert fail-closed). |
 
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
+
+**OS-012-Reststand nach Sprint 31/#96 (→ C8):** Der Orphan-Teil ist
+behoben (Purge-bei-Voll-Lauf). Offen bleiben: (a) mtime-only-Invalidierung
+in file_setup übersieht Restores mit altem Timestamp (Hash-basierte
+Invalidierung wäre der Fix — Cache-Hygiene); (b) verwaiste
+`.meta`-Dateien gelöschter Quelldateien (Datei-Lifecycle, der Browser
+liest sie weiter).
 
 **Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
 1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
@@ -551,6 +559,25 @@ io-Aktivität ist damit ein einseitiges **Progress-Veto**: Δ io-ops >
 den das st_size-Signal nicht sieht — Tests, die in Dateien/Sockets statt
 stdout schreiben). Veto-only: kann IL nur verhindern, nie erzeugen;
 unmessbar (macOS, AccessDenied) = neutral. Forensik: `io_ops_delta`.
+
+### Spike-Ergebnis #95: Coverage-Subprozess-Brücke (2026-06-11, Sprint 31)
+
+Messung (`_issues/spike_coverage_bridge.py`): `coverage run
+--data-file=<mutants>/.coverage.mutmut --source=. -m pytest` mit
+cwd=mutants schreibt ein Datafile, das der Parent via
+`Coverage(data_file=…).load()` sauber liest (mod.py → covered [1,2,5];
+never_called-Body korrekt NICHT covered). **Zeilen-Referenzsystem ist by
+construction konsistent**: Der Coverage-Schritt läuft nach copy_src_dir,
+aber VOR der Trampolinisierung — mutants/ enthält unmutierte 1:1-Kopien
+mit Original-Zeilennummern. **CM-013 live bestätigt**: `lines()` mit
+case-abweichendem Laufwerksbuchstaben → None; Fix = normcase-Keying
+beidseitig. **Entscheid (8-Schritt-CoT): JA, reaktiviert** —
+`runner.run_coverage_collection` + gather_coverage-Neufassung mit lauten
+Fehlerpfaden statt stillem „0 Mutanten"; tote Kompat-API
+(prepare_main_test_run/run_tests, In-Process-Modul-Unloading) entfernt.
+Dokumentierte Grenze: Code, der nur in test-gespawnten Subprozessen/
+xdist-Workern läuft, ist unmessbar → Leerheits-Guard wirft mit Hinweis.
+CM-003 ✅, CM-013 ✅, OS-011 ✅.
 
 ---
 
