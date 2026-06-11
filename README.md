@@ -88,6 +88,8 @@ All configuration goes in `pyproject.toml` under `[tool.mutmut]` (compatible wit
 paths_to_mutate = ["src/"]
 tests_dir = ["tests/"]
 timeout_multiplier = 30          # Wall-clock timeout factor (default: 30)
+clean_run_timeout = 300          # Timeout (s) for the clean baseline / stats runs (v2.6.0+)
+forced_fail_timeout = 120        # Timeout (s) for the forced-fail verification (v2.6.0+)
 max_children = 8                 # Worker processes (default: CPU count)
 do_not_mutate = ["**/migrations/*"]
 also_copy = ["fixtures/"]

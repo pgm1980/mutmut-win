@@ -6,6 +6,12 @@ CLASS_NAME_SEPARATOR = "ǁ"
 def create_trampoline_lookup(*, orig_name: str, mutants: list[str], class_name: str | None) -> str:
     """Generate source code for the mutants dict and __name__ assignment.
 
+    The generated statements live at MODULE level (issue #77): a dict inside
+    a class body is no descriptor, so ``enum.Enum`` turned it into a phantom
+    member, and the former ``ClassVar[...]`` annotation crashed ``NamedTuple``
+    creation (audit A1-MT-004/005).  For methods the dict values and the
+    ``__name__`` target are therefore qualified with ``<ClassName>.``.
+
     Args:
         orig_name: The original (unmangled) function name.
         mutants: List of mangled mutant function names.
@@ -15,15 +21,16 @@ def create_trampoline_lookup(*, orig_name: str, mutants: list[str], class_name: 
         Python source code string for the trampoline lookup table.
     """
     mangled_name = mangle_function_name(name=orig_name, class_name=class_name)
+    qualifier = f"{class_name}." if class_name else ""
 
     mutants_dict = (
-        f"{mangled_name}__mutmut_mutants : ClassVar[MutantDict] = {{ # type: ignore\n"
-        + ", \n    ".join(f"{m!r}: {m}" for m in mutants)
+        f"{mangled_name}__mutmut_mutants : MutantDict = {{ # type: ignore\n"
+        + ", \n    ".join(f"{m!r}: {qualifier}{m}" for m in mutants)
         + "\n}"
     )
     return f"""
 {mutants_dict}
-{mangled_name}__mutmut_orig.__name__ = '{mangled_name}'
+{qualifier}{mangled_name}__mutmut_orig.__name__ = '{mangled_name}'
 """
 
 

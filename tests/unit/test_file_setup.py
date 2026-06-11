@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mutmut_win.config import MutmutConfig
+
+if TYPE_CHECKING:
+    import pytest
 from mutmut_win.file_setup import (
     copy_also_copy_files,
     copy_src_dir,
@@ -40,36 +43,41 @@ _SIMPLE_SOURCE = "def add(a, b):\n    return a + b\n"
 
 
 class TestWalkAllFiles:
-    def test_walks_directory(self, tmp_path: Path) -> None:
+    def test_walks_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "a.py").write_text("", encoding="utf-8")
         (tmp_path / "b.txt").write_text("", encoding="utf-8")
 
-        cfg = _config(paths_to_mutate=[str(tmp_path)])
+        cfg = _config(paths_to_mutate=["."])
         files = list(walk_all_files(cfg))
         filenames = [f for _, f in files]
         assert "a.py" in filenames
         assert "b.txt" in filenames
 
-    def test_single_file_path(self, tmp_path: Path) -> None:
-        f = tmp_path / "single.py"
-        f.write_text("", encoding="utf-8")
+    def test_single_file_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "single.py").write_text("", encoding="utf-8")
 
-        cfg = _config(paths_to_mutate=[str(f)])
+        cfg = _config(paths_to_mutate=["single.py"])
         results = list(walk_all_files(cfg))
         assert len(results) == 1
-        assert results[0] == ("", str(f))
+        assert results[0] == ("", "single.py")
 
-    def test_nonexistent_path_yields_nothing(self, tmp_path: Path) -> None:
-        cfg = _config(paths_to_mutate=[str(tmp_path / "does_not_exist")])
+    def test_nonexistent_path_yields_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        cfg = _config(paths_to_mutate=["does_not_exist"])
         results = list(walk_all_files(cfg))
         assert results == []
 
-    def test_nested_directories(self, tmp_path: Path) -> None:
+    def test_nested_directories(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         sub = tmp_path / "sub"
         sub.mkdir()
         (sub / "nested.py").write_text("", encoding="utf-8")
 
-        cfg = _config(paths_to_mutate=[str(tmp_path)])
+        cfg = _config(paths_to_mutate=["."])
         files = list(walk_all_files(cfg))
         filenames = [f for _, f in files]
         assert "nested.py" in filenames
@@ -81,21 +89,27 @@ class TestWalkAllFiles:
 
 
 class TestWalkSourceFiles:
-    def test_yields_only_py_files(self, tmp_path: Path) -> None:
+    def test_yields_only_py_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "a.py").write_text("", encoding="utf-8")
         (tmp_path / "b.txt").write_text("", encoding="utf-8")
         (tmp_path / "c.pyi").write_text("", encoding="utf-8")
 
-        cfg = _config(paths_to_mutate=[str(tmp_path)])
+        cfg = _config(paths_to_mutate=["."])
         paths = list(walk_source_files(cfg))
         names = [p.name for p in paths]
         assert "a.py" in names
         assert "b.txt" not in names
         assert "c.pyi" not in names
 
-    def test_returns_path_objects(self, tmp_path: Path) -> None:
+    def test_returns_path_objects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         (tmp_path / "x.py").write_text("", encoding="utf-8")
-        cfg = _config(paths_to_mutate=[str(tmp_path)])
+        cfg = _config(paths_to_mutate=["."])
         paths = list(walk_source_files(cfg))
         assert all(isinstance(p, Path) for p in paths)
 

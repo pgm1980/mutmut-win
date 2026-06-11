@@ -1,5 +1,6 @@
 """This module contains the mutations for individual nodes, e.g. replacing a != b with a == b."""
 
+import math
 import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
@@ -23,9 +24,18 @@ def operator_number(
 ) -> Iterable[cst.BaseNumber]:
     """Mutate numeric literals by incrementing their value."""
     if isinstance(node, (cst.Integer, cst.Float)):
-        yield node.with_changes(value=repr(node.evaluated_value + 1))
+        new_value = node.evaluated_value + 1
+        # 1e400 is a legal literal evaluating to inf, but repr(inf) is not a
+        # valid float token — with_changes would raise CSTValidationError and
+        # kill mutant generation for the whole file (issue #78 / A1-NM-007).
+        if isinstance(new_value, float) and not math.isfinite(new_value):
+            return
+        yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
-        yield node.with_changes(value=repr(node.evaluated_value + 1j))
+        new_imag = node.evaluated_value + 1j
+        if not (math.isfinite(new_imag.real) and math.isfinite(new_imag.imag)):
+            return
+        yield node.with_changes(value=repr(new_imag))
     else:
         print("Unexpected number type", node)
 
@@ -78,10 +88,15 @@ def operator_dict_arguments(
     if not m.matches(node.func, m.Name(value="dict")):
         return
 
+    existing_keywords = {arg.keyword.value for arg in node.args if arg.keyword}
     for i, arg in enumerate(node.args):
         if not arg.keyword:
             return
         keyword = arg.keyword
+        if keyword.value + "XX" in existing_keywords:
+            # dict(a=1, aXX=2): mutating ``a`` would duplicate the existing
+            # ``aXX`` keyword — a SyntaxError mutant (issue #78 / A1-NM-009).
+            continue
         mutated_keyword = keyword.with_changes(value=keyword.value + "XX")
         mutated_args = [
             *node.args[:i],
@@ -157,12 +172,67 @@ def operator_unsymmetrical_string_methods_swap(
                 yield node.with_deep_changes(func_name, value=new_call)
 
 
+#: Expression types that can safely replace their enclosing node bare: they
+#: bind at least as tightly as a call and cannot carry hanging continuation
+#: lines unless already parenthesized (then the lpar check applies anyway).
+_ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
+    cst.Name,
+    cst.Integer,
+    cst.Float,
+    cst.Imaginary,
+    cst.SimpleString,
+    cst.ConcatenatedString,
+    cst.FormattedString,
+    cst.Call,
+    cst.Attribute,
+    cst.Subscript,
+    cst.List,
+    cst.Dict,
+    cst.Set,
+    cst.ListComp,
+    cst.SetComp,
+    cst.DictComp,
+    cst.Tuple,
+)
+
+
+def _safe_unwrap(expression: cst.BaseExpression) -> cst.BaseExpression:
+    """Make *expression* safe to stand alone where its enclosing node was.
+
+    Operators of the "yield a sub-expression" family (collection/math
+    neutralise, or-default, unary removal, conditional expression) replace a
+    node by one of its children.  The child loses its parent's parentheses,
+    which broke in three ways (issue #73, audit A1-NM-001…006, downstream
+    BUG-1):
+
+    - a sole-argument generator expression borrowed the call's parens —
+      yielding it bare is a SyntaxError;
+    - multi-line operands relied on the parent's parens to legalise their
+      newlines — stranded continuation lines are a SyntaxError;
+    - lower-precedence expressions rebind in the surrounding context
+      (``list(a or b)[0]`` → ``a or b[0]``) — valid code, wrong mutant.
+
+    All three are cured the same way: give the child its own parentheses.
+    Atomic single-line expressions stay bare to keep mutant diffs minimal.
+    """
+    if getattr(expression, "lpar", None):
+        return expression
+    rendered_multiline = "\n" in cst.Module(body=[]).code_for_node(expression)
+    if (
+        isinstance(expression, cst.GeneratorExp)
+        or not isinstance(expression, _ATOMIC_UNWRAP_TYPES)
+        or rendered_multiline
+    ):
+        return expression.with_changes(lpar=[cst.LeftParen()], rpar=[cst.RightParen()])
+    return expression
+
+
 def operator_remove_unary_ops(
     node: cst.UnaryOperation,
 ) -> Iterable[cst.BaseExpression]:
     """Remove unary Not and BitInvert operators."""
     if isinstance(node.operator, (cst.Not, cst.BitInvert)):
-        yield node.expression
+        yield _safe_unwrap(node.expression)
 
 
 _keyword_mapping: dict[type[cst.CSTNode], type[cst.CSTNode]] = {
@@ -392,7 +462,7 @@ def operator_math_methods(node: cst.Call) -> Iterable[cst.CSTNode]:
 
     # Neutralise to first argument (abs(x)→x, round(x)→x)
     if func_name in _MATH_NEUTRALIZE_TO_ARG and node.args:
-        yield node.args[0].value
+        yield _safe_unwrap(node.args[0].value)
 
     # Neutralise to zero (sum(x)→0)
     if func_name in _MATH_NEUTRALIZE_TO_ZERO:
@@ -430,8 +500,8 @@ def operator_conditional_expression(node: cst.IfExp) -> Iterable[cst.BaseExpress
 
     Tests whether both branches of a ternary expression are actually needed.
     """
-    yield node.body  # always true-branch
-    yield node.orelse  # always false-branch
+    yield _safe_unwrap(node.body)  # always true-branch
+    yield _safe_unwrap(node.orelse)  # always false-branch
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +581,7 @@ def operator_collection_neutralize(node: cst.Call) -> Iterable[cst.CSTNode]:
         return
     if not node.args:
         return
-    yield node.args[0].value
+    yield _safe_unwrap(node.args[0].value)
 
 
 def operator_comprehension_filter_removal(
@@ -541,30 +611,10 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     """
     if not isinstance(node.operator, cst.Or):
         return
-    if _is_multiline_boolean_op(node):
-        # Bug #68: in multi-line continuations like ``if (\n  A\n  or B\n):``
-        # the outer ``BooleanOperation`` represents ``(A or B) or C`` and the
-        # ``or`` token is preceded by a newline. Yielding ``node.left`` (the
-        # inner ``(A or B)``) drops the enclosing parentheses but keeps the
-        # original whitespace, leaving stranded continuation operand lines that
-        # don't parse. The single-line ``a or b`` case is unaffected.
-        return
-    yield node.left  # remove fallback
-    yield node.right  # always use fallback
-
-
-def _is_multiline_boolean_op(node: cst.BooleanOperation) -> bool:
-    """True if the ``BooleanOperation`` straddles a line boundary.
-
-    The whitespace nodes live on the ``operator`` token (``cst.Or`` / ``cst.And``)
-    via their ``whitespace_before`` / ``whitespace_after`` fields. libcst encodes
-    a line continuation as ``ParenthesizedWhitespace`` (vs. ``SimpleWhitespace``
-    for inline runs).
-    """
-    op = node.operator
-    return isinstance(op.whitespace_before, cst.ParenthesizedWhitespace) or isinstance(
-        op.whitespace_after, cst.ParenthesizedWhitespace
-    )
+    # Bug #68 / issue #73: multi-line operands used to be skipped entirely;
+    # _safe_unwrap parenthesizes them instead, so the mutants exist AND parse.
+    yield _safe_unwrap(node.left)  # remove fallback
+    yield _safe_unwrap(node.right)  # always use fallback
 
 
 # Operators that should be called on specific node types

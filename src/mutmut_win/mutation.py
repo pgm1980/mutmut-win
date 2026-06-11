@@ -3,6 +3,7 @@
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import libcst as cst
 import libcst.matchers as m
@@ -11,7 +12,16 @@ from libcst.metadata import MetadataWrapper, PositionProvider
 from mutmut_win.node_mutation import OPERATORS_TYPE, mutation_operators
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
 
-NEVER_MUTATE_FUNCTION_NAMES = {"__getattribute__", "__setattr__", "__new__"}
+NEVER_MUTATE_FUNCTION_NAMES = {
+    "__getattribute__",
+    "__setattr__",
+    "__new__",
+    # Implicit classmethods: their first parameter is the CLASS, and
+    # ``object.__getattribute__(cls, …)`` does not search a class's MRO —
+    # the trampoline cannot dispatch them (issue #76 / A1-MT-001).
+    "__init_subclass__",
+    "__class_getitem__",
+}
 NEVER_MUTATE_FUNCTION_CALLS = {"len", "isinstance"}
 
 
@@ -300,10 +310,11 @@ def combine_mutations_to_source(
             if not func_mutants:
                 result.append(func)
                 continue
-            nodes, mutant_names = function_trampoline_arrangement(
+            nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
                 func, func_mutants, class_name=None
             )
             result.extend(nodes)
+            result.extend(lookup_nodes)
             mutation_names.extend(mutant_names)
         elif isinstance(statement, cst.ClassDef):
             cls = statement
@@ -312,18 +323,28 @@ def combine_mutations_to_source(
                 result.append(cls)
             else:
                 mutated_body = []
+                # Lookup dicts go AFTER the class at module level (issue #77).
+                class_lookup_nodes: list[MODULE_STATEMENT] = []
                 for method in cls.body.body:
                     method_mutants = mutations_within_function.get(method)
                     if not isinstance(method, cst.FunctionDef) or not method_mutants:
                         mutated_body.append(method)
                         continue
-                    nodes, mutant_names = function_trampoline_arrangement(
+                    if not (method.params.posonly_params or method.params.params):
+                        # ``def m(*args)``-style methods have no named first
+                        # parameter the wrapper could bind the instance to —
+                        # leave them unmutated (issue #76 / A1-MT-001/003).
+                        mutated_body.append(method)
+                        continue
+                    nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
                         method, method_mutants, class_name=cls.name.value
                     )
                     mutated_body.extend(nodes)
+                    class_lookup_nodes.extend(lookup_nodes)
                     mutation_names.extend(mutant_names)
 
                 result.append(cls.with_changes(body=cls.body.with_changes(body=mutated_body)))
+                result.extend(class_lookup_nodes)
         else:
             result.append(statement)
 
@@ -335,10 +356,16 @@ def function_trampoline_arrangement(
     function: cst.FunctionDef,
     mutants: Iterable[Mutation],
     class_name: str | None,
-) -> tuple[Sequence[MODULE_STATEMENT], Sequence[str]]:
+) -> tuple[Sequence[MODULE_STATEMENT], Sequence[MODULE_STATEMENT], Sequence[str]]:
     """Create mutated functions and a trampoline that switches between versions.
 
-    :return: A tuple of (nodes, mutant names)"""
+    The lookup statements (mutants dict + ``__name__`` assignment) are
+    returned separately: they must be emitted at MODULE level — for methods
+    AFTER the class definition — because a dict in a class body becomes an
+    ``enum.Enum`` member and its annotation broke ``NamedTuple`` (issue #77).
+
+    :return: A tuple of (nodes for the original scope, module-level lookup
+        nodes, mutant names)"""
     nodes: list[MODULE_STATEMENT] = []
     mutant_names: list[str] = []
 
@@ -360,34 +387,44 @@ def function_trampoline_arrangement(
         mutated_method = deep_replace(mutated_method, mutant.original_node, mutant.mutated_node)
         nodes.append(mutated_method)  # type: ignore[arg-type]
 
-    mutants_dict = list(
+    lookup_nodes = list(
         cst.parse_module(
             create_trampoline_lookup(orig_name=name, mutants=mutant_names, class_name=class_name)
         ).body
     )
-    mutants_dict[0] = mutants_dict[0].with_changes(leading_lines=[cst.EmptyLine()])
+    lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
-    nodes.extend(mutants_dict)
-
-    return nodes, mutant_names
+    return nodes, lookup_nodes, mutant_names
 
 
 def create_trampoline_wrapper(
     function: cst.FunctionDef, mangled_name: str, class_name: str | None
 ) -> cst.FunctionDef:
-    """Create a trampoline wrapper function that dispatches to original or mutant."""
+    """Create a trampoline wrapper function that dispatches to original or mutant.
+
+    Codegen safety (issue #76): the instance/class argument is referenced by
+    its REAL first-parameter name (``cls`` for ``__init_subclass__``,
+    ``this``, … — the old hardcoded ``self`` raised NameError in the clean
+    run, A1-MT-001); wrapper locals are prefixed so user parameters named
+    ``args``/``kwargs`` cannot collide (A1-MT-002); ``*args`` is forwarded
+    intact (A1-MT-003); async generators get a plain ``def`` wrapper that
+    returns the generator object untouched so ``asend``/``athrow`` keep
+    working (A1-MT-006).  Callers guarantee that methods have a named first
+    parameter (others are left unmutated).
+    """
+    named_params = [*function.params.posonly_params, *function.params.params]
+    self_name = named_params[0].name.value if class_name is not None else None
+
+    forwarded_params = named_params[1:] if class_name is not None else named_params
     args: list[cst.Element | cst.StarredElement] = [
-        cst.Element(p.name) for p in function.params.posonly_params
+        cst.Element(p.name) for p in forwarded_params
     ]
-    args.extend(cst.Element(p.name) for p in function.params.params)
     if isinstance(function.params.star_arg, cst.Param):
         args.append(cst.StarredElement(function.params.star_arg.name))
 
-    if class_name is not None:
-        # remove self arg (handled by the trampoline function)
-        args = args[1:]
-
-    args_assignemnt = cst.Assign([cst.AssignTarget(cst.Name(value="args"))], cst.List(args))
+    args_assignemnt = cst.Assign(
+        [cst.AssignTarget(cst.Name(value="_mutmut_args"))], cst.List(args)
+    )
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
         cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)
@@ -396,49 +433,47 @@ def create_trampoline_wrapper(
     if isinstance(function.params.star_kwarg, cst.Param):
         kwargs.append(cst.StarredDictElement(function.params.star_kwarg.name))
 
-    kwargs_assignment = cst.Assign([cst.AssignTarget(cst.Name(value="kwargs"))], cst.Dict(kwargs))
+    kwargs_assignment = cst.Assign(
+        [cst.AssignTarget(cst.Name(value="_mutmut_kwargs"))], cst.Dict(kwargs)
+    )
 
     def _get_local_name(func_name: str) -> cst.BaseExpression:
         # for top level, simply return the name
         if class_name is None:
             return cst.Name(func_name)
-        # for class methods, use object.__getattribute__(self, name)
+        # for class methods, use object.__getattribute__(<first param>, name)
         return cst.Call(
             func=cst.Attribute(cst.Name("object"), cst.Name("__getattribute__")),
-            args=[cst.Arg(cst.Name("self")), cst.Arg(cst.SimpleString(f"'{func_name}'"))],
+            args=[
+                cst.Arg(cst.Name(cast("str", self_name))),
+                cst.Arg(cst.SimpleString(f"'{func_name}'")),
+            ],
         )
 
     result: cst.BaseExpression = cst.Call(
         func=cst.Name("_mutmut_trampoline"),
         args=[
             cst.Arg(_get_local_name(f"{mangled_name}_orig")),
-            cst.Arg(_get_local_name(f"{mangled_name}_mutants")),
-            cst.Arg(cst.Name("args")),
-            cst.Arg(cst.Name("kwargs")),
-            cst.Arg(cst.Name("None" if class_name is None else "self")),
+            # The mutants dict lives at module level (issue #77), so it is
+            # resolved as a global name even from inside a method body.
+            cst.Arg(cst.Name(f"{mangled_name}_mutants")),
+            cst.Arg(cst.Name("_mutmut_args")),
+            cst.Arg(cst.Name("_mutmut_kwargs")),
+            cst.Arg(cst.Name("None" if self_name is None else self_name)),
         ],
     )
-    # for non-async functions, simply return the value or generator
+    # For sync functions (and async generators, see below) simply return the
+    # value or generator object.
     result_statement: cst.BaseStatement = cst.SimpleStatementLine([cst.Return(result)])
 
-    if function.asynchronous:
-        is_generator = _is_generator(function)
-        if is_generator:
-            result_statement = cst.For(
-                target=cst.Name("i"),
-                iter=result,
-                body=cst.IndentedBlock(
-                    [cst.SimpleStatementLine([cst.Expr(cst.Yield(cst.Name("i")))])]
-                ),
-                asynchronous=cst.Asynchronous(),
-            )
-        else:
-            result_statement = cst.SimpleStatementLine([cst.Return(cst.Await(result))])
+    async_generator = bool(function.asynchronous) and _is_generator(function)
+    if function.asynchronous and not async_generator:
+        result_statement = cst.SimpleStatementLine([cst.Return(cst.Await(result))])
 
     type_ignore_whitespace = cst.TrailingWhitespace(comment=cst.Comment("# type: ignore"))
 
-    return function.with_changes(
-        body=cst.IndentedBlock(
+    wrapper_changes: dict[str, object] = {
+        "body": cst.IndentedBlock(
             [
                 cst.SimpleStatementLine(
                     [args_assignemnt], trailing_whitespace=type_ignore_whitespace
@@ -449,7 +484,14 @@ def create_trampoline_wrapper(
                 result_statement,
             ],
         ),
-    )
+    }
+    if async_generator:
+        # A sync wrapper returning the async-generator object preserves the
+        # full protocol; re-yielding via ``async for`` swallowed ``asend()``
+        # values and bypassed ``athrow()`` (issue #76 / A1-MT-006).
+        wrapper_changes["asynchronous"] = None
+
+    return function.with_changes(**wrapper_changes)
 
 
 def get_statements_until_func_or_class(

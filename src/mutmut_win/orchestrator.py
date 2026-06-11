@@ -146,7 +146,17 @@ class MutationOrchestrator:
         print("Running clean test suite…")
         clean_exit = self._runner.run_clean_test()
         if clean_exit != 0:
-            msg = f"Clean test run failed with exit code {clean_exit}. Fix tests before mutating."
+            if clean_exit == EXIT_CODE_TIMEOUT:
+                msg = (
+                    f"Clean test run timed out after {self._config.clean_run_timeout}s. "
+                    "The trampolined suite in mutants/ runs slower than the native "
+                    "suite — raise [tool.mutmut].clean_run_timeout in pyproject.toml."
+                )
+            else:
+                msg = (
+                    f"Clean test run failed with exit code {clean_exit}. "
+                    "Fix tests before mutating."
+                )
             raise CleanTestFailedError(msg)
 
         # ------------------------------------------------------------------

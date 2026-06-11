@@ -162,6 +162,9 @@ def _is_valid_regex(pattern: str) -> bool:
     """Check if a pattern compiles as a valid regex."""
     try:
         re.compile(pattern)
-    except re.error:
+    except (re.error, OverflowError):
+        # Repetition counts >= 2**32-1 (e.g. ``a{4294967295}`` produced by the
+        # {n+1} mutation) raise OverflowError instead of re.error
+        # (issue #78 / A1-RX-001).
         return False
     return True

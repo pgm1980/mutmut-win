@@ -111,6 +111,24 @@ class MutmutConfig(BaseModel):
         gt=0.0,
         description="Multiplier for timeout calculation (mutmut default: 30x)",
     )
+    clean_run_timeout: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "Timeout (seconds) for the clean baseline and stats pytest runs "
+            "inside mutants/. The trampolined suite runs slower than the "
+            "native one — raise this for suites that need more than five "
+            "minutes. See issue #74."
+        ),
+    )
+    forced_fail_timeout: int = Field(
+        default=120,
+        gt=0,
+        description=(
+            "Timeout (seconds) for the forced-fail trampoline verification "
+            "run. See issue #74."
+        ),
+    )
     max_stack_depth: int = Field(
         default=-1,
         description="Maximum stack depth for mutations (-1 = unlimited)",
@@ -183,6 +201,35 @@ class MutmutConfig(BaseModel):
         if isinstance(v, str):
             return [v]
         return v
+
+    @field_validator("paths_to_mutate", mode="after")
+    @classmethod
+    def _reject_absolute_paths(cls, v: list[str]) -> list[str]:
+        """Reject absolute ``paths_to_mutate`` entries (issue #75 / A3-CM-001).
+
+        ``Path("mutants") / <absolute path>`` discards the left operand, so an
+        absolute entry would make the mutation engine write the trampoline
+        code INTO the original source file.  Entries under the current working
+        directory are silently relativized; anything else is an error.
+        """
+        safe: list[str] = []
+        for entry in v:
+            path = Path(entry)
+            if path.is_absolute():
+                try:
+                    path = path.relative_to(Path.cwd())
+                except ValueError as exc:
+                    msg = (
+                        f"paths_to_mutate entry {entry!r} is an absolute path "
+                        "outside the project root — use paths relative to the "
+                        "project root (absolute paths would let the mutants/ "
+                        "staging overwrite the original sources)"
+                    )
+                    raise ValueError(msg) from exc
+                safe.append(str(path))
+            else:
+                safe.append(entry)
+        return safe
 
     @field_validator("type_check_command", "pytest_add_cli_args", mode="before")
     @classmethod
@@ -272,6 +319,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
+        "clean_run_timeout": _get("clean_run_timeout", 300),
+        "forced_fail_timeout": _get("forced_fail_timeout", 120),
         "max_stack_depth": _get("max_stack_depth", -1),
         "debug": _get("debug", False),
         "mutate_only_covered_lines": _get("mutate_only_covered_lines", False),
