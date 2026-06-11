@@ -2,6 +2,13 @@
 
 from collections import defaultdict
 
+#: Environment variable read by the trampoline to select the mutant under
+#: test. Single source of truth (issue #110 / A4-QX-019) — runner.py and
+#: process/worker.py re-export it; the literal inside the trampoline
+#: TEMPLATE stays standalone by design (the generated artifact must not
+#: import mutmut_win for the env read) and is pinned against this value.
+MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
+
 # Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
 # deviations (issue #91, audit A2-EW-020 / A4-QX-025):
 #

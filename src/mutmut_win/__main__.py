@@ -4,26 +4,27 @@ from mutmut_win.cli import cli
 
 from mutmut_win.exceptions import MutmutProgrammaticFailException  # noqa: F401 — imported by trampoline_impl  # isort: skip
 
-#: Cached max_stack_depth value; ``None`` means not yet loaded.
-_cached_max_stack_depth: int | None = None
-
 
 def _get_max_stack_depth() -> int:
     """Return the configured max_stack_depth, caching after first load.
+
+    The cache lives in ``_state`` (issue #110 / A4-QX-017) so that
+    ``_reset_globals`` covers it together with the other trampoline state.
 
     Returns:
         The ``max_stack_depth`` value from the current project config.
         Returns ``-1`` (unlimited) if the config cannot be loaded.
     """
-    global _cached_max_stack_depth
-    if _cached_max_stack_depth is None:
+    from mutmut_win import _state
+
+    if _state._cached_max_stack_depth is None:
         try:
             from mutmut_win.config import load_config
 
-            _cached_max_stack_depth = load_config().max_stack_depth
+            _state._cached_max_stack_depth = load_config().max_stack_depth
         except Exception:  # broad catch: trampoline must not crash under any circumstance
-            _cached_max_stack_depth = -1
-    return _cached_max_stack_depth
+            _state._cached_max_stack_depth = -1
+    return _state._cached_max_stack_depth
 
 
 def record_trampoline_hit(name: str) -> None:

@@ -133,12 +133,11 @@ class TestRecordTrampolineHit:
         from unittest.mock import patch
 
         import mutmut_win.__main__ as _main
-        from mutmut_win._state import _stats
+        from mutmut_win._state import _reset_globals, _stats
 
-        # Reset the cache to force config reload.
-        _main._cached_max_stack_depth = None
-
-        _stats.clear()
+        # Issue #110 / QX-017: the depth cache lives in _state and resets
+        # with the rest — no manual cache poking anymore.
+        _reset_globals()
         with patch("mutmut_win.__main__._get_max_stack_depth", return_value=-1):
             _main.record_trampoline_hit("x_my_func")
         assert "x_my_func" in _stats
@@ -177,8 +176,9 @@ class TestRecordTrampolineHit:
         from unittest.mock import patch
 
         import mutmut_win.__main__ as _main
+        from mutmut_win._state import _reset_globals
 
-        _main._cached_max_stack_depth = None
+        _reset_globals()
         with patch("mutmut_win.config.load_config") as mock_load:
             from mutmut_win.config import MutmutConfig
 
@@ -190,5 +190,4 @@ class TestRecordTrampolineHit:
         assert depth1 == 5
         assert depth2 == 5
         mock_load.assert_called_once()
-        # Reset cache.
-        _main._cached_max_stack_depth = None
+        _reset_globals()

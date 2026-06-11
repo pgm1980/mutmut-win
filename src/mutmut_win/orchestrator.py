@@ -277,6 +277,22 @@ class MutationOrchestrator:
         # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
         tasks_with_timeouts.sort(key=lambda t: t.estimated_time)
 
+        # Issue #110 / DOG-002: the window-vs-timeout hint (A2-JT-018) is
+        # emitted here, ONCE per run — the previous per-worker guard meant
+        # N-fold spam on N worker processes. Compared against the SMALLEST
+        # budget: the most at-risk task — if the window doesn't cover half
+        # of that one, it covers half of none.
+        if self._config.infinite_loop_detection and tasks_with_timeouts:
+            window = self._config.infinite_loop_window_seconds
+            smallest_budget = min(t.timeout_seconds for t in tasks_with_timeouts)
+            if window >= smallest_budget / 2:
+                print(
+                    f"IL-MONITOR HINT: IL window covers >=50% of the smallest task "
+                    f"timeout ({window:.0f}s window vs {smallest_budget:.0f}s timeout). "
+                    f"First-sample CPU priming may dilute the mean; consider a smaller "
+                    f"infinite_loop_window_seconds."
+                )
+
         # ------------------------------------------------------------------
         # Step 6 + 7: Run mutation tests via the pool executor.
         # ------------------------------------------------------------------

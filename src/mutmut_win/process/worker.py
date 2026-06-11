@@ -18,20 +18,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT
+
+# Explicit re-export for BWC — single source of truth: constants (#110).
+from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 
 if TYPE_CHECKING:
     import multiprocessing.queues
 
-#: Environment variable checked by mutmut's trampoline to activate a mutant.
-MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
-
 #: Maximum number of pytest output lines to capture on timeout/suspicious.
 _MAX_DIAGNOSTIC_LINES: int = 50
-
-#: One-shot guard for the window-vs-timeout configuration hint (A2-JT-018).
-#: Per worker process, so a long run prints it once per worker, not per task.
-_window_hint_emitted: bool = False
 
 #: Exit codes whose outcome needs no diagnostic log tail: clean survive (0),
 #: regular kill (1), no tests (5/33), skipped (34). Everything else —
@@ -198,17 +194,9 @@ def _process_task(
     il_enabled = bool(config_data.get("infinite_loop_detection", True))
     il_thresholds = _build_il_thresholds(config_data)
     monitor: Any = None  # ProcessMonitor or None — Any avoids loop_monitor import
-    global _window_hint_emitted  # one-shot hint per worker process
-    window_covers_half = il_thresholds.window_seconds >= timeout_seconds / 2
-    if il_enabled and not _window_hint_emitted and window_covers_half:
-        _window_hint_emitted = True
-        print(
-            f"IL-MONITOR HINT: IL window covers >=50% of the task timeout "
-            f"({il_thresholds.window_seconds:.0f}s window vs {timeout_seconds:.0f}s timeout). "
-            f"First-sample CPU priming may dilute the mean; consider a smaller "
-            f"infinite_loop_window_seconds.",
-            flush=True,
-        )
+    # The window-vs-timeout configuration hint (A2-JT-018) is emitted by the
+    # orchestrator, once per RUN — a per-worker guard meant N-fold spam on
+    # N worker processes (issue #110 / DOG-002).
 
     start = time.monotonic()
     proc: subprocess.Popen[bytes] | None = None
