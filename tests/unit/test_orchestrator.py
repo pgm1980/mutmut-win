@@ -393,6 +393,103 @@ class TestMutationOrchestratorRunHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# MutationOrchestrator.run — type-check filter integration (#93)
+# ---------------------------------------------------------------------------
+
+
+def _setup_mini_project(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+
+def _executor_yielding_kills() -> tuple[MagicMock, list[MutationTask]]:
+    captured_tasks: list[MutationTask] = []
+    executor = MagicMock()
+    executor.start.side_effect = captured_tasks.extend
+
+    def fake_get_events() -> Any:
+        pid = os.getpid()
+        for task in captured_tasks:
+            yield TaskStarted(mutant_name=task.mutant_name, worker_pid=pid)
+            yield TaskCompleted(
+                mutant_name=task.mutant_name, worker_pid=pid, exit_code=1, duration=0.01
+            )
+
+    executor.get_events.side_effect = fake_get_events
+    return executor, captured_tasks
+
+
+class TestTypeCheckFilterIntegration:
+    def test_all_caught_is_a_successful_run_not_an_indexerror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A3-OS-010: all_tasks[0] after the filter crashed when the checker
+        # caught everything. 100% caught is a legitimate, successful run.
+        import mutmut_win.orchestrator as orch_module
+
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        def catch_everything(
+            tasks: list[MutationTask], _source_data: Any, _command: Any
+        ) -> tuple[list[MutationTask], set[str]]:
+            return [], {t.mutant_name for t in tasks}
+
+        monkeypatch.setattr(orch_module, "_filter_with_type_checker", catch_everything)
+        executor, _ = _executor_yielding_kills()
+        orch = MutationOrchestrator(
+            _config(paths_to_mutate=["src"], type_check_command=["mypy", "--output=json", "."]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "db",
+        )
+        result = orch.run()
+        assert result.total_mutants > 0
+        assert result.type_check_caught == result.total_mutants
+        assert result.score == pytest.approx(100.0)
+        executor.start.assert_not_called()  # nothing left to execute
+
+    def test_caught_mutants_are_persisted_and_counted_in_their_own_bucket(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A3-OS-003: type-check kills never reached the DB — results/CICD
+        # diverged from the run gate forever. They also flowed into `killed`
+        # while the dedicated type_check_caught field stayed orphaned at 0.
+        import mutmut_win.orchestrator as orch_module
+        from mutmut_win.db import load_results
+
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        def catch_first(
+            tasks: list[MutationTask], _source_data: Any, _command: Any
+        ) -> tuple[list[MutationTask], set[str]]:
+            return tasks[1:], {tasks[0].mutant_name}
+
+        monkeypatch.setattr(orch_module, "_filter_with_type_checker", catch_first)
+        executor, _ = _executor_yielding_kills()
+        db_path = tmp_path / "cache.db"
+        orch = MutationOrchestrator(
+            _config(paths_to_mutate=["src"], type_check_command=["mypy", "--output=json", "."]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=db_path,
+        )
+        result = orch.run()
+
+        assert result.type_check_caught == 1
+        assert result.killed == result.total_mutants - 1  # buckets disjoint
+        assert result.score == pytest.approx(100.0)
+
+        rows = {r.mutant_name: r for r in load_results(db_path)}
+        assert len(rows) == result.total_mutants  # caught row included
+        caught_rows = [r for r in rows.values() if r.status == "caught by type check"]
+        assert len(caught_rows) == 1
+        assert caught_rows[0].exit_code == 37
+
+
+# ---------------------------------------------------------------------------
 # MutationOrchestrator.run — keyboard interrupt
 # ---------------------------------------------------------------------------
 

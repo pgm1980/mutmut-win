@@ -13,8 +13,51 @@ from mutmut_win.type_checker_filter import (
     MutatedMethodsCollector,
     group_by_path,
     is_mutated_method_name,
+    to_mutants_relative,
 )
 from mutmut_win.type_checking import TypeCheckingError
+
+
+class TestToMutantsRelative:
+    """Issue #93 / A3-CM-002: checker-reported paths arrive in several forms
+    (mutants-relative from mypy, absolute from pyright, absolute bound to the
+    mutants cwd by the parsers).  One canonical normalization to the
+    mutants-relative form is what get_mutant_name() needs to produce names
+    that actually match the task names."""
+
+    def test_relative_path_stays_mutants_relative(self, tmp_path: Path) -> None:
+        mutants = tmp_path / "mutants"
+        (mutants / "src" / "pkg").mkdir(parents=True)
+        (mutants / "src" / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        result = to_mutants_relative(Path("src/pkg/mod.py"), mutants)
+        assert result == Path("src/pkg/mod.py")
+
+    def test_absolute_path_under_mutants_is_made_relative(self, tmp_path: Path) -> None:
+        mutants = tmp_path / "mutants"
+        (mutants / "src").mkdir(parents=True)
+        target = mutants / "src" / "mod.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        result = to_mutants_relative(target, mutants)
+        assert result == Path("src/mod.py")
+
+    def test_path_outside_mutants_is_rejected(self, tmp_path: Path) -> None:
+        mutants = tmp_path / "mutants"
+        mutants.mkdir()
+        outside = tmp_path / "elsewhere" / "mod.py"
+        outside.parent.mkdir()
+        outside.write_text("x = 1\n", encoding="utf-8")
+        assert to_mutants_relative(outside, mutants) is None
+
+    def test_case_insensitive_drive_form_is_normalized(self, tmp_path: Path) -> None:
+        # pyright reports lowercase drive letters on Windows; resolve() must
+        # reconcile both sides.
+        mutants = tmp_path / "mutants"
+        (mutants / "src").mkdir(parents=True)
+        target = mutants / "src" / "mod.py"
+        target.write_text("x = 1\n", encoding="utf-8")
+        sloppy = Path(str(target)[0].lower() + str(target)[1:])
+        result = to_mutants_relative(sloppy, mutants)
+        assert result == Path("src/mod.py")
 
 # ---------------------------------------------------------------------------
 # is_mutated_method_name

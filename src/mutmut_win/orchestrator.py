@@ -139,6 +139,22 @@ class MutationOrchestrator:
                 source_data_by_file,
                 self._config.type_check_command,
             )
+        if not all_tasks:
+            # Every mutant was caught by the type checker — a legitimate,
+            # successful run, not an IndexError (issue #93 / A3-OS-010).
+            create_db(self._db_path)
+            _persist_type_check_kills(self._db_path, type_checked_names)
+            for sfd in source_data_by_file.values():
+                sfd.save()
+            summary = MutationRunResult(
+                total_mutants=len(type_checked_names),
+                type_check_caught=len(type_checked_names),
+                duration_seconds=time.monotonic() - wall_start,
+            )
+            print(f"All {len(type_checked_names)} mutants caught by the type checker.")
+            if not self._no_progress:
+                _print_summary(summary)
+            return summary
 
         # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
@@ -193,10 +209,15 @@ class MutationOrchestrator:
         # Step 6 + 7: Run mutation tests via the pool executor.
         # ------------------------------------------------------------------
         create_db(self._db_path)
-        # Total includes the type-checker-caught mutants (already counted).
+        # Type-check kills go to the DB (issue #93 / A3-OS-003: they only
+        # ever flowed into the in-memory summary, so `results` and the CICD
+        # export diverged from the run gate forever) and into their OWN
+        # bucket — the score formula counts the kill class, buckets stay
+        # disjoint (#91).
+        _persist_type_check_kills(self._db_path, type_checked_names)
         summary = MutationRunResult(
             total_mutants=len(tasks_with_timeouts) + len(type_checked_names),
-            killed=len(type_checked_names),
+            type_check_caught=len(type_checked_names),
         )
         completed = 0
         total = len(tasks_with_timeouts)
@@ -544,8 +565,9 @@ def _filter_with_type_checker(
         FailedTypeCheckMutant,
         MutatedMethodsCollector,
         group_by_path,
+        to_mutants_relative,
     )
-    from mutmut_win.type_checking import run_type_checker
+    from mutmut_win.type_checking import TypeCheckingError, run_type_checker
 
     caught: set[str] = set()
 
@@ -563,7 +585,24 @@ def _filter_with_type_checker(
     if not errors:
         return tasks, caught
 
-    errors_by_path = group_by_path(errors)
+    # Normalize every checker-reported path to the mutants-relative form
+    # BEFORE grouping — mypy reports relative-to-mutants, pyright absolute,
+    # and the parsers bind some paths to the mutants cwd. Without this the
+    # derived names never matched the task names (issue #93 / A3-CM-002).
+    normalized: list[TypeCheckingError] = []
+    for error in errors:
+        mutants_rel = to_mutants_relative(error.file_path, mutants_dir)
+        if mutants_rel is None:
+            continue  # error outside mutants/ cannot belong to a mutant
+        normalized.append(
+            TypeCheckingError(
+                file_path=mutants_rel,
+                line_number=error.line_number,
+                error_description=error.error_description,
+            )
+        )
+
+    errors_by_path = group_by_path(normalized)
     mutants_to_skip: dict[str, FailedTypeCheckMutant] = {}
 
     for path, errors_of_file in errors_by_path.items():
@@ -591,20 +630,18 @@ def _filter_with_type_checker(
                 # Error outside any mutated method — skip (don't crash)
                 continue
 
-            try:
-                rel_path = path.relative_to(Path().absolute())
-            except ValueError:
-                rel_path = path
-            mutant_name = get_mutant_name(rel_path, mutant.function_name)
-
+            mutant_name = get_mutant_name(path, mutant.function_name)
             mutants_to_skip[mutant_name] = FailedTypeCheckMutant(
                 method_location=mutant,
                 name=mutant_name,
                 error=error,
             )
 
-    # Remove caught mutants from tasks and update source_data.
-    caught = set(mutants_to_skip.keys())
+    # Only mutants that are part of THIS run count as caught — without the
+    # intersection, subset runs (--mutant-names/--since-commit) booked
+    # foreign mutants into their score (issue #93 / A3-OS-009).
+    task_names = {t.mutant_name for t in tasks}
+    caught = set(mutants_to_skip.keys()) & task_names
     remaining = [t for t in tasks if t.mutant_name not in caught]
     for mutant_name in caught:
         _update_source_data(
@@ -615,6 +652,17 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
+    """Write one ``caught by type check`` row per caught mutant (issue #93).
+
+    Args:
+        db_path: Path to the SQLite result cache (must already exist).
+        caught_names: Fully qualified names of the caught mutants.
+    """
+    for name in sorted(caught_names):
+        save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
 
 
 def _update_summary_and_persist(
