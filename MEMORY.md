@@ -29,10 +29,37 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   top, 31 issues (#73–#103+#104), all 15 S1 fixed across
   v2.6.0–v2.10.0 (five releases, one day). 0 open issues. Remainders
   live in the severity-sorted **maintenance backlog** (product backlog,
-  26 entries incl. dogfooding finds DOG-001/002). Earlier same day:
+  13 entries after Sprint 33 cleared 13 incl. DOG-001/002). Earlier same day:
   v2.9.0 (C6+C7, "score corrections"), v2.8.0 (C5), v2.7.0 (all S1),
   v2.6.0 (W4.11 blockers — nextgen-cot-mcp-server can upgrade its pin
   and revert the §1.5 genexp workaround).
+- **Sprint**: 33 — *v2.11.0 Maintenance 1: Runtime & Self-Run* —
+  implementation complete 2026-06-11 (6 issues, 31/31 SP, commits
+  28a718f..4b87423 on `feature/v2.11.0-maintenance-1`): FIRST
+  demand-driven maintenance sprint (pool selection, no promise for the
+  rest). **Pilot 24.2% -> 86.9% GROSS, 0 timeouts instead of 175** —
+  verified twice (mid-gate after #105/#106/#110 AND closing run,
+  deterministically identical 212/32/0 over 244). Measured startup
+  floor in the timeout model (#105: clamp(clean_wall − Σdurations,
+  5, 60) + clean-wall-scaled full-suite fallback, floor printed with
+  its inputs); no-tests producer (#106: mapped-but-empty → exit 33
+  persisted, never dispatched; empty mapping keeps the loud full-suite
+  fallback); hygiene batch (#110: max_stack_depth 0-trap rejected,
+  depth cache in _state covered by _reset_globals, MUTANT_ENV_VAR
+  single-sourced in constants, IL hint once per RUN); **trampoline
+  decoupled (#107): hit recording in bottom-band kernel module
+  `hit_recording`, template imports exceptions/hit_recording instead
+  of __main__ (~1.4s CLI chain per test process gone), QX-001
+  architecture skip REMOVED — the layer gate ran green INSIDE the
+  fresh artifact (closing run, 840 tests)**; browser diff single-source
+  (#108: render_function_diff shared with `show`, DB fallback searches
+  the local def name); robustness (#109: empty-table guard, ConfigError
+  exit 2 in show/apply, DOCUMENTED empty-DB convention — informational
+  0 / CI gate 1, summary always prints — --no-progress gates only live
+  lines). Maintenance pool 26 -> 13 (13 findings cleared). Gates: 868
+  passed bare (+47), ruff 0, format-check 0, mypy 0 new (baseline 20),
+  semgrep 0 (full src+tests sweep), lint-imports KEPT everywhere incl.
+  artifact, pilot documented. Release v2.11.0 pending user approval.
 - **Sprint**: 32 — *v2.10.0 Pipeline Hygiene* — implementation complete
   2026-06-11 (7 items, 36/36 SP, commits 804e402..4d1e908 on
   `feature/v2.10.0-pipeline-hygiene`): THE LAST AUDIT SPRINT — cycle

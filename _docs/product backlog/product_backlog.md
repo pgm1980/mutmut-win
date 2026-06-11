@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 2.1.0
+**Version:** 2.2.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -647,19 +647,19 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #105 | Bug | DOG-001: additiver Startup-Sockel im Timeout-Modell | Must | 5 | Open |
-| #106 | Bug | QX-007: no-tests-Producer (exit 33) statt Vollsuite | Must | 5 | Open |
-| #107 | Bug | QX-001+QX-020: Trampolin-Importkette → Kernel-Modul; Architektur-Skip fliegt | Must | 8 | Open |
-| #108 | Bug | UI-007: Browser-Diff = show-Diff (Single Source) | Should | 5 | Open |
-| #109 | Bug | Browser/CLI-Robustheit (UI-010/011/013/016) | Should | 5 | Open |
-| #110 | Bug | Hygiene-Kleinkram (QX-017/018, QX-019-Rest, DOG-002) | Should | 3 | Open |
+| #105 | Bug | DOG-001: additiver Startup-Sockel im Timeout-Modell | Must | 5 | Done (`28a718f`) |
+| #106 | Bug | QX-007: no-tests-Producer (exit 33) statt Vollsuite | Must | 5 | Done (`6430d18`) |
+| #107 | Bug | QX-001+QX-020: Trampolin-Importkette → Kernel-Modul; Architektur-Skip fliegt | Must | 8 | Done (`4659d36`) |
+| #108 | Bug | UI-007: Browser-Diff = show-Diff (Single Source) | Should | 5 | Done (`fbed4cd`) |
+| #109 | Bug | Browser/CLI-Robustheit (UI-010/011/013/016) | Should | 5 | Done (`4b87423`) |
+| #110 | Bug | Hygiene-Kleinkram (QX-017/018, QX-019-Rest, DOG-002) | Should | 3 | Done (`ce907d0`) |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] Dogfooding-Pilot (gleiche Module wie Sprint 32) erreicht brutto ≥ 80 % — Zwischengate nach #105/#106, Abschluss-Lauf dokumentiert
-- [ ] Mutanten ohne gemappte Tests werden als `no tests` verbucht (nie dispatcht); Vollsuite-Fallback nur ohne Stats, weiterhin laut
-- [ ] Der QX-001-Architektur-Skip ist ENTFERNT — lint-imports hält auch im Trampolin-Artefakt
-- [ ] Score-Verschiebungen im Changelog ausgewiesen
-- [ ] Quality Gates: pytest ≥ 840, ruff 0, format-check 0, mypy 0 neue, semgrep 0 (src+tests), lint-imports KEPT überall
+- [x] Dogfooding-Pilot (gleiche Module wie Sprint 32) erreicht brutto ≥ 80 % — **86,9 %** (Zwischengate UND Abschluss, 0 Timeouts)
+- [x] Mutanten ohne gemappte Tests werden als `no tests` verbucht (nie dispatcht); Vollsuite-Fallback nur ohne Stats, weiterhin laut
+- [x] Der QX-001-Architektur-Skip ist ENTFERNT — lint-imports hält auch im Trampolin-Artefakt
+- [ ] Score-Verschiebungen im Changelog ausgewiesen (bei Release v2.11.0)
+- [x] Quality Gates: pytest 868, ruff 0, format-check 0, mypy 0 neue, semgrep 0 (src+tests), lint-imports KEPT überall (inkl. Artefakt)
 
 ---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
@@ -668,18 +668,15 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 > Fixing-Sprints (28–32) bewusst nicht behobenen Findings — nichts davon
 > korrumpiert Daten, blockiert Läufe oder belügt CI. Severity-sortiert;
 > Kandidatenpool für bedarfsgetriebene Maintenance, KEIN Sprint-Versprechen.
+>
+> **Sprint 33 (v2.11.0) hat 13 Einträge abgeräumt** (DOG-001, QX-007,
+> QX-001, QX-020, QX-017, QX-018, QX-019, DOG-002, UI-007, UI-010,
+> UI-011, UI-013, UI-016 → Issues #105–#110). Verbleibender Pool: 13.
 
 | Sev | Finding | Modul | Real-Schaden |
 |-----|---------|-------|--------------|
-| S2 | DOG-001 (neu) | orchestrator.py | Timeout-Modell ohne additiven Startup-Sockel: Interpreter+Collection (10–15 s bei großen Suiten) sprengen `max(5 s, estimated×mult)` — Dogfooding: 175/244 Pseudo-Timeouts MIT fertiger pytest-Summary im Tail (Mutant detektiert, Uhr riss) |
-| S2 | UI-007 | browser.py | TUI-Diff ist Ganzdatei-Diff (Trampolin + alle Mutanten, identisch je Mutant); DB-Fallback zeigt immer „mutant not found" |
-| S2 | QX-001 | __main__.py | Erster Stats-Trampolin-Hit importiert die komplette CLI-Kette (click+textual+rich, ~1,4 s gemessen) in den User-Testprozess |
-| S3 | QX-007 | worker.py, constants | Exit 33/34 ohne Producer: Mutanten ohne zugeordnete Tests laufen die VOLLE Suite statt „no tests" — Laufzeitverlust vs. mutmut-Design |
 | S3 | RN-006 | runner.py | Forced-Fail beweist nur „≥1 Failure irgendwo"; ohne `-x` läuft die volle Suite (Laufzeit) |
-| S3 | UI-011 | cli.py | Korrupte pyproject → rohe Tracebacks in show/apply/browse (run hat seit #102 den --debug-Pfad; .meta-Toleranz seit #101) |
 | S3 | UI-012 | cli.py, orchestrator | mutant_names-Matching inkonsistent über 5 Commands (run: exakt+Glob; show/apply: nur exakt) — undokumentiert |
-| S3 | UI-013 | cli.py | Exit-Code-Inkonsistenz bei leerer DB: results 0, export-cicd 1, time-estimates 0 |
-| S3 | UI-010 | browser.py | Browser-Aktionen crashen bei leerer Mutanten-Tabelle (RowDoesNotExist) |
 | S3 | RN-012 | runner.py | PY_IGNORE_IMPORTMISMATCH nur im Stats-Run gesetzt — Clean/Forced-Fail/Worker inkonsistent |
 | S3 | RN-013 | config.py | Arg-Koerzierung: `'-m "not slow"'` → naives split() zerlegt falsch; test_selection akzeptiert keine Strings |
 | S3 | FD-008 | file_setup.py | pyproject-Sanitiser übersieht `[tool.uv.sources.<pkg>]`-Subtables → „Distribution not found" für diese Syntax |
@@ -687,15 +684,9 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 | S3 | QX-006 | exceptions.py, cli | 6 tote Exception-Klassen; cli fängt `Exception` statt `MutmutWinError` |
 | S4 | UI-014 | mutant_diff.py | show-Diff: Hunk-Header funktionsrelativ, from/to identisch → nicht patch-fähig |
 | S4 | UI-015 | cli.py | „Suspicious:1" ohne Leerzeichen (Alignment, Format ist test-verdrahtet) |
-| S4 | UI-016 | cli.py | --no-progress unterdrückt auch die End-Summary — leiser Lauf endet ohne jedes Ergebnis |
-| S4 | QX-017 | _state.py | _reset_globals deckt _cached_max_stack_depth nicht ab |
-| S4 | QX-018 | config.py | max_stack_depth ohne ge=-1: Wert 0 verwirft alle Stats-Hits → Vollsuite je Mutant |
-| S4 | QX-019 | 5 Module | Konstanten-Drift: MUTANT_UNDER_TEST 3× definiert; vereinzelte Exit-Code-Literale |
-| S4 | QX-020 | __main__.py | Per-Hit-Import in record_trampoline_hit (Hot Path) |
 | S4 | QX-023-Rest | type_checking.py | raised nackte `Exception` statt domänenspezifischer Klasse (cli-Seite seit #102 mit --debug) |
 | S4 | RN-010 | runner.py | _mutants_env schreibt Dateien (sitecustomize) — Dogfooding-Pilot bestätigte es live; Test-Seite seit Sprint 32 isoliert (autouse-CWD-Fixture), die schreibende Produktionsseite bleibt |
 | S4 | RN-011 | runner.py | sitecustomize-Blocker matcht sys.path exakt-string (kein normcase/realpath) |
-| S4 | DOG-002 (neu) | worker.py | JT-018-Window-Hint feuert einmal PRO Worker — bei N Workern N-fach im Log (kosmetisch) |
 | S4 | OS-012-Restgrenze | file_setup.py | Deletion-Sync deckt src/source-Wurzeln; Flat-Layout („.") bewusst ausgenommen (dokumentiert in #101) |
 
 ---
@@ -770,7 +761,7 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 | Sprint 30 | 25 | 25 | 100% | v2.8.0 IL Detection Honesty (#85–#90) |
 | Sprint 31 | 33 | 33 | 100% | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
 | Sprint 32 | 36 | 36 | 100% | v2.10.0 Pipeline Hygiene (#98–#104) |
-| Sprint 33 | 31 | (offen) | — | v2.11.0 Maintenance 1 (#105–#110) |
+| Sprint 33 | 31 | 31 | 100% | v2.11.0 Maintenance 1 (#105–#110) — Pilot 24,2 % → 86,9 % brutto |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -807,3 +798,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.9.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geplant: Epic 23 (Pipeline Hygiene, #98–#104, 36 SP) mit 12-Schritt-Planungs-CoT — letzter Audit-Sprint (C8+C9-Top + Neuzugänge + Dogfooding-Premiere); Format-Commit als Sprint-Auftakt, verschärfte Gates als Sprint-Inhalt, C9-Rest-Triage statt Versanden; OS-006/FD-002 am v2.9.0-Stand re-verifiziert. Branch-Aufräumen: 37 lokale + 2 Remote-Branches entfernt. |
 | 2.0.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geschlossen (Epic 23 Done, v2.10.0 released, Velocity 36/36) — **AUDIT-ZYKLUS BEENDET**: C1–C8 komplett + C9-Top über 5 Releases an einem Tag; verschärfte Gates verankert (format-check, nackter pytest, semgrep auf tests/); Dogfooding-Premiere (85,5 % über bewertbare Mutanten, 4 Anläufe = 4 Funde); Maintenance-Backlog (26 Einträge) als einziger Arbeitsvorrat. |
 | 2.1.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geplant: Epic 24 (Maintenance 1: Runtime & Self-Run, #105–#110, 31 SP) per 10-Schritt-CoT — bedarfsgetriebene Pool-Auswahl (3×S2 + Bündel), Messziel Pilot brutto ≥ 80 %, Pool-Rest (20) bewusst unversprochen. |
+| 2.2.0 | 2026-06-11 | Claude Code Agent | Sprint 33 implementiert (Epic 24 Done, Velocity 31/31): Pilot 24,2 % → **86,9 % brutto** (0 Timeouts statt 175), Architektur-Skip im Artefakt entfernt, Maintenance-Pool 26 → 13. Release v2.11.0 ausstehend. |
