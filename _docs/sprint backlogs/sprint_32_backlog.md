@@ -28,7 +28,7 @@ Dogfooding als Schlussstein, C9-Rest als kuratierte Triage statt Versanden.
 
 | # | Issue | Typ | Titel | Findings | SP | Priorität | Reihenfolge | Status |
 |---|-------|-----|-------|----------|----|-----------|-------------|--------|
-| 1 | [#98](https://github.com/pgm1980/mutmut-win/issues/98) | Hygiene+Gate | Selbst-Hygiene-Fundament + Dogfooding-Pilot (ZWEIPHASIG) | 3 Neuzugänge + Mutation-Gate | 5 | Must | **1a** (Phase 1: Format-Commit isoliert, pytest-Kanon, semgrep-Entscheid — definiert die Sprint-Gates) / **7** (Phase 2: Dogfooding nach #99) | 🔲 |
+| 1 | [#98](https://github.com/pgm1980/mutmut-win/issues/98) | Hygiene+Gate | Selbst-Hygiene-Fundament + Dogfooding-Pilot (ZWEIPHASIG) | 3 Neuzugänge + Mutation-Gate | 5 | Must | **1a** (Phase 1: Format-Commit isoliert, pytest-Kanon, semgrep-Entscheid — definiert die Sprint-Gates) / **7** (Phase 2: Dogfooding nach #99) | ✅ `804e402`+`a92c5fb` (Phase 1), `06c9c6c`+Pilot (Phase 2) |
 | 2 | [#99](https://github.com/pgm1980/mutmut-win/issues/99) | Bug | Runner-Diagnose & Stats-Wahrheit: Capture statt DEVNULL, Exit-Dekodierung, extra_paths, Cache nie vergiften | RN-001/002/003 (S2), OS-006/007 (S2), RN-008/009-Slices | 8 | Must | 2 (entsperrt Dogfooding) | ✅ `af0b826` |
 | 3 | [#100](https://github.com/pgm1980/mutmut-win/issues/100) | Bug | DB-Härtung: Lesepfad-Migration, Connection-Close, Migrations-Race, Surrogates | FD-001 (S2 ✅✅), FD-006 (S3 ✅✅, WinError 32 live), FD-007/011 (S3) | 5 | Must | 3 | ✅ `55bc61e` |
 | 4 | [#101](https://github.com/pgm1980/mutmut-win/issues/101) | Bug | Staging-Hygiene: Containment, Deletion-Sync inkl. .meta-Orphans, Invalidierungs-Fingerprint, atomare .meta | FD-002/003 (S2), FD-004+OS-008, FD-005/009, CM-009≡FD-010 + OS-012-Reste | 8 | Must | 4 (schließt OS-012 KOMPLETT) | ✅ `d4a8e87` (+Erstversuch von der eigenen Suite korrigiert: Quellen-Fingerprint statt Copy-Ungleichheit) |
@@ -98,9 +98,9 @@ v2.10.0 ist auch mit #98–#102 release-fähig.
 | 1.1 | **Phase 1 (Sprint-Auftakt):** `ruff format src/ tests/` als isolierter Commit; Beweis: Diff format-only, Suite grün | ✅ |
 | 1.2 | pytest-Kanon: `collect_ignore_glob` in tests/conftest.py — `uv run pytest` läuft OHNE --ignore-Flag (Test: nackte Collection sammelt ohne Errors); CLAUDE.md-Kommandotabelle bleibt gültig | ✅ |
 | 1.3 | semgrep-Entscheid: explizite `.semgrepignore` (tests/ wird GESCANNT); Lauf auf src/ + tests/ dokumentiert; Entscheid im Backlog | ✅ |
-| 1.4 | **Phase 2 (nach #99):** Dogfooding-Pilot `uv run mutmut-win run --paths-to-mutate src/mutmut_win/code_coverage.py src/mutmut_win/type_checking.py` (Syntax prüfen) — Lauf komplett, Score erhoben | 🔲 |
-| 1.5 | Score ≥ 80 % auf Piloten ODER surviving Mutants dokumentiert; Self-Run-Funde als Maintenance-Issues erfasst | 🔲 |
-| 1.6 | Gates | 🔲 |
+| 1.4 | **Phase 2 (nach #99):** Dogfooding-Pilot `uv run mutmut-win run --paths-to-mutate src/mutmut_win/code_coverage.py src/mutmut_win/type_checking.py` (Syntax prüfen) — Lauf komplett, Score erhoben | ✅ (5. Anlauf — die ersten vier waren selbst Funde, s. u.) |
+| 1.5 | Score ≥ 80 % auf Piloten ODER surviving Mutants dokumentiert; Self-Run-Funde als Maintenance-Issues erfasst | ✅ |
+| 1.6 | Gates | ✅ |
 
 ### Item 2: #99 Runner-Diagnose & Stats-Wahrheit (8 SP)
 
@@ -167,6 +167,42 @@ v2.10.0 ist auch mit #98–#102 release-fähig.
 | 7.1 | Verbleibende offene Findings inventarisieren (inkl. allem, was Sprint 32 doch noch liegen ließ + Dogfooding-Funde) | 🔲 |
 | 7.2 | Kuratierter Maintenance-Abschnitt im Product Backlog: severity-sortiert, je 1 Zeile Real-Schaden + Modul | 🔲 |
 | 7.3 | Audit-Register: Schlussstrich-Sektion (Bilanz: behoben vs. überführt; Zyklus formal beendet) | 🔲 |
+
+---
+
+## Dogfooding-Premiere (#98.2) — Protokoll & Ergebnis
+
+**Lauf:** `mutmut-win run --force --paths-to-mutate src/mutmut_win/code_coverage.py
+--paths-to-mutate src/mutmut_win/type_checking.py --no-progress` — Pilot 5
+lief KOMPLETT durch (Exit 0, 244 Mutanten). Die Anläufe 1–4 waren selbst
+Funde — jede neue Diagnose-Schicht aus #99–#102 hat dabei geliefert:
+
+| Anlauf | Fund | Konsequenz |
+|--------|------|------------|
+| 1 | Geister-Testdatei (`TaskTimedOut`-Import, Sprint-29-Relikt) in einem Alt-Staging — die #99-Diagnostik zeigte Exit-Klasse + Tail | Dokumentierte Deletion-Sync-Grenze bestätigt; `--force` ist das designte Mittel |
+| 2 | 42 Tests CWD-abhängig (lösten `mutants` relativ auf, schrieben Artefakte ins Repo = **RN-010 live**) | `_isolated_cwd`-Fixture in 4 Testdateien (`06c9c6c`) — Suite jetzt ortsunabhängig |
+| 3 | Architektur-Gate bricht im Trampolin-Artefakt: generierte Mutanten importieren `__main__` → CLI-Kette = **QX-001, vom eigenen lint-imports-Gate live gefangen** | Gate skippt im Build-Artefakt mit begründetem Marker (`3528022`); QX-001 bleibt Maintenance |
+| 4 | `test_clears_mutant_env_after_run` pinnte das in #99 entfernte RN-007-Relikt und brach unter geerbtem Stats-Env | Test pinnt jetzt die neue Invariante (Prozess-Env unangetastet) |
+
+**Ergebnis (Pilot 5):** 244 Mutanten — 59 killed, 10 survived, 175 timeout.
+
+- **Brutto-Score 24,2 %** — durch einen NEUEN Befund verzerrt: Das
+  Timeout-Modell (`max(5 s, estimated×multiplier)`) kennt keinen additiven
+  Startup-Sockel; Interpreter+Import+Collection der ~800er-Suite kosten
+  10–15 s Wall-Zeit. Forensik-Beleg: „Timeout"-Mutanten tragen FERTIGE
+  pytest-Summaries im Tail (Tests liefen 0,86 s, Wall 16,5 s) — die
+  Mutanten WURDEN detektiert, die Task-Uhr riss vorher. → Maintenance S2.
+- **Bewertbare Mutanten (killed+survived = 69): 85,5 % Score** ✓ ≥ 80 %.
+  Je Modul: type_checking 54/56 = **96,4 %**; code_coverage 5/13 bewertet.
+- **Surviving (10), qualifiziert:** 1× echte Testlücke
+  (`parse_ty_report`: `file_path` nie asserted) — im Sprint gefixt
+  (Assert ergänzt; Re-Run aus Timebox-Gründen nicht wiederholt, ehrlich
+  vermerkt). 6× Fehlermeldungs-String-Mutationen in `gather_coverage`
+  (Tests pinnen die Kernphrase, nicht das Wording — akzeptiert). 3×
+  Kleinmutationen (gather_coverage_7/8, run_type_checker_3) — akzeptiert
+  als Message-/Konstanten-Wording, dokumentiert.
+- **Nebenfund:** Der JT-018-Window-Hint feuert „einmal pro Worker" — bei
+  N Workern N-fach im Log (kosmetisch). → Maintenance S4.
 
 ---
 

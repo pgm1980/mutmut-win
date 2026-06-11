@@ -226,15 +226,20 @@ class TestRunStats:
             assert "pytest_sessionfinish" in content
             assert "mutmut-stats.json" in content
 
-    def test_clears_mutant_env_after_run(self) -> None:
-        """MUTANT_UNDER_TEST must be cleared after stats collection."""
+    def test_does_not_touch_the_process_env(self) -> None:
+        """Issue #99 / A2-RN-007: the vestigial os.environ write is gone —
+        the stats sentinel travels via the SUBPROCESS env parameter only.
+        The parent process env must stay untouched, whatever it carries
+        (under dogfooding it legitimately holds 'stats'; the old pin on
+        '== ""' broke exactly there, found by the second self-run)."""
         import os
 
+        before = os.environ.get(MUTANT_ENV_VAR)
         runner = PytestRunner(_config())
         run_result = MagicMock(stdout="", returncode=0)
         with patch("subprocess.run", return_value=run_result):
             runner.run_stats()
-        assert os.environ.get(MUTANT_ENV_VAR, "") == ""
+        assert os.environ.get(MUTANT_ENV_VAR) == before
 
     def test_tests_dir_forwarded(self) -> None:
         """tests_dir config should be included in the pytest command."""

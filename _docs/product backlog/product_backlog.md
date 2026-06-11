@@ -641,6 +641,7 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 
 | Sev | Finding | Modul | Real-Schaden |
 |-----|---------|-------|--------------|
+| S2 | DOG-001 (neu) | orchestrator.py | Timeout-Modell ohne additiven Startup-Sockel: Interpreter+Collection (10–15 s bei großen Suiten) sprengen `max(5 s, estimated×mult)` — Dogfooding: 175/244 Pseudo-Timeouts MIT fertiger pytest-Summary im Tail (Mutant detektiert, Uhr riss) |
 | S2 | UI-007 | browser.py | TUI-Diff ist Ganzdatei-Diff (Trampolin + alle Mutanten, identisch je Mutant); DB-Fallback zeigt immer „mutant not found" |
 | S2 | QX-001 | __main__.py | Erster Stats-Trampolin-Hit importiert die komplette CLI-Kette (click+textual+rich, ~1,4 s gemessen) in den User-Testprozess |
 | S3 | QX-007 | worker.py, constants | Exit 33/34 ohne Producer: Mutanten ohne zugeordnete Tests laufen die VOLLE Suite statt „no tests" — Laufzeitverlust vs. mutmut-Design |
@@ -664,6 +665,7 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 | S4 | QX-023-Rest | type_checking.py | raised nackte `Exception` statt domänenspezifischer Klasse (cli-Seite seit #102 mit --debug) |
 | S4 | RN-010 | runner.py | _mutants_env schreibt Dateien (sitecustomize) — Dogfooding-Pilot bestätigte es live; Test-Seite seit Sprint 32 isoliert (autouse-CWD-Fixture), die schreibende Produktionsseite bleibt |
 | S4 | RN-011 | runner.py | sitecustomize-Blocker matcht sys.path exakt-string (kein normcase/realpath) |
+| S4 | DOG-002 (neu) | worker.py | JT-018-Window-Hint feuert einmal PRO Worker — bei N Workern N-fach im Log (kosmetisch) |
 | S4 | OS-012-Restgrenze | file_setup.py | Deletion-Sync deckt src/source-Wurzeln; Flat-Layout („.") bewusst ausgenommen (dokumentiert in #101) |
 
 ---

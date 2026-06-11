@@ -165,6 +165,9 @@ class TestParseTyReport:
         assert len(errors) == 1
         assert errors[0].line_number == 7
         assert errors[0].error_description == "ty error"
+        # Dogfooding survivor x_parse_ty_report__mutmut_3 (file_path=None):
+        # no test ever asserted the path field.
+        assert errors[0].file_path == Path("src/x.py").absolute()
 
     def test_skips_minor_severity(self) -> None:
         report = [
