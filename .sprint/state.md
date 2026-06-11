@@ -3,9 +3,9 @@ current_sprint: "34"
 sprint_goal: "v2.12.0 Maintenance 2: Final Sweep — kompletter Pool-Rest (13 Einträge, #111–#117) + MEMORY-Entscheidungsregister; danach Entwicklungspause. Messziel: Pilot brutto >= 80 % halten."
 branch: "feature/v2.12.0-maintenance-2"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -16,23 +16,20 @@ documentation_updated: true
 
 ## Current Focus
 Sprint 34 — **v2.12.0 Maintenance 2: Final Sweep** —
-**IMPLEMENTIERUNG KOMPLETT** (alle 7 Issues #111–#117, 27/27 SP,
-Commits `8251509`..`fa590ac`). **Maintenance-Pool 13 → 0,
-Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, 5 stale
-GitHub-Milestones geschlossen.** Gates: 951 passed (+83), ruff/format
-0, semgrep 0 (voller Sweep), lint-imports KEPT inkl. Artefakt;
-Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts im Re-Run 6/6
-gekillt → 87,6 % effektiv; 30 dokumentierte Survivors). pip-audit
-bleibt umgebungsblockiert (TLS-Interception). Bedienungs-Lektion:
-`--since-commit` nach Konfig-Wechsel braucht `--force` (Stats-Cache);
-der #106-Producer verbuchte 7318 unkartierte Mutanten ehrlich als
-`no tests` statt Vollsuite. Abschluss-Vollvermessung (12 Module,
-erstmalig): **7800 Mutanten, 68,3 % brutto** — 2337 Survivors + 45
-Timeouts als ehrliche Pausen-Baseline dokumentiert; 1 Dogfooding-
-Test-Fund gefixt (`6101548`, instrumentierungsfester Depth-Cache-Test).
-Release v2.12.0 wartet auf explizites User-„Release"
-(Merge → Auto-Close #111–#117 → housekeeping_done);
-**danach Entwicklungspause** (Pausenzustand dokumentiert).
+**GESCHLOSSEN, v2.12.0 RELEASED 2026-06-12** (User-„Release"; Merge
+`9789429`, Bump `932f90e`, annotated Tag v2.12.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0),
+#111–#117 via Merge auto-geschlossen — 0 offene Issues). Gates vor dem
+Merge frisch verifiziert: 951 passed / 4 skipped, ruff/format 0, mypy
+14 = Baseline (0 neue).
+
+**PROJEKT IN ENTWICKLUNGSPAUSE (User-Entscheidung):**
+0 offene Issues · 0 Pool-Einträge · 0 offene Entscheidungen ·
+0 offene Milestones. Wiederaufnahme-Startpunkte: Pausen-Baseline der
+Vollvermessung (7800 Mutanten, 68,3 % brutto; 2337 Survivors + 45
+Timeouts, Sprint-34-Dogfooding-Protokoll) und die dort notierte
+Stats-Fingerprint-Beobachtung. Kein neuer Sprint geplant —
+nächster Sprint-State entsteht erst bei Wiederaufnahme.
 
 ## Sprint 34 Backlog (27 SP — Must 19, Should 8)
 1. **#111 (Must, 5 SP):** RN-006+RN-012 — Forced-Fail-Wahrheit

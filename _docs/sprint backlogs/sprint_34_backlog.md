@@ -148,7 +148,7 @@ Won't-Fix-Entscheidung mit Begründung im Product Backlog.
 | A.1 | Pilot-Re-Run (code_coverage.py + type_checking.py, `--force --no-progress`, Flags einzeln) — Gate ≥ 80 %, Vorher/Nachher dokumentiert | ✅ **85,1 % brutto (Gate gehalten)**; 6 Kaltstart-Timeouts im Namens-Re-Run 6/6 gekillt → 87,6 % effektiv; keine neuen Pool-Funde |
 | A.2 | `--since-commit <Sprint-Start>`-Lauf über die geänderten Module — informativ, Survivors dokumentiert | ✅ **68,3 % brutto über 12 Module** (7800 Mutanten, 5122+1 Kills, 2337 Survivors, 45 Timeouts, 295 no tests; 65,8 min) — erste Vollvermessung dieser Module, dokumentierte Baseline für eine spätere Wiederaufnahme; Stats-Phase nach Test-Fix `6101548` grün (2607 Mappings) |
 | A.3 | pip-audit-Versuch mit System-Trust (Ergebnis oder dokumentierte Umgebungs-Limitation) | ✅ dokumentiert gescheitert: `--system-certs` deckt nur uvs eigene Fetches; pip-audits requests/certifi-Kette erhält weiter `CERTIFICATE_VERIFY_FAILED` — Limitation bleibt (Status seit Sprint 28 unverändert) |
-| A.4 | Implementation-complete-Commit; Release wartet auf User-„Release" | 🔲 |
+| A.4 | Implementation-complete-Commit; Release wartet auf User-„Release" | ✅ `0f64b48`; Release ausgelöst 2026-06-12 |
 
 ---
 
@@ -241,12 +241,15 @@ Pilot identisch zu Sprint 32/33 (Vergleichbarkeit): `code_coverage.py` +
 
 ---
 
-## Release v2.12.0 (nur auf explizites User-„Release")
+## Release v2.12.0 (ausgelöst durch explizites User-„Release" am 2026-06-12)
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.12.0 (`uv lock --system-certs`) | 🔲 |
-| Annotated Tag v2.12.0 | 🔲 |
-| GitHub Release (Changelog: Final Sweep, Pool 13 → 0, Deprecation-Hinweis, Pausenzustand) | 🔲 |
-| Auto-close #111–#117 via Merge | 🔲 |
-| MEMORY.md + product_backlog.md: Pool = 0, Entscheidungsregister = 0, **Entwicklungspause dokumentiert** | 🔲 |
+| pyproject.toml + uv.lock auf 2.12.0 (`uv lock --system-certs`) | ✅ `932f90e` |
+| Annotated Tag v2.12.0 | ✅ |
+| GitHub Release (Changelog: Final Sweep, Pool 13 → 0, Deprecation-Hinweis, Pausenzustand) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0) |
+| Auto-close #111–#117 via Merge | ✅ (verifiziert: 0 offene Issues) |
+| MEMORY.md + product_backlog.md: Pool = 0, Entscheidungsregister = 0, **Entwicklungspause dokumentiert** | ✅ |
+
+Vor dem Merge frisch verifizierte Gates: 951 passed / 4 skipped (231 s),
+ruff 0, format-check 0, mypy 14 = Baseline (0 neue).

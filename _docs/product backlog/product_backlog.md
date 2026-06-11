@@ -30,7 +30,7 @@
 | v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Done | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding-Premiere (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) — released 2026-06-11; **Audit-Zyklus beendet** |
 | v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Done | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — released 2026-06-11; **Pilot 24,2 % → 86,9 % brutto, 0 Timeouts statt 175; Architektur-Skip im Artefakt entfernt** |
-| v2.12.0 | Maintenance 2: Final Sweep | Sprint 34 | Planned | VOLLSTÄNDIGER Pool-Rest (13 Einträge) + Entscheidungsregister: Runner-Wahrheit (#111), Arg-Koerzierung (#112), Sanitiser-Subtables (#113), Exception-Hygiene (#114), CLI-Konsistenz (#115), sitecustomize (#116), Abschluss-Dossier (#117) — danach **Entwicklungspause**; Messziel: Pilot ≥ 80 % halten |
+| v2.12.0 | Maintenance 2: Final Sweep | Sprint 34 | Done | VOLLSTÄNDIGER Pool-Rest (13 Einträge) + Entscheidungsregister: Runner-Wahrheit (#111), Arg-Koerzierung (#112), Sanitiser-Subtables (#113), Exception-Hygiene (#114), CLI-Konsistenz (#115), sitecustomize (#116), Abschluss-Dossier (#117) — released 2026-06-12; **Pool 13 → 0, Register 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten, Vollvermessung 68,3 % als Pausen-Baseline; danach ENTWICKLUNGSPAUSE** |
 
 ---
 
@@ -760,7 +760,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
 | Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Done |
 | Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
-| Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Planned |
+| Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Done |
 
 ---
 
@@ -841,3 +841,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.3.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geschlossen (v2.11.0 released, Merge schloss #105–#110 automatisch): annotated Tag + GitHub-Release mit ausgewiesener Score-Verschiebung (no_tests verlässt den Nenner, Vollsuite-Zufallskills den Zähler); Milestone/Epic auf Done, MEMORY.md + state.md synchronisiert. |
 | 2.4.0 | 2026-06-11 | Claude Code Agent | Sprint 34 geplant: Epic 25 (Maintenance 2: Final Sweep, #111–#117, 27 SP) per 11-Schritt-CoT — User-Auftrag „alle offenen Topics, danach Entwicklungspause": kompletter Pool-Rest (13) + MEMORY-Entscheidungsregister (4); kein Auswahl-Ventil, Eskalation nur zu dokumentierter Won't-Fix-Entscheidung; Messziel Pilot ≥ 80 % halten. |
 | 2.5.0 | 2026-06-11 | Claude Code Agent | Sprint 34 implementiert (Epic 25 Done, Velocity 27/27): **Maintenance-Pool 13 → 0, Entscheidungsregister 4 → 0**, mypy-Baseline 20 → 14, 5 stale GitHub-Milestones geschlossen; Gates: 951 passed (+83), ruff/format 0, semgrep 0 (voller Sweep), lint-imports KEPT; Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts re-run-verifiziert als Kills). Release v2.12.0 ausstehend; danach Entwicklungspause. |
+| 2.6.0 | 2026-06-12 | Claude Code Agent | Sprint 34 geschlossen (v2.12.0 released, Merge schloss #111–#117 automatisch): annotated Tag + GitHub-Release; **PROJEKT IN ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Pool-Einträge, 0 offene Entscheidungen, 0 offene Milestones; Vollvermessungs-Baseline (7800 Mutanten, 68,3 %) als Wiederaufnahme-Startpunkt dokumentiert. |

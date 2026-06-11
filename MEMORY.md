@@ -1,8 +1,15 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-06-11. Source of truth for sprint state is `.sprint/state.md`;
+> Last refresh: 2026-06-12. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
+
+> **STATUS: DEVELOPMENT PAUSED** (user decision, 2026-06-12, after the
+> v2.12.0 "Final Sweep" release): 0 open issues, 0 maintenance-pool
+> entries, 0 open decisions, 0 open milestones. Resumption starting
+> points: the documented pause baseline (full self-run, 7800 mutants,
+> 68.3% gross — 2337 survivors + 45 timeouts in the Sprint-34 dogfooding
+> protocol) and the stats-fingerprint observation noted there.
 
 ## What it is
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
@@ -19,6 +26,14 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - Distributed as `mutmut-win` on PyPI. Console script: `mutmut-win`.
 
 ## Where we are
+- **Version**: **v2.12.0** released 2026-06-12
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0),
+  bump 932f90e) — Maintenance 2: Final Sweep, THE LAST RELEASE before
+  the development pause. Pool 13 → 0, decision register 4 → 0, mypy
+  baseline 20 → 14, --treat-timeout-as-kill deprecated (removal in a
+  future major), release policy documented. Pilot held at 85.1% gross;
+  first full self-measurement (12 modules, 7800 mutants) at 68.3%
+  gross = the documented pause baseline.
 - **Version**: **v2.11.0** released 2026-06-11
   ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.11.0),
   bump 493f120) — Maintenance 1: Runtime & Self-Run. Pilot 24.2% ->
@@ -72,8 +87,10 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   honest pause baseline (NOT pool entries); two dogfooding finds —
   the --force-after-config-change lesson (7318 honest 'no tests'
   instead of days of full-suite runs, #106 working as designed) and
-  one instrumentation-unsafe test fixed (6101548). Release v2.12.0
-  pending user approval — **development pauses afterwards**.
+  one instrumentation-unsafe test fixed (6101548). **Released as
+  v2.12.0 on 2026-06-12 — sprint fully closed (27/27 SP; merge
+  auto-closed #111–#117, 0 open issues; gates re-verified pre-merge:
+  951 passed). DEVELOPMENT PAUSED.**
 - **Sprint**: 33 — *v2.11.0 Maintenance 1: Runtime & Self-Run* —
   implementation complete 2026-06-11 (6 issues, 31/31 SP, commits
   28a718f..4b87423 on `feature/v2.11.0-maintenance-1`): FIRST
