@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 
 if TYPE_CHECKING:
@@ -221,17 +222,17 @@ def _process_task(
                 samples = monitor.take_samples_snapshot()
                 classification = _classify_with_monitor(samples, il_thresholds, last_output)
                 if classification.verdict == "killed_by_infinite_loop":
-                    exit_code = 38  # EXIT_CODE_INFINITE_LOOP — kill-bucket
+                    exit_code = EXIT_CODE_INFINITE_LOOP
                     forensics_dict = classification.forensics.model_dump()
                     forensics_dict["confidence"] = classification.confidence
                 else:
-                    exit_code = 36  # timeout
+                    exit_code = EXIT_CODE_TIMEOUT
                     # Persist forensics even on plain timeout so the user can see
                     # why the classifier said "not IL".
                     forensics_dict = classification.forensics.model_dump()
                     forensics_dict["confidence"] = classification.confidence
             else:
-                exit_code = 36  # timeout (no detection available)
+                exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
         exit_code = 35  # suspicious
