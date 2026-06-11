@@ -298,13 +298,19 @@ class CicdStats:
     def score(self) -> float:
         """Mutation score as a percentage.
 
+        The numerator is the kill class: ``killed`` (which already includes
+        infinite-loop kills, #86) plus ``caught_by_type_check`` plus
+        ``segfault`` — a crash under a mutant is a detection (issue #91).
+        Buckets stay disjoint; aggregation happens only here.
+
         Returns:
             A float in [0.0, 100.0]; 0.0 if no testable mutants exist.
         """
         denominator = self.total - self.skipped - self.no_tests
         if denominator <= 0:
             return 0.0
-        return (self.killed + self.caught_by_type_check) / denominator * 100.0
+        kill_class = self.killed + self.caught_by_type_check + self.segfault
+        return kill_class / denominator * 100.0
 
 
 def compute_cicd_stats(results: list[tuple[str, str | None]]) -> CicdStats:

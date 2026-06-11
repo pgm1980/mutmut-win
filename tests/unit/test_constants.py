@@ -19,8 +19,11 @@ class TestStatusByExitCode:
     def test_exit_5_is_no_tests(self) -> None:
         assert status_by_exit_code[5] == "no tests"
 
-    def test_exit_2_is_interrupted(self) -> None:
-        assert status_by_exit_code[2] == "check was interrupted by user"
+    def test_exit_2_is_a_kill(self) -> None:
+        # Changed in v2.9.0 (#91 / A4-QX-025): pytest exit 2 in a worker is
+        # a collection error caused by the mutant — a kill, not a user
+        # interrupt. See tests/unit/test_status_truth.py for the rationale.
+        assert status_by_exit_code[2] == "killed"
 
     def test_exit_37_is_type_check(self) -> None:
         assert status_by_exit_code[37] == "caught by type check"

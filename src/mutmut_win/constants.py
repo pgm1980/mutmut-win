@@ -2,16 +2,31 @@
 
 from collections import defaultdict
 
-# Exit code to status mapping — 1:1 with mutmut 3.5.0.
-# Includes Unix signal codes for cross-platform support (WSL, Linux CI).
+# Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
+# deviations (issue #91, audit A2-EW-020 / A4-QX-025):
+#
+# * Exit 2 maps to "killed", not "check was interrupted by user". pytest
+#   exit 2 covers collection errors — and an import-breaking mutant that
+#   aborts collection IS an observable behaviour change, i.e. a kill
+#   (precedent: exit 3, pytest internal error, has always counted as one).
+#   In mutmut-win workers a genuine user Ctrl-C ends the run via the
+#   orchestrator's interrupt path, not via worker exit codes; the worker
+#   captures the log tail for anomalous exits, so a collection kill stays
+#   auditable ("Interrupted: N errors during collection" in last_output).
+#   The legacy status string remains renderable for pre-v2.9 DB rows.
+# * The duplicate -24 key is resolved to "timeout" (SIGXCPU, upstream
+#   behaviour); the shadowed "killed" mapping was dead code.
+#
+# Negative codes (-24, -11, -9) are POSIX signal semantics — unreachable on
+# Windows, kept for WSL/Linux CI. Windows crashes surface as the unsigned
+# DWORD form of NTSTATUS codes instead.
 status_by_exit_code: defaultdict[int | None, str] = defaultdict(
     lambda: "suspicious",
     {
         0: "survived",
         1: "killed",
-        2: "check was interrupted by user",
+        2: "killed",  # pytest "Interrupted" — collection error under a mutant
         3: "killed",  # internal error in pytest means a kill
-        -24: "killed",
         5: "no tests",
         33: "no tests",
         34: "skipped",
@@ -19,12 +34,15 @@ status_by_exit_code: defaultdict[int | None, str] = defaultdict(
         36: "timeout",
         37: "caught by type check",
         38: "killed_by_infinite_loop",  # Issue #71 — triple-check IL classifier
-        -24: "timeout",  # SIGXCPU (overrides -24: "killed" above, same as mutmut)
+        -24: "timeout",  # SIGXCPU (POSIX only)
         24: "timeout",  # SIGXCPU
         152: "timeout",  # SIGXCPU
         255: "timeout",
-        -11: "segfault",
-        -9: "segfault",
+        -11: "segfault",  # SIGSEGV (POSIX only)
+        -9: "segfault",  # SIGKILL, e.g. the OOM killer (POSIX only)
+        0xC0000005: "segfault",  # Windows STATUS_ACCESS_VIOLATION
+        0xC00000FD: "segfault",  # Windows STATUS_STACK_OVERFLOW (recursion mutants)
+        0xC0000409: "segfault",  # Windows STATUS_STACK_BUFFER_OVERRUN
         None: "not checked",
     },
 )

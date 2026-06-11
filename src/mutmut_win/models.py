@@ -180,11 +180,20 @@ class MutationRunResult(BaseModel):
     skipped: int = 0
     no_tests: int = 0
     type_check_caught: int = 0
+    # New in v2.9.0 (#91, A2-EW-004): crashes used to count in the denominator
+    # without any bucket. Buckets are DISJOINT — kill-class aggregation
+    # happens in the score formula, never by folding buckets into each other.
+    segfault: int = 0
     duration_seconds: float = 0.0
 
     @property
     def score(self) -> float:
-        """Mutation score as percentage (killed / (total - skipped - no_tests))."""
+        """Mutation score as percentage (kill class / (total - skipped - no_tests)).
+
+        The kill class is ``killed + type_check_caught + segfault``: a suite
+        that crashes under a mutant has detected it just as surely as a
+        failing assertion (issue #91).
+        """
         return self.compute_score(treat_timeout_as_kill=False)
 
     def compute_score(self, treat_timeout_as_kill: bool = False) -> float:
@@ -199,5 +208,6 @@ class MutationRunResult(BaseModel):
         denominator = self.total_mutants - self.skipped - self.no_tests
         if denominator <= 0:
             return 0.0
-        effective_killed = self.killed + (self.timeout if treat_timeout_as_kill else 0)
+        kill_class = self.killed + self.type_check_caught + self.segfault
+        effective_killed = kill_class + (self.timeout if treat_timeout_as_kill else 0)
         return (effective_killed / denominator) * 100.0

@@ -697,6 +697,18 @@ def _increment_summary(summary: MutationRunResult, status: str) -> None:
             summary.skipped += 1
         case "no tests":
             summary.no_tests += 1
+        case "segfault":
+            summary.segfault += 1
+        case _:
+            # Issue #91 / A2-EW-004: no status may ever count toward the
+            # total without a visible bucket again. Unknown statuses land
+            # in suspicious — loudly, not silently.
+            summary.suspicious += 1
+            print(
+                f"Warning: unknown mutant status {status!r} counted as "
+                f"suspicious — the status map and the summary buckets have "
+                f"drifted apart."
+            )
 
 
 def _update_source_data(
