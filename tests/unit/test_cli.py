@@ -147,9 +147,9 @@ class TestResultsCommand:
             result = runner.invoke(cli, ["results"])
 
         assert result.exit_code == 0
-        assert "Total:     3" in result.output
-        assert "Killed:    1" in result.output
-        assert "Survived:  1" in result.output
+        assert "Total:      3" in result.output
+        assert "Killed:     1" in result.output
+        assert "Survived:   1" in result.output
 
     def test_results_shows_no_results_message(self) -> None:
         runner = CliRunner()

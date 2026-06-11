@@ -54,6 +54,16 @@ class MutationParseError(MutationError):
     """
 
 
+class AmbiguousMutantNameError(MutmutWinError):
+    """A mutant name pattern matched more than one mutant.
+
+    Producer: ``mutant_diff.resolve_mutant`` — ``show``/``apply`` accept
+    glob patterns but require a UNIQUE match; the error lists the
+    candidates (issue #115 / A4-UI-012). ``run`` deliberately accepts
+    multi-matches (filtering many mutants is its job).
+    """
+
+
 class TypeCheckCommandError(MutmutWinError):
     """The external type checker failed to run or produced an unusable report.
 

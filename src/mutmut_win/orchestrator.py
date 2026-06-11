@@ -10,7 +10,6 @@ summarised in a ``MutationRunResult``.
 from __future__ import annotations
 
 import contextlib
-import fnmatch
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,7 +23,7 @@ from mutmut_win.exceptions import (
 )
 from mutmut_win.models import MutationRunResult, MutationTask, SourceFileMutationData
 from mutmut_win.stats import MutmutStats, collect_or_load_stats
-from mutmut_win.test_mapping import tests_for_mutant_names
+from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -617,9 +616,9 @@ def _filter_tasks_by_names(
 ) -> list[MutationTask]:
     """Return only tasks whose ``mutant_name`` matches any of *mutant_names*.
 
-    Supports ``fnmatch`` glob patterns (e.g. ``src.foo.*``).  A task is
-    included if its name is an exact match **or** matches at least one pattern
-    via :func:`fnmatch.fnmatch`.
+    Delegates to :func:`mutmut_win.test_mapping.match_mutant_names` — the
+    one matching rule shared with ``show``/``apply``/``time-estimates``
+    (issue #115 / A4-UI-012).
 
     Args:
         tasks: Full list of mutation tasks.
@@ -628,12 +627,8 @@ def _filter_tasks_by_names(
     Returns:
         Filtered list of tasks (may be empty).
     """
-    filtered: list[MutationTask] = []
-    for task in tasks:
-        key = task.mutant_name
-        if key in mutant_names or any(fnmatch.fnmatch(key, pattern) for pattern in mutant_names):
-            filtered.append(task)
-    return filtered
+    matched = set(match_mutant_names(mutant_names, [task.mutant_name for task in tasks]))
+    return [task for task in tasks if task.mutant_name in matched]
 
 
 def _compute_startup_floor(

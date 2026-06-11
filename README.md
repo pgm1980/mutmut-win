@@ -121,6 +121,14 @@ uv add mutmut-win --dev
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
 
+Mutant name matching is the same everywhere: an argument is either an
+exact mutant name or a glob pattern (`*`, `?`, `[...]`). `run` and
+`time-estimates` accept any number of matches; `show` and `apply`
+operate on a single mutant — a pattern matching more than one fails
+with the candidate list. `show` diffs are patch-capable for top-level
+functions (`a/`–`b/` labels, hunk lines refer to the original file);
+for class methods prefer `mutmut-win apply` over `patch`.
+
 Frequently used `run` options (see `mutmut-win run --help` for all):
 
 | Option | Effect |

@@ -21,7 +21,11 @@ from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.runner import PytestRunner
 from mutmut_win.stats import load_stats, save_cicd_stats
-from mutmut_win.test_mapping import mangled_name_from_mutant_name, tests_for_mutant_names
+from mutmut_win.test_mapping import (
+    mangled_name_from_mutant_name,
+    match_mutant_names,
+    tests_for_mutant_names,
+)
 
 
 @click.group()
@@ -380,11 +384,11 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     effective_killed = kill_aggregate + segfault + (timeout if treat_timeout_as_kill else 0)
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
-    click.echo(f"Total:     {total}")
+    click.echo(f"Total:      {total}")
     if il_killed > 0:
-        click.echo(f"Killed:    {kill_aggregate}  (incl. {il_killed} infinite-loop)")
+        click.echo(f"Killed:     {kill_aggregate}  (incl. {il_killed} infinite-loop)")
     else:
-        click.echo(f"Killed:    {kill_aggregate}")
+        click.echo(f"Killed:     {kill_aggregate}")
     # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
     # interrupted and not-checked rows used to count in Total and the score
     # denominator while appearing in no output line). The fixed list keeps
@@ -398,11 +402,17 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         count = counts.get(status, 0)
         if count == 0 and status not in always_shown:
             continue
-        click.echo(f"{status.capitalize() + ':':<11}{count}")
+        # Width 12: the longest standard label ("Suspicious:", 11 chars)
+        # keeps at least one space before its value (issue #115 /
+        # A4-UI-015 — it used to print "Suspicious:1"); legacy labels
+        # wider than the field get a single separating space.
+        label = status.capitalize() + ":"
+        line = f"{label:<12}{count}" if len(label) < 12 else f"{label} {count}"
+        click.echo(line)
     if treat_timeout_as_kill and timeout > 0:
-        click.echo(f"Score:     {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
+        click.echo(f"Score:      {score:.1f}% (Bug #71: {timeout} timeouts counted as kills)")
     else:
-        click.echo(f"Score:     {score:.1f}%")
+        click.echo(f"Score:      {score:.1f}%")
 
     if show_all:
         click.echo("")
@@ -463,7 +473,12 @@ def _format_ratio(value: object) -> str:
 @cli.command()
 @click.argument("mutant_name")
 def show(mutant_name: str) -> None:
-    """Show the diff for a specific mutant MUTANT_NAME."""
+    """Show the diff for a specific mutant MUTANT_NAME.
+
+    MUTANT_NAME is an exact mutant name or a glob pattern (*, ?, [...])
+    that matches exactly ONE mutant — the same matching rule as `run`;
+    an ambiguous pattern fails and lists the candidates.
+    """
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -493,7 +508,12 @@ def show(mutant_name: str) -> None:
 @cli.command()
 @click.argument("mutant_name")
 def apply(mutant_name: str) -> None:
-    """Apply mutant MUTANT_NAME to the source file on disk."""
+    """Apply mutant MUTANT_NAME to the source file on disk.
+
+    MUTANT_NAME is an exact mutant name or a glob pattern that matches
+    exactly ONE mutant; an ambiguous pattern fails and lists the
+    candidates — apply never applies a set.
+    """
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -553,7 +573,8 @@ def tests_for_mutant_cmd(name: str) -> None:
 def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
     """Show estimated run times for mutants.
 
-    When MUTANT_NAMES are given, only those mutants are shown; otherwise all
+    When MUTANT_NAMES are given (exact names or glob patterns — the same
+    matching rule as `run`), only those mutants are shown; otherwise all
     mutants recorded in the results cache are listed.  Estimates are derived
     from the stats-collected per-test durations.
 
@@ -574,9 +595,11 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
         click.echo("No results found. Run 'mutmut-win run' first.")
         return
 
-    # Filter to requested mutant names (if any).
+    # Filter to requested mutant names (if any) — same exact+glob rule as
+    # `run` and `show`/`apply` (issue #115 / A4-UI-012).
     if mutant_names:
-        filtered = [r for r in all_results if r.mutant_name in mutant_names]
+        matched = set(match_mutant_names(mutant_names, [r.mutant_name for r in all_results]))
+        filtered = [r for r in all_results if r.mutant_name in matched]
         if not filtered:
             click.echo(f"No results found for the given mutant names: {list(mutant_names)}")
             return

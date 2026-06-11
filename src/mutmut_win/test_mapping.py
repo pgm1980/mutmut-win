@@ -12,8 +12,37 @@ Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 from __future__ import annotations
 
 import fnmatch
+from typing import TYPE_CHECKING
 
 from mutmut_win.trampoline import CLASS_NAME_SEPARATOR
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+
+def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> list[str]:
+    """Return the candidates matching any pattern — exact or fnmatch glob.
+
+    THE matching rule for user-supplied mutant names (issue #115 /
+    A4-UI-012): ``run``, ``show``, ``apply`` and ``time-estimates`` all
+    resolve names through this function. An exact name matches itself;
+    ``*``/``?``/``[...]`` patterns match via :func:`fnmatch.fnmatch`.
+    Candidate order is preserved, each candidate appears at most once.
+
+    Args:
+        patterns: User-supplied names and/or glob patterns.
+        candidates: Known mutant names to match against.
+
+    Returns:
+        The matching candidates in their original order (possibly empty).
+    """
+    pattern_list = list(patterns)
+    return [
+        candidate
+        for candidate in candidates
+        if candidate in pattern_list
+        or any(fnmatch.fnmatch(candidate, pattern) for pattern in pattern_list)
+    ]
 
 
 def mangled_name_from_mutant_name(mutant_name: str) -> str:

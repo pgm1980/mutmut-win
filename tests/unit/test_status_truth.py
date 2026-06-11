@@ -138,7 +138,7 @@ class TestThreeChannelSegfaultConsistency:
         monkeypatch.setattr(cli_module, "DEFAULT_DB_PATH", db_path)
         output = CliRunner().invoke(cli_module.results, []).output
         assert "egfault" in output  # a visible segfault line (UI-009)
-        assert "Score:     66.7%" in output
+        assert "Score:      66.7%" in output
 
         # Channel 3: CICD export from the same rows.
         from mutmut_win.db import load_results
@@ -168,4 +168,7 @@ class TestResultsRendersEveryBucket:
         assert "egfault" in out
         assert "ot checked" in out
         assert "nterrupted" in out  # legacy rows from pre-v2.9 runs stay visible
-        assert "Total:     4" in out
+        assert "Total:      4" in out
+        # Issue #115 / A4-UI-015: labels wider than the field width get a
+        # separating space too — no "user:1" squeeze.
+        assert "Check was interrupted by user: 1" in out

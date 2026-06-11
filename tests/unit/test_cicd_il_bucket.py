@@ -80,8 +80,8 @@ class TestThreeChannelConsistency:
         # Channel 2: `results` command on the same DB.
         monkeypatch.setattr(cli_module, "DEFAULT_DB_PATH", db_path)
         output = CliRunner().invoke(cli_module.results, []).output
-        assert "Killed:    2  (incl. 1 infinite-loop)" in output
-        assert "Score:     66.7%" in output
+        assert "Killed:     2  (incl. 1 infinite-loop)" in output
+        assert "Score:      66.7%" in output
 
         # Channel 3: CICD export from the same DB rows.
         rows = load_results(db_path)
