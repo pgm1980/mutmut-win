@@ -172,7 +172,9 @@ class MutmutConfig(BaseModel):
     )
     infinite_loop_output_threshold: int = Field(
         default=1024,
-        ge=0,
+        # gt=0: a 0 threshold silently disabled IL detection (growth<0 never
+        # holds, A2-JT-010). Use infinite_loop_detection=false to opt out.
+        gt=0,
         description=(
             "Maximum output growth (bytes) in window allowed for an IL "
             "verdict. Above this, the test is making observable progress."

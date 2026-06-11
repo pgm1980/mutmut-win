@@ -63,21 +63,31 @@ except ImportError:  # pragma: no cover - graceful degradation path
 Verdict = Literal["killed_by_infinite_loop", "timeout"]
 Confidence = Literal["high", "medium", "low"]
 
+#: Minimum number of samples before any IL verdict is possible (issue #88,
+#: A2-JT-009: a single cpu=99 sample used to yield IL with HIGH confidence).
+#: At the default 0.5 s poll interval this is 2.5 s of real observation.
+#: Deliberately NOT configurable — it is a correctness floor of the
+#: classifier, not a tuning knob.
+MIN_SAMPLES_FOR_VERDICT: int = 5
+
 
 class IlSample(NamedTuple):
     """A single point-in-time observation of the monitored subprocess."""
 
-    timestamp: float        # time.monotonic() at sample
-    cpu_pct: float          # 0.0 to 100.0 * N_cores (process-tree sum)
-    output_bytes: int       # cumulative size of the log file
-    status: str             # psutil status string ("running", "sleeping", …)
+    timestamp: float          # time.monotonic() at sample
+    cpu_pct: float            # 0.0 to 100.0 * N_cores (process-tree sum)
+    output_bytes: int | None  # cumulative log size; None if stat() failed
+    status: str               # psutil status string ("running", "sleeping", …)
 
 
 class IlThresholds(BaseModel):
     """Tunable classifier thresholds (configurable via ``[tool.mutmut]``)."""
 
     cpu_threshold: float = Field(default=70.0, ge=0.0, le=10_000.0)
-    output_threshold: int = Field(default=1024, ge=0)
+    # gt=0: a threshold of 0 would make `growth < threshold` unsatisfiable and
+    # silently disable IL detection (A2-JT-010). Opting out has its own
+    # switch: [tool.mutmut].infinite_loop_detection = false.
+    output_threshold: int = Field(default=1024, gt=0)
     running_ratio: float = Field(default=0.8, ge=0.0, le=1.0)
     window_seconds: float = Field(default=10.0, gt=0.0)
 
@@ -98,6 +108,9 @@ class IlForensics(BaseModel):
     samples_collected: int
     window_seconds: float
     last_output_tail: str | None = None  # last few lines of pytest output
+    # New in v2.8.0 (#88) — defaults keep rows persisted by v2.6-v2.7 parseable.
+    status_signal_used: bool = True   # False when the platform can't report it
+    sampler_errors: int = 0           # exceptions survived by the sampler thread
 
 
 class LoopClassification(BaseModel):
@@ -119,35 +132,56 @@ def classify_samples(
     samples: list[IlSample],
     thresholds: IlThresholds,
     last_output_tail: str | None = None,
+    *,
+    status_signal_available: bool = True,
+    sampler_errors: int = 0,
 ) -> LoopClassification:
     """Apply the triple-check rule and return a :class:`LoopClassification`.
 
     The rule:
-    ``killed_by_infinite_loop`` iff all three hold simultaneously over the
-    rolling window of ``samples``:
+    ``killed_by_infinite_loop`` iff all *available* checks hold simultaneously
+    over the rolling window of ``samples``:
 
     - mean(cpu_pct) >= ``thresholds.cpu_threshold``
-    - output_growth_in_window < ``thresholds.output_threshold``
-    - running_ratio >= ``thresholds.running_ratio``
+    - output_growth_in_window < ``thresholds.output_threshold``, computed over
+      samples with a *measurable* ``output_bytes`` — samples where ``stat()``
+      failed carry ``None`` and never argue for a kill (A2-JT-015)
+    - running_ratio >= ``thresholds.running_ratio`` — only if
+      ``status_signal_available``
 
     Otherwise: ``timeout`` (the pre-Sprint-26 default).
 
-    Confidence is derived from the margin against the thresholds:
-    - ``high``: all three thresholds passed with ≥20 % margin
-    - ``medium``: passed but at least one margin <20 %
-    - ``low``: the verdict is ``timeout`` (no IL detected) or zero samples
+    Args:
+        samples: Rolling-window observations from :class:`ProcessMonitor`.
+        thresholds: Tunable classifier thresholds.
+        last_output_tail: Last pytest output lines for the forensics panel.
+        status_signal_available: Whether ``IlSample.status`` carries signal on
+            this platform. The caller declares the platform reality: psutil
+            reports virtually every Windows process as "running"
+            (A2-JT-001), so the worker passes ``sys.platform != "win32"``.
+        sampler_errors: Number of exceptions the sampler thread survived;
+            recorded in the forensics for post-hoc auditing (A2-JT-011).
+
+    Confidence semantics — reflects evidence quality, not just margins:
+    - ``high``: ALL THREE signals were available and passed with ≥20 % margin
+    - ``medium``: IL verdict, but either a margin <20 % or only two signals
+      were available (two-of-three is never sold as ``high``)
+    - ``low``: ``timeout`` verdict, zero samples, or fewer than
+      :data:`MIN_SAMPLES_FOR_VERDICT` samples (A2-JT-009)
     """
-    if not samples:
-        # No data — fall back to the safe default. confidence=low signals the
-        # absence of evidence (not its absence in favour of timeout).
+    if len(samples) < MIN_SAMPLES_FOR_VERDICT:
+        # No/insufficient data — fall back to the safe default. The forensics
+        # carry samples_collected so `show` reveals the evidence deficit.
         forensics = IlForensics(
             cpu_pct_mean=0.0,
             cpu_pct_max=0.0,
             output_growth_bytes=0,
             running_ratio=0.0,
-            samples_collected=0,
+            samples_collected=len(samples),
             window_seconds=thresholds.window_seconds,
             last_output_tail=last_output_tail,
+            status_signal_used=status_signal_available,
+            sampler_errors=sampler_errors,
         )
         return LoopClassification(
             verdict="timeout",
@@ -158,7 +192,10 @@ def classify_samples(
     cpu_values = [s.cpu_pct for s in samples]
     cpu_mean = sum(cpu_values) / len(cpu_values)
     cpu_max = max(cpu_values)
-    output_growth = max(0, samples[-1].output_bytes - samples[0].output_bytes)
+    # Output growth only over measurable samples — a failed stat() is missing
+    # data, not "the log stagnated" (the old clamp-to-0 was a pro-IL bias).
+    measurable = [s.output_bytes for s in samples if s.output_bytes is not None]
+    output_growth = max(0, measurable[-1] - measurable[0]) if measurable else 0
     running_ratio = sum(1 for s in samples if s.status == "running") / len(samples)
 
     forensics = IlForensics(
@@ -169,26 +206,35 @@ def classify_samples(
         samples_collected=len(samples),
         window_seconds=thresholds.window_seconds,
         last_output_tail=last_output_tail,
+        status_signal_used=status_signal_available,
+        sampler_errors=sampler_errors,
     )
 
     cpu_ok = cpu_mean >= thresholds.cpu_threshold
-    output_ok = output_growth < thresholds.output_threshold
-    running_ok = running_ratio >= thresholds.running_ratio
+    output_ok = bool(measurable) and output_growth < thresholds.output_threshold
+    # A dead status signal is excluded from the verdict, not vacuously passed
+    # off as evidence — the confidence cap below accounts for the gap.
+    running_ok = (
+        running_ratio >= thresholds.running_ratio if status_signal_available else True
+    )
 
     if cpu_ok and output_ok and running_ok:
         # Margin-based confidence: how far past each threshold are we?
         cpu_margin = (cpu_mean - thresholds.cpu_threshold) / max(thresholds.cpu_threshold, 1.0)
-        running_margin = (running_ratio - thresholds.running_ratio) / max(
-            thresholds.running_ratio, 0.01
-        )
-        # output_growth being well below the threshold = strong signal
-        output_margin = (
-            (thresholds.output_threshold - output_growth) / max(thresholds.output_threshold, 1)
-            if thresholds.output_threshold > 0
-            else 1.0
-        )
-        weakest = min(cpu_margin, running_margin, output_margin)
+        # output_growth being well below the threshold = strong signal.
+        # thresholds.output_threshold is validated gt=0.
+        output_margin = (thresholds.output_threshold - output_growth) / thresholds.output_threshold
+        margins = [cpu_margin, output_margin]
+        if status_signal_available:
+            margins.append(
+                (running_ratio - thresholds.running_ratio) / max(thresholds.running_ratio, 0.01)
+            )
+        weakest = min(margins)
         confidence: Confidence = "high" if weakest >= 0.2 else "medium"
+        if not status_signal_available:
+            # Two-of-three checks is honest evidence for a kill, but never
+            # "high" — the cap is monotone (only ever lowers confidence).
+            confidence = "medium"
         return LoopClassification(
             verdict="killed_by_infinite_loop",
             confidence=confidence,
@@ -229,8 +275,6 @@ class ProcessMonitor(threading.Thread):
     always have at least one full window's worth of samples even mid-poll.
     """
 
-    daemon = True
-
     def __init__(
         self,
         pid: int,
@@ -239,7 +283,9 @@ class ProcessMonitor(threading.Thread):
         poll_interval: float = 0.5,
         window_seconds: float = 10.0,
     ) -> None:
-        super().__init__(name=f"il-monitor-{pid}")
+        # daemon=True belongs here, not as a class attribute shadowing the
+        # Thread property (A2-JT-012: it worked, but left _daemonic stale).
+        super().__init__(name=f"il-monitor-{pid}", daemon=True)
         if not _HAS_PSUTIL:
             msg = (
                 "ProcessMonitor requires psutil. Install with `uv add psutil` "
@@ -273,20 +319,28 @@ class ProcessMonitor(threading.Thread):
         # lifetime of the monitor, re-use it for every sample, and only
         # discard it when the process disappears.
         self._proc_cache: dict[int, Any] = {}
+        # Exceptions survived by the sampling loop (A2-JT-011) — surfaced via
+        # the forensics so a degraded observation is never silent.
+        self._sampler_errors = 0
 
     # ---------------------------------------------------------------- public
+
+    @property
+    def sampler_errors(self) -> int:
+        """Number of unexpected exceptions the sampling loop survived."""
+        return self._sampler_errors
 
     def take_samples_snapshot(self) -> list[IlSample]:
         """Return a snapshot of the samples deque (last full window).
 
-        Filter to samples within the last ``window_seconds`` so the classifier
-        sees a stable window even if the monitor outlived its useful budget.
+        The cutoff is anchored to the LAST sample, not to ``now``: the worker
+        kills the subprocess and reads the log before classifying, and that
+        latency used to silently shrink the effective window (A2-JT-014).
         """
         all_samples = list(self._samples)
         if not all_samples:
             return []
-        now = time.monotonic()
-        cutoff = now - self._window_seconds
+        cutoff = all_samples[-1].timestamp - self._window_seconds
         return [s for s in all_samples if s.timestamp >= cutoff]
 
     def shutdown(self, timeout: float = 1.0) -> None:
@@ -308,9 +362,16 @@ class ProcessMonitor(threading.Thread):
             return  # subprocess gone already — nothing to sample
 
         while not self._stop_event.is_set():
-            sample = self._take_sample()
-            if sample is not None:
-                self._samples.append(sample)
+            try:
+                sample = self._take_sample()
+                if sample is not None:
+                    self._samples.append(sample)
+            except Exception:  # the sampler must survive any glitch
+                # A2-JT-011: one bad tick must not end the whole observation.
+                # The count reaches the forensics via the worker, so degraded
+                # sampling is auditable instead of silently becoming
+                # "timeout/low for every mutant from here on".
+                self._sampler_errors += 1
             # event.wait returns True if set, False on timeout
             if self._stop_event.wait(self._poll_interval):
                 break
@@ -346,9 +407,11 @@ class ProcessMonitor(threading.Thread):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
         try:
-            output_bytes = self._log_path.stat().st_size
+            output_bytes: int | None = self._log_path.stat().st_size
         except OSError:
-            output_bytes = 0
+            # Missing data, not "output stagnated" — clamping to 0 was a
+            # pro-IL bias (A2-JT-015). The classifier skips None samples.
+            output_bytes = None
         return IlSample(
             timestamp=time.monotonic(),
             cpu_pct=cpu,

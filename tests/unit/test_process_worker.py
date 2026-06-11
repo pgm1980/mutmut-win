@@ -168,6 +168,72 @@ class TestWorkerMain:
 
         assert captured_env.get(MUTANT_ENV_VAR) == "src/foo.py::bar__mutmut_1"
 
+    def test_pythonunbuffered_is_set_for_the_subprocess(self) -> None:
+        """Issue #88 / A2-JT-002: block buffering froze the log's st_size, so
+        the classifier's output signal saw 0 bytes while the suite was making
+        progress.  PYTHONUNBUFFERED=1 makes st_size honest for the whole tree."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        captured_env: dict[str, str] = {}
+
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            captured_env.update(kwargs.get("env", {}))
+            return _make_popen_mock(exit_code=0)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        assert captured_env.get("PYTHONUNBUFFERED") == "1"
+
+    def test_window_vs_timeout_hint_emitted_once(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #88 / A2-JT-018: when the sampling window covers >=50% of the
+        task timeout, first-sample CPU priming (documented 0.0) dilutes the
+        mean and biases the classifier toward timeout.  The worker emits a
+        one-time configuration hint instead of silently underreporting."""
+        monkeypatch.setattr(worker_module, "_window_hint_emitted", False)
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+
+        # Two tasks with timeout 15s vs the default 10s window → 10 >= 7.5.
+        task_q.put(_simple_task(timeout_seconds=15.0))
+        task_q.put(_simple_task(mutant_name="src/foo.py::bar__mutmut_2", timeout_seconds=15.0))
+        task_q.put(None)
+
+        config = _make_config(infinite_loop_detection=True)
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            side_effect=lambda *_a, **_k: _make_popen_mock(exit_code=0),
+        ):
+            worker_main(task_q, event_q, config)  # type: ignore[arg-type]
+
+        out = capsys.readouterr().out
+        assert out.count("IL window covers") == 1  # once per worker, not per task
+
+    def test_no_window_hint_when_window_is_small(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(worker_module, "_window_hint_emitted", False)
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+
+        task_q.put(_simple_task(timeout_seconds=60.0))  # 10s window < 30s
+        task_q.put(None)
+
+        config = _make_config(infinite_loop_detection=True)
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            side_effect=lambda *_a, **_k: _make_popen_mock(exit_code=0),
+        ):
+            worker_main(task_q, event_q, config)  # type: ignore[arg-type]
+
+        assert "IL window covers" not in capsys.readouterr().out
+
     def test_pytest_extra_args_forwarded(self) -> None:
         """pytest_add_cli_args from config must appear in the subprocess cmd."""
         task_q: _SimpleQueue = _SimpleQueue()
