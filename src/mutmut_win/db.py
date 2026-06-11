@@ -7,6 +7,7 @@ cache database.  The default database location is
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -49,25 +50,43 @@ _SELECT_ALL_SQL = (
 )
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, ddl: str) -> None:
+    """Run an ``ALTER TABLE ... ADD COLUMN`` tolerating a concurrent winner.
+
+    A parallel migrator may add the column between our PRAGMA check and our
+    ALTER (issue #100 / A3-FD-007 — the interleaving was confirmed live);
+    "duplicate column" is then success, not failure.
+
+    Args:
+        conn: Open connection.
+        ddl: The ``ALTER TABLE`` statement.
+    """
+    try:
+        conn.execute(ddl)
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 def create_db(path: Path = DEFAULT_DB_PATH) -> None:
     """Create the SQLite database and schema if they do not exist.
 
     Parent directories are created automatically.  Existing databases
     from older versions are migrated (``last_output`` and ``forensics``
-    columns added).
+    columns added); migrations tolerate concurrent runners.
 
     Args:
         path: Filesystem path to the SQLite database file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute(_CREATE_TABLE_SQL)
         # Migrate existing databases from older schemas.
         columns = {row[1] for row in conn.execute("PRAGMA table_info(mutant)").fetchall()}
         if "last_output" not in columns:
-            conn.execute(_MIGRATE_ADD_LAST_OUTPUT)
+            _add_column_if_missing(conn, _MIGRATE_ADD_LAST_OUTPUT)
         if "forensics" not in columns:
-            conn.execute(_MIGRATE_ADD_FORENSICS)
+            _add_column_if_missing(conn, _MIGRATE_ADD_FORENSICS)
         conn.commit()
 
 
@@ -96,7 +115,13 @@ def save_result(
     """
     create_db(path)
     forensics_json = json.dumps(forensics) if forensics is not None else None
-    with sqlite3.connect(path) as conn:
+    if last_output is not None:
+        # Issue #100 / A3-FD-011: a lone surrogate (undecodable bytes that
+        # slipped through as \udcXX/\udXXX) raised UnicodeEncodeError inside
+        # the driver and LOST the upsert. Diagnostics may be lossy, results
+        # may not.
+        last_output = last_output.encode("utf-8", errors="replace").decode("utf-8")
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute(
             _UPSERT_SQL,
             (mutant_name, status, exit_code, duration, last_output, forensics_json),
@@ -126,7 +151,7 @@ def delete_results_not_in(path: Path, valid_names: set[str]) -> int:
     if not path.exists():
         return 0
 
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         rows = conn.execute("SELECT mutant_name FROM mutant").fetchall()
         orphans = sorted({row[0] for row in rows} - valid_names)
         conn.executemany(
@@ -140,7 +165,10 @@ def delete_results_not_in(path: Path, valid_names: set[str]) -> int:
 def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
     """Load all mutation results from the database.
 
-    Returns an empty list if the database does not exist.
+    Returns an empty list if the database does not exist. Existing caches
+    from older versions are migrated first (issue #100 / A3-FD-001: the
+    SELECT names columns that only ``create_db`` adds — pre-v2.5 caches
+    raised OperationalError in every reader after an upgrade).
 
     Args:
         path: Filesystem path to the SQLite database file.
@@ -152,8 +180,9 @@ def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
 
     if not path.exists():
         return []
+    create_db(path)  # idempotent; migrates old schemas on the READ path
 
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         cursor = conn.execute(_SELECT_ALL_SQL)
         rows = cursor.fetchall()
 
