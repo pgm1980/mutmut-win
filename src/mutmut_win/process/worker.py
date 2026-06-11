@@ -55,12 +55,6 @@ def worker_main(
     if isinstance(raw_extra, list):
         pytest_extra_args = [str(a) for a in raw_extra]
 
-    # Per-mutant timeout: generous default (60s), prevents hung pytest processes
-    # (e.g. pytest-asyncio event loop corruption) from blocking the pool forever.
-    raw_timeout = config_data.get("timeout_multiplier", 30.0)
-    timeout_val = float(raw_timeout) if isinstance(raw_timeout, (int, float)) else 60.0
-    worker_timeout = max(60.0, timeout_val)
-
     while True:
         raw_item = task_queue.get()
         if raw_item is None:
@@ -76,9 +70,7 @@ def worker_main(
                 fallback_name = raw_name
 
         try:
-            _process_task(
-                raw_item, event_queue, pid, pytest_extra_args, config_data, worker_timeout
-            )
+            _process_task(raw_item, event_queue, pid, pytest_extra_args, config_data)
         except Exception as exc:  # Bug #12 recovery: keep the worker alive
             # Any uncaught exception (Pydantic ValidationError, RuntimeError from
             # the subprocess layer, libcst hiccup, transient FS error, …) would
@@ -108,7 +100,6 @@ def _process_task(
     pid: int,
     pytest_extra_args: list[str],
     config_data: dict[str, object],
-    worker_timeout: float,
 ) -> None:
     """Process a single mutation task.
 
@@ -116,6 +107,11 @@ def _process_task(
     that bubbles up from here and synthesise a recovery event (Bug #12).
     """
     task = MutationTask.model_validate(raw_item)
+    # Per-task budget computed by the orchestrator (estimated runtime of the
+    # assigned tests times timeout_multiplier, floor 5 s).  Before issue #81 /
+    # A2-JT-003 the worker ignored it and used max(60, timeout_multiplier) —
+    # the MULTIPLIER acted as flat absolute seconds for every task.
+    timeout_seconds = task.timeout_seconds
 
     # Notify main process that work has started.
     event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
@@ -208,9 +204,11 @@ def _process_task(
         # a live-pid sweep cannot bridge (uv launcher chains showed exactly
         # that).
         task_job_handle = _create_task_job(proc.pid)
-        monitor = _maybe_start_loop_monitor(il_enabled, proc.pid, log_path)
+        monitor = _maybe_start_loop_monitor(
+            il_enabled, proc.pid, log_path, window_seconds=il_thresholds.window_seconds
+        )
         try:
-            exit_code = proc.wait(timeout=worker_timeout)
+            exit_code = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             # Kill the still-running subprocess tree before sampling so the
             # classifier sees the final state of the rolling window.
@@ -273,13 +271,28 @@ def _process_task(
     )
 
 
+#: Tail block size for diagnostic log reads — generously covers
+#: ``_MAX_DIAGNOSTIC_LINES`` even with very long lines.
+_TAIL_READ_BYTES: int = 64 * 1024
+
+
 def _read_last_lines(path: Path, n: int) -> str | None:
-    """Read the last *n* lines from *path*, returning None on failure."""
+    """Tail-read the last *n* lines from *path*, returning None on failure.
+
+    Reads only the final block of the file (issue #81 / A2-EW-014):
+    ``read_text`` loaded output-runaway mutant logs fully into memory,
+    risking MemoryError right inside the diagnostic path.
+    """
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = min(size, _TAIL_READ_BYTES)
+            f.seek(size - block)
+            data = f.read(block)
     except OSError:
         return None
-    lines = content.splitlines()
+    lines = data.decode("utf-8", errors="replace").splitlines()
     return "\n".join(lines[-n:]) if lines else None
 
 
@@ -289,13 +302,18 @@ def _read_last_lines(path: Path, n: int) -> str | None:
 
 
 def _maybe_start_loop_monitor(
-    enabled: bool, pid: int, log_path: Path
+    enabled: bool, pid: int, log_path: Path, window_seconds: float = 10.0
 ) -> Any:
     """Try to spawn an IL-detection monitor; return ``None`` on opt-out / failure.
 
     Failures here MUST NEVER take down the worker — IL detection is best-effort
     enhancement. psutil missing, permission denied on the PID, or any other
     error degrades gracefully to "no detection, plain timeout".
+
+    *window_seconds* carries the configured ``infinite_loop_window_seconds``
+    through to the sampler — previously the monitor was hard-wired to its
+    10 s default while the forensics claimed the configured value
+    (issue #81 / A2-EW-009).
     """
     if not enabled:
         return None
@@ -304,7 +322,7 @@ def _maybe_start_loop_monitor(
 
         if not has_psutil():
             return None
-        monitor = ProcessMonitor(pid=pid, log_path=log_path)
+        monitor = ProcessMonitor(pid=pid, log_path=log_path, window_seconds=window_seconds)
         monitor.start()
     except Exception as exc:  # graceful degradation: never poison the run
         print(f"WORKER MONITOR start failed: {exc}", flush=True)

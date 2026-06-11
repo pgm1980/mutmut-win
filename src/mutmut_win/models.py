@@ -77,18 +77,11 @@ class TaskCompleted(BaseModel):
     )
 
 
-class TaskTimedOut(BaseModel):
-    """Event: a mutation task exceeded its wall-clock timeout.
-
-    Injected by the timeout monitor into event_queue.
-    """
-
-    mutant_name: str
-    worker_pid: int
-
-
-# Union type for all events that flow through the event queue.
-TaskEvent = TaskStarted | TaskCompleted | TaskTimedOut
+# Union type for all events that flow through the event queue.  Timeouts are
+# reported by the worker itself as TaskCompleted with exit code 36/38 — the
+# separate TaskTimedOut event belonged to the never-wired WallClockTimeout
+# monitor and was removed with it (issue #81 / A2-JT-003).
+TaskEvent = TaskStarted | TaskCompleted
 
 
 class MutationResult(BaseModel):

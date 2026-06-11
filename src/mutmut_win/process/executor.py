@@ -57,8 +57,7 @@ class SpawnPoolExecutor:
 
     Creates *max_workers* child processes using the ``spawn`` start method,
     distributes ``MutationTask`` objects via a task queue, and yields domain
-    events (``TaskStarted``, ``TaskCompleted``, ``TaskTimedOut``) from an
-    event queue.
+    events (``TaskStarted``, ``TaskCompleted``) from an event queue.
 
     Args:
         max_workers: Number of worker processes to spawn.
@@ -145,8 +144,8 @@ class SpawnPoolExecutor:
         """Yield domain events until all tasks have been reported as done.
 
         ``TaskStarted`` events are yielded immediately as they arrive; the
-        loop ends once every task produced a ``TaskCompleted`` or
-        ``TaskTimedOut``.
+        loop ends once every task produced a ``TaskCompleted`` (worker-side
+        timeouts arrive as completions with exit code 36/38).
 
         Liveness (issue #80 / A2-EW-002): the queue is polled with a timeout,
         and every idle tick sweeps the workers.  A worker that died hard can
@@ -159,11 +158,11 @@ class SpawnPoolExecutor:
         of fabricating results for them.
 
         Yields:
-            ``TaskStarted``, ``TaskCompleted``, or ``TaskTimedOut`` instances.
+            ``TaskStarted`` or ``TaskCompleted`` instances.
         """
         import queue as queue_module
 
-        from mutmut_win.models import TaskCompleted, TaskStarted, TaskTimedOut
+        from mutmut_win.models import TaskCompleted, TaskStarted
 
         finished = 0
         in_flight: dict[str, int] = {}  # mutant_name -> worker pid
@@ -207,8 +206,10 @@ class SpawnPoolExecutor:
                 event = TaskStarted.model_validate(raw)
                 in_flight[event.mutant_name] = event.worker_pid
             else:
-                event = TaskTimedOut.model_validate(raw)
-                finished += 1
+                # Fail fast on unknown shapes instead of misparsing them
+                # (issue #81; the #79 finally-shutdown cleans up the pool).
+                msg = f"unknown event shape on the event queue: {sorted(raw)!r}"
+                raise RuntimeError(msg)
 
             yield event
 

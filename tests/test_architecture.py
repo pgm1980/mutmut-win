@@ -28,7 +28,6 @@ def test_all_modules_importable() -> None:
         "mutmut_win.type_checking",
         "mutmut_win.process",
         "mutmut_win.process.executor",
-        "mutmut_win.process.timeout",
         "mutmut_win.process.worker",
     ]
     for module_name in modules:
@@ -59,7 +58,6 @@ def test_architecture_contracts() -> None:
 
     # Layer 4 — infrastructure / process
     import_module("mutmut_win.process.executor")
-    import_module("mutmut_win.process.timeout")
     import_module("mutmut_win.process.worker")
 
 
@@ -71,10 +69,9 @@ def test_no_upward_import_from_process() -> None:
     import-linter; this test validates successful loading.
     """
     executor = import_module("mutmut_win.process.executor")
-    timeout = import_module("mutmut_win.process.timeout")
     worker = import_module("mutmut_win.process.worker")
 
-    for mod in (executor, timeout, worker):
+    for mod in (executor, worker):
         assert mod.__spec__ is not None, f"{mod.__name__} has no __spec__"
 
 

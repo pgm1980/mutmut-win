@@ -221,26 +221,6 @@ class TestSpawnPoolExecutorGetEvents:
         assert isinstance(events[0], TaskStarted)
         assert isinstance(events[1], TaskCompleted)
 
-    def test_timed_out_event_counted_as_finished(self) -> None:
-        """A TaskTimedOut in the queue must count toward the finished tally."""
-        from mutmut_win.models import TaskTimedOut
-
-        task_q: _FakeQueue = _FakeQueue()
-        event_q: _FakeQueue = _FakeQueue()
-
-        executor = SpawnPoolExecutor(max_workers=1, config=_config())
-        executor._task_queue = task_q  # type: ignore[assignment]
-        executor._event_queue = event_q  # type: ignore[assignment]
-        executor._num_tasks = 1
-
-        event_q.put(TaskStarted(mutant_name="m1", worker_pid=os.getpid()).model_dump())
-        event_q.put(TaskTimedOut(mutant_name="m1", worker_pid=os.getpid()).model_dump())
-
-        events = list(executor.get_events())
-        assert len(events) == 2
-        assert isinstance(events[1], TaskTimedOut)
-
-
 class TestSpawnPoolExecutorShutdown:
     def test_shutdown_kills_alive_workers(self) -> None:
         """shutdown() must kill any still-alive workers."""
