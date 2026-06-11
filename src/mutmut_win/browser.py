@@ -18,30 +18,93 @@ from textual.containers import Container
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Static
 
-from mutmut_win.constants import status_by_exit_code
+from mutmut_win.constants import emoji_by_status, status_by_exit_code
 from mutmut_win.db import DEFAULT_DB_PATH
 from mutmut_win.models import MutationResult, SourceFileMutationData
 
 #: CSS file co-located with this package
 _CSS_PATH = Path(__file__).parent / "result_browser_layout.tcss"
 
-#: Emoji per status (kept in sync with constants.py)
-_EMOJI_BY_STATUS: dict[str, str] = {
-    "survived": "🙁",
-    "no tests": "🫥",
-    "timeout": "⏰",
-    "suspicious": "🤔",
-    "skipped": "🔇",
-    "caught by type check": "🧙",
-    "check was interrupted by user": "🛑",
-    "not checked": "?",
-    "killed": "🎉",
-    "segfault": "💥",
-}
+#: Emoji per status — the constants.py map IS the source of truth.  The
+#: private copy this replaced predated the IL classifier and had drifted
+#: (no killed_by_infinite_loop entry, audit A4-UI-002).
+_EMOJI_BY_STATUS: dict[str, str] = emoji_by_status
+
+#: Statuses that count as a kill — hidden from the mutants table unless
+#: --show-killed is given.
+_KILL_STATUSES: frozenset[str] = frozenset(
+    {"killed", "caught by type check", "killed_by_infinite_loop"}
+)
 
 _STATUS_COLUMNS: list[tuple[str, Any]] = [("path", "Path")] + [
     (status, Text(emoji, justify="right")) for status, emoji in _EMOJI_BY_STATUS.items()
 ]
+
+
+def _describe_mutant(
+    status: str,
+    exit_code: int | None,
+    duration: float | str,
+    estimated_duration: float | str,
+    type_check_error: str,
+) -> str:
+    """Return the one-line status description shown above the diff view.
+
+    Args:
+        status: Status string from ``constants.status_by_exit_code``.
+        exit_code: Raw pytest/classifier exit code, or ``None`` if unknown.
+        duration: Measured run duration in seconds, or ``"?"``.
+        estimated_duration: Baseline test duration in seconds, or ``"?"``.
+        type_check_error: Type checker output for type-check kills, or ``"?"``.
+
+    Returns:
+        A human-readable description of the mutant's outcome.
+    """
+    view_tests_desc = "(press r to retest this mutant)"
+
+    match status:
+        case "killed":
+            return f"Killed ({exit_code=}): Mutant caused a test to fail 🎉"
+        case "killed_by_infinite_loop":
+            return (
+                f"Killed — infinite loop ({exit_code=}): The IL detector classified "
+                "this mutant as non-terminating 🌀 "
+                "Run 'mutmut-win show <mutant>' for the forensics behind the verdict."
+            )
+        case "survived":
+            return f"Survived ({exit_code=}): No test detected this mutant. {view_tests_desc}"
+        case "skipped":
+            return f"Skipped ({exit_code=})"
+        case "check was interrupted by user":
+            return f"User interrupted ({exit_code=})"
+        case "caught by type check":
+            return f"Caught by type checker ({exit_code=}): {type_check_error}"
+        case "timeout":
+            dur_str = f"{duration:.3f}" if isinstance(duration, float) else str(duration)
+            est_str = (
+                f"{estimated_duration:.3f}"
+                if isinstance(estimated_duration, float)
+                else str(estimated_duration)
+            )
+            return (
+                f"Timeout ({exit_code=}): Timed out after {dur_str}s. "
+                f"Tests without mutation took {est_str}s. {view_tests_desc}"
+            )
+        case "no tests":
+            return (
+                f"Untested ({exit_code=}): Skipped because selected tests do not execute this code."
+            )
+        case "segfault":
+            return f"Segfault ({exit_code=}): Running pytest with this mutant segfaulted."
+        case "suspicious":
+            return (
+                f"Unknown ({exit_code=}): "
+                "Running pytest with this mutant resulted in an unknown exit code."
+            )
+        case "not checked":
+            return "Not checked in the last mutmut-win run."
+        case _:
+            return f"Unknown status ({exit_code=}, {status=})"
 
 
 def _get_diff_for_mutant(mutant_name: str, path: Path | None = None) -> str:
@@ -257,7 +320,7 @@ class ResultBrowser(App[None]):
         if file_path == "__all__":
             for mutant_name, result in sorted(self._db_results.items()):
                 status = result.status
-                if status not in ("killed", "caught by type check") or self._show_killed:
+                if status not in _KILL_STATUSES or self._show_killed:
                     emoji = _EMOJI_BY_STATUS.get(status, "?")
                     mutants_table.add_row(mutant_name, emoji, key=mutant_name)
             return
@@ -268,7 +331,7 @@ class ResultBrowser(App[None]):
         sfd, _counts = self._source_data[file_path]
         for mutant_name, exit_code in sfd.exit_code_by_key.items():
             status = status_by_exit_code.get(exit_code, "suspicious")
-            if status not in ("killed", "caught by type check") or self._show_killed:
+            if status not in _KILL_STATUSES or self._show_killed:
                 emoji = _EMOJI_BY_STATUS.get(status, "?")
                 mutants_table.add_row(mutant_name, emoji, key=mutant_name)
 
@@ -298,50 +361,9 @@ class ResultBrowser(App[None]):
             duration = db_result.duration if db_result.duration is not None else "?"
 
         status = status_by_exit_code.get(exit_code, "suspicious")
-        view_tests_desc = "(press r to retest this mutant)"
-
-        match status:
-            case "killed":
-                description = f"Killed ({exit_code=}): Mutant caused a test to fail 🎉"
-            case "survived":
-                description = (
-                    f"Survived ({exit_code=}): No test detected this mutant. {view_tests_desc}"
-                )
-            case "skipped":
-                description = f"Skipped ({exit_code=})"
-            case "check was interrupted by user":
-                description = f"User interrupted ({exit_code=})"
-            case "caught by type check":
-                description = f"Caught by type checker ({exit_code=}): {type_check_error}"
-            case "timeout":
-                dur_str = f"{duration:.3f}" if isinstance(duration, float) else str(duration)
-                est_str = (
-                    f"{estimated_duration:.3f}"
-                    if isinstance(estimated_duration, float)
-                    else str(estimated_duration)
-                )
-                description = (
-                    f"Timeout ({exit_code=}): Timed out after {dur_str}s. "
-                    f"Tests without mutation took {est_str}s. {view_tests_desc}"
-                )
-            case "no tests":
-                description = (
-                    f"Untested ({exit_code=}): "
-                    "Skipped because selected tests do not execute this code."
-                )
-            case "segfault":
-                description = (
-                    f"Segfault ({exit_code=}): Running pytest with this mutant segfaulted."
-                )
-            case "suspicious":
-                description = (
-                    f"Unknown ({exit_code=}): "
-                    "Running pytest with this mutant resulted in an unknown exit code."
-                )
-            case "not checked":
-                description = "Not checked in the last mutmut-win run."
-            case _:
-                description = f"Unknown status ({exit_code=}, {status=})"
+        description = _describe_mutant(
+            status, exit_code, duration, estimated_duration, type_check_error
+        )
 
         description_view.update(f"\n {description}\n")
         diff_view.update("<loading code diff...>")
