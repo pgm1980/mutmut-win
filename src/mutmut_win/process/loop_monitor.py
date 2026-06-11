@@ -1,4 +1,4 @@
-"""True infinite-loop detection for mutation-test workers (Bug #5 / Issue #71).
+"""Infinite-loop detection for mutation-test workers (Bug #5 / Issue #71).
 
 The pre-Sprint-26 worker only knew "subprocess timed out — exit_code 36".
 That bucketed two semantically different things into the same TIMEOUT bucket:
@@ -9,28 +9,36 @@ That bucketed two semantically different things into the same TIMEOUT bucket:
 2. **Genuine slow test** that hit the wall-clock budget for non-mutation
    reasons (network wait, expensive setup, …). Real TIMEOUT.
 
-This module distinguishes the two with a triple-check classifier sampled by a
-lightweight ``threading.Thread`` during the subprocess's lifetime. After
-``TimeoutExpired`` the caller invokes :func:`classify_samples` which returns a
-:class:`LoopClassification` carrying the verdict, a confidence band, and a
-structured :class:`IlForensics` snapshot that gets persisted with the mutant
-so the user can post-hoc verify every classification.
+This module distinguishes the two with a sampling classifier: a lightweight
+``threading.Thread`` observes the subprocess tree during its lifetime; after
+``TimeoutExpired`` the caller invokes :func:`classify_samples`, which returns
+a :class:`LoopClassification` carrying the verdict, a confidence band, and a
+structured :class:`IlForensics` snapshot that is persisted with the mutant so
+every classification can be audited post hoc (``mutmut-win show <mutant>``).
 
-Architecture chosen after a 10-step Maxential CoT plus 4-stage Tree-of-Thoughts
-analysis (best path score 0.94). Cross-validated against the 4 typical
-real-world scenarios from critique-model-service Sprint 4 / Sprint 10 bug
-reports:
+Signals and their honest, platform-dependent reach (issues #88/#89):
 
-| Scenario                           | CPU      | Output    | Status   | Verdict                  |
+- **CPU** (mean over the window, process tree): the primary signal, real on
+  all platforms.
+- **Progress** (negative signal — observable progress vetoes IL): captured-log
+  growth (the worker sets ``PYTHONUNBUFFERED=1`` so ``st_size`` is honest)
+  OR io_counters activity of the tree (a pure spin makes zero syscalls;
+  unavailable on macOS). Note that pytest writes nothing *during* a single
+  long test, so a silent log alone is weak evidence — hence the conjunction
+  with CPU.
+- **Process status** (``running_ratio``): POSIX only. Windows reports
+  virtually every process as "running", so the worker declares the signal
+  unavailable there (``status_signal_available=False``) and verdicts rest on
+  the other signals — capped at ``medium`` confidence, never ``high``.
+
+Reference scenarios (status column is POSIX semantics):
+
+| Scenario                           | CPU      | Progress  | Status   | Verdict                  |
 |------------------------------------|----------|-----------|----------|--------------------------|
 | Hypothesis-IL (Bug #5 case)        | high     | none      | running  | killed_by_infinite_loop  |
 | Slow DB / network test             | low      | none      | sleeping | timeout                  |
 | Genuine many Hypothesis examples   | med-high | growing   | running  | timeout                  |
 | Async event loop spinning          | high     | none      | running  | killed_by_infinite_loop  |
-
-No other mutation-testing tool in the market (Stryker, PIT, mutpy, cosmic-ray,
-cargo-mutants) currently does explainable infinite-loop detection. v2.5.0 is
-alone-international-state-of-the-art on this dimension.
 """
 
 from __future__ import annotations

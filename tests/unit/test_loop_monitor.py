@@ -70,7 +70,13 @@ def test_classify_hypothesis_infinite_loop_is_killed_with_high_confidence() -> N
 
 
 def test_classify_slow_io_test_is_timeout_not_loop() -> None:
-    """CPU low + no output + sleeping → timeout (not IL — process waiting on I/O)."""
+    """CPU low + no output → timeout (not IL — process waiting on I/O).
+
+    The "sleeping" status here is POSIX semantics: Windows reports virtually
+    every process as "running" (A2-JT-001), so on win32 the worker declares
+    the status signal unavailable and CPU alone carries this discrimination —
+    see tests/unit/test_classifier_honesty.py for the win32 path.
+    """
     samples = _make_samples(n=20, cpu=5.0, output_growth_per_sample=0, status="sleeping")
     result = classify_samples(samples, IlThresholds())
 
@@ -135,16 +141,23 @@ def test_classify_just_above_threshold_is_killed_medium_confidence() -> None:
 
 
 def test_classify_running_ratio_below_threshold_blocks_il_verdict() -> None:
-    """Even with CPU + no-output, ratio<threshold (mixed sleeping/running) → timeout."""
-    # 12 running + 8 sleeping = ratio 0.6, below the default 0.8 threshold
+    """running_ratio in ISOLATION blocks IL (POSIX semantics, A2-JT-016).
+
+    The pre-#90 version of this test mixed low CPU into the sleeping samples,
+    so the ratio was never the deciding signal and the suite could not have
+    caught A2-JT-001 (the ratio check being vacuous on Windows). Here CPU is
+    pegged on EVERY sample and output is silent — the ratio alone must veto.
+    """
+    # 12 running + 8 sleeping = ratio 0.6, below the default 0.8 threshold;
+    # cpu=95 throughout → cpu_ok and output_ok both hold.
     samples = (
         _make_samples(n=12, cpu=95.0, status="running")
-        + _make_samples(n=8, cpu=10.0, status="sleeping")
+        + _make_samples(n=8, cpu=95.0, status="sleeping")
     )
     result = classify_samples(samples, IlThresholds())
 
-    # Mean cpu = (12*95 + 8*10) / 20 = 61, also below 70 — both blockers
     assert result.verdict == "timeout"
+    assert result.forensics.running_ratio == 0.6
 
 
 def test_classify_tunable_thresholds_lower_cpu_floor() -> None:

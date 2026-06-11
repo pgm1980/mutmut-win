@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from queue import Queue
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -214,6 +216,58 @@ class TestWorkerMain:
 
         out = capsys.readouterr().out
         assert out.count("IL window covers") == 1  # once per worker, not per task
+
+    def test_timeout_path_declares_the_platform_status_signal(self) -> None:
+        """Issue #90 / A2-JT-016: the worker must tell the classifier whether
+        the status signal is real on this platform (False on win32, where
+        psutil reports everything as 'running') and forward the sampler error
+        count — this is the plumbing the win32 confidence cap hangs on."""
+        captured: dict[str, Any] = {}
+
+        class _FakeMonitor:
+            sampler_errors = 7
+
+            def take_samples_snapshot(self) -> list[Any]:
+                return []
+
+            def shutdown(self, timeout: float = 1.0) -> None:
+                pass
+
+        def fake_classify(
+            _samples: Any,
+            _thresholds: Any,
+            _last_output: Any,
+            *,
+            status_signal_available: bool,
+            sampler_errors: int,
+        ) -> MagicMock:
+            captured["status_signal_available"] = status_signal_available
+            captured["sampler_errors"] = sampler_errors
+            classification = MagicMock()
+            classification.verdict = "timeout"
+            classification.confidence = "low"
+            classification.forensics.model_dump.return_value = {}
+            return classification
+
+        proc = _make_popen_mock()
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task(timeout_seconds=60.0))
+        task_q.put(None)
+
+        config = _make_config(infinite_loop_detection=True)
+        with (
+            patch("mutmut_win.process.worker.subprocess.Popen", return_value=proc),
+            patch.object(worker_module, "_kill_proc_tree"),
+            patch.object(worker_module, "_maybe_start_loop_monitor", return_value=_FakeMonitor()),
+            patch.object(worker_module, "_classify_with_monitor", side_effect=fake_classify),
+        ):
+            worker_main(task_q, event_q, config)  # type: ignore[arg-type]
+
+        assert captured["status_signal_available"] == (sys.platform != "win32")
+        assert captured["sampler_errors"] == 7
 
     def test_no_window_hint_when_window_is_small(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

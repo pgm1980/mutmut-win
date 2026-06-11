@@ -20,7 +20,7 @@ mutmut explicitly blocks Windows execution ([issue #397](https://github.com/boxe
 | IPC | `os.wait()` + exit codes | Two-Queue architecture (task + event) |
 | Mutation engine | libcst (CST-based) | libcst (CST-based) - identical |
 | Config format | `[tool.mutmut]` in pyproject.toml | `[tool.mutmut]` in pyproject.toml - compatible |
-| Infinite-loop detection | None (plain timeout) | psutil triple-check classifier with forensics + confidence (v2.5.0) |
+| Infinite-loop detection | None (plain timeout) | psutil sampling classifier (CPU + progress signals, platform-aware confidence) with persisted forensics |
 
 ## Installation
 
@@ -97,11 +97,11 @@ extra_paths = ["benchmarks/"]    # Sibling packages: copied into mutants/ + on w
 mutate_only_covered_lines = false
 type_check_command = ["mypy", "src/"]
 
-# True infinite-loop detection (v2.5.0+, needs psutil — installed by default)
+# Infinite-loop detection (v2.5.0+, needs psutil — installed by default)
 infinite_loop_detection = true           # reclassify CPU-pegged timeouts as kills
 infinite_loop_cpu_threshold = 70.0       # mean CPU% over the rolling window
-infinite_loop_output_threshold = 1024    # max output growth (bytes) in window
-infinite_loop_running_ratio = 0.8        # min fraction of 'running' samples
+infinite_loop_output_threshold = 1024    # max output growth (bytes) in window; must be > 0
+infinite_loop_running_ratio = 0.8        # min fraction of 'running' samples (POSIX signal; not used on Windows)
 infinite_loop_window_seconds = 10.0      # rolling sample window
 ```
 
@@ -122,7 +122,7 @@ Infrastructure     process/ (executor, timeout, worker, job_object, loop_monitor
 - **Per-Task Wall-Clock Timeouts (v2.7.0):** Each task carries its own budget (estimated runtime of its assigned tests × `timeout_multiplier`, floor 5 s); the worker enforces it via `proc.wait(timeout=…)` and reaps the whole pytest tree through a per-task kill-on-close job object on expiry. The generous default multiplier (30x) accounts for wall-clock vs CPU-time differences.
 - **Windows Job Objects:** When the parent process dies unexpectedly, the OS kernel automatically terminates all workers and their pytest subprocesses. Prevents CPU overheating from orphaned processes.
 - **Two-Queue IPC:** `task_queue` (main to workers) + `event_queue` (workers to main). All data is pickle-safe (plain dicts over queues).
-- **True Infinite-Loop Detection (v2.5.0):** A psutil-based monitor thread samples CPU%, output growth, and process status of the test subprocess tree. On timeout, a triple-check classifier separates real infinite loops (`killed_by_infinite_loop`, with persisted forensics and a confidence band, rendered by `show`) from genuinely slow tests. Degrades gracefully to plain timeouts when psutil is unavailable.
+- **Infinite-Loop Detection (v2.5.0, made honest in v2.8.0):** A psutil-based monitor thread samples CPU%, log growth, io activity, and process status of the test subprocess tree. On timeout, a classifier separates real infinite loops (`killed_by_infinite_loop`, with persisted forensics and a confidence band, rendered by `show`) from genuinely slow tests. The signals are platform-aware: the process-status signal only exists on POSIX (Windows reports nearly every process as "running"), so Windows verdicts rest on CPU plus progress evidence (unbuffered log growth, io_counters activity — either vetoes a kill) and are capped at `medium` confidence. Verdicts need at least 5 samples; degraded sampling is recorded in the forensics. Falls back to plain timeouts when psutil is unavailable.
 
 ## Development
 

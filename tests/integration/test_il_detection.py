@@ -2,9 +2,11 @@
 
 Spawns a real Python subprocess running ``while True: pass`` (CPU-pegged, no
 output), attaches a ``ProcessMonitor``, samples for a few seconds, then asks
-:func:`classify_samples` for a verdict. The classifier must return
-``killed_by_infinite_loop`` with ``high`` confidence — anything else means the
-detector regressed.
+:func:`classify_samples` for a verdict — with ``status_signal_available``
+declared exactly the way the worker declares it (``sys.platform != "win32"``,
+issue #88): on Windows psutil reports virtually every process as "running",
+so verdicts there rest on the CPU and progress signals and are capped at
+``medium`` confidence.
 
 This is the integration counterpart to the unit-level classifier tests in
 ``tests/unit/test_loop_monitor.py``. It exercises the full chain
@@ -67,12 +69,22 @@ def _run_classifier_against_subprocess(
         if tmp_log.exists():
             tmp_log.unlink()
 
-    classification = classify_samples(snapshot, IlThresholds(window_seconds=window_seconds))
+    # Declare the status signal exactly the way the worker does (issue #88):
+    # dead on win32, real on POSIX.
+    classification = classify_samples(
+        snapshot,
+        IlThresholds(window_seconds=window_seconds),
+        status_signal_available=sys.platform != "win32",
+    )
     return classification.verdict, classification.confidence, len(snapshot)
 
 
 def test_busy_loop_subprocess_classified_as_infinite_loop() -> None:
-    """``while True: pass`` must classify as killed_by_infinite_loop with high confidence."""
+    """``while True: pass`` must classify as killed_by_infinite_loop.
+
+    Confidence is platform-exact: "medium" on Windows (two-signal verdict,
+    capped — issue #88), "high" on POSIX (all three signals with margin).
+    """
     verdict, confidence, samples = _run_classifier_against_subprocess(
         [sys.executable, "-c", _BUSY_LOOP_SOURCE]
     )
@@ -85,13 +97,21 @@ def test_busy_loop_subprocess_classified_as_infinite_loop() -> None:
         f"This is the canonical Bug #5 / Issue #71 case — if it fails the IL "
         f"detector is broken."
     )
-    assert confidence in {"high", "medium"}, (
-        f"Confidence should be at least medium for a clear busy loop, got {confidence!r}"
+    expected_confidence = "medium" if sys.platform == "win32" else "high"
+    assert confidence == expected_confidence, (
+        f"Expected {expected_confidence!r} confidence on {sys.platform} "
+        f"(two-signal cap on win32, three-signal high on POSIX), got {confidence!r}"
     )
 
 
 def test_sleeping_subprocess_classified_as_timeout() -> None:
-    """``time.sleep(20)`` (no CPU, status=sleeping) must classify as timeout, not IL."""
+    """``time.sleep(20)`` must classify as timeout, not IL.
+
+    Cross-platform the discriminating signal is CPU ~0%. The "sleeping"
+    process status only exists on POSIX — Windows reports "running" even
+    for a blocked process (A2-JT-001), which is why the worker declares the
+    status signal unavailable there.
+    """
     verdict, _confidence, samples = _run_classifier_against_subprocess(
         [sys.executable, "-c", "import time; time.sleep(20)"]
     )
