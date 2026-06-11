@@ -13,7 +13,7 @@ import click
 
 from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
-from mutmut_win.config import load_config
+from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
 from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
@@ -27,6 +27,22 @@ from mutmut_win.test_mapping import mangled_name_from_mutant_name, tests_for_mut
 @click.version_option(version=__version__)
 def cli() -> None:
     """mutmut-win — Windows-native mutation testing for Python."""
+
+
+def _load_config_or_exit() -> MutmutConfig:
+    """Load the project config; exit 2 with the message on ConfigError.
+
+    Issue #109 / A4-UI-011: a corrupted pyproject.toml surfaced as a RAW
+    traceback in ``show``/``apply`` (``run`` got its clean path in #102).
+    Config errors follow the #102 convention: exit code 2, message only.
+    """
+    from mutmut_win.exceptions import ConfigError
+
+    try:
+        return load_config()
+    except ConfigError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(2)
 
 
 @cli.command()
@@ -231,8 +247,6 @@ def run(
         # the merged config so the field constraints apply to CLI input too.
         from pydantic import ValidationError
 
-        from mutmut_win.config import MutmutConfig
-
         try:
             config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
         except ValidationError as exc:
@@ -328,7 +342,12 @@ def run(
     ),
 )
 def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
-    """Print a summary of mutation testing results from the cache database."""
+    """Print a summary of mutation testing results from the cache database.
+
+    Empty-DB convention (issue #109 / A4-UI-013): informational queries
+    (``results``, ``time-estimates``) exit 0 with an explicit notice; only
+    the CI gate (``export-cicd-stats``) fails on an empty result set.
+    """
     all_results = load_results(DEFAULT_DB_PATH)
 
     if not all_results:
@@ -446,7 +465,7 @@ def show(mutant_name: str) -> None:
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    config = load_config()
+    config = _load_config_or_exit()
     try:
         diff = get_diff_for_mutant(mutant_name, config)
     except FileNotFoundError as exc:
@@ -476,7 +495,7 @@ def apply(mutant_name: str) -> None:
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    config = load_config()
+    config = _load_config_or_exit()
     try:
         apply_mutant(mutant_name, config)
     except FileNotFoundError as exc:
@@ -534,7 +553,8 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
     mutants recorded in the results cache are listed.  Estimates are derived
     from the stats-collected per-test durations.
 
-    Exits with code 1 if no stats are available.
+    Exits with code 1 if no stats are available.  An empty results DB is
+    informational — notice plus exit 0 (issue #109 / A4-UI-013 convention).
     """
     mutants_dir = Path("mutants")
     stats = load_stats(mutants_dir)
@@ -584,7 +604,9 @@ def export_cicd_stats_cmd() -> None:
 
     The output JSON is intended for use in CI/CD pipelines to gate pull
     requests based on mutation score.  Exits with code 1 if no previous
-    mutation data is found.
+    mutation data is found — deliberately stricter than the informational
+    queries (issue #109 / A4-UI-013): an empty result set in a gate context
+    means the pipeline ran nothing, and silence would read as green.
     """
     all_results = load_results(DEFAULT_DB_PATH)
     if not all_results:

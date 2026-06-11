@@ -388,9 +388,15 @@ class ResultBrowser(App[None]):
     # ------------------------------------------------------------------
 
     def _get_selected_mutant_name(self) -> str | None:
-        """Return the mutant name from the current mutants table selection."""
+        """Return the mutant name from the current mutants table selection.
+
+        Issue #109 / A4-UI-010: ``cursor_row`` is 0 even on an EMPTY table,
+        so ``get_row_at(0)`` raised ``RowDoesNotExist`` and every action
+        binding crashed before any mutant was listed — the ``None`` guard
+        alone was dead code.
+        """
         mutants_table: DataTable[str] = self.query_one("#mutants", DataTable)
-        if mutants_table.cursor_row is None:
+        if mutants_table.row_count == 0 or mutants_table.cursor_row is None:
             return None
         row = mutants_table.get_row_at(mutants_table.cursor_row)
         return str(row[0]) if row else None

@@ -170,8 +170,7 @@ class MutationOrchestrator:
                 duration_seconds=time.monotonic() - wall_start,
             )
             print(f"All {len(type_checked_names)} mutants caught by the type checker.")
-            if not self._no_progress:
-                _print_summary(summary)
+            _print_summary(summary)
             return summary
 
         # ------------------------------------------------------------------
@@ -253,8 +252,7 @@ class MutationOrchestrator:
                 no_tests=len(no_test_names),
                 duration_seconds=time.monotonic() - wall_start,
             )
-            if not self._no_progress:
-                _print_summary(summary)
+            _print_summary(summary)
             return summary
 
         multiplier = self._config.timeout_multiplier
@@ -348,8 +346,11 @@ class MutationOrchestrator:
             sfd.save()
 
         summary.duration_seconds = time.monotonic() - wall_start
-        if not self._no_progress:
-            _print_summary(summary)
+        # Issue #109 / A4-UI-016: the summary ALWAYS prints — --no-progress
+        # suppresses only the live lines. A quiet run that ends without any
+        # result output at all was seen live in the Sprint 33 dogfooding
+        # mid-gate (exit 0, no numbers).
+        _print_summary(summary)
         return summary
 
     def dry_run(self) -> MutationRunResult:
