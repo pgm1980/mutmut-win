@@ -598,7 +598,7 @@ wheels = [
 
 [[package]]
 name = "mutmut-win"
-version = "2.10.0"
+version = "2.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
