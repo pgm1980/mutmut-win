@@ -186,12 +186,12 @@ eigenes Sprint-32-Item) — der Sprint ist in jedem Ausgang abschließbar.
 
 ---
 
-## Release v2.9.0 (nur auf explizites User-„Release")
+## Release v2.9.0 — released 2026-06-11
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.9.0 (`uv lock --system-certs`) | 🔲 |
-| Annotated Tag v2.9.0 | 🔲 |
-| GitHub Release v2.9.0 (Changelog inkl. „score corrections"-Sektion) | 🔲 |
-| Auto-close #91–#97 via Merge-Commit | 🔲 |
-| MEMORY.md + product_backlog.md update | 🔲 |
+| pyproject.toml + uv.lock auf 2.9.0 (`uv lock --system-certs`) | ✅ `e02bb34` (Suite auf gemergtem main erneut grün: 773/4) |
+| Annotated Tag v2.9.0 | ✅ |
+| GitHub Release v2.9.0 (Changelog inkl. „score corrections"-Sektion) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.9.0) — Score-Korrekturen prominent als ⚠-Sektion |
+| Auto-close #91–#97 via Merge-Commit | ✅ Merge `87a0271`, 0 offene Issues verifiziert |
+| MEMORY.md + product_backlog.md update | ✅ (Backlog v1.8.0) |

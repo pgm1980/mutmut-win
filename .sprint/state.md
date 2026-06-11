@@ -3,9 +3,9 @@ current_sprint: "31"
 sprint_goal: "v2.9.0 Feature Truth & Score Integrity — tote Features (Type-Check-Filter, Coverage) ehrlich reaktivieren oder abschalten; Score-Pipeline lückenlos (Buckets, Exit-Code-Map, Ctrl-C-Abbruch, Orphans, JSON-Kanal)."
 branch: "feature/v2.9.0-score-integrity"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -32,12 +32,13 @@ complete** (alle 7 Items, 33/33 SP). Commits auf
 Gates: **773 passed / 4 skipped** (+54), ruff 0, mypy **20 pre-existing /
 0 neue** (Baseline gesunken), semgrep 0, lint-imports KEPT.
 
-## Nächster Schritt
-**Warten auf User-„Release"**: Merge auf main, Bump 2.9.0
-(`uv lock --system-certs`!), Tag, GitHub Release mit
-**„score corrections"-Sektion** (Exit-2/Segfault-Kills rein,
-Phantom-caught raus, Interrupt-Nenner — CI-Gates können kippen!),
-Issues #91–#97 schließen via Merge.
+## Release — DONE 2026-06-11
+v2.9.0 released: Merge `87a0271` (closes #91–#97, verifiziert 0 offene
+Issues), Bump `e02bb34`, annotated Tag `v2.9.0`, GitHub Release
+https://github.com/pgm1980/mutmut-win/releases/tag/v2.9.0 mit
+prominenter ⚠-„Score corrections"-Sektion. Suite auf gemergtem main
+erneut 773 passed / 4 skipped. Sprint 31 vollständig abgeschlossen,
+alle Housekeeping-Items erledigt.
 
 ## Out of scope (Roadmap unverändert)
 Sprint 32 / v2.10.0 = C8+C9 inkl. 3 vorgemerkter Pipeline-Hygiene-Punkte,

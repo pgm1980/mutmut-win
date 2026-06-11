@@ -1,6 +1,6 @@
 # Product Backlog — mutmut-win
 
-**Version:** 1.7.0
+**Version:** 1.8.0
 **Datum:** 2026-06-11
 **Status:** Active
 
@@ -27,7 +27,7 @@
 | v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Done | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) — released 2026-06-11 |
 | v2.7.0 | Runtime Reliability | Sprint 29 | Done | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) — released 2026-06-11; **alle 15 S1 geschlossen** |
 | v2.8.0 | IL Detection Honesty | Sprint 30 | Done | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Progress-Veto (#89), Test-Ehrlichkeit (#90) — released 2026-06-11 |
-| v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Planned | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage-Entscheid (#95), DB-Orphans (#96), CI-Kanal (#97) |
+| v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Roadmap | Audit C8+C9-Top: Stats-/DB-/Copy-Hygiene (re-enabled Dogfooding-Gate), Diagnose-UX |
 
 ---
@@ -577,21 +577,21 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #91 | Bug | Status-Wahrheit: Exit-Code-Map + Summary-Buckets + results-Rendering (EW-020, QX-025, EW-004, UI-009) | Must | 5 | Open |
-| #92 | Bug | type_checking.py härten: Erkennung, Robustheit, Severity (CM-008/010/011) | Must | 5 | Open |
-| #93 | Bug | Type-Check-Filter end-to-end: Matching, Schnittmenge, Persistenz, Guard (CM-002, OS-003/009/010) | Must | 8 | Open |
-| #94 | Bug | Ctrl-C-Ehrlichkeit: was_interrupted, unchecked, Exit 130, Gate-Skip (OS-005) | Must | 3 | Open |
-| #95 | Spike+Fix | Coverage: Spike → Entscheid → Einbau ODER ehrliche Deaktivierung (CM-003/OS-011, CM-013) | Must | 5 | Open |
-| #96 | Bug | DB-Orphan-Zeilen: results = Vereinigungsmenge aller Läufe (OS-012-Orphan-Teil) | Should | 5 | Open |
-| #97 | Bug | CI-Kanal: score im JSON, 0-Mutanten-Gate-Kommunikation (OS-014, OS-026) | Should | 2 | Open |
+| #91 | Bug | Status-Wahrheit: Exit-Code-Map + Summary-Buckets + results-Rendering (EW-020, QX-025, EW-004, UI-009) | Must | 5 | Done |
+| #92 | Bug | type_checking.py härten: Erkennung, Robustheit, Severity (CM-008/010/011) | Must | 5 | Done |
+| #93 | Bug | Type-Check-Filter end-to-end: Matching, Schnittmenge, Persistenz, Guard (CM-002, OS-003/009/010) | Must | 8 | Done |
+| #94 | Bug | Ctrl-C-Ehrlichkeit: was_interrupted, unchecked, Exit 130, Gate-Skip (OS-005) | Must | 3 | Done |
+| #95 | Spike+Fix | Coverage: Spike → Entscheid → Einbau ODER ehrliche Deaktivierung (CM-003/OS-011, CM-013) | Must | 5 | Done (JA-Pfad: reaktiviert) |
+| #96 | Bug | DB-Orphan-Zeilen: results = Vereinigungsmenge aller Läufe (OS-012-Orphan-Teil) | Should | 5 | Done |
+| #97 | Bug | CI-Kanal: score im JSON, 0-Mutanten-Gate-Kommunikation (OS-014, OS-026) | Should | 2 | Done |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] Ein Windows-üblicher Type-Checker-Aufruf (`mypy.exe`, `uv run mypy`) bricht den Lauf nicht mehr ab; der E2E-Test fängt mit echtem mypy exakt den erwarteten Mutanten
-- [ ] Type-Check-Kills erscheinen in results UND CICD-Export (Drei-Kanal-Konsistenz erweitert); Subset-Läufe zählen keine fremden caught
-- [ ] Kein Status zählt in den Nenner ohne sichtbares Bucket — Summen-Invariante (Buckets + unchecked == total) als Test
-- [ ] Ctrl-C-Lauf ist in CI erkennbar: Exit 130, was_interrupted, min-score-Gate übersprungen mit Meldung
-- [ ] `mutate_only_covered_lines` lügt nicht mehr still: funktioniert ODER erklärt sich mit klarem Fehler (Entscheid + ggf. Negativergebnis im Audit-Register dokumentiert)
-- [ ] Quality Gates: pytest ≥ 745, ruff 0, mypy 0 neue, semgrep 0, lint-imports KEPT
+- [x] Ein Windows-üblicher Type-Checker-Aufruf (`mypy.exe`, `uv run mypy`) bricht den Lauf nicht mehr ab; der E2E-Test fängt mit echtem mypy exakt den erwarteten Mutanten
+- [x] Type-Check-Kills erscheinen in results UND CICD-Export (Drei-Kanal-Konsistenz erweitert); Subset-Läufe zählen keine fremden caught
+- [x] Kein Status zählt in den Nenner ohne sichtbares Bucket — Summen-Invariante (Buckets + unchecked == total) als Test
+- [x] Ctrl-C-Lauf ist in CI erkennbar: Exit 130, was_interrupted, min-score-Gate übersprungen mit Meldung
+- [x] `mutate_only_covered_lines` lügt nicht mehr still: funktioniert ODER erklärt sich mit klarem Fehler (Entscheid + ggf. Negativergebnis im Audit-Register dokumentiert)
+- [x] Quality Gates: pytest ≥ 745, ruff 0, mypy 0 neue, semgrep 0, lint-imports KEPT
 
 ---
 
@@ -624,7 +624,7 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 | Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Done |
 | Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Done |
 | IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Done |
-| Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Planned |
+| Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
 
 ---
 
@@ -661,7 +661,7 @@ Detail: `_docs/sprint backlogs/sprint_31_backlog.md`.
 | Sprint 28 | 31 | 31 | 100% | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
 | Sprint 29 | 27 | 27 | 100% | v2.7.0 Runtime Reliability (#79–#84) |
 | Sprint 30 | 25 | 25 | 100% | v2.8.0 IL Detection Honesty (#85–#90) |
-| Sprint 31 | 33 | (offen) | — | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
+| Sprint 31 | 33 | 33 | 100% | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -694,3 +694,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 1.5.0 | 2026-06-11 | Claude Code Agent | Sprint 29 geschlossen (Epic 20 Done, v2.7.0 released, alle 15 S1 zu, Velocity 27/27); Sprint 30 geplant: Epic 21 (IL Detection Honesty, #85–#90, 25 SP) mit Planungs-CoT (Wertschöpfungskette, Confidence-Cap-Kompatibilitätsfenster, JT-013 obsolet). |
 | 1.6.0 | 2026-06-11 | Claude Code Agent | Sprint 30 geschlossen (Epic 21 Done, v2.8.0 released, Velocity 25/25): C5 komplett — Forensik persistiert+gerendert, Ein-Score-Konsistenz, Classifier plattform-ehrlich (Confidence-Cap medium auf win32), io_counters als Progress-Veto (Sleeping-Ersatz widerlegt+dokumentiert). 3 Pipeline-Hygiene-Neuzugänge für C8 vorgemerkt (format-Gate, pytest-Kanon, semgrep-tests-Ignore). |
 | 1.7.0 | 2026-06-11 | Claude Code Agent | Sprint 31 geplant: Epic 22 (Feature Truth & Score Integrity, #91–#97, 33 SP) mit 12-Schritt-Planungs-CoT — C6/C7-Befunde am v2.8.0-Stand re-verifiziert; Kette Map→Härtung→E2E→Abbruch→Entscheide; Exit-2-Default „killed"; Coverage als timeboxed Entscheid (Zeilen-Referenzsystem-Frage); Scope-Ventil #96/#97. |
+| 1.8.0 | 2026-06-11 | Claude Code Agent | Sprint 31 geschlossen (Epic 22 Done, v2.9.0 released, Velocity 33/33): C6+C7 komplett — Type-Check-Filter end-to-end repariert (E2E mit echtem mypy), Coverage via Subprozess-Brücke REAKTIVIERT (Spike + 8-Schritt-CoT), Status-/Score-Pipeline lückenlos (Summen-Invariante, Exit-2/NTSTATUS-Kills, Interrupt-Ehrlichkeit, Orphan-Purge, score im JSON). Release mit ⚠-Score-corrections-Sektion. mypy-Baseline 26→20. |
