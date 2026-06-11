@@ -49,7 +49,7 @@ class TestMutationTask:
     def test_pickle_roundtrip(self, name: str) -> None:
         task = MutationTask(mutant_name=name)
         # pickle is safe here: we control both serialization and deserialization
-        restored = pickle.loads(pickle.dumps(task))  # noqa: S301
+        restored = pickle.loads(pickle.dumps(task))  # noqa: S301  # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle — roundtrip of our own object guarantees multiprocessing.Queue picklability
         assert restored == task
 
 
@@ -67,7 +67,7 @@ class TestTaskEvents:
     def test_completed_pickle_roundtrip(self, exit_code: int) -> None:
         event = TaskCompleted(mutant_name="test", worker_pid=100, exit_code=exit_code, duration=0.1)
         # pickle is safe here: we control both serialization and deserialization
-        restored = pickle.loads(pickle.dumps(event))  # noqa: S301
+        restored = pickle.loads(pickle.dumps(event))  # noqa: S301  # nosemgrep: python.lang.security.deserialization.pickle.avoid-pickle — roundtrip of our own object guarantees multiprocessing.Queue picklability
         assert restored == event
 
 

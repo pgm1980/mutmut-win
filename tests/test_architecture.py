@@ -34,6 +34,8 @@ def test_all_modules_importable() -> None:
         "mutmut_win.process.worker",
     ]
     for module_name in modules:
+        # Iterates our own src/ module list — no external input is imported.
+        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
         imported = import_module(module_name)
         assert imported is not None, f"Failed to import {module_name}"
 
