@@ -1,5 +1,6 @@
 """This module contains the mutations for individual nodes, e.g. replacing a != b with a == b."""
 
+import math
 import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
@@ -23,9 +24,18 @@ def operator_number(
 ) -> Iterable[cst.BaseNumber]:
     """Mutate numeric literals by incrementing their value."""
     if isinstance(node, (cst.Integer, cst.Float)):
-        yield node.with_changes(value=repr(node.evaluated_value + 1))
+        new_value = node.evaluated_value + 1
+        # 1e400 is a legal literal evaluating to inf, but repr(inf) is not a
+        # valid float token — with_changes would raise CSTValidationError and
+        # kill mutant generation for the whole file (issue #78 / A1-NM-007).
+        if isinstance(new_value, float) and not math.isfinite(new_value):
+            return
+        yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
-        yield node.with_changes(value=repr(node.evaluated_value + 1j))
+        new_imag = node.evaluated_value + 1j
+        if not (math.isfinite(new_imag.real) and math.isfinite(new_imag.imag)):
+            return
+        yield node.with_changes(value=repr(new_imag))
     else:
         print("Unexpected number type", node)
 
@@ -78,10 +88,15 @@ def operator_dict_arguments(
     if not m.matches(node.func, m.Name(value="dict")):
         return
 
+    existing_keywords = {arg.keyword.value for arg in node.args if arg.keyword}
     for i, arg in enumerate(node.args):
         if not arg.keyword:
             return
         keyword = arg.keyword
+        if keyword.value + "XX" in existing_keywords:
+            # dict(a=1, aXX=2): mutating ``a`` would duplicate the existing
+            # ``aXX`` keyword — a SyntaxError mutant (issue #78 / A1-NM-009).
+            continue
         mutated_keyword = keyword.with_changes(value=keyword.value + "XX")
         mutated_args = [
             *node.args[:i],

@@ -446,34 +446,54 @@ def create_mutants_for_file(
     source = filename.read_text(encoding="utf-8")
 
     mutant_names: list[str]
-    with output_path.open("w", encoding="utf-8") as out:
+    generated: str
+    try:
+        buf = StringIO()
+        mutant_names = write_all_mutants_to_file(
+            out=buf,
+            source=source,
+            filename=filename,
+            covered_lines=covered_lines,
+        )
+        generated = buf.getvalue()
+    except (cst.ParserSyntaxError, cst.CSTValidationError, ValueError) as exc:
+        # libcst cannot parse this file, or the engine hit an unmutatable
+        # construct (e.g. an identifier containing the U+01C1 mangling
+        # separator) — copy unchanged so tests still run (issue #78).
+        w = warnings.WarningMessage(
+            message=SyntaxWarning(f"Unsupported syntax in {filename} ({exc!s}), skipping"),
+            category=SyntaxWarning,
+            filename=str(filename),
+            lineno=0,
+        )
+        collected_warnings.append(w)
+        generated = source
+        mutant_names = []
+
+    # Safety net (issue #78): validate BEFORE writing.  A single invalid
+    # mutant makes the whole file unimportable and breaks the clean run with
+    # a misleading error (the Bug-#68 / BUG-1 class).  Fall back to the
+    # unmutated source and warn loudly instead of poisoning the staging.
+    if mutant_names:
         try:
-            buf = StringIO()
-            mutant_names = write_all_mutants_to_file(
-                out=buf,
-                source=source,
-                filename=filename,
-                covered_lines=covered_lines,
-            )
-            out.write(buf.getvalue())
-        except cst.ParserSyntaxError as exc:
-            # libcst cannot parse this file — copy unchanged so tests still run.
+            ast.parse(generated)
+        except (IndentationError, SyntaxError) as exc:
+            lineno = getattr(exc, "lineno", "?")
             w = warnings.WarningMessage(
-                message=SyntaxWarning(f"Unsupported syntax in {filename} ({exc!s}), skipping"),
+                message=SyntaxWarning(
+                    f"Generated mutants for {filename} do not compile "
+                    f"(line {lineno}: {exc.msg}) — copying the file unmutated. "
+                    "Please report this as a mutmut-win bug."
+                ),
                 category=SyntaxWarning,
                 filename=str(filename),
                 lineno=0,
             )
             collected_warnings.append(w)
-            out.write(source)
+            generated = source
             mutant_names = []
 
-    # Validate that the generated output has no syntax errors.
-    try:
-        ast.parse(output_path.read_text(encoding="utf-8"))
-    except (IndentationError, SyntaxError):
-        # Return empty names so the caller skips this file gracefully.
-        return [], collected_warnings
+    output_path.write_text(generated, encoding="utf-8")
 
     # Persist the mutation metadata for this file.
     source_file_mutation_data = SourceFileMutationData(path=str(filename))
