@@ -679,20 +679,20 @@ geschlossen (dokumentierte Begründung)". Detail:
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #111 | Bug | RN-006 + RN-012: Runner-Phasen-Wahrheit (Forced-Fail, IMPORTMISMATCH) | Must | 5 | Open |
-| #112 | Bug | RN-013: Arg-Koerzierung via shlex (beide Felder, str+list) | Must | 3 | Open |
-| #113 | Bug | FD-008: Sanitiser entfernt `[tool.uv.sources.<pkg>]`-Subtables | Must | 3 | Open |
-| #114 | Bug | QX-005/006/023-Rest: Exception-Hygiene | Must | 5 | Open |
-| #115 | Bug | UI-012/014/015: Resolver, patch-fähige Diffs, Alignment | Should | 5 | Open |
-| #116 | Bug | RN-010/011: sitecustomize-Hygiene | Should | 3 | Open |
-| #117 | Chore | Abschluss-Dossier: Deprecation, Release-Policy, formale Schließungen, Pausenzustand | Must | 3 | Open |
+| #111 | Bug | RN-006 + RN-012: Runner-Phasen-Wahrheit (Forced-Fail, IMPORTMISMATCH) | Must | 5 | Done (`8251509`) |
+| #112 | Bug | RN-013: Arg-Koerzierung via shlex (beide Felder, str+list) | Must | 3 | Done (`36d70e6`) |
+| #113 | Bug | FD-008: Sanitiser entfernt `[tool.uv.sources.<pkg>]`-Subtables | Must | 3 | Done (`a72861f`) |
+| #114 | Bug | QX-005/006/023-Rest: Exception-Hygiene | Must | 5 | Done (`2f3e7da`) |
+| #115 | Bug | UI-012/014/015: Resolver, patch-fähige Diffs, Alignment | Should | 5 | Done (`b08a9a4`) |
+| #116 | Bug | RN-010/011: sitecustomize-Hygiene | Should | 3 | Done (`9fa333f`) |
+| #117 | Chore | Abschluss-Dossier: Deprecation, Release-Policy, formale Schließungen, Pausenzustand | Must | 3 | Done (`fa590ac`) |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] Maintenance-Pool-Tabelle = 0 Einträge (13/13 gefixt oder formal geschlossen)
-- [ ] MEMORY.md „Open Decisions" = alle 4 entschieden/geschlossen
-- [ ] Dogfooding-Pilot (gleiche Module) hält brutto ≥ 80 %; `--since-commit`-Lauf dokumentiert
-- [ ] Quality Gates: pytest grün, ruff 0, format-check 0, mypy ≤ 20 Baseline (0 neue), semgrep 0, lint-imports KEPT inkl. Artefakt
-- [ ] Pausenzustand dokumentiert (MEMORY.md, state.md, Release Notes)
+- [x] Maintenance-Pool-Tabelle = 0 Einträge (12/13 gefixt via #111–#116, OS-012-Rest formal geschlossen via #117)
+- [x] MEMORY.md „Open Decisions" = alle 4 entschieden/geschlossen
+- [x] Dogfooding-Pilot (gleiche Module) hält brutto ≥ 80 % — **85,1 %** (6 Kaltstart-Timeouts re-run-verifiziert als Kills → 87,6 % effektiv); `--since-commit`-Läufe dokumentiert (inkl. Stats-Cache-Lehrstück)
+- [x] Quality Gates: pytest 951 grün, ruff 0, format-check 0, mypy **14 = neue Baseline** (vorher 20, 0 neue), semgrep 0 (voller Sweep), lint-imports KEPT inkl. Artefakt
+- [x] Pausenzustand dokumentiert (MEMORY.md, state.md; Release Notes bei v2.12.0)
 
 ---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
@@ -800,6 +800,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Sprint 31 | 33 | 33 | 100% | v2.9.0 Feature Truth & Score Integrity (#91–#97) |
 | Sprint 32 | 36 | 36 | 100% | v2.10.0 Pipeline Hygiene (#98–#104) |
 | Sprint 33 | 31 | 31 | 100% | v2.11.0 Maintenance 1 (#105–#110) — Pilot 24,2 % → 86,9 % brutto |
+| Sprint 34 | 27 | 27 | 100% | v2.12.0 Maintenance 2: Final Sweep (#111–#117) — Pool 13 → 0, Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -839,3 +840,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.2.0 | 2026-06-11 | Claude Code Agent | Sprint 33 implementiert (Epic 24 Done, Velocity 31/31): Pilot 24,2 % → **86,9 % brutto** (0 Timeouts statt 175), Architektur-Skip im Artefakt entfernt, Maintenance-Pool 26 → 13. Release v2.11.0 ausstehend. |
 | 2.3.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geschlossen (v2.11.0 released, Merge schloss #105–#110 automatisch): annotated Tag + GitHub-Release mit ausgewiesener Score-Verschiebung (no_tests verlässt den Nenner, Vollsuite-Zufallskills den Zähler); Milestone/Epic auf Done, MEMORY.md + state.md synchronisiert. |
 | 2.4.0 | 2026-06-11 | Claude Code Agent | Sprint 34 geplant: Epic 25 (Maintenance 2: Final Sweep, #111–#117, 27 SP) per 11-Schritt-CoT — User-Auftrag „alle offenen Topics, danach Entwicklungspause": kompletter Pool-Rest (13) + MEMORY-Entscheidungsregister (4); kein Auswahl-Ventil, Eskalation nur zu dokumentierter Won't-Fix-Entscheidung; Messziel Pilot ≥ 80 % halten. |
+| 2.5.0 | 2026-06-11 | Claude Code Agent | Sprint 34 implementiert (Epic 25 Done, Velocity 27/27): **Maintenance-Pool 13 → 0, Entscheidungsregister 4 → 0**, mypy-Baseline 20 → 14, 5 stale GitHub-Milestones geschlossen; Gates: 951 passed (+83), ruff/format 0, semgrep 0 (voller Sweep), lint-imports KEPT; Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts re-run-verifiziert als Kills). Release v2.12.0 ausstehend; danach Entwicklungspause. |

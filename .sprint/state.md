@@ -4,27 +4,35 @@ sprint_goal: "v2.12.0 Maintenance 2: Final Sweep — kompletter Pool-Rest (13 Ei
 branch: "feature/v2.12.0-maintenance-2"
 started_at: "2026-06-11"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State (Sprint 34 opened 2026-06-11)
 
 ## Current Focus
-Sprint 34 — **v2.12.0 Maintenance 2: Final Sweep** — der LETZTE Sprint
-vor der geplanten Entwicklungspause (User-Auftrag: alle offenen Topics).
-Inhalt: vollständiger Maintenance-Pool (13 Einträge → 0) + alle 4
-offenen MEMORY-Entscheidungen. 7 Issues (#111–#117, 27 SP), Reihenfolge
-111 → 112 → 113 → 114 → 115 → 116 → 117 → Doppel-Dogfooding
-(Pilot-Gate ≥ 80 % + informativer --since-commit-Lauf).
-KEIN Auswahl-Ventil: unverhältnismäßige Items werden dokumentierte
-Won't-Fix-Entscheidungen, nichts bleibt still liegen.
-Release v2.12.0 nur auf explizites User-„Release"; danach Pausenzustand
-in MEMORY.md/state.md/Release Notes dokumentieren.
+Sprint 34 — **v2.12.0 Maintenance 2: Final Sweep** —
+**IMPLEMENTIERUNG KOMPLETT** (alle 7 Issues #111–#117, 27/27 SP,
+Commits `8251509`..`fa590ac`). **Maintenance-Pool 13 → 0,
+Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, 5 stale
+GitHub-Milestones geschlossen.** Gates: 951 passed (+83), ruff/format
+0, semgrep 0 (voller Sweep), lint-imports KEPT inkl. Artefakt;
+Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts im Re-Run 6/6
+gekillt → 87,6 % effektiv; 30 dokumentierte Survivors). pip-audit
+bleibt umgebungsblockiert (TLS-Interception). Bedienungs-Lektion:
+`--since-commit` nach Konfig-Wechsel braucht `--force` (Stats-Cache);
+der #106-Producer verbuchte 7318 unkartierte Mutanten ehrlich als
+`no tests` statt Vollsuite. Abschluss-Vollvermessung (12 Module,
+erstmalig): **7800 Mutanten, 68,3 % brutto** — 2337 Survivors + 45
+Timeouts als ehrliche Pausen-Baseline dokumentiert; 1 Dogfooding-
+Test-Fund gefixt (`6101548`, instrumentierungsfester Depth-Cache-Test).
+Release v2.12.0 wartet auf explizites User-„Release"
+(Merge → Auto-Close #111–#117 → housekeeping_done);
+**danach Entwicklungspause** (Pausenzustand dokumentiert).
 
 ## Sprint 34 Backlog (27 SP — Must 19, Should 8)
 1. **#111 (Must, 5 SP):** RN-006+RN-012 — Forced-Fail-Wahrheit

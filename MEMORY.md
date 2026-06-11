@@ -39,6 +39,41 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   v2.9.0 (C6+C7, "score corrections"), v2.8.0 (C5), v2.7.0 (all S1),
   v2.6.0 (W4.11 blockers — nextgen-cot-mcp-server can upgrade its pin
   and revert the §1.5 genexp workaround).
+- **Sprint**: 34 — *v2.12.0 Maintenance 2: Final Sweep* — implementation
+  complete 2026-06-11 (7 issues #111–#117, 27/27 SP, commits
+  8251509..fa590ac on `feature/v2.12.0-maintenance-2`): THE LAST SPRINT
+  before the planned development pause. **Maintenance pool 13 → 0,
+  open-decisions register 4 → 0.** Forced-fail proves the right thing
+  (#111: -x, timeout never success, MutmutProgrammaticFailException
+  attribution via --tb=line + COLUMNS; PY_IGNORE_IMPORTMISMATCH
+  single-sourced for all phases + worker); shlex arg coercion for both
+  pytest arg fields, Windows-safe escape="" (#112); sanitiser covers
+  [tool.uv.sources.<pkg>] subtables (#113); exception hygiene (#114:
+  exit-4 producer at the clean gate, InvalidConfigValueError/
+  WorkerError/MutationParseError wired, WorkerCrashError/WorkerInitError
+  deleted as unproducible, TypeCheckCommandError + CoverageCollectionError
+  replace bare Exceptions, cli catches MutmutWinError — foreign bugs
+  propagate as tracebacks; **mypy baseline 20 → 14**); one name-matching
+  rule (#115: match_mutant_names backs run/show/apply/time-estimates,
+  resolve_mutant requires a unique match with candidate list,
+  patch-capable diffs via PositionProvider, summary alignment incl.
+  legacy labels); sitecustomize as explicit injectable setup step +
+  normcase/realpath blocker (#116); closure dossier (#117:
+  --treat-timeout-as-kill deprecated-now/remove-in-v3, release policy in
+  the README, OS-012-Rest/shrink-storm/BUG_REPORT_9 formally closed,
+  5 stale GitHub milestones closed). Gates: 951 passed (+83),
+  ruff/format 0, semgrep 0 (full sweep), lint-imports KEPT incl.
+  artifact; pilot **85.1% gross HELD** (6 cold-start timeouts
+  re-run-verified as kills → 87.6% effective; 30 survivors = the
+  documented accepted classes); pip-audit still environment-blocked
+  (TLS interception). **Closing full self-run** (--since-commit
+  --force, first-ever measurement over all 12 changed modules): 7800
+  mutants, 68.3% gross, 2337 survivors + 45 timeouts documented as the
+  honest pause baseline (NOT pool entries); two dogfooding finds —
+  the --force-after-config-change lesson (7318 honest 'no tests'
+  instead of days of full-suite runs, #106 working as designed) and
+  one instrumentation-unsafe test fixed (6101548). Release v2.12.0
+  pending user approval — **development pauses afterwards**.
 - **Sprint**: 33 — *v2.11.0 Maintenance 1: Runtime & Self-Run* —
   implementation complete 2026-06-11 (6 issues, 31/31 SP, commits
   28a718f..4b87423 on `feature/v2.11.0-maintenance-1`): FIRST
