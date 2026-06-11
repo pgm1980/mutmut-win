@@ -6,10 +6,13 @@ and that the import-linter layer contracts are satisfied.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
+
+import pytest
 
 
 def test_all_modules_importable() -> None:
@@ -66,6 +69,16 @@ def test_architecture_contracts() -> None:
     import_module("mutmut_win.process.worker")
 
 
+@pytest.mark.skipif(
+    os.environ.get("MUTANT_UNDER_TEST") is not None,
+    reason=(
+        "architecture contracts apply to src/, not to the trampolined build "
+        "artifact: generated mutants import mutmut_win.__main__ for the "
+        "trampoline hit recording, which statically pulls the CLI chain "
+        "across layers (maintenance finding QX-001) — found live by the "
+        "first dogfooding run (#98)"
+    ),
+)
 def test_import_linter_contracts_hold() -> None:
     """Execute the REAL import-linter gate inside the suite (issue #84).
 

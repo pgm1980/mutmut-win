@@ -632,6 +632,42 @@ Maintenance-Abschnitt. Detail: `_docs/sprint backlogs/sprint_32_backlog.md`.
 
 ---
 
+## Maintenance-Backlog (Audit-Reste, epic-los)
+
+> Ergebnis der C9-Rest-Triage (#104, Sprint 32): Die nach fünf
+> Fixing-Sprints (28–32) bewusst nicht behobenen Findings — nichts davon
+> korrumpiert Daten, blockiert Läufe oder belügt CI. Severity-sortiert;
+> Kandidatenpool für bedarfsgetriebene Maintenance, KEIN Sprint-Versprechen.
+
+| Sev | Finding | Modul | Real-Schaden |
+|-----|---------|-------|--------------|
+| S2 | UI-007 | browser.py | TUI-Diff ist Ganzdatei-Diff (Trampolin + alle Mutanten, identisch je Mutant); DB-Fallback zeigt immer „mutant not found" |
+| S2 | QX-001 | __main__.py | Erster Stats-Trampolin-Hit importiert die komplette CLI-Kette (click+textual+rich, ~1,4 s gemessen) in den User-Testprozess |
+| S3 | QX-007 | worker.py, constants | Exit 33/34 ohne Producer: Mutanten ohne zugeordnete Tests laufen die VOLLE Suite statt „no tests" — Laufzeitverlust vs. mutmut-Design |
+| S3 | RN-006 | runner.py | Forced-Fail beweist nur „≥1 Failure irgendwo"; ohne `-x` läuft die volle Suite (Laufzeit) |
+| S3 | UI-011 | cli.py | Korrupte pyproject → rohe Tracebacks in show/apply/browse (run hat seit #102 den --debug-Pfad; .meta-Toleranz seit #101) |
+| S3 | UI-012 | cli.py, orchestrator | mutant_names-Matching inkonsistent über 5 Commands (run: exakt+Glob; show/apply: nur exakt) — undokumentiert |
+| S3 | UI-013 | cli.py | Exit-Code-Inkonsistenz bei leerer DB: results 0, export-cicd 1, time-estimates 0 |
+| S3 | UI-010 | browser.py | Browser-Aktionen crashen bei leerer Mutanten-Tabelle (RowDoesNotExist) |
+| S3 | RN-012 | runner.py | PY_IGNORE_IMPORTMISMATCH nur im Stats-Run gesetzt — Clean/Forced-Fail/Worker inkonsistent |
+| S3 | RN-013 | config.py | Arg-Koerzierung: `'-m "not slow"'` → naives split() zerlegt falsch; test_selection akzeptiert keine Strings |
+| S3 | FD-008 | file_setup.py | pyproject-Sanitiser übersieht `[tool.uv.sources.<pkg>]`-Subtables → „Distribution not found" für diese Syntax |
+| S3 | QX-005 | exceptions.py | BadTestExecutionCommandsException tot (kein Producer); Worker-Exit-4 fällt still in „suspicious" |
+| S3 | QX-006 | exceptions.py, cli | 6 tote Exception-Klassen; cli fängt `Exception` statt `MutmutWinError` |
+| S4 | UI-014 | mutant_diff.py | show-Diff: Hunk-Header funktionsrelativ, from/to identisch → nicht patch-fähig |
+| S4 | UI-015 | cli.py | „Suspicious:1" ohne Leerzeichen (Alignment, Format ist test-verdrahtet) |
+| S4 | UI-016 | cli.py | --no-progress unterdrückt auch die End-Summary — leiser Lauf endet ohne jedes Ergebnis |
+| S4 | QX-017 | _state.py | _reset_globals deckt _cached_max_stack_depth nicht ab |
+| S4 | QX-018 | config.py | max_stack_depth ohne ge=-1: Wert 0 verwirft alle Stats-Hits → Vollsuite je Mutant |
+| S4 | QX-019 | 5 Module | Konstanten-Drift: MUTANT_UNDER_TEST 3× definiert; vereinzelte Exit-Code-Literale |
+| S4 | QX-020 | __main__.py | Per-Hit-Import in record_trampoline_hit (Hot Path) |
+| S4 | QX-023-Rest | type_checking.py | raised nackte `Exception` statt domänenspezifischer Klasse (cli-Seite seit #102 mit --debug) |
+| S4 | RN-010 | runner.py | _mutants_env schreibt Dateien (sitecustomize) — Dogfooding-Pilot bestätigte es live; Test-Seite seit Sprint 32 isoliert (autouse-CWD-Fixture), die schreibende Produktionsseite bleibt |
+| S4 | RN-011 | runner.py | sitecustomize-Blocker matcht sys.path exakt-string (kein normcase/realpath) |
+| S4 | OS-012-Restgrenze | file_setup.py | Deletion-Sync deckt src/source-Wurzeln; Flat-Layout („.") bewusst ausgenommen (dokumentiert in #101) |
+
+---
+
 ## Priorisierung
 
 | Priorität | Bedeutung | Anteil |

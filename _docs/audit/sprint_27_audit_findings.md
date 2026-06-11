@@ -585,5 +585,28 @@ CM-003 ✅, CM-013 ✅, OS-011 ✅.
 
 ---
 
+---
+
+## Schlussstrich: Audit-Zyklus abgeschlossen (Sprint 32, 2026-06-11)
+
+Fünf Fixing-Sprints (28–32, Releases v2.6.0–v2.10.0) haben die neun
+Fix-Cluster abgearbeitet:
+
+| Bilanz | Umfang |
+|--------|--------|
+| **Behoben** | C1–C8 vollständig + C9-Top — 31 GitHub-Issues (#73–#103), darunter alle 15 S1 (Sprint 29) und sämtliche S2 der Cluster C1–C8; zusätzlich miterledigt ohne eigene Issue-Nummer: RN-007 (vestigiales os.environ-Schreiben, fiel mit dem #99-run_stats-Umbau), RN-008/009 (Slices in #99), JT-013 (obsolet durch timeout.py-Löschung) |
+| **Überführt** | 24 bewusst nicht behobene Reste (2×S2, 11×S3, 11×S4) → severity-sortierter **Maintenance-Backlog** im Product Backlog (#104) — nichts davon korrumpiert Daten, blockiert Läufe oder belügt CI |
+| **Dokumentierte Grenzen** | Deletion-Sync deckt src/source-Wurzeln (Flat-Layout/also_copy-Spiegel ausgenommen — der Dogfooding-Pilot bestätigte die Grenze live: Geister-Tests in einem Alt-Staging, per `--force` bereinigbar); Coverage-Brücke sieht keine Subprozess-/xdist-Ausführung; mtime+size-Fingerprint blind für mtime-manipulierte Gleichgrößen |
+| **Umgebungsbedingt offen** | pip-audit-Baseline (SSL zu pypi.org gebrochen) |
+
+Der Zyklus begann mit dem W4.11-Downstream-Report (2 Bugs), wuchs über das
+201-Finding-Audit (Sprint 27) und endet mit einem Werkzeug, das seine
+eigenen Regeln auf sich anwendet: Format-Gate, nackter pytest-Kanon,
+semgrep inkl. tests/, erstes echtes Dogfooding mit Mutation-Score
+(Sprint-32-Backlog). Weitere Funde laufen als reguläre Issues in den
+Maintenance-Backlog — dieses Register wird nicht mehr fortgeschrieben.
+
+---
+
 *Sprint 27 abgeschlossen 2026-06-11. Fixing beginnt erst nach
 User-Priorisierung (analysis-only-Mandat).*
