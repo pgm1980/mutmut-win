@@ -4,58 +4,42 @@ sprint_goal: "v2.9.0 Feature Truth & Score Integrity — tote Features (Type-Che
 branch: "feature/v2.9.0-score-integrity"
 started_at: "2026-06-11"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State (Sprint 31 opened 2026-06-11)
 
 ## Current Focus
-Sprint 31 — **v2.9.0 Feature Truth & Score Integrity** — geplant,
-Implementierung noch nicht gestartet (wartet auf „Go"). Basis: Audit-Cluster
-**C6 + C7**. Die beiden tot beworbenen Features (Type-Check-Filter auf drei
-Ebenen gebrochen, Coverage ohne Subprozess-Brücke) werden ehrlich, die
-Score-Pipeline wird lückenlos. Issues #91–#97 angelegt. Branch
-`feature/v2.9.0-score-integrity`.
+Sprint 31 — **v2.9.0 Feature Truth & Score Integrity** — **implementation
+complete** (alle 7 Items, 33/33 SP). Commits auf
+`feature/v2.9.0-score-integrity`:
 
-## Sprint 31 Backlog (33 SP — Must 26, Should 7)
-1. **#91 (Must, 5 SP):** Status-Wahrheit — Exit-Code-Map (−24-Dublette,
-   0xC0000005, Exit-2-Entscheid per CoT ≥3), vollständige Summary-Buckets +
-   Catch-All + Summen-Invariante, generisches results-Rendering.
-2. **#92 (Must, 5 SP):** type_checking.py härten — Basename-Erkennung
-   (mypy.exe/uv run mypy — heute Lauf-ABBRUCH auf Windows), timeout/
-   returncode/encoding, pyright-Severity-Filter. Context7 PFLICHT.
-3. **#93 (Must, 8 SP):** Type-Check end-to-end — kanonisches Matching
-   (CM-002: matcht heute NIE), Task-Schnittmenge (OS-009), DB-Persistenz
-   (OS-003), Leerheits-Guard (OS-010), E2E mit echtem mypy. NACH #91+#92.
-4. **#94 (Must, 3 SP):** Ctrl-C-Ehrlichkeit — was_interrupted + unchecked,
-   Exit 130, Gate-Skip.
-5. **#95 (Must, 5 SP):** Coverage timeboxed Spike → Entscheid-CoT ≥8 →
-   Einbau ODER ehrliche Deaktivierung. Kernfrage Zeilen-Referenzsystem.
-   Context7 für coverage-API.
-6. **#96 (Should, 5 SP):** DB-Orphans — Design-CoT ≥8, Tendenz
-   Purge-bei-Voll-Lauf mit Subset-Guard (destruktiv → Tests zuerst).
-7. **#97 (Should, 2 SP):** CI-Kanal — score im JSON (additiv),
-   0-Mutanten-Gate-Kommunikation. ZULETZT (finale Modellform).
+| Issue | Commit | Inhalt |
+|-------|--------|--------|
+| #91 | `33c2c98` | Status-Wahrheit: Exit-Code-Map (−24-Dublette, NTSTATUS-Crashes, Exit 2 → killed per CoT), segfault-Bucket + Catch-All + Summen-Invariante, Kill-Klassen-Score in allen 3 Kanälen, generisches results-Rendering, Worker-Log-Tail für anomale Exits |
+| #92 | `108ed87` | type_checking gehärtet: Basename-Erkennung (mypy.exe/uv run mypy brachen den Lauf ab), timeout/returncode/encoding (mypy-Exit-2 = stiller 0-Filter), pyright-Severity. Context7 + empirisch verifiziert |
+| #93 | `18011c9` | Type-Check end-to-end: `to_mutants_relative`-Normalisierung (Matching traf NIE), Task-Schnittmenge, DB-Persistenz + eigenes Bucket, 100 %-caught-Guard, E2E mit echtem mypy |
+| #94 | `80f38ab` | Ctrl-C: was_interrupted + unchecked (Score über Geprüfte), Exit 130, Gate-Skip |
+| #95 | `75983f2` | Coverage REAKTIVIERT (Spike + 8-Schritt-CoT): Subprozess-Brücke, normcase-Keying (CM-013), laute Fehlerpfade; tote Kompat-API entfernt; mypy-Baseline 26→20 |
+| #96 | `09fbad5`+`09c6cd7` | DB-Orphan-Purge bei Voll-Lauf (Default-Polarität False, CLI verdrahtet Voll-Lauf-Info); executemany statt dynamischem SQL (semgrep-clean) |
+| #97 | `a70be0d` | CI-Kanal: score als computed_field im JSON; 0-Mutanten-Gate kommuniziert fail-closed |
 
-Scope-Ventil: #96/#97 → Sprint 32 bei Blowup; #95 weicht bei Timebox-Riss
-auf den Deaktivierungs-Pfad aus.
+Gates: **773 passed / 4 skipped** (+54), ruff 0, mypy **20 pre-existing /
+0 neue** (Baseline gesunken), semgrep 0, lint-imports KEPT.
 
-## Planungs-Erkenntnisse (12-Schritt-CoT)
-- Map zuerst: constants.status_by_exit_code ist das Fundament aller
-  Downstream-Konsumenten — Korrekturen danach wären Doppelarbeit.
-- Exit-2-Default: `2 → killed` (Worker-Ctrl-C strukturell vom
-  Orchestrator-Pfad getrennt; Collection-Error = beobachtbare
-  Verhaltensänderung); Forensik via last_output statt neuem Status.
-- Score-Korrekturen (Phantom-caught weg, Segfault/Collection-Kills rein)
-  im Changelog als „score corrections" ausweisen — CI-Gates können kippen.
-- summary.type_check_caught ist heute verwaist (caught fließt in killed).
-- Alle C6/C7-Befunde am v2.8.0-Stand re-verifiziert (Planungsphase).
+## Nächster Schritt
+**Warten auf User-„Release"**: Merge auf main, Bump 2.9.0
+(`uv lock --system-certs`!), Tag, GitHub Release mit
+**„score corrections"-Sektion** (Exit-2/Segfault-Kills rein,
+Phantom-caught raus, Interrupt-Nenner — CI-Gates können kippen!),
+Issues #91–#97 schließen via Merge.
 
 ## Out of scope (Roadmap unverändert)
-C8+C9 (Sprint 32 / v2.10.0) inkl. 3 vorgemerkter Pipeline-Hygiene-Punkte
-und OS-012-mtime-Teil; Mutation-Gate deferred bis C8; pip-audit (SSL).
+Sprint 32 / v2.10.0 = C8+C9 inkl. 3 vorgemerkter Pipeline-Hygiene-Punkte,
+OS-012-Reste (mtime-Invalidierung, verwaiste .meta), Mutation-Gate
+(C8-Stats-Fix), pip-audit (Umgebungs-SSL).
