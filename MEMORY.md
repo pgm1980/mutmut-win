@@ -28,7 +28,18 @@ on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
   merge 5c93ecc, bump fdc2361, tag v2.6.0). **Both W4.11 downstream
   blockers closed** — nextgen-cot-mcp-server can upgrade its pin and
   revert the §1.5 genexp workaround.
-- **Sprint**: 28 — *v2.6.0 Source Protection & Codegen Correctness* —
+- **Sprint**: 29 — *v2.7.0 Runtime Reliability* — implementation complete
+  2026-06-11 (6 items, 27/27 SP, commits 4257f3c..243206a on
+  `feature/v2.7.0-runtime-reliability`): both remaining S1 hangs fixed
+  (#79 queue shutdown, #80 worker liveness) → **all 15 S1 audit findings
+  closed**; per-task timeouts end-to-end + dead WallClockTimeout removed
+  (#81, −464 lines); per-task kill-on-close jobs for tree reaping (#82 —
+  ppid scans cannot bridge dead intermediates, empirically proven);
+  job-object polish via parallel worktree subagent (#83); import-linter
+  contracts realigned per ADR, gate now runs INSIDE pytest (#84).
+  Gates: 681 passed / 4 skipped, ruff 0, mypy 0 new, semgrep 0,
+  lint-imports KEPT. Release v2.7.0 pending user approval.
+- **Sprint 28** — *v2.6.0 Source Protection & Codegen Correctness* —
   closed 2026-06-11 (all 6 items, 31/31 SP): BUG-2 clean_run_timeout
   config (#74), validate-then-write safety net + crash guards (#78),
   source protection incl. class-aware apply (#75), safe-unwrap for the

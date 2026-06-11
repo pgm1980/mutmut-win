@@ -4,21 +4,35 @@ sprint_goal: "v2.7.0 Runtime Reliability — letzte 2 S1-Hänger (Abbruch-/Fehle
 branch: "feature/v2.7.0-runtime-reliability"
 started_at: "2026-06-11"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
-# Sprint State (Sprint 29 opened 2026-06-11)
+# Sprint State (Sprint 29 — implementation complete 2026-06-11)
 
 ## Current Focus
-Sprint 29 — **v2.7.0 Runtime Reliability** — planned, implementation not
-started. Basis: audit clusters **C3 + C4** plus the Sprint-28 lint-imports
-follow-up. After this sprint **all 15 S1 audit findings are closed**.
-Issues #79–#84 created. Branch `feature/v2.7.0-runtime-reliability`.
+Sprint 29 — **v2.7.0 Runtime Reliability** — all six items implemented
+and committed (27/27 SP). **All 15 S1 audit findings are now closed.**
+
+| Issue | Commit | Delivered |
+|-------|--------|-----------|
+| #79 shutdown hang | 4257f3c | queues cancel_join_thread+close, graceful-join-then-kill, idempotent shutdown, orchestrator finally |
+| #80 worker liveness | 0a06b3d | poll+sweep protocol, synthetic completions, late-flush single-count, all-dead abort, no 'unknown' DB rows |
+| #83 job-object polish | c781d62/3b9512e | use_last_error, argtypes/restype, least-privilege mask (parallel worktree subagent, verified by main session) |
+| #82 process hygiene | a2f6037 | per-task kill-on-close job (design upgrade: ppid scans cannot bridge dead intermediates — empirically shown), startup artifact sweep, sys.executable worker |
+| #81 timeout architecture | a955b89 | worker enforces task.timeout_seconds; dead WallClockTimeout/TaskTimedOut REMOVED (−464 lines); IL window wired; tail-read logs; README architecture fixed |
+| #84 lint-imports ADR | 243206a | five-band contract (shared kernel below process), KEPT 0 broken, gate now runs inside pytest |
+
+Gates: 681 passed / 4 skipped; ruff clean; mypy 0 new (26 known);
+semgrep 0 findings; lint-imports KEPT and self-enforcing via the suite.
+
+## Pending (needs user approval — outward-facing)
+Release v2.7.0: bump (uv lock --system-certs), merge to main
+(auto-closes #79–#84), tag, push, GitHub release.
 
 ## Findings bookkeeping
 Audit total ~180 unique; Sprint 28 closed 22 (incl. 13/15 S1); ~158 remain.
