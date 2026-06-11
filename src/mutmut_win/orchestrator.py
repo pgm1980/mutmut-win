@@ -202,6 +202,7 @@ class MutationOrchestrator:
         total = len(tasks_with_timeouts)
 
         executor = self._get_executor()
+        interrupted = False
         try:
             executor.start(tasks_with_timeouts)
             for event in executor.get_events():
@@ -214,10 +215,13 @@ class MutationOrchestrator:
                     if not self._no_progress:
                         _print_live_progress(completed, total, summary)
         except KeyboardInterrupt:
+            interrupted = True
             print("\nInterrupted — shutting down workers…")
-            executor.shutdown(timeout=5.0)
-        else:
-            executor.shutdown()
+        finally:
+            # Issue #79 / A2-EW-001: shutdown must run on EVERY exit path —
+            # any other exception used to leave workers and the queue feeder
+            # alive, hanging the interpreter at exit.
+            executor.shutdown(timeout=5.0 if interrupted else 10.0)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.

@@ -12,6 +12,7 @@ import logging
 import multiprocessing
 import multiprocessing.queues
 import sys
+import time
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,7 @@ class SpawnPoolExecutor:
         self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = self._mp_ctx.Queue()
         self._workers: list[multiprocessing.process.BaseProcess] = []
         self._num_tasks: int = 0
+        self._shutdown_done: bool = False
 
         # Orphan protection: Windows Job Object kills all children when parent dies.
         self._job_handle: int | None = None
@@ -144,23 +146,35 @@ class SpawnPoolExecutor:
     def shutdown(self, timeout: float = 10.0) -> None:
         """Terminate all worker processes and release resources.
 
-        Attempts a graceful join first, then kills any remaining workers.
+        Joins workers gracefully within one shared *timeout* deadline (on the
+        normal path they are already draining their sentinels and exit within
+        milliseconds), kills whatever is still alive, then severs both queues
+        via ``cancel_join_thread()`` + ``close()``: with buffered items and
+        dead readers, multiprocessing would otherwise join the feeder thread
+        at interpreter exit forever (issue #79 / A2-EW-001).  Losing the
+        buffered task data is intended at shutdown.  Safe to call repeatedly.
 
         Args:
-            timeout: Maximum seconds to wait for each worker to exit cleanly
-                before resorting to ``kill()``.
+            timeout: Shared deadline in seconds for the graceful join of all
+                workers before resorting to ``kill()``.
         """
-        for worker in self._workers:
-            if worker.is_alive():
-                worker.kill()
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
 
+        deadline = time.monotonic() + timeout
         for worker in self._workers:
-            worker.join(timeout=timeout)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        for worker in self._workers:
             if worker.is_alive():
                 worker.kill()
                 worker.join()
 
         self._workers.clear()
+
+        for queue in (self._task_queue, self._event_queue):
+            queue.cancel_join_thread()
+            queue.close()
 
         # Release the Job Object handle (processes are already dead at this point).
         if self._job_handle is not None:
