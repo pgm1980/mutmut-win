@@ -19,6 +19,12 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - Distributed as `mutmut-win` on PyPI. Console script: `mutmut-win`.
 
 ## Where we are
+- **Version**: **v2.11.0** released 2026-06-11
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.11.0),
+  bump 493f120) — Maintenance 1: Runtime & Self-Run. Pilot 24.2% ->
+  86.9% gross, 0 timeouts; QX-001 architecture skip removed; score
+  shift documented in the notes (no_tests leaves the denominator).
+  Maintenance pool: 13 entries.
 - **Version**: **v2.5.1** released 2026-05-23 (hotfix on top of v2.5.0:
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
@@ -59,7 +65,9 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   lines). Maintenance pool 26 -> 13 (13 findings cleared). Gates: 868
   passed bare (+47), ruff 0, format-check 0, mypy 0 new (baseline 20),
   semgrep 0 (full src+tests sweep), lint-imports KEPT everywhere incl.
-  artifact, pilot documented. Release v2.11.0 pending user approval.
+  artifact, pilot documented. **Released as v2.11.0 on 2026-06-11 —
+  sprint fully closed (31/31 SP; merge auto-closed #105–#110, 0 open
+  issues; gates re-verified pre-merge: 868 passed).**
 - **Sprint**: 32 — *v2.10.0 Pipeline Hygiene* — implementation complete
   2026-06-11 (7 items, 36/36 SP, commits 804e402..4d1e908 on
   `feature/v2.10.0-pipeline-hygiene`): THE LAST AUDIT SPRINT — cycle

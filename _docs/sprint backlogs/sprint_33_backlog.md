@@ -201,12 +201,16 @@ Pilot identisch zu Sprint 32 (Vergleichbarkeit): `code_coverage.py` +
 
 ---
 
-## Release v2.11.0 (nur auf explizites User-„Release")
+## Release v2.11.0 (ausgelöst durch explizites User-„Release" am 2026-06-11)
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.11.0 (`uv lock --system-certs`) | 🔲 |
-| Annotated Tag v2.11.0 | 🔲 |
-| GitHub Release (Changelog: Runtime-Fixes, Pilot-Vorher/Nachher, Skip-Entfernung) | 🔲 |
-| Auto-close #105–#110 via Merge | 🔲 |
-| MEMORY.md + product_backlog.md update (Maintenance-Pool-Pflege) | 🔲 |
+| pyproject.toml + uv.lock auf 2.11.0 (`uv lock --system-certs`) | ✅ `493f120` |
+| Annotated Tag v2.11.0 | ✅ |
+| GitHub Release (Changelog: Runtime-Fixes, Pilot-Vorher/Nachher, Skip-Entfernung, Score-Verschiebung) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.11.0) |
+| Auto-close #105–#110 via Merge | ✅ (verifiziert: 0 offene Issues) |
+| MEMORY.md + product_backlog.md update (Maintenance-Pool-Pflege) | ✅ |
+
+Vor dem Merge frisch verifizierte Gates (identisch mit Sprint-Abschluss):
+868 passed / 4 skipped (290 s), ruff 0, format-check 0, mypy 20 = Baseline
+(0 neue).

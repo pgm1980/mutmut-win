@@ -3,9 +3,9 @@ current_sprint: "33"
 sprint_goal: "v2.11.0 Maintenance 1: Runtime & Self-Run — Startup-Sockel im Timeout-Modell (DOG-001), no-tests-Producer (QX-007), Trampolin-Importkette entkoppeln (QX-001, Architektur-Skip fliegt); Ziel: Dogfooding-Pilot brutto >= 80 %."
 branch: "feature/v2.11.0-maintenance-1"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -16,14 +16,16 @@ documentation_updated: true
 
 ## Current Focus
 Sprint 33 — **v2.11.0 Maintenance 1: Runtime & Self-Run** —
-**IMPLEMENTIERUNG KOMPLETT** (alle 6 Issues, 31/31 SP, Commits
-`28a718f`..`4b87423`). **Messziel erreicht: Pilot 24,2 % → 86,9 %
-brutto, 0 Timeouts statt 175** (Zwischengate + Abschluss identisch).
-QX-001-Architektur-Skip entfernt — Layer-Gate lief grün im frischen
-Artefakt. Maintenance-Pool 26 → 13. Gates: 868 passed, ruff/format 0,
-mypy 0 neue, semgrep 0 (voller Sweep), lint-imports KEPT überall.
-Release v2.11.0 wartet auf explizites User-„Release"
-(Merge → Auto-Close #105–#110 → housekeeping_done).
+**GESCHLOSSEN, v2.11.0 RELEASED 2026-06-11** (User-„Release"; Merge
+`493f120^`, Bump `493f120`, annotated Tag v2.11.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.11.0),
+#105–#110 via Merge auto-geschlossen — 0 offene Issues). Gates vor dem
+Merge frisch verifiziert: 868 passed / 4 skipped, ruff/format 0, mypy
+20 = Baseline (0 neue). **Messziel erreicht: Pilot 24,2 % → 86,9 %
+brutto, 0 Timeouts statt 175.** QX-001-Architektur-Skip entfernt —
+Layer-Gate gilt wieder im Artefakt. Maintenance-Pool: 13 Einträge.
+Nächster Schritt: neue Pool-Auswahl (Maintenance 2) oder bewusster
+Stopp — User-Entscheidung.
 
 ## Sprint 33 Backlog (31 SP — Must 18, Should 13)
 1. **#105 (Must, 5 SP):** DOG-001 — gemessener Startup-Sockel

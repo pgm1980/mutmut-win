@@ -29,7 +29,7 @@
 | v2.8.0 | IL Detection Honesty | Sprint 30 | Done | Audit C5: Forensik-Persistenz (#85) + CICD-Bucket (#86) + Rendering (#87), Classifier-Ehrlichkeit Windows (#88), io_counters-Progress-Veto (#89), Test-Ehrlichkeit (#90) — released 2026-06-11 |
 | v2.9.0 | Feature Truth & Score Integrity | Sprint 31 | Done | Audit C6+C7: Status-Wahrheit (#91), Type-Checking-Härtung (#92) + end-to-end (#93), Ctrl-C-Ehrlichkeit (#94), Coverage REAKTIVIERT (#95), DB-Orphan-Purge (#96), CI-Kanal (#97) — released 2026-06-11 mit „score corrections"-Sektion |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Done | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding-Premiere (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) — released 2026-06-11; **Audit-Zyklus beendet** |
-| v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Planned | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — Messziel: Pilot brutto >= 80 % |
+| v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Done | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — released 2026-06-11; **Pilot 24,2 % → 86,9 % brutto, 0 Timeouts statt 175; Architektur-Skip im Artefakt entfernt** |
 
 ---
 
@@ -658,7 +658,7 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 - [x] Dogfooding-Pilot (gleiche Module wie Sprint 32) erreicht brutto ≥ 80 % — **86,9 %** (Zwischengate UND Abschluss, 0 Timeouts)
 - [x] Mutanten ohne gemappte Tests werden als `no tests` verbucht (nie dispatcht); Vollsuite-Fallback nur ohne Stats, weiterhin laut
 - [x] Der QX-001-Architektur-Skip ist ENTFERNT — lint-imports hält auch im Trampolin-Artefakt
-- [ ] Score-Verschiebungen im Changelog ausgewiesen (bei Release v2.11.0)
+- [x] Score-Verschiebungen im Changelog ausgewiesen — Release-Notes-Abschnitt „Score shift, stated plainly" (no_tests verlässt den Nenner, Vollsuite-Zufallskills den Zähler)
 - [x] Quality Gates: pytest 868, ruff 0, format-check 0, mypy 0 neue, semgrep 0 (src+tests), lint-imports KEPT überall (inkl. Artefakt)
 
 ---
@@ -722,7 +722,7 @@ Architektur-Skip im Build-Artefakt). Messziel: Dogfooding-Pilot brutto
 | IL Detection Honesty v2.8.0 | v2.8.0 | Epic 21 | #85–#90 | Done |
 | Feature Truth & Score Integrity v2.9.0 | v2.9.0 | Epic 22 | #91–#97 | Done |
 | Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Done |
-| Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Planned |
+| Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
 
 ---
 
@@ -799,3 +799,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.0.0 | 2026-06-11 | Claude Code Agent | Sprint 32 geschlossen (Epic 23 Done, v2.10.0 released, Velocity 36/36) — **AUDIT-ZYKLUS BEENDET**: C1–C8 komplett + C9-Top über 5 Releases an einem Tag; verschärfte Gates verankert (format-check, nackter pytest, semgrep auf tests/); Dogfooding-Premiere (85,5 % über bewertbare Mutanten, 4 Anläufe = 4 Funde); Maintenance-Backlog (26 Einträge) als einziger Arbeitsvorrat. |
 | 2.1.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geplant: Epic 24 (Maintenance 1: Runtime & Self-Run, #105–#110, 31 SP) per 10-Schritt-CoT — bedarfsgetriebene Pool-Auswahl (3×S2 + Bündel), Messziel Pilot brutto ≥ 80 %, Pool-Rest (20) bewusst unversprochen. |
 | 2.2.0 | 2026-06-11 | Claude Code Agent | Sprint 33 implementiert (Epic 24 Done, Velocity 31/31): Pilot 24,2 % → **86,9 % brutto** (0 Timeouts statt 175), Architektur-Skip im Artefakt entfernt, Maintenance-Pool 26 → 13. Release v2.11.0 ausstehend. |
+| 2.3.0 | 2026-06-11 | Claude Code Agent | Sprint 33 geschlossen (v2.11.0 released, Merge schloss #105–#110 automatisch): annotated Tag + GitHub-Release mit ausgewiesener Score-Verschiebung (no_tests verlässt den Nenner, Vollsuite-Zufallskills den Zähler); Milestone/Epic auf Done, MEMORY.md + state.md synchronisiert. |
