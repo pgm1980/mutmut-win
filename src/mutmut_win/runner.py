@@ -17,13 +17,6 @@ if TYPE_CHECKING:
 #: Environment variable used by the trampoline to select the active mutant.
 MUTANT_ENV_VAR = "MUTANT_UNDER_TEST"
 
-#: Default timeout (seconds) for subprocess pytest runs in runner phases.
-#: Generous to avoid false positives on slow CI machines.
-_RUNNER_TIMEOUT: int = 300
-
-#: Default timeout (seconds) for forced-fail verification.
-_FORCED_FAIL_TIMEOUT: int = 120
-
 #: Sentinel value that triggers a programmatic fail in the trampoline.
 MUTANT_FAIL_SENTINEL = "fail"
 
@@ -75,10 +68,14 @@ class PytestRunner:
                 stderr=subprocess.DEVNULL,
                 cwd="mutants",
                 env=env,
-                timeout=_RUNNER_TIMEOUT,
+                timeout=self._config.clean_run_timeout,
             )
         except subprocess.TimeoutExpired:
-            print(f"Warning: clean test suite timed out after {_RUNNER_TIMEOUT}s")
+            print(
+                f"Warning: clean test suite timed out after "
+                f"{self._config.clean_run_timeout}s "
+                "(configure [tool.mutmut].clean_run_timeout)"
+            )
             return 36  # timeout exit code
         return result.returncode
 
@@ -141,10 +138,14 @@ class PytestRunner:
         try:
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                cwd="mutants", env=env, timeout=_RUNNER_TIMEOUT,
+                cwd="mutants", env=env, timeout=self._config.clean_run_timeout,
             )
         except subprocess.TimeoutExpired:
-            print(f"Warning: stats collection timed out after {_RUNNER_TIMEOUT}s")
+            print(
+                f"Warning: stats collection timed out after "
+                f"{self._config.clean_run_timeout}s "
+                "(configure [tool.mutmut].clean_run_timeout)"
+            )
             os.environ[MUTANT_ENV_VAR] = ""
             return
 
@@ -223,12 +224,16 @@ class PytestRunner:
                 stderr=subprocess.DEVNULL,
                 cwd="mutants",
                 env=env,
-                timeout=_FORCED_FAIL_TIMEOUT,
+                timeout=self._config.forced_fail_timeout,
             )
         except subprocess.TimeoutExpired:
             # Forced-fail timeout likely means pytest-asyncio event loop corruption.
             # Return non-zero so the orchestrator treats it as "tests did fail" (correct).
-            print(f"Warning: forced-fail verification timed out after {_FORCED_FAIL_TIMEOUT}s")
+            print(
+                f"Warning: forced-fail verification timed out after "
+                f"{self._config.forced_fail_timeout}s "
+                "(configure [tool.mutmut].forced_fail_timeout)"
+            )
             return 1  # non-zero = tests failed = trampoline works
         return result.returncode
 

@@ -111,6 +111,24 @@ class MutmutConfig(BaseModel):
         gt=0.0,
         description="Multiplier for timeout calculation (mutmut default: 30x)",
     )
+    clean_run_timeout: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "Timeout (seconds) for the clean baseline and stats pytest runs "
+            "inside mutants/. The trampolined suite runs slower than the "
+            "native one — raise this for suites that need more than five "
+            "minutes. See issue #74."
+        ),
+    )
+    forced_fail_timeout: int = Field(
+        default=120,
+        gt=0,
+        description=(
+            "Timeout (seconds) for the forced-fail trampoline verification "
+            "run. See issue #74."
+        ),
+    )
     max_stack_depth: int = Field(
         default=-1,
         description="Maximum stack depth for mutations (-1 = unlimited)",
@@ -272,6 +290,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
+        "clean_run_timeout": _get("clean_run_timeout", 300),
+        "forced_fail_timeout": _get("forced_fail_timeout", 120),
         "max_stack_depth": _get("max_stack_depth", -1),
         "debug": _get("debug", False),
         "mutate_only_covered_lines": _get("mutate_only_covered_lines", False),
