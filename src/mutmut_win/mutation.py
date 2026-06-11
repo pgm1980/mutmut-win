@@ -300,10 +300,11 @@ def combine_mutations_to_source(
             if not func_mutants:
                 result.append(func)
                 continue
-            nodes, mutant_names = function_trampoline_arrangement(
+            nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
                 func, func_mutants, class_name=None
             )
             result.extend(nodes)
+            result.extend(lookup_nodes)
             mutation_names.extend(mutant_names)
         elif isinstance(statement, cst.ClassDef):
             cls = statement
@@ -312,18 +313,22 @@ def combine_mutations_to_source(
                 result.append(cls)
             else:
                 mutated_body = []
+                # Lookup dicts go AFTER the class at module level (issue #77).
+                class_lookup_nodes: list[MODULE_STATEMENT] = []
                 for method in cls.body.body:
                     method_mutants = mutations_within_function.get(method)
                     if not isinstance(method, cst.FunctionDef) or not method_mutants:
                         mutated_body.append(method)
                         continue
-                    nodes, mutant_names = function_trampoline_arrangement(
+                    nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
                         method, method_mutants, class_name=cls.name.value
                     )
                     mutated_body.extend(nodes)
+                    class_lookup_nodes.extend(lookup_nodes)
                     mutation_names.extend(mutant_names)
 
                 result.append(cls.with_changes(body=cls.body.with_changes(body=mutated_body)))
+                result.extend(class_lookup_nodes)
         else:
             result.append(statement)
 
@@ -335,10 +340,16 @@ def function_trampoline_arrangement(
     function: cst.FunctionDef,
     mutants: Iterable[Mutation],
     class_name: str | None,
-) -> tuple[Sequence[MODULE_STATEMENT], Sequence[str]]:
+) -> tuple[Sequence[MODULE_STATEMENT], Sequence[MODULE_STATEMENT], Sequence[str]]:
     """Create mutated functions and a trampoline that switches between versions.
 
-    :return: A tuple of (nodes, mutant names)"""
+    The lookup statements (mutants dict + ``__name__`` assignment) are
+    returned separately: they must be emitted at MODULE level — for methods
+    AFTER the class definition — because a dict in a class body becomes an
+    ``enum.Enum`` member and its annotation broke ``NamedTuple`` (issue #77).
+
+    :return: A tuple of (nodes for the original scope, module-level lookup
+        nodes, mutant names)"""
     nodes: list[MODULE_STATEMENT] = []
     mutant_names: list[str] = []
 
@@ -360,16 +371,14 @@ def function_trampoline_arrangement(
         mutated_method = deep_replace(mutated_method, mutant.original_node, mutant.mutated_node)
         nodes.append(mutated_method)  # type: ignore[arg-type]
 
-    mutants_dict = list(
+    lookup_nodes = list(
         cst.parse_module(
             create_trampoline_lookup(orig_name=name, mutants=mutant_names, class_name=class_name)
         ).body
     )
-    mutants_dict[0] = mutants_dict[0].with_changes(leading_lines=[cst.EmptyLine()])
+    lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
-    nodes.extend(mutants_dict)
-
-    return nodes, mutant_names
+    return nodes, lookup_nodes, mutant_names
 
 
 def create_trampoline_wrapper(
@@ -412,7 +421,9 @@ def create_trampoline_wrapper(
         func=cst.Name("_mutmut_trampoline"),
         args=[
             cst.Arg(_get_local_name(f"{mangled_name}_orig")),
-            cst.Arg(_get_local_name(f"{mangled_name}_mutants")),
+            # The mutants dict lives at module level (issue #77), so it is
+            # resolved as a global name even from inside a method body.
+            cst.Arg(cst.Name(f"{mangled_name}_mutants")),
             cst.Arg(cst.Name("args")),
             cst.Arg(cst.Name("kwargs")),
             cst.Arg(cst.Name("None" if class_name is None else "self")),
