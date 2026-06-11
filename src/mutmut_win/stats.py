@@ -8,8 +8,10 @@ a fresh collection via the pytest runner.
 Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 - All global state replaced by an explicit ``MutmutStats`` dataclass.
 - ``Path`` objects used throughout; ``encoding='utf-8'`` on every file I/O.
-- ``collect_or_load_stats`` does not perform incremental stats (new-test
-  detection) — that is a future extension.
+- Collection runs pytest as a SUBPROCESS with an injected plugin; the
+  plugin-written ``mutmut-stats.json`` is the single source of truth.
+- ``collect_or_load_stats`` updates incrementally: new tests trigger a
+  re-collection, removed tests trigger a cache cleanup (issue #99).
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import json
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from pathlib import Path
-from time import process_time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -138,22 +139,27 @@ def collect_or_load_stats(
     """
     cached = load_stats(mutants_dir)
     if cached is None:
-        return _run_stats_collection(runner, mutants_dir)
+        return _run_stats_collection(runner, mutants_dir, cached=None)
 
-    # Incremental update: check if there are new tests.
+    # Incremental update: compare the live test list against the cache.
     current_tests = set(runner.collect_tests())
     all_known_tests = set(cached.duration_by_test.keys())
     new_tests = current_tests - all_known_tests
+    removed_tests = all_known_tests - current_tests
 
-    if new_tests:
-        print(f"Found {len(new_tests)} new tests, re-running stats collection for them")
-        # Use ListAllTestsResult to clean up obsolete tests.
+    if removed_tests:
+        # Issue #99 / A3-OS-007: pure deletion never triggered this cleanup —
+        # dead node IDs stayed in the argfiles, pytest exited 4, and every
+        # affected mutant flooded into "suspicious".
+        print(f"Cleaning up {len(removed_tests)} removed tests from the stats cache")
         result = ListAllTestsResult(ids=current_tests, stats=cached)
         result.clear_out_obsolete_test_names(mutants_dir)
         save_stats(cached, mutants_dir)
 
+    if new_tests:
+        print(f"Found {len(new_tests)} new tests, re-running stats collection for them")
         # Re-run stats for new tests only.
-        return _run_stats_collection(runner, mutants_dir, tests=list(new_tests))
+        return _run_stats_collection(runner, mutants_dir, tests=list(new_tests), cached=cached)
 
     return cached
 
@@ -162,32 +168,53 @@ def _run_stats_collection(
     runner: PytestRunner,
     mutants_dir: Path,
     tests: list[str] | None = None,  # noqa: ARG001 — reserved for future per-test stats collection
+    cached: MutmutStats | None = None,
 ) -> MutmutStats:
-    """Run a fresh stats collection and persist the result.
+    """Run a fresh stats collection; never let a failure poison the cache.
 
-    Calls ``runner.run_stats()`` which runs pytest in-process with the
-    ``StatsCollector`` plugin.  Reads the populated ``_state`` globals and
-    saves the collected data to disk.
+    ``runner.run_stats()`` executes pytest as a subprocess with the stats
+    plugin; the plugin writes ``mutmut-stats.json`` at session end — that
+    file is the single source of truth (its ``stats_time`` is the accurate
+    in-subprocess measurement, issue #99 / A2-RN-008: the parent used to
+    re-save it with a near-zero ``process_time()``).
+
+    On a FAILED run (issue #99 / A3-OS-006 + A2-RN-003): the freshly
+    written JSON may be partial — it is neither loaded nor trusted; the
+    pre-run *cached* copy is restored to disk (healing a partial write) and
+    returned. Without any cache, the full-suite fallback is announced
+    loudly instead of silently degrading every mutant run.
 
     Args:
         runner: ``PytestRunner`` used to execute the stats run.
-        mutants_dir: Directory where the stats JSON file will be written.
+        mutants_dir: Directory where the stats JSON file lives.
+        tests: Reserved for future per-test collection.
+        cached: The pre-run cache, used as fallback on failure.
 
     Returns:
-        A freshly populated ``MutmutStats`` instance.
+        The freshly collected stats, or the fallback described above.
     """
-    from mutmut_win import _state
+    exit_code = runner.run_stats()
+    if exit_code != 0:
+        if cached is not None:
+            print("Warning: stats collection failed — keeping the existing stats cache untouched.")
+            save_stats(cached, mutants_dir)  # heal a possibly partial plugin write
+            return cached
+        print(
+            "Warning: stats collection failed and no cache exists — every "
+            "mutant will run the full test suite (slow)."
+        )
+        stats_path = mutants_dir / "mutmut-stats.json"
+        if stats_path.exists():
+            stats_path.unlink()  # a partial write must not become tomorrow's cache
+        return MutmutStats()
 
-    start_cpu = process_time()
-    runner.run_stats()
-    stats_time = process_time() - start_cpu
-
-    stats = MutmutStats(
-        tests_by_mangled_function_name=dict(_state.tests_by_mangled_function_name),
-        duration_by_test=dict(_state.duration_by_test),
-        stats_time=stats_time,
-    )
-    save_stats(stats, mutants_dir)
+    stats = load_stats(mutants_dir)
+    if stats is None:
+        print(
+            "Warning: stats collection wrote no data — every mutant will "
+            "run the full test suite (slow)."
+        )
+        return cached if cached is not None else MutmutStats()
     return stats
 
 
@@ -227,23 +254,32 @@ class ListAllTestsResult:
     def clear_out_obsolete_test_names(self, mutants_dir: Path = Path("mutants")) -> None:
         """Remove test names that no longer exist from the cached stats.
 
-        Modifies *stats* in-place and persists the result if any entries were
-        removed.
+        Cleans BOTH the per-mutant test mapping (whose dead node IDs end up
+        in worker argfiles → pytest exit 4 → "suspicious" floods, issue #99 /
+        A3-OS-007) and ``duration_by_test`` (whose dead keys would re-trigger
+        the removed-tests cleanup on every run). Modifies *stats* in-place
+        and persists the result if any entries were removed.
 
         Args:
             mutants_dir: Directory where the stats JSON file lives.
         """
         before = sum(len(v) for v in self._stats.tests_by_mangled_function_name.values())
+        before_durations = len(self._stats.duration_by_test)
 
         for k in self._stats.tests_by_mangled_function_name:
             self._stats.tests_by_mangled_function_name[k] = {
                 name for name in self._stats.tests_by_mangled_function_name[k] if name in self._ids
             }
+        self._stats.duration_by_test = {
+            name: duration
+            for name, duration in self._stats.duration_by_test.items()
+            if name in self._ids
+        }
 
         after = sum(len(v) for v in self._stats.tests_by_mangled_function_name.values())
-        if before != after:
-            removed = before - after
-            print(f"Removed {removed} obsolete test names")
+        removed = (before - after) + (before_durations - len(self._stats.duration_by_test))
+        if removed:
+            print(f"Removed {removed} obsolete test entries")
             save_stats(self._stats, mutants_dir)
 
     def new_tests(self) -> set[str]:

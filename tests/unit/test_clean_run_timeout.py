@@ -179,9 +179,13 @@ class TestOrchestratorTimeoutMessage:
 
         runner = MagicMock()
         runner.run_clean_test.return_value = 1
+        runner.last_diagnostic_output = "FAILED tests/test_x.py::test_y"
         cfg = MutmutConfig(paths_to_mutate=["src"])
         orch = MutationOrchestrator(
             cfg, runner=runner, executor=MagicMock(), db_path=tmp_path / "db"
         )
-        with pytest.raises(CleanTestFailedError, match="Fix tests before mutating"):
+        # Issue #99 / A2-RN-001: the blanket "Fix tests" is gone — the message
+        # decodes the exit class and carries the captured pytest tail.
+        with pytest.raises(CleanTestFailedError, match="tests failed") as excinfo:
             orch.run()
+        assert "FAILED tests/test_x.py::test_y" in str(excinfo.value)
