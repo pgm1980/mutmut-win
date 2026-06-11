@@ -22,6 +22,36 @@ def _default_max_children() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def _split_cli_string(value: str) -> list[str]:
+    """Tokenize a CLI argument string shell-style, Windows-safe.
+
+    Quotes (single or double) group tokens and are stripped; backslash is
+    NOT an escape character, so Windows paths survive untouched. This is
+    what a naive ``str.split()`` got wrong for ``'-m "not slow"'``
+    (issue #112 / A2-RN-013).
+
+    Args:
+        value: The raw argument string from config or CLI.
+
+    Returns:
+        The token list (empty for an empty/blank string).
+
+    Raises:
+        ValueError: On unbalanced quotes — surfaced by pydantic as a
+            validation error naming the offending string.
+    """
+    import shlex
+
+    lex = shlex.shlex(value, posix=True)
+    lex.whitespace_split = True
+    lex.escape = ""  # keep Windows backslashes literal
+    try:
+        return list(lex)
+    except ValueError as exc:
+        msg = f"unbalanced quotes in CLI argument string {value!r}: {exc}"
+        raise ValueError(msg) from exc
+
+
 def guess_paths_to_mutate() -> list[str]:
     """Guess source paths to mutate based on common project layouts.
 
@@ -254,12 +284,24 @@ class MutmutConfig(BaseModel):
                 safe.append(entry)
         return safe
 
-    @field_validator("type_check_command", "pytest_add_cli_args", mode="before")
+    @field_validator(
+        "type_check_command",
+        "pytest_add_cli_args",
+        "pytest_add_cli_args_test_selection",
+        mode="before",
+    )
     @classmethod
     def _coerce_command_to_list(cls, v: object) -> object:
-        """Accept a single string and split it into a list."""
+        """Accept a single string and tokenize it shell-style.
+
+        Quote-aware — ``'-m "not slow"'`` stays one marker expression —
+        and Windows-safe: backslash is NOT an escape character, so path
+        arguments survive untouched (issue #112 / A2-RN-013; the naive
+        ``str.split()`` handed pytest broken tokens, and the
+        test-selection field accepted no string at all).
+        """
         if isinstance(v, str):
-            return v.split()
+            return _split_cli_string(v)
         return v
 
     def should_ignore_for_mutation(self, path: str | Path) -> bool:
