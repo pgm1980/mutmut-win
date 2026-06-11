@@ -69,41 +69,44 @@ def _make_executor(events: list[Any] | None = None) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
+# Issue #105 / DOG-001: the budget formula gained an additive startup floor
+# and a clean-wall-scaled fallback — these tests pin the NEW semantics
+# (the dedicated model tests live in test_timeout_model.py).
 class TestApplyTimeouts:
     def test_uses_fallback_when_no_stats(self) -> None:
         tasks = [_task()]
-        result = _apply_timeouts(tasks, {}, 10.0)
-        assert result[0].timeout_seconds == 60.0  # _FALLBACK_TIMEOUT
+        result = _apply_timeouts(tasks, {}, 10.0, startup_floor=5.0, clean_wall_seconds=1.0)
+        assert result[0].timeout_seconds == 60.0  # _FALLBACK_TIMEOUT lower bound
 
-    def test_uses_multiplier_with_known_stats(self) -> None:
+    def test_uses_floor_plus_scaled_estimate_with_known_stats(self) -> None:
         tasks = [_task(tests=["tests/test_foo.py::test_x"])]
         stats = {"tests/test_foo.py::test_x": 2.0}
-        result = _apply_timeouts(tasks, stats, 5.0)
-        # 2.0 * 5.0 = 10.0 — above _MIN_TIMEOUT
-        assert result[0].timeout_seconds == pytest.approx(10.0)
+        result = _apply_timeouts(tasks, stats, 5.0, startup_floor=7.0, clean_wall_seconds=9.0)
+        # floor 7.0 + 2.0 * 5.0 = 17.0
+        assert result[0].timeout_seconds == pytest.approx(17.0)
 
     def test_min_timeout_enforced(self) -> None:
         tasks = [_task(tests=["tests/test_foo.py::test_x"])]
         stats = {"tests/test_foo.py::test_x": 0.001}
-        result = _apply_timeouts(tasks, stats, 1.0)
+        result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=5.0)
         assert result[0].timeout_seconds >= 5.0  # _MIN_TIMEOUT
 
     def test_uses_mean_when_no_test_assignment(self) -> None:
         tasks = [_task()]  # no tests assigned
         stats = {"tests/test_a.py::test_x": 2.0, "tests/test_b.py::test_y": 4.0}
-        result = _apply_timeouts(tasks, stats, 2.0)
-        # mean = 3.0, * 2.0 = 6.0
-        assert result[0].timeout_seconds == pytest.approx(6.0)
+        result = _apply_timeouts(tasks, stats, 2.0, startup_floor=5.0, clean_wall_seconds=11.0)
+        # floor 5.0 + mean 3.0 * 2.0 = 11.0
+        assert result[0].timeout_seconds == pytest.approx(11.0)
 
     def test_does_not_mutate_original_tasks(self) -> None:
         original = _task()
         original_timeout = original.timeout_seconds
-        _apply_timeouts([original], {}, 10.0)
+        _apply_timeouts([original], {}, 10.0, startup_floor=5.0, clean_wall_seconds=1.0)
         assert original.timeout_seconds == original_timeout  # unchanged
 
     def test_preserves_task_count(self) -> None:
         tasks = [_task(f"m{i}") for i in range(5)]
-        result = _apply_timeouts(tasks, {}, 2.0)
+        result = _apply_timeouts(tasks, {}, 2.0, startup_floor=5.0, clean_wall_seconds=1.0)
         assert len(result) == 5
 
 
@@ -670,7 +673,7 @@ class TestSortByEstimatedTime:
             _task("m2", tests=["t2"]),
         ]
         stats = {"t1": 0.1, "t2": 1.0, "t3": 0.5}
-        result = _apply_timeouts(tasks, stats, 1.0)
+        result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=2.0)
         sorted_result = sorted(result, key=lambda t: t.estimated_time)
         times = [t.estimated_time for t in sorted_result]
         assert times == sorted(times)
@@ -682,7 +685,7 @@ class TestSortByEstimatedTime:
             _task("slow", tests=["t_slow"]),
         ]
         stats = {"t_fast": 0.1, "t_slow": 5.0}
-        result = _apply_timeouts(tasks, stats, 1.0)
+        result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=6.0)
         result.sort(key=lambda t: t.estimated_time)
         assert result[0].mutant_name == "fast"
         assert result[1].mutant_name == "slow"

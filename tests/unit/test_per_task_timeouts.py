@@ -73,15 +73,22 @@ class TestWorkerUsesPerTaskTimeout:
         fake_proc.wait.assert_called_once_with(timeout=123.0)
 
 
+# Issue #105 / DOG-001: the budget gained an additive startup floor — the
+# property pins the NEW formula max(5, floor + estimated x multiplier).
 class TestApplyTimeoutsIsMultiplicative:
     @given(
         estimated=st.floats(min_value=0.01, max_value=500.0, allow_nan=False),
         multiplier=st.floats(min_value=0.1, max_value=100.0, allow_nan=False),
+        floor=st.floats(min_value=5.0, max_value=60.0, allow_nan=False),
     )
-    def test_timeout_is_floor_or_product(self, estimated: float, multiplier: float) -> None:
+    def test_timeout_is_floor_plus_product(
+        self, estimated: float, multiplier: float, floor: float
+    ) -> None:
         task = MutationTask(mutant_name="pkg.x_f__mutmut_1", tests=["t1"])
-        [result] = _apply_timeouts([task], {"t1": estimated}, multiplier)
-        assert result.timeout_seconds == pytest.approx(max(5.0, estimated * multiplier))
+        [result] = _apply_timeouts(
+            [task], {"t1": estimated}, multiplier, startup_floor=floor, clean_wall_seconds=1.0
+        )
+        assert result.timeout_seconds == pytest.approx(max(5.0, floor + estimated * multiplier))
 
 
 class TestMonitorWindowWiring:

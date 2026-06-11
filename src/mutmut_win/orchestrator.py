@@ -28,10 +28,13 @@ if TYPE_CHECKING:
     from mutmut_win.process.executor import SpawnPoolExecutor
     from mutmut_win.runner import PytestRunner
 
-#: Minimum timeout in seconds for any single mutation task.
+#: Minimum timeout in seconds for any single mutation task — also the lower
+#: clamp bound of the measured startup floor (issue #105).
 _MIN_TIMEOUT: float = 5.0
 
-#: Default multiplier applied to the estimated time when no stats are available.
+#: Lower bound of the full-suite fallback budget when no stats are available
+#: (the budget scales with the measured clean-run wall time above this) —
+#: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
 
 
@@ -175,7 +178,9 @@ class MutationOrchestrator:
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
         print("Running clean test suite…")
+        clean_start = time.monotonic()
         clean_exit = self._runner.run_clean_test()
+        clean_wall_seconds = time.monotonic() - clean_start
         if clean_exit != 0:
             from mutmut_win.runner import decode_pytest_exit
 
@@ -223,7 +228,21 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         all_tasks = _assign_tests_to_tasks(all_tasks, mutmut_stats)
         multiplier = self._config.timeout_multiplier
-        tasks_with_timeouts = _apply_timeouts(all_tasks, mutmut_stats.duration_by_test, multiplier)
+        startup_floor = _compute_startup_floor(clean_wall_seconds, mutmut_stats.duration_by_test)
+        # Issue #105 / DOG-001: the timeout model must not be a black box —
+        # the measured floor decides over timeout-vs-killed for every task.
+        total_test_time = sum(mutmut_stats.duration_by_test.values())
+        print(
+            f"Timeout model: startup floor {startup_floor:.1f}s + test time x {multiplier} "
+            f"(clean run {clean_wall_seconds:.1f}s - measured test time {total_test_time:.1f}s)"
+        )
+        tasks_with_timeouts = _apply_timeouts(
+            all_tasks,
+            mutmut_stats.duration_by_test,
+            multiplier,
+            startup_floor=startup_floor,
+            clean_wall_seconds=clean_wall_seconds,
+        )
 
         # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
         tasks_with_timeouts.sort(key=lambda t: t.estimated_time)
@@ -531,20 +550,72 @@ def _filter_tasks_by_names(
     return filtered
 
 
+def _compute_startup_floor(
+    clean_wall_seconds: float,
+    duration_by_test: dict[str, float],
+) -> float:
+    """Return the measured per-process startup overhead, clamped to [5s, 60s].
+
+    Issue #105 / DOG-001: every task subprocess pays a constant overhead
+    (interpreter start, suite imports, pytest collection) BEFORE the first
+    test runs — 16.5s wall for 0.86s of tests in the dogfooding pilot.  The
+    clean run over the full suite happens in the same trampolined
+    environment as the workers, so ``clean_wall - sum(test durations)`` is a
+    self-calibrating, project-specific measurement of that overhead (a
+    slightly conservative upper bound: workers collect fewer node IDs).
+
+    The clamp guards degenerate measurements: stale cached durations can
+    exceed a fresh, faster clean run (negative difference), and empty stats
+    degenerate the difference to the full wall time.  Bounds reuse the two
+    existing documented constants — no new magic numbers.
+
+    Trade-off (issue #105 worst-case accounting): a truly hanging mutant now
+    lives up to ``floor`` seconds longer before the timeout fires.  IL
+    detection verdicts on its own window well before that, and #106 removes
+    the unmapped full-suite hang pool entirely — while WITHOUT the floor,
+    72% of the pilot's mutants were unassessable pseudo-timeouts.
+
+    Args:
+        clean_wall_seconds: Measured wall time of the clean run (step 2).
+        duration_by_test: Per-test durations from the stats plugin.
+
+    Returns:
+        The startup floor in seconds, within ``[_MIN_TIMEOUT, _FALLBACK_TIMEOUT]``.
+    """
+    raw = clean_wall_seconds - sum(duration_by_test.values())
+    return min(_FALLBACK_TIMEOUT, max(_MIN_TIMEOUT, raw))
+
+
 def _apply_timeouts(
     tasks: list[MutationTask],
     stats: dict[str, float],
     multiplier: float,
+    *,
+    startup_floor: float,
+    clean_wall_seconds: float,
 ) -> list[MutationTask]:
     """Return a copy of *tasks* with ``timeout_seconds`` computed from *stats*.
 
-    The timeout for a task is ``max(_MIN_TIMEOUT, estimated_time * multiplier)``.
-    If no timing data is available for a task's tests, ``_FALLBACK_TIMEOUT`` is used.
+    The budget for a task with timing data is
+    ``max(_MIN_TIMEOUT, startup_floor + estimated_time * multiplier)`` —
+    the additive floor covers the constant process overhead the multiplier
+    cannot scale (issue #105 / DOG-001: 175/244 pilot mutants timed out
+    with FINISHED pytest summaries in their tails).
+
+    Without any timing data the task runs the full suite, so its budget is
+    ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)`` — the
+    measured wall time of exactly such a run; a flat 60s would pseudo-
+    timeout every suite that takes longer than a minute.
+
+    ``estimated_time`` stays free of the floor: it means "estimated TEST
+    runtime" and feeds the fast-first sort.
 
     Args:
         tasks: Original mutation tasks (not mutated in-place).
-        stats: Per-test duration mapping from ``PytestRunner.run_stats()``.
+        stats: Per-test duration mapping from the stats plugin.
         multiplier: Timeout multiplier from ``MutmutConfig.timeout_multiplier``.
+        startup_floor: Measured startup overhead from :func:`_compute_startup_floor`.
+        clean_wall_seconds: Measured wall time of the clean run (step 2).
 
     Returns:
         New list of ``MutationTask`` instances with updated timeout values.
@@ -559,7 +630,10 @@ def _apply_timeouts(
         else:
             estimated = 0.0
 
-        timeout = max(_MIN_TIMEOUT, estimated * multiplier) if estimated > 0 else _FALLBACK_TIMEOUT
+        if estimated > 0:
+            timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
+        else:
+            timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
 
         updated.append(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})
