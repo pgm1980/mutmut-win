@@ -552,6 +552,25 @@ den das st_size-Signal nicht sieht — Tests, die in Dateien/Sockets statt
 stdout schreiben). Veto-only: kann IL nur verhindern, nie erzeugen;
 unmessbar (macOS, AccessDenied) = neutral. Forensik: `io_ops_delta`.
 
+### Spike-Ergebnis #95: Coverage-Subprozess-Brücke (2026-06-11, Sprint 31)
+
+Messung (`_issues/spike_coverage_bridge.py`): `coverage run
+--data-file=<mutants>/.coverage.mutmut --source=. -m pytest` mit
+cwd=mutants schreibt ein Datafile, das der Parent via
+`Coverage(data_file=…).load()` sauber liest (mod.py → covered [1,2,5];
+never_called-Body korrekt NICHT covered). **Zeilen-Referenzsystem ist by
+construction konsistent**: Der Coverage-Schritt läuft nach copy_src_dir,
+aber VOR der Trampolinisierung — mutants/ enthält unmutierte 1:1-Kopien
+mit Original-Zeilennummern. **CM-013 live bestätigt**: `lines()` mit
+case-abweichendem Laufwerksbuchstaben → None; Fix = normcase-Keying
+beidseitig. **Entscheid (8-Schritt-CoT): JA, reaktiviert** —
+`runner.run_coverage_collection` + gather_coverage-Neufassung mit lauten
+Fehlerpfaden statt stillem „0 Mutanten"; tote Kompat-API
+(prepare_main_test_run/run_tests, In-Process-Modul-Unloading) entfernt.
+Dokumentierte Grenze: Code, der nur in test-gespawnten Subprozessen/
+xdist-Workern läuft, ist unmessbar → Leerheits-Guard wirft mit Hinweis.
+CM-003 ✅, CM-013 ✅, OS-011 ✅.
+
 ---
 
 *Sprint 27 abgeschlossen 2026-06-11. Fixing beginnt erst nach

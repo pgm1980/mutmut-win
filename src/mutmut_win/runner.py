@@ -137,8 +137,12 @@ class PytestRunner:
 
         try:
             result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                cwd="mutants", env=env, timeout=self._config.clean_run_timeout,
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd="mutants",
+                env=env,
+                timeout=self._config.clean_run_timeout,
             )
         except subprocess.TimeoutExpired:
             print(
@@ -168,33 +172,53 @@ class PytestRunner:
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
             )
 
-    def prepare_main_test_run(self) -> None:
-        """Prepare for a main test run (no-op for subprocess-based runner).
+    def run_coverage_collection(self, data_file: Path) -> int:
+        """Run the clean suite under ``coverage run`` inside ``mutants/``.
 
-        Provided for API compatibility with the mutmut 3.5.0 ``TestRunner``
-        abstract interface so that ``code_coverage.gather_coverage()`` can call
-        this method without branching.
-        """
-
-    def run_tests(
-        self,
-        *,
-        mutant_name: str | None,  # noqa: ARG002  # kept for API symmetry
-        tests: list[str] | None,  # noqa: ARG002  # kept for API symmetry
-    ) -> int:
-        """Run the test suite (in mutants/ directory) for coverage gathering.
-
-        Provided for API compatibility with the mutmut 3.5.0 ``TestRunner``
-        interface.  Delegates to ``run_clean_test`` which runs in ``mutants/``.
+        The subprocess coverage bridge for ``mutate_only_covered_lines``
+        (issue #95): pytest executes under ``coverage run`` with an explicit
+        data file, and the parent process loads that file afterwards.  Runs
+        against the unmutated copies with ``MUTANT_UNDER_TEST=''``.
 
         Args:
-            mutant_name: Unused — kept for interface symmetry.
-            tests: Unused — kept for interface symmetry.
+            data_file: Absolute path the coverage data is written to.
 
         Returns:
-            The pytest exit code.
+            The exit code (0 = suite passed; 36 on timeout, mirroring
+            ``run_clean_test``).
         """
-        return self.run_clean_test()
+        cmd = [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            f"--data-file={data_file}",
+            "--source=.",
+            "-m",
+            "pytest",
+        ]
+        cmd.extend(self._config.pytest_add_cli_args)
+        if self._config.tests_dir:
+            cmd.extend(self._config.tests_dir)
+        env = self._mutants_env()
+        env[MUTANT_ENV_VAR] = ""
+        try:
+            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd="mutants",
+                env=env,
+                timeout=self._config.clean_run_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"Warning: coverage collection timed out after "
+                f"{self._config.clean_run_timeout}s "
+                "(configure [tool.mutmut].clean_run_timeout)"
+            )
+            return 36  # timeout exit code
+        return result.returncode
 
     def run_forced_fail(
         self,

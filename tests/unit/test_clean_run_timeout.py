@@ -9,7 +9,7 @@ never pass the clean gate, and the error text blamed the tests.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -106,6 +106,31 @@ class TestRunnerUsesConfiguredTimeouts:
         with patch("subprocess.run", return_value=_completed(1)) as mock_run:
             runner.run_forced_fail("token")
         assert mock_run.call_args[1]["timeout"] == 200
+
+    def test_coverage_collection_builds_a_coverage_run_command(self, tmp_path: Path) -> None:
+        """Issue #95: the coverage bridge runs pytest UNDER `coverage run`
+        with an explicit data file inside mutants/ — the parent loads the
+        data file afterwards."""
+        runner = PytestRunner(MutmutConfig())
+        captured: dict[str, Any] = {}
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:
+            captured["cmd"] = cmd
+            captured.update(kwargs)
+            return _completed(0)
+
+        data_file = tmp_path / ".coverage.mutmut"
+        with patch("subprocess.run", side_effect=fake_run):
+            exit_code = runner.run_coverage_collection(data_file)
+
+        assert exit_code == 0
+        cmd = captured["cmd"]
+        assert cmd[1:4] == ["-m", "coverage", "run"]
+        assert f"--data-file={data_file}" in cmd
+        assert "--source=." in cmd
+        assert "pytest" in cmd
+        assert captured["cwd"] == "mutants"
+        assert captured["timeout"] == MutmutConfig().clean_run_timeout
 
     def test_clean_timeout_warning_names_config_key(self, capsys: pytest.CaptureFixture) -> None:
         runner = PytestRunner(MutmutConfig(clean_run_timeout=7))
