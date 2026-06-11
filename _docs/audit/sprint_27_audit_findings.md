@@ -516,6 +516,13 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
 
+**OS-012-Reststand nach Sprint 31/#96 (→ C8):** Der Orphan-Teil ist
+behoben (Purge-bei-Voll-Lauf). Offen bleiben: (a) mtime-only-Invalidierung
+in file_setup übersieht Restores mit altem Timestamp (Hash-basierte
+Invalidierung wäre der Fix — Cache-Hygiene); (b) verwaiste
+`.meta`-Dateien gelöschter Quelldateien (Datei-Lifecycle, der Browser
+liest sie weiter).
+
 **Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
 1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
    drift­en (`ruff format --check src/ tests/` rot); Sprint-Gates liefen

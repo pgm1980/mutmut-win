@@ -63,11 +63,18 @@ class MutationOrchestrator:
         db_path: Path = DEFAULT_DB_PATH,
         mutant_names: tuple[str, ...] | None = None,
         no_progress: bool = False,
+        purge_stale_results: bool = False,
     ) -> None:
         self._config = config
         self._db_path = db_path
         self._mutant_names: tuple[str, ...] | None = mutant_names
         self._no_progress = no_progress
+        # Issue #96 / A3-OS-012: on FULL runs the CLI opts in to purging DB
+        # rows of mutants that are no longer generated. Default False — the
+        # safe polarity for a destructive operation: subset runs
+        # (--mutant-names/--since-commit) know only a slice of the valid set
+        # and must never purge.
+        self._purge_stale_results = purge_stale_results
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -117,6 +124,11 @@ class MutationOrchestrator:
                 duration_seconds=time.monotonic() - wall_start,
             )
 
+        # The COMPLETE generation set, captured before any filtering — the
+        # purge reference for full runs (issue #96): filtered-out mutants
+        # still exist as valid mutants and must never be treated as stale.
+        all_generated_names = {t.mutant_name for t in all_tasks}
+
         # ------------------------------------------------------------------
         # Step 1a: Filter to specific mutant names if requested (fnmatch supported).
         # ------------------------------------------------------------------
@@ -143,6 +155,7 @@ class MutationOrchestrator:
             # Every mutant was caught by the type checker — a legitimate,
             # successful run, not an IndexError (issue #93 / A3-OS-010).
             create_db(self._db_path)
+            self._maybe_purge_stale(all_generated_names)
             _persist_type_check_kills(self._db_path, type_checked_names)
             for sfd in source_data_by_file.values():
                 sfd.save()
@@ -209,6 +222,7 @@ class MutationOrchestrator:
         # Step 6 + 7: Run mutation tests via the pool executor.
         # ------------------------------------------------------------------
         create_db(self._db_path)
+        self._maybe_purge_stale(all_generated_names)
         # Type-check kills go to the DB (issue #93 / A3-OS-003: they only
         # ever flowed into the in-memory summary, so `results` and the CICD
         # export diverged from the run gate forever) and into their OWN
@@ -390,6 +404,23 @@ class MutationOrchestrator:
             )
 
         return all_tasks, source_data
+
+    def _maybe_purge_stale(self, all_generated_names: set[str]) -> None:
+        """Purge DB rows of mutants outside the current generation set.
+
+        Only acts when the CLI opted in (full run, issue #96 / A3-OS-012);
+        logs the deleted count so the cleanup is visible, never silent.
+
+        Args:
+            all_generated_names: The complete, unfiltered generation set.
+        """
+        if not self._purge_stale_results:
+            return
+        from mutmut_win.db import delete_results_not_in
+
+        deleted = delete_results_not_in(self._db_path, all_generated_names)
+        if deleted:
+            print(f"Purged {deleted} stale result rows (mutants no longer generated).")
 
     def _gather_coverage(
         self,

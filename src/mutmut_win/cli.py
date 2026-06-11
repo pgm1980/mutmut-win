@@ -201,12 +201,16 @@ def run(
 
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
+    # Only a FULL run may purge stale DB rows (issue #96): subset runs know
+    # just a slice of the valid mutant set and must never delete history.
+    is_full_run = not mutant_names and since_commit is None
     orchestrator = MutationOrchestrator(
         config,
         runner=runner,
         executor=executor,
         mutant_names=mutant_names if mutant_names else None,
         no_progress=no_progress,
+        purge_stale_results=is_full_run,
     )
 
     try:
