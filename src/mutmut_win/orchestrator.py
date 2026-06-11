@@ -363,8 +363,17 @@ class MutationOrchestrator:
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}
 
+        # The generation fast path may only run when the mutant universe is
+        # unchanged — a config edit (paths/do_not_mutate/coverage gating)
+        # used to leave stale mutants in place (issue #101 / A3-OS-008).
+        from mutmut_win.file_setup import config_fingerprint_matches
+
+        allow_fast_path = config_fingerprint_matches(self._config)
+        if not allow_fast_path:
+            print("Configuration changed — regenerating all mutants.")
+
         # Build per-file args for the pool worker.
-        file_args: list[tuple[str, Path, Path, set[int] | None]] = []
+        file_args: list[tuple[str, Path, Path, set[int] | None, bool]] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
             file_covered: set[int] | None = None
@@ -372,7 +381,7 @@ class MutationOrchestrator:
                 from mutmut_win.code_coverage import get_covered_lines_for_file
 
                 file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
-            file_args.append((rel_path, src_file, output_path, file_covered))
+            file_args.append((rel_path, src_file, output_path, file_covered, allow_fast_path))
 
         # Step 5: Generate per-file mutants.
         # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0)
@@ -465,7 +474,7 @@ class MutationOrchestrator:
 
 
 def _create_mutants_worker(
-    args: tuple[str, Path, Path, set[int] | None],
+    args: tuple[str, Path, Path, set[int] | None, bool],
 ) -> tuple[str, list[str], Exception | None, list[str]]:
     """Top-level picklable worker for parallel mutant generation.
 
@@ -474,8 +483,9 @@ def _create_mutants_worker(
     back so the parent can correlate results despite unordered delivery.
 
     Args:
-        args: A tuple of ``(rel_path, filename, output_path, covered_lines)``
-              where ``rel_path`` is the string path relative to the project root.
+        args: A tuple of ``(rel_path, filename, output_path, covered_lines,
+              allow_fast_path)`` where ``rel_path`` is the string path
+              relative to the project root.
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages)`` where
@@ -483,9 +493,11 @@ def _create_mutants_worker(
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
-    rel_path, filename, output_path, covered_lines = args
+    rel_path, filename, output_path, covered_lines, allow_fast_path = args
     try:
-        mutant_names, warns = create_mutants_for_file(filename, output_path, covered_lines)
+        mutant_names, warns = create_mutants_for_file(
+            filename, output_path, covered_lines, allow_fast_path=allow_fast_path
+        )
         warn_msgs = [str(w.message) for w in warns]
         return rel_path, mutant_names, None, warn_msgs
     except Exception as exc:  # broad catch: pool workers must not crash the parent

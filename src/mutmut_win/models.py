@@ -121,6 +121,12 @@ class SourceFileMutationData(BaseModel):
     durations_by_key: dict[str, float] = Field(default_factory=dict)
     estimated_time_of_tests_by_mutant: dict[str, float] = Field(default_factory=dict)
     type_check_error_by_key: dict[str, str] = Field(default_factory=dict)
+    # Source fingerprint at generation time (issue #101 / A3-FD-004): the
+    # fast path compares EQUALITY against the live source — a restore with
+    # an older timestamp is inequality and regenerates. Defaults keep
+    # pre-v2.10 meta files loadable (their None never matches → regenerate).
+    source_mtime: float | None = None
+    source_size: int | None = None
 
     @property
     def meta_path(self) -> Path:
@@ -128,11 +134,25 @@ class SourceFileMutationData(BaseModel):
         return Path("mutants") / (self.path + ".meta")
 
     def load(self) -> None:
-        """Load mutation metadata from the JSON meta file."""
+        """Load mutation metadata from the JSON meta file.
+
+        Tolerates corruption (issue #101 / A3-CM-009, confirmed via a
+        truncated-file experiment): a half-written ``.meta`` used to raise
+        an uncaught ``JSONDecodeError`` and block EVERY subsequent run
+        until manual deletion. A corrupt file now warns, is removed (so the
+        generation fast path rebuilds cleanly), and loading starts empty.
+        """
         try:
             with self.meta_path.open(encoding="utf-8") as f:
                 meta: dict[str, object] = json.load(f)
         except FileNotFoundError:
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            import contextlib
+
+            print(f"Warning: corrupted meta file {self.meta_path} — rebuilding from scratch.")
+            with contextlib.suppress(OSError):
+                self.meta_path.unlink()
             return
 
         raw_exit = meta.pop("exit_code_by_key", {})
@@ -151,20 +171,34 @@ class SourceFileMutationData(BaseModel):
         if isinstance(raw_tc, dict):
             self.type_check_error_by_key = {str(k): str(v) for k, v in raw_tc.items()}
 
+        raw_mtime = meta.pop("source_mtime", None)
+        self.source_mtime = float(raw_mtime) if isinstance(raw_mtime, (int, float)) else None
+        raw_size = meta.pop("source_size", None)
+        self.source_size = int(raw_size) if isinstance(raw_size, int) else None
+
     def save(self) -> None:
-        """Save mutation metadata to the JSON meta file."""
+        """Save mutation metadata to the JSON meta file (atomically).
+
+        Writes to a sibling ``.tmp`` and swaps via ``Path.replace`` —
+        atomic on the same volume — so a crash mid-write (the A3-CM-009
+        scenario) can never leave a truncated ``.meta`` behind.
+        """
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.meta_path.open("w", encoding="utf-8") as f:
+        tmp_path = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(
                 {
                     "exit_code_by_key": self.exit_code_by_key,
                     "durations_by_key": self.durations_by_key,
                     "type_check_error_by_key": self.type_check_error_by_key,
                     "estimated_durations_by_key": self.estimated_time_of_tests_by_mutant,
+                    "source_mtime": self.source_mtime,
+                    "source_size": self.source_size,
                 },
                 f,
                 indent=4,
             )
+        tmp_path.replace(self.meta_path)
 
 
 class MutationRunResult(BaseModel):

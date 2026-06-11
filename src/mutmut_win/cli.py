@@ -155,7 +155,17 @@ def run(
             p = Path(dirname)
             if p.exists():
                 shutil.rmtree(p, ignore_errors=True)
-                click.echo(f"Removed {dirname}/")
+                # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
+                # unconditional success message sold a PARTIAL deletion
+                # (files locked by another process) as a clean slate.
+                if p.exists():
+                    click.echo(
+                        f"Warning: could not fully remove {dirname}/ "
+                        f"(files in use?) — the run may see stale state.",
+                        err=True,
+                    )
+                else:
+                    click.echo(f"Removed {dirname}/")
 
     config = load_config()
 

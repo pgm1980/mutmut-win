@@ -146,10 +146,19 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
         ".mutmut-cache",
     }
 
+    expected_targets: set[Path] = set()
+    synced_roots: list[Path] = []
+
     for source_root_name in ["src", "source", "."]:
         source_root = Path(source_root_name)
         if not source_root.exists() or not source_root.is_dir():
             continue
+        if source_root_name != ".":
+            # Deletion sync only covers the EXPLICIT mirror roots: under the
+            # "." grab-bag the expectation set cannot be cleanly separated
+            # from also_copy mirrors and generated artifacts (stats plugin,
+            # sitecustomize) — deleting there would be guessing.
+            synced_roots.append(source_root)
 
         for root_str, dirs, files in os.walk(source_root):
             # Skip cache/venv directories
@@ -158,9 +167,15 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
             for name in files:
                 source_path = Path(root_str) / name
                 target_path = Path("mutants") / root_str / name
+                expected_targets.add(target_path)
 
                 if target_path.exists():
-                    # Update if source is newer than the copy in mutants/.
+                    # `>` is deliberate here: after generation the target IS
+                    # the trampolined file (newer and bigger than the source),
+                    # so inequality-based comparison would invalidate every
+                    # run. Restores with OLD timestamps are caught on the
+                    # GENERATION side via the source fingerprint in .meta
+                    # (issue #101 / A3-FD-004).
                     if source_path.is_file() and _source_is_newer(source_path, target_path):
                         _copy_with_retry(source_path, target_path)
                         print(f"     updated: {source_path} (source changed since last run)")
@@ -173,6 +188,8 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
                 _copy_with_retry(source_path, target_path)
 
+    _sync_deleted_sources(expected_targets, synced_roots, skip_dirs)
+
 
 def _source_is_newer(source: Path, target: Path) -> bool:
     """Return True if *source* was modified more recently than *target*."""
@@ -180,6 +197,49 @@ def _source_is_newer(source: Path, target: Path) -> bool:
         return source.stat().st_mtime > target.stat().st_mtime
     except OSError:
         return True
+
+
+def _sync_deleted_sources(
+    expected_targets: set[Path], synced_roots: list[Path], skip_dirs: set[str]
+) -> None:
+    """Remove staged ``.py`` mirrors whose source no longer exists.
+
+    Deleted/renamed sources used to stay in ``mutants/`` forever — tests ran
+    green against deleted modules and their ``.meta`` files survived with
+    them (issue #101 / A3-FD-003 + the OS-012 remainder). Deliberately
+    narrow: only ``*.py`` files (plus their ``.meta``) under the mirror
+    roots, using the SAME walk skip set as the copy phase, never anything
+    else in the staging tree. Locked files are skipped, never fatal.
+
+    Args:
+        expected_targets: Every target path the copy walk produced.
+        synced_roots: The source roots that were mirrored this run.
+        skip_dirs: Directory names excluded from the copy walk.
+    """
+    import contextlib
+
+    removed = 0
+    for source_root in synced_roots:
+        staged_root = Path("mutants") / source_root
+        if not staged_root.is_dir():
+            continue
+        for root_str, dirs, files in os.walk(staged_root):
+            dirs[:] = [d for d in dirs if d not in skip_dirs and d != "mutants"]
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                staged = Path(root_str) / name
+                if staged in expected_targets:
+                    continue
+                with contextlib.suppress(OSError):
+                    staged.unlink()
+                    removed += 1
+                meta = Path(str(staged) + ".meta")
+                if meta.exists():
+                    with contextlib.suppress(OSError):
+                        meta.unlink()
+    if removed:
+        print(f"     removed {removed} stale staged files (sources deleted/renamed)")
 
 
 def copy_also_copy_files(config: MutmutConfig) -> None:
@@ -205,6 +265,7 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     # implemented in process/worker.py rather than here.
     paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
 
+    mutants_root = Path("mutants").resolve()
     for path_str in paths_to_copy:
         path = Path(path_str)
         # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
@@ -216,8 +277,13 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         if path.name in skip_dirs:
             print("     skipping", path_str, "(matches venv/cache skip list)")
             continue
-        print("     also copying", path_str)
-        # Guard 2: absolute paths break Path("mutants") / path because Python
+        # Guard 2 (issue #101 / A3-FD-005): "." and mutants/ itself defeat the
+        # name-based skip (``Path(".").name == ""``) and would nest the whole
+        # project — including mutants/ and .git — into mutants/mutants.
+        if path.resolve() in (Path.cwd().resolve(), mutants_root):
+            print("     skipping", path_str, "(would nest the project into mutants/)")
+            continue
+        # Guard 3: absolute paths break Path("mutants") / path because Python
         # discards the left operand when the right is absolute, causing a
         # self-copy (source == destination).  Make them relative to CWD.
         if path.is_absolute():
@@ -225,9 +291,22 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
                 path = path.relative_to(Path.cwd())
             except ValueError:
                 continue  # Path outside the project — skip
-        destination = Path("mutants") / path
+        # Sibling entries with ".." (the Bug-#69 core use case) are staged
+        # under their own name — mutants/<name>, which is exactly where the
+        # worker puts them on PYTHONPATH. Without this, "mutants" / "../x"
+        # silently wrote OUTSIDE the staging tree (issue #101 / A3-FD-002,
+        # sandbox-confirmed).
+        destination = Path("mutants") / (path.name if ".." in path.parts else path)
+        # Guard 4 (containment, second line of defence): whatever the entry
+        # looks like, the destination must stay inside mutants/.
+        try:
+            destination.resolve().relative_to(mutants_root)
+        except ValueError:
+            print(f"     skipping {path_str} (destination escapes the staging directory)")
+            continue
         if not path.exists():
             continue
+        print("     also copying", path_str)
         if path.is_file():
             _copy_with_retry(path, destination)
         else:
@@ -239,6 +318,53 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     # that contain relative paths. These paths are relative to the original
     # project root and break when resolved from mutants/ (one level deeper).
     _sanitise_mutants_pyproject()
+
+
+def config_fingerprint_matches(config: MutmutConfig) -> bool:
+    """Check (and persist) the mutant-universe fingerprint of *config*.
+
+    The generation fast path reuses ``.meta`` mutant names when the source
+    is unchanged — but the UNIVERSE also depends on configuration:
+    ``paths_to_mutate``, ``do_not_mutate``, ``mutate_only_covered_lines``,
+    ``also_copy``/``extra_paths``. Editing any of these used to leave a
+    stale mutant universe in place without warning (issue #101 /
+    A3-OS-008). The orchestrator calls this once per run and disables the
+    fast path when the fingerprint changed.
+
+    Args:
+        config: Active ``MutmutConfig``.
+
+    Returns:
+        ``True`` if the persisted fingerprint matches *config* (fast path
+        allowed); ``False`` on first run or after a universe-relevant
+        change — the new fingerprint is persisted either way.
+    """
+    import hashlib
+    import json
+
+    payload = json.dumps(
+        {
+            "paths_to_mutate": sorted(config.paths_to_mutate),
+            "do_not_mutate": sorted(config.do_not_mutate),
+            "mutate_only_covered_lines": config.mutate_only_covered_lines,
+            "also_copy": sorted(config.also_copy),
+            "extra_paths": sorted(config.extra_paths),
+        },
+        sort_keys=True,
+    )
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    fingerprint_path = Path("mutants") / ".mutmut-config-fingerprint"
+
+    try:
+        stored = fingerprint_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        stored = None
+
+    if stored == fingerprint:
+        return True
+    fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+    fingerprint_path.write_text(fingerprint, encoding="utf-8")
+    return False
 
 
 def _sanitise_mutants_pyproject() -> None:
@@ -399,10 +525,16 @@ def write_all_mutants_to_file(
     return list(mutant_names)
 
 
+class _FastPathMissError(Exception):
+    """Internal sentinel: the .meta source fingerprint does not match."""
+
+
 def create_mutants_for_file(
     filename: Path,
     output_path: Path,
     covered_lines: set[int] | None = None,
+    *,
+    allow_fast_path: bool = True,
 ) -> tuple[list[str], list[warnings.WarningMessage]]:
     """Generate mutants for a single source file and write to *output_path*.
 
@@ -441,12 +573,24 @@ def create_mutants_for_file(
     # the existing mutant names from the .meta file instead of re-generating.
     # This enables repeated runs: the orchestrator gets the task list even
     # though the mutated file already exists in mutants/.
+    # The comparison is against the SOURCE fingerprint recorded in .meta at
+    # generation time (mtime AND size, equality not ordering) — the old
+    # `source_mtime < target_mtime` check missed restores with OLD
+    # timestamps (issue #101 / A3-FD-004, sandbox-confirmed).
+    # The orchestrator passes allow_fast_path=False when the config
+    # fingerprint changed (issue #101 / A3-OS-008) — a different mutant
+    # universe must be regenerated regardless of file timestamps.
     try:
-        source_mtime = filename.stat().st_mtime
-        mutant_mtime = output_path.stat().st_mtime
-        if source_mtime < mutant_mtime:
+        source_stat = filename.stat()
+        if allow_fast_path and output_path.exists():
             source_file_mutation_data = SourceFileMutationData(path=str(filename))
             source_file_mutation_data.load()
+            fingerprint_ok = (
+                source_file_mutation_data.source_mtime == source_stat.st_mtime
+                and source_file_mutation_data.source_size == source_stat.st_size
+            )
+            if not fingerprint_ok:
+                raise _FastPathMissError
             # Extract local mutant names from the qualified keys in .meta.
             # Qualified keys look like "module.submod.func__mutmut_1" — the
             # local name is the part containing "__mutmut_" (the mangled name).
@@ -464,7 +608,7 @@ def create_mutants_for_file(
             if existing_local:
                 return existing_local, collected_warnings
             # No names in meta → fall through to regenerate
-    except OSError:
+    except (OSError, _FastPathMissError):
         pass
 
     source = filename.read_text(encoding="utf-8")
@@ -519,11 +663,18 @@ def create_mutants_for_file(
 
     output_path.write_text(generated, encoding="utf-8")
 
-    # Persist the mutation metadata for this file.
+    # Persist the mutation metadata for this file, including the source
+    # fingerprint the fast path compares against (issue #101 / A3-FD-004).
     source_file_mutation_data = SourceFileMutationData(path=str(filename))
     source_file_mutation_data.exit_code_by_key = {
         get_mutant_name(filename, name): None for name in mutant_names
     }
+    try:
+        stat = filename.stat()
+        source_file_mutation_data.source_mtime = stat.st_mtime
+        source_file_mutation_data.source_size = stat.st_size
+    except OSError:
+        pass
     source_file_mutation_data.save()
 
     return mutant_names, collected_warnings

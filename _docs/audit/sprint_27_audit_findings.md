@@ -517,12 +517,16 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
 
-**OS-012-Reststand nach Sprint 31/#96 (→ C8):** Der Orphan-Teil ist
-behoben (Purge-bei-Voll-Lauf). Offen bleiben: (a) mtime-only-Invalidierung
-in file_setup übersieht Restores mit altem Timestamp (Hash-basierte
-Invalidierung wäre der Fix — Cache-Hygiene); (b) verwaiste
-`.meta`-Dateien gelöschter Quelldateien (Datei-Lifecycle, der Browser
-liest sie weiter).
+**OS-012: KOMPLETT geschlossen mit Sprint 32/#101.** Sprint 31/#96
+behob den DB-Orphan-Teil (Purge-bei-Voll-Lauf); #101 schloss die Reste:
+(a) Restore-Erkennung über den Quellen-Fingerprint (mtime+size,
+GLEICHHEIT statt Ordnung) in der .meta — der Generierungs-Fast-Path
+regeneriert bei zurückgedrehten Timestamps (FD-004); (b) Deletion-Sync
+entfernt Staging-Spiegel UND verwaiste `.meta`-Dateien gelöschter
+Quellen (FD-003). Dokumentierte Grenze: Der Deletion-Sync deckt die
+expliziten Spiegel-Wurzeln src/source — im Flat-Layout (".") ist die
+Erwartungsmenge nicht sauber von also_copy-Spiegeln und generierten
+Artefakten trennbar.
 
 **Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
 1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
