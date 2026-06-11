@@ -3,16 +3,16 @@ current_sprint: "29"
 sprint_goal: "v2.7.0 Runtime Reliability — letzte 2 S1-Hänger (Abbruch-/Fehlerpfade) eliminieren, Timeout-Architektur end-to-end reparieren, Prozess-Hygiene, import-linter-Contracts per ADR scharf schalten."
 branch: "feature/v2.7.0-runtime-reliability"
 started_at: "2026-06-11"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Sprint 29 — implementation complete 2026-06-11)
+# Sprint State (Sprint 29 — CLOSED with v2.7.0 release 2026-06-11)
 
 ## Current Focus
 Sprint 29 — **v2.7.0 Runtime Reliability** — all six items implemented
@@ -30,9 +30,11 @@ and committed (27/27 SP). **All 15 S1 audit findings are now closed.**
 Gates: 681 passed / 4 skipped; ruff clean; mypy 0 new (26 known);
 semgrep 0 findings; lint-imports KEPT and self-enforcing via the suite.
 
-## Pending (needs user approval — outward-facing)
-Release v2.7.0: bump (uv lock --system-certs), merge to main
-(auto-closes #79–#84), tag, push, GitHub release.
+## Released
+v2.7.0 published 2026-06-11 (merge 7ef982f, bump d46f4db, tag v2.7.0,
+https://github.com/pgm1980/mutmut-win/releases/tag/v2.7.0); issues
+#79–#84 auto-closed, verified 0 open. Next: Sprint 30 = audit cluster
+C5 (IL detection honesty, v2.8.0) per the remainder roadmap.
 
 ## Findings bookkeeping
 Audit total ~180 unique; Sprint 28 closed 22 (incl. 13/15 S1); ~158 remain.

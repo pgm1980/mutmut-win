@@ -23,11 +23,12 @@ on the market (Stryker, PIT, mutpy, cosmic-ray, cargo-mutants) has this.
   psutil.Process instance caching for stable cpu_percent). Annotated tags
   `v2.5.0` + `v2.5.1` on `main`.
   [GitHub releases](https://github.com/pgm1980/mutmut-win/releases).
-- **Version**: **v2.6.0** released 2026-06-11
-  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.6.0),
-  merge 5c93ecc, bump fdc2361, tag v2.6.0). **Both W4.11 downstream
-  blockers closed** — nextgen-cot-mcp-server can upgrade its pin and
-  revert the §1.5 genexp workaround.
+- **Version**: **v2.7.0** released 2026-06-11
+  ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.7.0),
+  merge 7ef982f, bump d46f4db). **All 15 S1 audit findings fixed.**
+  v2.6.0 (same day) closed both W4.11 downstream blockers —
+  nextgen-cot-mcp-server can upgrade its pin and revert the §1.5 genexp
+  workaround.
 - **Sprint**: 29 — *v2.7.0 Runtime Reliability* — implementation complete
   2026-06-11 (6 items, 27/27 SP, commits 4257f3c..243206a on
   `feature/v2.7.0-runtime-reliability`): both remaining S1 hangs fixed

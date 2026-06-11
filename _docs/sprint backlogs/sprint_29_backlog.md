@@ -6,7 +6,7 @@
 **Epic(s):** Epic 20 (Runtime Reliability) — neu
 **Branch:** `feature/v2.7.0-runtime-reliability`
 **Zeitraum:** 2026-06-11 – 2026-06-11
-**Status:** ✅ Implementierung abgeschlossen (alle 6 Items, 27/27 SP) — Release v2.7.0 pending User-Freigabe. **Alle 15 S1-Audit-Findings sind geschlossen.**
+**Status:** ✅ Closed mit v2.7.0 Release (merge 7ef982f, bump d46f4db, Tag v2.7.0 — alle 6 Items, 27/27 SP, Velocity 100 %; Issues #79–#84 auto-closed). **Alle 15 S1-Audit-Findings sind geschlossen.**
 
 **Grundlage:** Sprint-27-Audit (`_docs/audit/sprint_27_audit_findings.md`),
 Fix-Cluster **C3 + C4** + lint-imports-Nachtrag aus Sprint 28. Nach diesem
@@ -167,8 +167,8 @@ Must-Items allein schließen beide S1 und die Timeout-Architektur.
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.7.0 (`uv lock --system-certs`) | 🔲 (pending User-Freigabe) |
-| Annotated Tag v2.7.0 | 🔲 (pending User-Freigabe) |
-| GitHub Release v2.7.0 (Changelog: beide S1-Hänger zu, echte per-Task-Timeouts, Prozess-Hygiene, Contracts scharf) | 🔲 (pending User-Freigabe) |
-| Auto-close #79–#84 via Merge-Commit | 🔲 (pending User-Freigabe) |
-| MEMORY.md + product_backlog.md update | 🔲 (bei Release) |
+| pyproject.toml + uv.lock auf 2.7.0 (`uv lock --system-certs`) | ✅ d46f4db (`mutmut-win --version` → 2.7.0 verifiziert) |
+| Annotated Tag v2.7.0 | ✅ |
+| GitHub Release v2.7.0 (Changelog: beide S1-Hänger zu, echte per-Task-Timeouts, Prozess-Hygiene, Contracts scharf) | ✅ https://github.com/pgm1980/mutmut-win/releases/tag/v2.7.0 |
+| Auto-close #79–#84 via Merge-Commit | ✅ verifiziert: 0 offene Issues |
+| MEMORY.md + product_backlog.md update | ✅ |

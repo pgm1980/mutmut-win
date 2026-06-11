@@ -25,7 +25,7 @@
 | v2.5.0 / v2.5.1 | Polish + True IL Detection | Sprint 26 | Done | Echte Infinite-Loop-Detection (psutil + Forensics + Confidence, #71), `--version`-Fix (#72); v2.5.1 Hotfix psutil-Process-Caching |
 | — | Full Source Audit | Sprint 27 | Done | Analysis-only: 201 Findings (15 S1) über alle 29 Module, 9 Fix-Cluster — `_docs/audit/sprint_27_audit_findings.md` |
 | v2.6.0 | Source Protection & Codegen Correctness | Sprint 28 | Done | W4.11-Blocker (BUG-1 #73, BUG-2 #74), Quell-Schutz (#75), Codegen-Fixes (#76–#78) — released 2026-06-11 |
-| v2.7.0 | Runtime Reliability | Sprint 29 | Planned | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) |
+| v2.7.0 | Runtime Reliability | Sprint 29 | Done | Audit C3+C4: letzte 2 S1-Hänger (#79, #80), Prozess-Hygiene (#82), Timeout-Architektur (#81), Job-Object-Polish (#83), lint-imports-ADR (#84) — released 2026-06-11; **alle 15 S1 geschlossen** |
 | v2.8.0 | IL Detection Honesty | Sprint 30 | Roadmap | Audit C5: Forensik-Persistenz + Rendering, Windows-Realismus des Triple-Checks, CICD-IL-Bucket |
 | v2.9.0 | Feature Revival & Score Integrity | Sprint 31 | Roadmap | Audit C6+C7: Type-Checker-Filter + Coverage reaktivieren, Summary-/Score-Lücken, Epochen-Invalidierung |
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Roadmap | Audit C8+C9-Top: Stats-/DB-/Copy-Hygiene (re-enabled Dogfooding-Gate), Diagnose-UX |
@@ -518,20 +518,20 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 
 | Issue | Typ | Titel | Priorität | SP | Status |
 |-------|-----|-------|-----------|-----|--------|
-| #79 | Bug | Shutdown-Hänger: Queues schließen + finally um Event-Loop (EW-001 S1) | Must | 3 | Open |
-| #80 | Bug | Worker-Liveness in get_events + synthetisches Completion (EW-002 S1) | Must | 5 | Open |
-| #82 | Bug | Prozess-Hygiene: kill-tree, Log-Sweep, sys.executable-Worker | Must | 5 | Open |
-| #81 | Bug | Per-Task-Timeouts end-to-end; toten Timeout-Monitor entfernen; IL-Fenster durchreichen | Must | 8 | Open |
-| #83 | Bug | Job-Object-Polish: use_last_error, argtypes, Least-Privilege | Should | 3 | Open |
-| #84 | Task | import-linter-Contracts per ADR an reale Architektur angleichen | Should | 3 | Open |
+| #79 | Bug | Shutdown-Hänger: Queues schließen + finally um Event-Loop (EW-001 S1) | Must | 3 | Done (4257f3c) |
+| #80 | Bug | Worker-Liveness in get_events + synthetisches Completion (EW-002 S1) | Must | 5 | Done (0a06b3d) |
+| #82 | Bug | Prozess-Hygiene: kill-tree, Log-Sweep, sys.executable-Worker | Must | 5 | Done (a2f6037 — Design-Upgrade: per-Task-Job-Objects, da ppid-Scans tote Zwischenglieder nicht überbrücken) |
+| #81 | Bug | Per-Task-Timeouts end-to-end; toten Timeout-Monitor entfernen; IL-Fenster durchreichen | Must | 8 | Done (a955b89, −464 Zeilen) |
+| #83 | Bug | Job-Object-Polish: use_last_error, argtypes, Least-Privilege | Should | 3 | Done (c781d62/3b9512e, Worktree-Subagent) |
+| #84 | Task | import-linter-Contracts per ADR an reale Architektur angleichen | Should | 3 | Done (243206a — KEPT, Gate läuft in pytest) |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] Abbruch (Ctrl+C/Crash) mit gefüllter Task-Queue → Prozess endet binnen Frist, keine Orphans (Watchdog-Integration-Test)
-- [ ] Hart gekillter Worker → Lauf endet regulär, betroffene Tasks als „suspicious/worker died", Rest abgearbeitet
-- [ ] `timeout_multiplier` wirkt nachweislich multiplikativ pro Task (`task.timeout_seconds` wird im Worker gelesen)
-- [ ] `WallClockTimeout`/`TaskTimedOut` entfernt; README-Architektur-Sektion korrigiert
-- [ ] `uv run lint-imports` → 0 Verletzungen mit ADR-begründeten Contracts; Gate läuft real im Sprint-Abschluss
-- [ ] Nach Sprint 29: alle 15 S1-Audit-Findings geschlossen
+- [x] Abbruch (Ctrl+C/Crash) mit gefüllter Task-Queue → Prozess endet binnen Frist, keine Orphans (Watchdog-Integration-Test: alt 30-s-Hänger, neu Sofort-Exit)
+- [x] Hart gekillter Worker → Lauf endet regulär, betroffene Tasks als „suspicious/worker died", Rest abgearbeitet
+- [x] `timeout_multiplier` wirkt nachweislich multiplikativ pro Task (`task.timeout_seconds` wird im Worker gelesen; hypothesis-Property)
+- [x] `WallClockTimeout`/`TaskTimedOut` entfernt; README-Architektur-Sektion korrigiert
+- [x] `uv run lint-imports` → KEPT (0 Verletzungen) mit ADR-begründeten Contracts; Gate läuft jetzt IN der pytest-Suite
+- [x] Nach Sprint 29: alle 15 S1-Audit-Findings geschlossen ✓
 
 ---
 
@@ -562,7 +562,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Polish + IL Detection v2.5.0 | v2.5.0 / v2.5.1 | Epic 17 | #71 (re-open), #72 | Done |
 | Full Source Audit | — | Epic 18 | — (Findings-Report) | Done |
 | Source Protection v2.6.0 | v2.6.0 | Epic 19 | #73–#78 | Done |
-| Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Planned |
+| Runtime Reliability v2.7.0 | v2.7.0 | Epic 20 | #79–#84 | Done |
 
 ---
 
@@ -597,7 +597,7 @@ implementiert (Epic-3-AC korrigiert); Sprint-26-Forensics-AC war nie erfüllt
 | Sprint 26 | 14 | 14 | 100% | Polish + True IL Detection (#71 re-open, #72) |
 | Sprint 27 | — | — | — | Full Source Audit (analysis-only, kein SP-Tracking) |
 | Sprint 28 | 31 | 31 | 100% | v2.6.0 Source Protection & Codegen Correctness (#73–#78) |
-| Sprint 29 | 27 | (offen) | — | v2.7.0 Runtime Reliability (#79–#84) |
+| Sprint 29 | 27 | 27 | 100% | v2.7.0 Runtime Reliability (#79–#84) |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
