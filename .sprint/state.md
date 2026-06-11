@@ -1,46 +1,74 @@
 ---
-current_sprint: "31"
-sprint_goal: "v2.9.0 Feature Truth & Score Integrity — tote Features (Type-Check-Filter, Coverage) ehrlich reaktivieren oder abschalten; Score-Pipeline lückenlos (Buckets, Exit-Code-Map, Ctrl-C-Abbruch, Orphans, JSON-Kanal)."
-branch: "feature/v2.9.0-score-integrity"
+current_sprint: "32"
+sprint_goal: "v2.10.0 Pipeline Hygiene — letzter Audit-Sprint: Runner-Diagnose + Stats-Cache-Wahrheit, DB-Härtung, Staging-Hygiene (Containment/Deletion-Sync/Fingerprint), Config-/CLI-Validierung, reiner JSON-Kanal, Selbst-Hygiene-Gates + Dogfooding-Premiere, C9-Rest-Triage."
+branch: "feature/v2.10.0-pipeline-hygiene"
 started_at: "2026-06-11"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State (Sprint 31 opened 2026-06-11)
+# Sprint State (Sprint 32 opened 2026-06-11)
 
 ## Current Focus
-Sprint 31 — **v2.9.0 Feature Truth & Score Integrity** — **implementation
-complete** (alle 7 Items, 33/33 SP). Commits auf
-`feature/v2.9.0-score-integrity`:
+Sprint 32 — **v2.10.0 Pipeline Hygiene** — geplant, Implementierung noch
+nicht gestartet (wartet auf „Go"). Basis: Audit-Cluster **C8 + C9-Top** +
+4 Neuzugänge + Dogfooding-Gate (deferred seit Sprint 28). Der LETZTE
+Audit-Sprint — danach ist der Zyklus formal beendet, C9-Rest wird
+kuratierter Maintenance-Backlog. Issues #98–#104 angelegt. Branch
+`feature/v2.10.0-pipeline-hygiene`.
 
-| Issue | Commit | Inhalt |
-|-------|--------|--------|
-| #91 | `33c2c98` | Status-Wahrheit: Exit-Code-Map (−24-Dublette, NTSTATUS-Crashes, Exit 2 → killed per CoT), segfault-Bucket + Catch-All + Summen-Invariante, Kill-Klassen-Score in allen 3 Kanälen, generisches results-Rendering, Worker-Log-Tail für anomale Exits |
-| #92 | `108ed87` | type_checking gehärtet: Basename-Erkennung (mypy.exe/uv run mypy brachen den Lauf ab), timeout/returncode/encoding (mypy-Exit-2 = stiller 0-Filter), pyright-Severity. Context7 + empirisch verifiziert |
-| #93 | `18011c9` | Type-Check end-to-end: `to_mutants_relative`-Normalisierung (Matching traf NIE), Task-Schnittmenge, DB-Persistenz + eigenes Bucket, 100 %-caught-Guard, E2E mit echtem mypy |
-| #94 | `80f38ab` | Ctrl-C: was_interrupted + unchecked (Score über Geprüfte), Exit 130, Gate-Skip |
-| #95 | `75983f2` | Coverage REAKTIVIERT (Spike + 8-Schritt-CoT): Subprozess-Brücke, normcase-Keying (CM-013), laute Fehlerpfade; tote Kompat-API entfernt; mypy-Baseline 26→20 |
-| #96 | `09fbad5`+`09c6cd7` | DB-Orphan-Purge bei Voll-Lauf (Default-Polarität False, CLI verdrahtet Voll-Lauf-Info); executemany statt dynamischem SQL (semgrep-clean) |
-| #97 | `a70be0d` | CI-Kanal: score als computed_field im JSON; 0-Mutanten-Gate kommuniziert fail-closed |
+## Sprint 32 Backlog (36 SP — Must 34, Should 2)
+1. **#98 (Must, 5 SP, ZWEIPHASIG):** Phase 1 als SPRINT-AUFTAKT:
+   isolierter repo-weiter Format-Commit (~23 Dateien), pytest-Kanon via
+   conftest (`uv run pytest` ohne Flag), semgrep-Entscheid (tests/ wird
+   gescannt). Phase 2 als SCHLUSSSTEIN (nach #99): Dogfooding-Pilot auf
+   code_coverage.py + type_checking.py, Score dokumentiert.
+2. **#99 (Must, 8 SP):** Runner/Stats: DEVNULL → Tail-Capture + Exit-
+   Dekodierung (RN-001), extra_paths im Runner-PYTHONPATH (RN-002 ✅✅),
+   Stats-Fehlschlag vergiftet nie den Cache (OS-006 re-verifiziert,
+   RN-003), Obsolete-Cleanup bei Test-Löschung (OS-007). Capture-CoT ≥3.
+3. **#100 (Must, 5 SP):** DB: Lesepfad-Migration (FD-001 ✅✅ Prä-v2.5-
+   Crash), Connection-Close (FD-006 ✅✅ WinError 32 live), Migrations-
+   Race (FD-007), Surrogates (FD-011).
+4. **#101 (Must, 8 SP):** Staging: `..`-Containment (FD-002, Sandbox-
+   bestätigt), Deletion-Sync inkl. .meta-Orphans (FD-003 — schließt
+   OS-012 KOMPLETT), Fingerprint-Invalidierung (FD-004+OS-008),
+   Nesting-Guard (FD-005), --force ehrlich (FD-009), .meta atomar+
+   tolerant (CM-009). Design-CoT ≥8. Destruktiv → Tests zuerst.
+5. **#102 (Must, 5 SP):** Config/CLI: Override-Re-Validierung (CM-004:
+   --max-children 0 = Hänger heute), Typo-Warnung mit difflib (CM-005),
+   since-commit-returncode (CM-006: falscher CI-Erfolg heute), --debug
+   real (UI-005).
+6. **#103 (Must, 3 SP):** CI-Output: json.loads(stdout) muss
+   funktionieren (UI-006 — vervollständigt #97), kein UnicodeEncodeError
+   auf cp1252 (QX-003). Nach #102 (beide cli.py).
+7. **#104 (Should, 2 SP, ZULETZT):** C9-Rest-Triage → kuratierter
+   Maintenance-Abschnitt im Product Backlog + Audit-Schlussstrich.
 
-Gates: **773 passed / 4 skipped** (+54), ruff 0, mypy **20 pre-existing /
-0 neue** (Baseline gesunken), semgrep 0, lint-imports KEPT.
+Reihenfolge: 98.1 → 99 → 100 → 101 → 102 → 103 → 98.2 → 104.
+Scope-Ventil: #103+#104 rutschen; #101 teilbar (Kern vs.
+Deletion-Sync+Fingerprint). v2.10.0 auch mit #98–#102 release-fähig.
 
-## Release — DONE 2026-06-11
-v2.9.0 released: Merge `87a0271` (closes #91–#97, verifiziert 0 offene
-Issues), Bump `e02bb34`, annotated Tag `v2.9.0`, GitHub Release
-https://github.com/pgm1980/mutmut-win/releases/tag/v2.9.0 mit
-prominenter ⚠-„Score corrections"-Sektion. Suite auf gemergtem main
-erneut 773 passed / 4 skipped. Sprint 31 vollständig abgeschlossen,
-alle Housekeeping-Items erledigt.
+## Planungs-Erkenntnisse (12-Schritt-CoT)
+- Format-Commit MUSS vor allen Logik-Items liegen (Diff-Rauschen).
+- Dogfooding-Blockade seit Sprint 28 ist exakt OS-006/RN-003 → #99 zuerst.
+- Verschärfte Gates sind Sprint-INHALT: format --check neu, semgrep auf
+  tests/ neu, pytest ohne Flag, Mutation-Pilot dokumentiert.
+- C9-Rest (UI-007, QX-001/007, S4-Sammel) bewusst raus — via #104
+  ehrlich überführt statt still versandet.
+- UI-015 (Alignment) raus aus #103: Kosmetik mit Test-Rattenschwanz.
+- OS-006 + FD-002 bei Planung am v2.9.0-Stand re-verifiziert.
 
-## Out of scope (Roadmap unverändert)
-Sprint 32 / v2.10.0 = C8+C9 inkl. 3 vorgemerkter Pipeline-Hygiene-Punkte,
-OS-012-Reste (mtime-Invalidierung, verwaiste .meta), Mutation-Gate
-(C8-Stats-Fix), pip-audit (Umgebungs-SSL).
+## Branch-Aufräumen (2026-06-11, User-Auftrag)
+37 lokale gemergte Branches gelöscht (git branch -d, alle in main),
+2 Remote-Branches entfernt (origin/feature/v2.6.0-source-protection,
+origin/feature/v2.7.0-runtime-reliability), --prune. Übrig: nur main
+(+ dieser Sprint-Branch). Historie/Tags unberührt.
+
+## Out of scope
+C9-Rest (via #104 dokumentiert), pip-audit (Umgebungs-SSL).
