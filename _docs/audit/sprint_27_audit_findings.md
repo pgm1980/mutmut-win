@@ -516,6 +516,18 @@ die Baselines erhoben. Verifikations-Skripte: `_issues/audit_verify_a1.py`,
 **C5-Reststand nach #88:** JT-016 (Test-/Doku-Ehrlichkeit → #90),
 io_counters-Spike als mögliches Ersatz-Drittsignal (→ #89).
 
+**Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
+1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
+   drift­en (`ruff format --check src/ tests/` rot); Sprint-Gates liefen
+   historisch nur `ruff check`.
+2. Der Suite-Kanon `uv run pytest --ignore=tests/e2e_projects` lebt nur in
+   Backlog-Prosa — ohne das Flag bricht die Collection (16 Errors). Gehört
+   config-verankert (z. B. `collect_ignore` in `tests/conftest.py` oder
+   `norecursedirs`).
+3. Semgreps Default-Ignore überspringt `tests/` komplett (0 Dateien
+   gescannt) — das dokumentierte Gate „semgrep auf tests/" war faktisch
+   leer; explizite `.semgrepignore`-Entscheidung nötig.
+
 ### Spike-Ergebnis #89: io_counters (2026-06-11, win32, psutil 7.2.2)
 
 Messung (`_issues/spike_io_counters.py`, 5-s-Fenster, Tree-Aggregation):
