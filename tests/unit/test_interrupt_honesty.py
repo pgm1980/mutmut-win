@@ -75,3 +75,43 @@ class TestCliInterruptHonesty:
         exit_code, output = _invoke_run_with(result, "--min-score", "99")
         assert exit_code == 0
         assert "below threshold" not in output
+
+
+class TestCiJsonChannel:
+    """Issue #97 / A3-OS-014: --output json dumped the model WITHOUT the
+    score — the CI channel was blind on the one number it gates on."""
+
+    def test_json_output_carries_the_score(self) -> None:
+        import json
+
+        result = MutationRunResult(total_mutants=4, killed=2, segfault=1)
+        exit_code, output = _invoke_run_with(result, "--output", "json")
+        assert exit_code == 0
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert payload["score"] == pytest.approx(75.0)
+        # The v2.9.0 fields ride along additively.
+        assert payload["segfault"] == 1
+        assert payload["was_interrupted"] is False
+        assert payload["unchecked"] == 0
+
+    def test_model_dump_serializes_score_directly(self) -> None:
+        result = MutationRunResult(total_mutants=2, killed=1, survived=1)
+        assert result.model_dump()["score"] == pytest.approx(50.0)
+
+
+class TestZeroMutantGate:
+    """Issue #97 / A3-OS-026: --min-score with 0 testable mutants failed on
+    'score 0.0 below threshold' — fail-closed is right, the message was not."""
+
+    def test_zero_mutants_fails_closed_with_a_clear_message(self) -> None:
+        result = MutationRunResult(total_mutants=0)
+        exit_code, output = _invoke_run_with(result, "--min-score", "80")
+        assert exit_code == 1
+        assert "no testable mutants" in output.lower()
+        assert "below threshold" not in output
+
+    def test_all_skipped_counts_as_zero_testable(self) -> None:
+        result = MutationRunResult(total_mutants=3, skipped=3)
+        exit_code, output = _invoke_run_with(result, "--min-score", "80")
+        assert exit_code == 1
+        assert "no testable mutants" in output.lower()

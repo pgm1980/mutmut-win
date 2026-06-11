@@ -239,12 +239,21 @@ def run(
 
     # --- Score gate ---
     if min_score is not None:
+        testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
+        if testable <= 0:
+            # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
+            # below threshold' blamed a score that never existed.
+            click.echo(
+                "No testable mutants — score gate failed closed "
+                "(nothing was measured, so nothing can pass).",
+                err=True,
+            )
+            sys.exit(1)
         gate_score = result.compute_score(treat_timeout_as_kill=treat_timeout_as_kill)
         if gate_score < min_score:
             qualifier = " (timeouts counted as kills)" if treat_timeout_as_kill else ""
             click.echo(
-                f"Mutation score {gate_score:.1f}%{qualifier} is below threshold "
-                f"{min_score}%",
+                f"Mutation score {gate_score:.1f}%{qualifier} is below threshold {min_score}%",
                 err=True,
             )
             sys.exit(1)
@@ -328,9 +337,7 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
                 click.echo(f"  {result.mutant_name}")
 
 
-def _format_forensics_panel(
-    status: str | None, forensics: dict[str, object] | None
-) -> str | None:
+def _format_forensics_panel(status: str | None, forensics: dict[str, object] | None) -> str | None:
     """Render the IL forensics panel for ``show``, or None for non-IL mutants.
 
     NULL-safe in two ways: rows written before v2.8.0 have no forensics at
