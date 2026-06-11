@@ -114,8 +114,8 @@ def delete_results_not_in(path: Path, valid_names: set[str]) -> int:
     subset run knows just a slice of the valid set and must never purge.
 
     The orphan set is computed in Python (DB names minus *valid_names*) and
-    deleted in chunks of ``IN (...)`` — a ``NOT IN`` per chunk would be
-    semantically wrong, and SQLite caps bound parameters.
+    deleted via ``executemany`` with a fixed one-parameter statement — no
+    dynamic SQL, no SQLite bound-parameter limit, one transaction.
 
     Args:
         path: Filesystem path to the SQLite database file.
@@ -130,14 +130,10 @@ def delete_results_not_in(path: Path, valid_names: set[str]) -> int:
     with sqlite3.connect(path) as conn:
         rows = conn.execute("SELECT mutant_name FROM mutant").fetchall()
         orphans = sorted({row[0] for row in rows} - valid_names)
-        chunk_size = 500  # comfortably below SQLite's bound-parameter limit
-        for i in range(0, len(orphans), chunk_size):
-            chunk = orphans[i : i + chunk_size]
-            placeholders = ",".join("?" * len(chunk))
-            conn.execute(
-                f"DELETE FROM mutant WHERE mutant_name IN ({placeholders})",  # noqa: S608 — placeholders are generated '?', values are bound
-                chunk,
-            )
+        conn.executemany(
+            "DELETE FROM mutant WHERE mutant_name = ?",
+            [(name,) for name in orphans],
+        )
         conn.commit()
     return len(orphans)
 
