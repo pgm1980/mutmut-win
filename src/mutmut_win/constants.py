@@ -71,3 +71,4 @@ EXIT_CODE_TIMEOUT: int = 36
 EXIT_CODE_SKIPPED: int = 34
 EXIT_CODE_TYPE_CHECK: int = 37
 EXIT_CODE_INFINITE_LOOP: int = 38  # Issue #71 — triple-check IL classifier verdict
+EXIT_CODE_NO_TESTS: int = 33  # Issue #106 — mapped-but-uncovered mutant, never dispatched
