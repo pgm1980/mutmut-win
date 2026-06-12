@@ -1,35 +1,54 @@
-# Suggested Commands
+# Suggested Commands (as of v2.13.0)
 
-## Build & Run
-- `uv sync` — Install/sync dependencies
-- `uv run python -m mutmut_win` — Run the tool
+## Setup
+- `uv sync --extra dev` — install/sync all dependencies incl. dev extras
+  (mypy, ruff, hypothesis, import-linter, pytest plugins, pip-audit).
+
+## Run the tool
+- `uv run mutmut-win <subcommand>` — canonical entry point.
+- `uv run python -m mutmut_win` — also works (thin wrapper).
+- Subcommands: run, results, show, apply, browse, tests-for-mutant, time-estimates,
+  export-cicd-stats. There is NO `html` report command (that was upstream mutmut).
 
 ## Testing
-- `uv run pytest` — All tests
-- `uv run pytest tests/unit/` — Unit tests only
-- `uv run pytest tests/integration/` — Integration tests only
-- `uv run pytest --cov=src --cov-report=html` — Tests with coverage
-- `uv run pytest --benchmark-only` — Benchmarks only
+- `uv run pytest` — full suite: unit + integration + architecture
+  (1016 passed / 5 skipped @ v2.13.0).
+- `uv run pytest tests/unit/` | `tests/integration/` — partial runs.
+- `uv run pytest -m "not slow"` — skip long-running tests.
+- `uv run pytest --cov=src --cov-report=html` — coverage (pytest alone measures none).
+- `uv run pytest --benchmark-only` — benchmarks only.
 
-## Linting & Type Checking
-- `uv run ruff check .` — Lint
-- `uv run ruff format .` — Format
-- `uv run ruff check --fix .` — Auto-fix lint
-- `uv run mypy src/` — Type checking (strict)
+## Lint / Types / Architecture / Security
+- `uv run ruff check .` (+ `--fix`) — lint; `uv run ruff format .` — format.
+- `uv run mypy src/` — strict; known baseline is **14 errors** @ v2.13.0 — a change must
+  not add new ones.
+- `uv run lint-imports` — layer contracts (also enforced in the test suite).
+- `semgrep scan --config auto .` — security scan (best rule coverage for Python).
+- `uv run pip-audit` — dependency vulnerability audit.
 
-## Architecture & Security
-- `uv run lint-imports` — Architecture contracts
-- `semgrep scan --config auto .` — Security scan
-- `uv run pip-audit` — Dependency audit
+## Mutation testing (dogfooding — the tool tests itself)
+- `uv run mutmut-win run --paths-to-mutate src/mutmut_win/<module>.py` — targeted;
+  the flag is REPEATABLE (one path per flag), required gate for new/changed code.
+- `uv run mutmut-win run --since-commit HEAD~1` — incremental.
+- `uv run mutmut-win results` | `show <mutant>` | `browse` — inspect outcomes.
+- `uv run mutmut-win run --force …` — clean slate (deletes mutants/ + .mutmut-cache/).
+- `--rerun-all` — opt out of result reuse; `--dry-run` — count only;
+  `--output json --no-progress --min-score N` — CI mode.
+- Exit codes of `run`: 0 ok · 1 runtime failure or min-score gate · 2 invalid
+  config/option · 130 interrupted (partial results persisted, no score gate).
+- Mutant names: `src.pkg.module.x_<func>__mutmut_<n>`; glob patterns allowed
+  (`run`/`time-estimates` accept many matches, `show`/`apply` exactly one).
 
-## Mutation Testing
-- `uv run mutmut run --paths-to-mutate src/mutmut_win/` — Mutation testing
-- `uv run mutmut html` — HTML report
+## Git / GitHub
+- GitHub Flow; Conventional Commits (`type(scope): description`); branches
+  `feature/[ISSUE-NR]-kurzbeschreibung`; annotated SemVer tags `vX.Y.Z`; `gh` CLI for
+  GitHub operations.
 
-## Version Control
-- `git` commands for version control (GitHub Flow, Conventional Commits)
-
-## System utilities
-- Use FS MCP Server for ALL filesystem operations (cat, ls, cp, mv, rm, find, grep are BLOCKED)
-- `git` via Bash is allowed
-- `uv run ...` via Bash is allowed
+## Session tooling policy (from CLAUDE.md, harness-enforced)
+- FS MCP server (`execute_workflow`) for filesystem operations; Serena for code
+  navigation (activate by project NAME `mutmut-win`, not by Windows path); Context7
+  before using new/changed APIs.
+- Filesystem bash commands (cat, ls, grep, find, cp, mv, rm, mkdir, sed, awk, …) are
+  hard-blocked via `.claude/settings.json`. Bash stays allowed for `uv run …`, `git`,
+  `gh`, `semgrep`.
+- FS MCP allowed directories cover the project tree only (not user-profile paths).
