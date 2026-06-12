@@ -261,7 +261,9 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
    a `mutants/` staging copy. Unchanged files (source + config
    fingerprint) are reused.
 2. **Validate**: the unmutated suite must pass inside `mutants/`; a
-   forced-fail check proves the trampoline actually switches mutants.
+   forced-fail check proves the trampoline actually switches mutants —
+   the failure must come from the trampoline's own exception, a hung or
+   unrelated failure fails the gate.
 3. **Map & budget**: a stats run records per-test durations and the
    test↔function mapping; every mutant gets its covering tests and a
    wall-clock budget (measured startup floor + scaled test time).
@@ -304,15 +306,23 @@ sequence. Breaking changes wait for a major version; deprecations warn
 for at least one minor release first (current example:
 `--treat-timeout-as-kill`).
 
-## History (short)
+## History and project status
 
 mutmut-win started as a Windows port of mutmut 3.5.0's process layer
 (v0.x–v1.0), grew 7 additional mutation operators (v1.0), per-task
 timeouts, job-object process management and infinite-loop detection
-(v2.5–v2.8), and went through a full source audit with five hardening
+(v2.5–v2.8), went through a full source audit with five hardening
 releases covering score integrity, pipeline hygiene and runtime
-truthfulness (v2.6–v2.11). Details: the
+truthfulness (v2.6–v2.10), and closed the audit's maintenance pool
+completely in two demand-driven maintenance releases (v2.11–v2.12).
+Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
+
+**Status:** v2.12.0 is the current release. Active development is in a
+documented pause with a clean slate — zero open issues, zero known
+backlog entries. The issue tracker stays open; the resumption baseline
+(a full self-run over the tool's own codebase) is recorded in the
+repository docs.
 
 ## License
 

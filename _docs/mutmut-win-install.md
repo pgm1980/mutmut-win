@@ -1,7 +1,7 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.11.0
+**Version:** v2.12.0
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 ---
@@ -20,14 +20,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.11.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.11.0`
+Erwartete Ausgabe: `mutmut-win, version 2.12.0`
 
 ## Schritt 2: pyproject.toml konfigurieren
 
@@ -129,6 +129,12 @@ uv run mutmut-win browse                  # TUI-Browser (Dateien → Mutanten �
 uv run mutmut-win show <mutant-name>      # Diff eines einzelnen Mutanten
 ```
 
+Namens-Matching ist überall einheitlich (seit v2.12.0): exakter Name
+oder Glob-Pattern (`*`, `?`, `[...]`). `show`/`apply` verlangen einen
+EINDEUTIGEN Treffer — bei mehrdeutigem Pattern wird die Kandidatenliste
+ausgegeben. Die `show`-Diffs sind patch-fähig (a/- und b/-Labels, echte
+Zeilennummern der Originaldatei).
+
 ---
 
 ## Wichtige Hinweise
@@ -142,6 +148,7 @@ uv run mutmut-win show <mutant-name>      # Diff eines einzelnen Mutanten
   uv run mutmut-win run --paths-to-mutate src/a.py --paths-to-mutate src/b.py
   ```
 - **Wiederholte Läufe sind billig:** Quell- und Konfigurations-Fingerprints überspringen unveränderte Dateien bei der Generierung; Ergebnisse liegen in einer SQLite-DB. Bei Konfigurationsänderung wird automatisch alles regeneriert. Bei Problemen mit altem Staging: `uv run mutmut-win run --force` für einen sauberen Neulauf.
+- **Nach Änderung von `paths_to_mutate` (oder `--paths-to-mutate`-Wechsel): `--force` verwenden.** Das Test-zu-Mutant-Mapping stammt aus einem Stats-Cache des vorherigen Laufs; deckt der alte Cache die neu mutierten Module nicht ab, werden deren Mutanten ehrlich als `no tests` verbucht statt getestet. `--force` erzwingt eine frische Stats-Sammlung über das neue Staging.
 - **`no tests` ist ein Befund, kein Fehler:** Mutanten, die kein Test abdeckt, werden ohne Testlauf als `no tests` verbucht und verlassen den Score-Nenner. Viele `no tests`-Einträge = Module ohne Testabdeckung.
 - **Score-Semantik:** Kill-Klasse = killed + type-check-caught + infinite-loop-killed + segfault; Nenner = total − skipped − no tests − unchecked. `survived` ist die zu schließende Testlücke.
 - **Exit-Codes von `run`:** 0 Erfolg, 1 Laufzeitfehler oder `--min-score` verfehlt, 2 ungültige Konfiguration/Option, 130 unterbrochen (Ctrl-C; Teilergebnisse persistiert, Score-Gate übersprungen).
