@@ -50,7 +50,9 @@ POSIX code paths are kept functional for WSL/Linux CI).
   runs, and a machine-readable stats export.
 - **Caches aggressively.** Results live in SQLite, per-file mutant
   staging is fingerprinted (source + configuration) — unchanged files
-  are not regenerated, unchanged mutants are not re-run.
+  are not regenerated, and verdicts of unchanged mutants (same source,
+  same covering tests) are reused instead of re-run
+  (`--rerun-all` opts out).
 
 ## Why mutmut-win over other tools
 
@@ -143,6 +145,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
 | `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
+| `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
 | `--debug` | Full tracebacks on errors |

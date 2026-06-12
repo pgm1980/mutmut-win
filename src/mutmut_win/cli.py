@@ -121,6 +121,15 @@ def _load_config_or_exit() -> MutmutConfig:
     help="Delete mutants/ and .mutmut-cache/ before running (clean slate).",
 )
 @click.option(
+    "--rerun-all",
+    is_flag=True,
+    default=False,
+    help=(
+        "Execute every mutant even when a cached verdict could be reused "
+        "(unchanged source + unchanged covering tests)."
+    ),
+)
+@click.option(
     "--treat-timeout-as-kill",
     is_flag=True,
     default=False,
@@ -176,6 +185,7 @@ def run(
     timeout_multiplier: float | None,
     do_not_mutate: tuple[str, ...],
     force: bool,
+    rerun_all: bool,
     treat_timeout_as_kill: bool,
     extra_paths_to_copy: tuple[str, ...],
     no_infinite_loop_detection: bool,
@@ -309,6 +319,7 @@ def run(
         mutant_names=mutant_names if mutant_names else None,
         no_progress=no_progress,
         purge_stale_results=is_full_run,
+        rerun_all=rerun_all,
     )
 
     try:

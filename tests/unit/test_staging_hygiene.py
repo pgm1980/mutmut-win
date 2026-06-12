@@ -174,13 +174,14 @@ class TestRestoreInvalidation:
         output = project / "mutants" / "src" / "mod.py"
         output.parent.mkdir(parents=True)
 
-        names_first, _ = create_mutants_for_file(source, output)
+        names_first, _, _ = create_mutants_for_file(source, output)
         trampolined = output.read_text(encoding="utf-8")
 
-        names_second, _ = create_mutants_for_file(source, output)
+        names_second, _, took_fast = create_mutants_for_file(source, output)
 
         assert sorted(names_second) == sorted(names_first)
         assert output.read_text(encoding="utf-8") == trampolined  # not rewritten
+        assert took_fast is True  # the #119 reuse signal
 
 
 class TestConfigFingerprint:
@@ -216,7 +217,7 @@ class TestConfigFingerprint:
         output = project / "mutants" / "src" / "mod.py"
         output.parent.mkdir(parents=True)
 
-        names_first, _ = create_mutants_for_file(source, output)
+        names_first, _, _ = create_mutants_for_file(source, output)
         assert names_first
         # Record exit codes the way a finished run would (keeps the source
         # fingerprint the generator wrote into the .meta).
@@ -225,11 +226,15 @@ class TestConfigFingerprint:
         sfd.exit_code_by_key = {f"src.mod.{n}": 1 for n in names_first}
         sfd.save()
 
-        names_fast, _ = create_mutants_for_file(source, output)
+        names_fast, _, fast_flag = create_mutants_for_file(source, output)
         assert names_fast == names_first  # sanity: fast path active
+        assert fast_flag is True
 
-        names_forced, _ = create_mutants_for_file(source, output, allow_fast_path=False)
+        names_forced, _, forced_flag = create_mutants_for_file(
+            source, output, allow_fast_path=False
+        )
         assert sorted(names_forced) == sorted(names_first)  # regenerated for real
+        assert forced_flag is False
 
 
 class TestMetaRobustness:

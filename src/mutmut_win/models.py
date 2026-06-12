@@ -107,6 +107,15 @@ class MutationResult(BaseModel):
             "boundary without depending on loop_monitor types."
         ),
     )
+    tests_fingerprint: str | None = Field(
+        default=None,
+        description=(
+            "Fingerprint of the test basis this verdict was produced under "
+            "(sorted node IDs + per-test-file mtime/size) — the result-reuse "
+            "condition of issue #119. NULL for verdicts that are never "
+            "reused (type-check kills, no tests) and for pre-v2.13 rows."
+        ),
+    )
 
 
 class SourceFileMutationData(BaseModel):

@@ -381,7 +381,7 @@ class TestCreateMutantsForFile:
         output = tmp_path / "mutants_foo.py"
         output.parent.mkdir(parents=True, exist_ok=True)
 
-        names, warns = create_mutants_for_file(src, output)
+        names, warns, _ = create_mutants_for_file(src, output)
         assert output.exists()
         assert len(names) > 0
         assert warns == []
@@ -391,7 +391,7 @@ class TestCreateMutantsForFile:
         src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
         output = tmp_path / "foo_mutated.py"
 
-        names, _ = create_mutants_for_file(src, output)
+        names, _, _ = create_mutants_for_file(src, output)
         # Each name should contain the mutmut marker.
         assert all("__mutmut_" in n for n in names)
 
@@ -400,7 +400,7 @@ class TestCreateMutantsForFile:
         src.write_text("x = 1\n", encoding="utf-8")
         output = tmp_path / "trivial_out.py"
 
-        names, _ = create_mutants_for_file(src, output)
+        names, _, _ = create_mutants_for_file(src, output)
         # Trivial assignment may produce 0 or more mutants — just ensure
         # no exception is raised and the return types are correct.
         assert isinstance(names, list)
@@ -412,16 +412,18 @@ class TestCreateMutantsForFile:
         output = tmp_path / "mod_out.py"
 
         # First run: generate mutants normally.
-        names_first, _ = create_mutants_for_file(src, output)
+        names_first, _, took_fast_first = create_mutants_for_file(src, output)
         assert len(names_first) > 0
+        assert took_fast_first is False
 
         # Make output much newer than source (simulates "already mutated").
         future_mtime = src.stat().st_mtime + 3600
         os.utime(output, (future_mtime, future_mtime))
 
         # Second run: fast-path should return the same names from .meta.
-        names_second, _ = create_mutants_for_file(src, output)
+        names_second, _, took_fast_second = create_mutants_for_file(src, output)
         assert names_second == names_first
+        assert took_fast_second is True  # the #119 reuse signal
 
     def test_handles_syntax_error_gracefully(self, tmp_path: Path) -> None:
         src = tmp_path / "bad.py"
@@ -430,7 +432,7 @@ class TestCreateMutantsForFile:
         output = tmp_path / "bad_out.py"
 
         # Should not raise; may return empty names with a warning.
-        names, _warns = create_mutants_for_file(src, output)
+        names, _warns, _ = create_mutants_for_file(src, output)
         assert isinstance(names, list)
 
     def test_saves_meta_file(self, tmp_path: Path) -> None:
@@ -441,7 +443,7 @@ class TestCreateMutantsForFile:
             src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
             output = tmp_path / "meta_out.py"
 
-            names, _ = create_mutants_for_file(src, output)
+            names, _, _ = create_mutants_for_file(src, output)
             if names:
                 # Meta file should be created relative to cwd.
                 meta = Path("mutants") / (str(src) + ".meta")

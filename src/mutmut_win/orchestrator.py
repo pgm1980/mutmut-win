@@ -21,7 +21,12 @@ from mutmut_win.exceptions import (
     CleanTestFailedError,
     ForcedFailError,
 )
-from mutmut_win.models import MutationRunResult, MutationTask, SourceFileMutationData
+from mutmut_win.models import (
+    MutationResult,
+    MutationRunResult,
+    MutationTask,
+    SourceFileMutationData,
+)
 from mutmut_win.stats import MutmutStats, collect_or_load_stats
 from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
@@ -71,6 +76,7 @@ class MutationOrchestrator:
         mutant_names: tuple[str, ...] | None = None,
         no_progress: bool = False,
         purge_stale_results: bool = False,
+        rerun_all: bool = False,
     ) -> None:
         self._config = config
         self._db_path = db_path
@@ -82,6 +88,10 @@ class MutationOrchestrator:
         # (--mutant-names/--since-commit) know only a slice of the valid set
         # and must never purge.
         self._purge_stale_results = purge_stale_results
+        # Issue #119 / external QA RUN-001: --rerun-all disables result
+        # reuse — every dispatchable mutant executes even when a cached
+        # verdict could be reused.
+        self._rerun_all = rerun_all
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -123,7 +133,7 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         # Step 1: Generate mutants for all source files.
         # ------------------------------------------------------------------
-        all_tasks, source_data_by_file = self._generate_mutants()
+        all_tasks, source_data_by_file, fast_path_names = self._generate_mutants()
 
         if not all_tasks:
             print("No mutants generated.")
@@ -277,9 +287,28 @@ class MutationOrchestrator:
                 f"{len(no_test_names)} mutants have no covering tests — "
                 f"recorded as 'no tests', not dispatched."
             )
+
+        # ------------------------------------------------------------------
+        # Step 5b: Reuse cached verdicts for unchanged mutants (issue #119 /
+        # external QA RUN-001 — the README promised this cache for releases;
+        # the DB was write-only for `run` until v2.13.0).
+        # ------------------------------------------------------------------
+        tests_fp_by_name = _build_tests_fingerprints(all_tasks)
+        reused_results: list[MutationResult] = []
+        if not self._rerun_all and fast_path_names:
+            reused_results, all_tasks = _split_reusable_tasks(
+                all_tasks, fast_path_names, tests_fp_by_name, self._db_path
+            )
+        if reused_results:
+            print(
+                f"Reused {len(reused_results)} cached verdicts from the previous run "
+                f"({len(all_tasks)} dispatched; --rerun-all forces execution)."
+            )
+
         if not all_tasks:
-            # Everything was verdicted without dispatch (no tests and/or
-            # type-check kills) — a legitimate, successful run (cf. #93).
+            # Everything was verdicted without dispatch (no tests, type-check
+            # kills and/or reused cached verdicts) — a legitimate, successful
+            # run (cf. #93). Reused rows are already persisted.
             create_db(self._db_path)
             self._maybe_purge_stale(all_generated_names)
             _persist_type_check_kills(self._db_path, type_checked_names)
@@ -287,11 +316,13 @@ class MutationOrchestrator:
             for sfd in source_data_by_file.values():
                 sfd.save()
             summary = MutationRunResult(
-                total_mutants=len(no_test_names) + len(type_checked_names),
+                total_mutants=(len(no_test_names) + len(type_checked_names) + len(reused_results)),
                 type_check_caught=len(type_checked_names),
                 no_tests=len(no_test_names),
                 duration_seconds=time.monotonic() - wall_start,
             )
+            for reused in reused_results:
+                _increment_summary(summary, reused.status)
             _print_summary(summary)
             return summary
 
@@ -344,10 +375,19 @@ class MutationOrchestrator:
         _persist_type_check_kills(self._db_path, type_checked_names)
         _persist_no_test_mutants(self._db_path, no_test_names, source_data_by_file)
         summary = MutationRunResult(
-            total_mutants=len(tasks_with_timeouts) + len(type_checked_names) + len(no_test_names),
+            total_mutants=(
+                len(tasks_with_timeouts)
+                + len(type_checked_names)
+                + len(no_test_names)
+                + len(reused_results)
+            ),
             type_check_caught=len(type_checked_names),
             no_tests=len(no_test_names),
         )
+        # Reused verdicts count like real completions (sum invariant, #91);
+        # their rows are already in the DB and stay untouched.
+        for reused in reused_results:
+            _increment_summary(summary, reused.status)
         completed = 0
         total = len(tasks_with_timeouts)
 
@@ -357,7 +397,7 @@ class MutationOrchestrator:
             executor.start(tasks_with_timeouts)
             for event in executor.get_events():
                 is_completion = _update_summary_and_persist(
-                    event, summary, self._db_path, source_data_by_file
+                    event, summary, self._db_path, source_data_by_file, tests_fp_by_name
                 )
                 # Only count completed/timed-out mutants, not started events.
                 if is_completion:
@@ -429,7 +469,7 @@ class MutationOrchestrator:
 
     def _generate_mutants(
         self,
-    ) -> tuple[list[MutationTask], dict[str, SourceFileMutationData]]:
+    ) -> tuple[list[MutationTask], dict[str, SourceFileMutationData], set[str]]:
         """Walk source directories and generate mutants for all eligible files.
 
         Steps:
@@ -441,7 +481,10 @@ class MutationOrchestrator:
         5. For each source file call ``create_mutants_for_file`` to generate
            mutated output and build the ``MutationTask`` list.
         Returns:
-            A tuple of (flat task list, mapping of file path to SourceFileMutationData).
+            A tuple of (flat task list, mapping of file path to
+            SourceFileMutationData, qualified names of all mutants whose file
+            took the unchanged-staging fast path — the result-reuse
+            candidates of issue #119).
         """
         from mutmut_win.file_setup import (
             copy_also_copy_files,
@@ -500,14 +543,19 @@ class MutationOrchestrator:
 
         if self._config.max_children > 1:
             with multiprocessing.Pool(processes=self._config.max_children) as pool:
-                raw_results: list[tuple[str, list[str], Exception | None, list[str]]] = list(
+                raw_results: list[tuple[str, list[str], Exception | None, list[str], bool]] = list(
                     pool.imap_unordered(_create_mutants_worker, file_args)
                 )
         else:
             raw_results = [_create_mutants_worker(args) for args in file_args]
 
+        # Mutants of files whose staging was reused unchanged — the result-
+        # reuse candidates (issue #119): only for these can a prior verdict
+        # still describe the current code.
+        fast_path_names: set[str] = set()
+
         for result in raw_results:
-            rel_path_result, mutant_names, error, warn_msgs = result
+            rel_path_result, mutant_names, error, warn_msgs, took_fast_path = result
             for msg in warn_msgs:
                 print(f"Warning: {msg}")
             if error is not None:
@@ -517,6 +565,8 @@ class MutationOrchestrator:
                 continue
             src_file_result = Path(rel_path_result)
             qualified_names = [get_mutant_name(src_file_result, name) for name in mutant_names]
+            if took_fast_path:
+                fast_path_names.update(qualified_names)
             sfd = SourceFileMutationData(path=rel_path_result)
             sfd.load()
             source_data[rel_path_result] = sfd
@@ -530,7 +580,7 @@ class MutationOrchestrator:
                 for qname in qualified_names
             )
 
-        return all_tasks, source_data
+        return all_tasks, source_data, fast_path_names
 
     def _maybe_purge_stale(self, all_generated_names: set[str]) -> None:
         """Purge DB rows of mutants outside the current generation set.
@@ -585,7 +635,7 @@ class MutationOrchestrator:
 
 def _create_mutants_worker(
     args: tuple[str, Path, Path, set[int] | None, bool],
-) -> tuple[str, list[str], Exception | None, list[str]]:
+) -> tuple[str, list[str], Exception | None, list[str], bool]:
     """Top-level picklable worker for parallel mutant generation.
 
     Called by ``multiprocessing.Pool.imap_unordered`` inside
@@ -598,20 +648,22 @@ def _create_mutants_worker(
               relative to the project root.
 
     Returns:
-        A tuple of ``(rel_path, mutant_names, error, warning_messages)`` where
-        ``error`` is ``None`` on success and ``mutant_names`` may be empty.
+        A tuple of ``(rel_path, mutant_names, error, warning_messages,
+        took_fast_path)`` where ``error`` is ``None`` on success,
+        ``mutant_names`` may be empty, and ``took_fast_path`` marks files
+        whose staging was reused unchanged (issue #119 result reuse).
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
     rel_path, filename, output_path, covered_lines, allow_fast_path = args
     try:
-        mutant_names, warns = create_mutants_for_file(
+        mutant_names, warns, took_fast_path = create_mutants_for_file(
             filename, output_path, covered_lines, allow_fast_path=allow_fast_path
         )
         warn_msgs = [str(w.message) for w in warns]
-        return rel_path, mutant_names, None, warn_msgs
+        return rel_path, mutant_names, None, warn_msgs, took_fast_path
     except Exception as exc:  # broad catch: pool workers must not crash the parent
-        return rel_path, [], exc, []
+        return rel_path, [], exc, [], False
 
 
 def _filter_tasks_by_names(
@@ -900,6 +952,122 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
         save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
 
 
+#: Verdicts a later run may reuse for an unchanged mutant (issue #119 /
+#: external QA RUN-001). timeout/suspicious are environment-sensitive,
+#: 'no tests' is re-verdicted from the current mapping each run (#106),
+#: type-check kills are re-produced by the filter each run, and interrupt
+#: placeholders carry no verdict — extending this set must be a conscious
+#: decision (the pin test enforces that).
+REUSABLE_STATUSES: frozenset[str] = frozenset(
+    {"killed", "survived", "segfault", "killed_by_infinite_loop"}
+)
+
+
+def _build_tests_fingerprints(tasks: list[MutationTask]) -> dict[str, str]:
+    """Fingerprint every task's test basis (issue #119 result reuse).
+
+    One stat cache per call — the same few test files back thousands of
+    tasks, so each file is stat'ed exactly once.
+
+    Args:
+        tasks: Tasks after test assignment.
+
+    Returns:
+        Mapping of mutant name to fingerprint. Tasks without assigned tests
+        (full-suite fallback — no stats) get NO entry: nothing is known
+        about their test basis, so they are never reusable.
+    """
+    stat_cache: dict[str, str] = {}
+    return {
+        task.mutant_name: _tests_fingerprint(task.tests, stat_cache) for task in tasks if task.tests
+    }
+
+
+def _tests_fingerprint(tests: list[str], stat_cache: dict[str, str] | None = None) -> str:
+    """Hash a test basis: sorted node IDs + per-test-file (mtime_ns, size).
+
+    Adding, removing or renaming a covering test changes the node-ID part;
+    editing a test BODY changes the file part — both invalidate reuse
+    (issue #119: a node-ID-only hash would have kept cached verdicts after
+    assertions were strengthened). A missing test file hashes
+    deterministically as ``missing`` — still different from any fingerprint
+    recorded while the file existed.
+
+    Args:
+        tests: pytest node IDs assigned to one mutant.
+        stat_cache: Optional shared file-stat cache (filled on demand).
+
+    Returns:
+        A 16-hex-digit digest of the test basis.
+    """
+    import hashlib
+
+    if stat_cache is None:
+        stat_cache = {}
+    hasher = hashlib.sha256()
+    for node_id in sorted(tests):
+        hasher.update(node_id.encode("utf-8"))
+        hasher.update(b"\n")
+        file_part = node_id.split("::", 1)[0]
+        if file_part not in stat_cache:
+            try:
+                stat = Path(file_part).stat()
+                stat_cache[file_part] = f"{stat.st_mtime_ns}:{stat.st_size}"
+            except OSError:
+                stat_cache[file_part] = "missing"
+        hasher.update(stat_cache[file_part].encode("utf-8"))
+        hasher.update(b"\n")
+    return hasher.hexdigest()[:16]
+
+
+def _split_reusable_tasks(
+    tasks: list[MutationTask],
+    fast_path_names: set[str],
+    tests_fp_by_name: dict[str, str],
+    db_path: Path,
+) -> tuple[list[MutationResult], list[MutationTask]]:
+    """Split *tasks* into reused prior verdicts and tasks to dispatch.
+
+    The issue-#119 condition matrix — a prior verdict is reused iff ALL of:
+    the mutant's file took the staging fast path this run (source
+    fingerprint unchanged, #101), the task has a test fingerprint
+    (assigned tests) matching the one stored with the verdict, and the
+    stored status is in :data:`REUSABLE_STATUSES`. Reused rows are NOT
+    rewritten — the original verdict, duration and forensics stay.
+
+    Args:
+        tasks: Dispatchable tasks after the no-tests split.
+        fast_path_names: Qualified names from unchanged-staging files.
+        tests_fp_by_name: Current test fingerprints per mutant name.
+        db_path: Path to the SQLite result cache.
+
+    Returns:
+        ``(reused_rows, remaining_tasks)``
+    """
+    from mutmut_win.db import load_results
+
+    prior = {row.mutant_name: row for row in load_results(db_path)}
+    if not prior:
+        return [], tasks
+
+    reused: list[MutationResult] = []
+    remaining: list[MutationTask] = []
+    for task in tasks:
+        row = prior.get(task.mutant_name)
+        fingerprint = tests_fp_by_name.get(task.mutant_name)
+        if (
+            row is not None
+            and task.mutant_name in fast_path_names
+            and fingerprint is not None
+            and row.tests_fingerprint == fingerprint
+            and row.status in REUSABLE_STATUSES
+        ):
+            reused.append(row)
+        else:
+            remaining.append(task)
+    return reused, remaining
+
+
 def _split_no_test_tasks(
     tasks: list[MutationTask],
     stats: MutmutStats,
@@ -961,6 +1129,7 @@ def _update_summary_and_persist(
     summary: MutationRunResult,
     db_path: Path,
     source_data_by_file: dict[str, SourceFileMutationData],
+    tests_fp_by_name: dict[str, str] | None = None,
 ) -> bool:
     """Update *summary* counters and persist the result for a finished event.
 
@@ -970,6 +1139,8 @@ def _update_summary_and_persist(
         summary: Mutable summary object to update in-place.
         db_path: Path to the SQLite result cache.
         source_data_by_file: Mapping of file path to ``SourceFileMutationData``.
+        tests_fp_by_name: Test fingerprints per mutant name — stored with the
+            verdict as the result-reuse condition of issue #119.
 
     Returns:
         ``True`` if the event represents a completed mutant (i.e. a
@@ -1007,7 +1178,16 @@ def _update_summary_and_persist(
 
     # Persist to SQLite — including the IL forensics snapshot, which was
     # silently dropped here before issue #85 / A2-JT-004 (column always NULL).
-    save_result(db_path, mutant_name, status, exit_code, duration, last_output, forensics)
+    save_result(
+        db_path,
+        mutant_name,
+        status,
+        exit_code,
+        duration,
+        last_output,
+        forensics,
+        tests_fingerprint=(tests_fp_by_name or {}).get(mutant_name),
+    )
 
     # Update in-memory SourceFileMutationData.
     _update_source_data(mutant_name, exit_code, duration, source_data_by_file)

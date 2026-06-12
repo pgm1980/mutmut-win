@@ -44,7 +44,7 @@ class TestValidateThenWrite:
             return ["x_f__mutmut_1"]
 
         with patch("mutmut_win.file_setup.write_all_mutants_to_file", _broken_writer):
-            names, warns = create_mutants_for_file(src_file, out_file)
+            names, warns, _ = create_mutants_for_file(src_file, out_file)
 
         assert names == []
         written = out_file.read_text(encoding="utf-8")
@@ -72,7 +72,7 @@ class TestValidateThenWrite:
         src_file.write_text(source, encoding="utf-8")
         out_file = tmp_path / "out.py"
 
-        names, warns = create_mutants_for_file(src_file, out_file)
+        names, warns, _ = create_mutants_for_file(src_file, out_file)
 
         assert names == []
         assert out_file.read_text(encoding="utf-8") == source
