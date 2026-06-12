@@ -152,6 +152,13 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         if self._mutant_names:
             all_tasks = _filter_tasks_by_names(all_tasks, self._mutant_names)
+            # Issue #122 / external QA SCO-002: mutants that exist in the
+            # staging but were excluded by this run's filter surface as
+            # 'skipped' — the documented "Excluded from this run" status
+            # finally has a producer. Rows are written only where none
+            # exist: a real verdict is never overwritten (#96).
+            filtered_out = all_generated_names - {t.mutant_name for t in all_tasks}
+            _persist_skipped_mutants(self._db_path, filtered_out)
             if not all_tasks:
                 print("No mutants match the given names.")
                 return MutationRunResult(
@@ -1099,6 +1106,30 @@ def _split_no_test_tasks(
     dispatchable = [t for t in tasks if t.tests]
     no_tests = {t.mutant_name for t in tasks if not t.tests}
     return dispatchable, no_tests
+
+
+def _persist_skipped_mutants(db_path: Path, names: set[str]) -> None:
+    """Persist ``skipped`` (exit 34) for filtered-out mutants without a row.
+
+    Issue #122 / external QA SCO-002: ``EXIT_CODE_SKIPPED`` existed without
+    a producer — the documented status was unreachable. The producer is the
+    name-filter path: a mutant that exists in the current staging but was
+    excluded from this run is "Excluded from this run", exactly per the
+    README status table. Existing rows are NEVER overwritten (#96 history
+    rule) — a later full or matching run upserts the real verdict.
+
+    Args:
+        db_path: Path to the SQLite result cache (created on demand).
+        names: Staged mutant names excluded by this run's filter.
+    """
+    if not names:
+        return
+    from mutmut_win.constants import EXIT_CODE_SKIPPED
+    from mutmut_win.db import load_results
+
+    existing = {row.mutant_name for row in load_results(db_path)}
+    for name in sorted(names - existing):
+        save_result(db_path, name, "skipped", EXIT_CODE_SKIPPED, None)
 
 
 def _persist_no_test_mutants(

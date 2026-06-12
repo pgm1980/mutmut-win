@@ -331,6 +331,25 @@ class CicdStats:
     killed_by_infinite_loop: int = 0
 
     @property
+    def effective_killed(self) -> int:
+        """The kill class behind :attr:`score` (issue #91).
+
+        ``killed`` already includes infinite-loop kills (#86); the type
+        checker and a crash under a mutant are detections too.
+        """
+        return self.killed + self.caught_by_type_check + self.segfault
+
+    @property
+    def scoreable(self) -> int:
+        """The score denominator: mutants a verdict was possible for.
+
+        ``skipped`` and ``no tests`` leave the denominator — printing the
+        raw total next to the score invited verifying it with the wrong
+        division (issue #122 / external QA SCO-001).
+        """
+        return self.total - self.skipped - self.no_tests
+
+    @property
     def score(self) -> float:
         """Mutation score as a percentage.
 
@@ -342,11 +361,9 @@ class CicdStats:
         Returns:
             A float in [0.0, 100.0]; 0.0 if no testable mutants exist.
         """
-        denominator = self.total - self.skipped - self.no_tests
-        if denominator <= 0:
+        if self.scoreable <= 0:
             return 0.0
-        kill_class = self.killed + self.caught_by_type_check + self.segfault
-        return kill_class / denominator * 100.0
+        return self.effective_killed / self.scoreable * 100.0
 
 
 def compute_cicd_stats(results: list[tuple[str, str | None]]) -> CicdStats:

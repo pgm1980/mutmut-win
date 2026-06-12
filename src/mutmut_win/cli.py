@@ -421,9 +421,12 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         counts[result.status] = counts.get(result.status, 0) + 1
 
     total = len(all_results)
+    # Issue #122 / external QA SCO-003: `results` used to fold type-check
+    # kills into "Killed" with no line of their own, while the run summary
+    # and the CI JSON keep the category separate — one scheme everywhere.
+    type_check = counts.get("caught by type check", 0)
     kill_aggregate = (
         counts.get("killed", 0)
-        + counts.get("caught by type check", 0)
         + counts.get("killed_by_infinite_loop", 0)  # Issue #71 — IL classification
     )
     il_killed = counts.get("killed_by_infinite_loop", 0)
@@ -435,7 +438,9 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     denominator = total - skipped - no_tests
     # Kill class mirrors MutationRunResult.score / CicdStats.score (#91):
     # a crash under a mutant is a detection.
-    effective_killed = kill_aggregate + segfault + (timeout if treat_timeout_as_kill else 0)
+    effective_killed = (
+        kill_aggregate + type_check + segfault + (timeout if treat_timeout_as_kill else 0)
+    )
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
     click.echo(f"Total:      {total}")
@@ -443,6 +448,8 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         click.echo(f"Killed:     {kill_aggregate}  (incl. {il_killed} infinite-loop)")
     else:
         click.echo(f"Killed:     {kill_aggregate}")
+    if type_check > 0:
+        click.echo(f"Type-check:  {type_check}")
     # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
     # interrupted and not-checked rows used to count in Total and the score
     # denominator while appearing in no output line). The fixed list keeps
@@ -698,4 +705,9 @@ def export_cicd_stats_cmd() -> None:
     mutants_dir = Path("mutants")
     cicd = save_cicd_stats(pairs, mutants_dir)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
-    click.echo(f"Score: {cicd.score:.1f}%  ({cicd.killed} killed / {cicd.total} total)")
+    # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a
+    # 71.4% score invited verifying it with the WRONG denominator — the
+    # parenthetical now shows the kill class over the scoreable set.
+    click.echo(
+        f"Score: {cicd.score:.1f}%  ({cicd.effective_killed} killed / {cicd.scoreable} scoreable)"
+    )
