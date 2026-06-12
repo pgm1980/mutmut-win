@@ -54,6 +54,16 @@ class MutationParseError(MutationError):
     """
 
 
+class StaleStagingError(MutmutWinError):
+    """The staging is older than the source it was generated from.
+
+    Producer: ``mutant_diff.apply_mutant`` refuses to patch a source file
+    that changed after its mutants were generated (issue #123 / external QA
+    CLI-003 — the refusal used to escape as a raw ``RuntimeError``
+    traceback past the #114 domain-error rendering).
+    """
+
+
 class AmbiguousMutantNameError(MutmutWinError):
     """A mutant name pattern matched more than one mutant.
 

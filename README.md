@@ -198,6 +198,16 @@ infinite_loop_window_seconds = 10.0   # rolling sample window
 
 Notes:
 
+- **Staging mirrors your whole project tree.** `mutants/` is built from
+  ALL files under the source roots (`src/`, `source/`, or the project
+  root `.`) minus a fixed skip list (`.venv`, `.git`, caches,
+  `mutants/` itself, …) — not just `paths_to_mutate` + `also_copy`.
+  Tests must be able to import and read everything they normally can.
+  Two consequences worth knowing: root-level files (e.g. `.env`,
+  `uv.lock`, scratch files) are copied into `mutants/`, and projects
+  with large root-level assets pay that copy on the first run
+  (unchanged files are skipped afterwards). Keep secrets and bulk data
+  out of the project root or source roots.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of

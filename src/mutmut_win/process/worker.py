@@ -36,6 +36,29 @@ _MAX_DIAGNOSTIC_LINES: int = 50
 _QUIET_EXIT_CODES: frozenset[int] = frozenset({0, 1, 5, 33, 34})
 
 
+def _suppress_windows_error_dialogs() -> None:
+    """Keep WerFault from holding crashing pytest children (issue #123).
+
+    External QA WIN-001 (code-evidenced): on interactive Windows hosts with
+    WER UI enabled, a hard-crashing mutant (access violation, stack
+    overflow) can stall on the Windows Error Reporting dialog past the
+    task's wall-clock budget — the job object then reaps the tree and the
+    mutant is misclassified ``timeout`` instead of ``segfault``.
+    ``SetErrorMode`` is inherited by child processes, so crashes return
+    immediately as NTSTATUS exit codes. POSIX: no-op.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    sem_failcriticalerrors = 0x0001
+    sem_nogpfaulterrorbox = 0x0002
+    with contextlib.suppress(Exception):  # never let dialog hygiene kill a worker
+        kernel32 = ctypes.windll.kernel32
+        current = kernel32.GetErrorMode()
+        kernel32.SetErrorMode(current | sem_failcriticalerrors | sem_nogpfaulterrorbox)
+
+
 def worker_main(
     task_queue: multiprocessing.queues.Queue[dict[str, object] | None],
     event_queue: multiprocessing.queues.Queue[dict[str, object]],
@@ -57,6 +80,9 @@ def worker_main(
             incompatibility across process boundaries.
     """
     pid = os.getpid()
+    # Once per worker process — children inherit the error mode (issue #123
+    # / external QA WIN-001).
+    _suppress_windows_error_dialogs()
     pytest_extra_args: list[str] = []
     raw_extra = config_data.get("pytest_add_cli_args")
     if isinstance(raw_extra, list):
@@ -215,6 +241,9 @@ def _process_task(
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             cwd="mutants",
+            # No console window for the pytest child (issue #123 / WIN-001);
+            # 0 on POSIX where the attribute does not exist.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         # Per-task kill-on-close job (issue #82 / A2-EW-008): descendants
         # inherit membership at creation, so closing the handle reaps the

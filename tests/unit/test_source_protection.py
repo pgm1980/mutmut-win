@@ -153,6 +153,10 @@ class TestApplySafety:
         future = time.time() + 60
         os.utime(src_file, (future, future))
 
-        with pytest.raises(RuntimeError, match="re-run"):
+        # StaleStagingError since issue #123 / CLI-003 (was a raw
+        # RuntimeError that escaped the CLI's domain-error rendering).
+        from mutmut_win.exceptions import StaleStagingError
+
+        with pytest.raises(StaleStagingError, match="re-run"):
             apply_mutant(b_mutant, cfg)
         assert src_file.read_bytes() == before  # untouched

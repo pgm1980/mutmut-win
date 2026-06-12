@@ -455,8 +455,10 @@ class MutationOrchestrator:
         from mutmut_win.mutation import mutate_file_contents
 
         total = 0
+        walked: list[str] = []
         for src_file in walk_source_files(self._config):
             rel_path = str(src_file)
+            walked.append(rel_path)
             if self._config.should_ignore_for_mutation(rel_path):
                 continue
             try:
@@ -466,9 +468,21 @@ class MutationOrchestrator:
             except Exception:  # noqa: S112 — dry-run must not crash on unparseable files
                 continue
 
+        self._warn_unmatched_exclusions(walked)
         result = MutationRunResult(total_mutants=total)
         print(f"Dry run: {total} mutants would be generated.")
         return result
+
+    def _warn_unmatched_exclusions(self, walked_paths: list[str]) -> None:
+        """Warn for ``do_not_mutate`` patterns that matched no walked file.
+
+        Issue #123 / external QA CFG-002: a typo'd exclusion glob silently
+        re-enabled mutation of "excluded" files — the opposite of the
+        configured intent, discoverable only by noticing unexpected mutants.
+        Mirrors the unknown-key warning of issue #102.
+        """
+        for pattern in self._config.unmatched_exclusion_patterns(walked_paths):
+            print(f"Warning: do_not_mutate pattern '{pattern}' matched no files")
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -508,10 +522,13 @@ class MutationOrchestrator:
 
         # Collect all eligible source files (needed before coverage run).
         source_files: list[tuple[str, Path]] = []
+        walked: list[str] = []
         for src_file in walk_source_files(self._config):
             rel_path = str(src_file)
+            walked.append(rel_path)
             if not self._config.should_ignore_for_mutation(rel_path):
                 source_files.append((rel_path, src_file))
+        self._warn_unmatched_exclusions(walked)
 
         # Step 4: Optionally gather coverage to restrict which lines are mutated.
         covered_lines_map: dict[str, set[int]] | None = None
