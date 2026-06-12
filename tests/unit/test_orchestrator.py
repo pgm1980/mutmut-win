@@ -258,10 +258,12 @@ class TestPytestVersionGuard:
         monkeypatch.setattr(pytest, "__version__", "8.1.2")
         with pytest.raises(UnsupportedPytestVersionError) as excinfo:
             self._guard()()
+        # The message is actionable contract: found version, required
+        # version, the @argfile reason, and the concrete fix command.
         message = str(excinfo.value)
-        assert "8.1.2" in message  # the version that was found
-        assert "8.2" in message  # the version that is required
-        assert "@" in message  # names the @argfile mechanism as the reason
+        assert message.startswith("pytest 8.1.2 is too old for mutation runs")
+        assert "@argfile syntax, which exists since pytest 8.2" in message
+        assert 'uv add "pytest>=8.2" --dev' in message  # names the @argfile mechanism as the reason
 
     def test_rejects_old_major(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from mutmut_win.exceptions import UnsupportedPytestVersionError
@@ -276,14 +278,39 @@ class TestPytestVersionGuard:
         monkeypatch.setattr(pytest, "__version__", "8.2.0rc1")
         self._guard()()
 
+    def test_two_digit_components_parse_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Kills regex mutants of the (\d+)\.(\d+) pattern: '10.11' must parse
+        # as (10, 11) — single-digit or character-class mutants either fail
+        # to match (spurious warning) or truncate the comparison.
+        monkeypatch.setattr(pytest, "__version__", "10.11.2")
+        self._guard()()  # must not raise
+        assert capsys.readouterr().out == ""  # parsed cleanly — no warning
+
+    def test_double_digit_minor_above_floor_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Kills the (\d+)\.(\d) minor-truncation mutant: a future pytest
+        # 8.10 truncated to (8, 1) would falsely abort below the (8, 2)
+        # floor. Must parse as (8, 10) and pass silently.
+        monkeypatch.setattr(pytest, "__version__", "8.10.0")
+        self._guard()()  # must not raise
+        assert capsys.readouterr().out == ""
+
     def test_unparseable_version_warns_and_proceeds(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Fail-open by design: the resolver floor is the primary defence; an
         # exotic dev build must not block the run (documented trade-off).
+        # The warning line is pinned verbatim — diagnostics are contract.
         monkeypatch.setattr(pytest, "__version__", "exotic-build")
         self._guard()()  # must not raise
-        assert "could not parse" in capsys.readouterr().out.lower()
+        expected = (
+            "Warning: could not parse pytest version 'exotic-build' — proceeding "
+            "(the pytest>=8.2 dependency floor is the primary guard)."
+        )
+        assert expected in capsys.readouterr().out.splitlines()
 
     def test_floor_pin_matches_guard_constant(self) -> None:
         # Drift protection (the #110 pin-test pattern): the pyproject runtime

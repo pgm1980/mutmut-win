@@ -15,6 +15,9 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from mutmut_win.config import MutmutConfig
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
@@ -273,6 +276,126 @@ class TestMetaRobustness:
         assert sfd.exit_code_by_key == {}
         assert "corrupt" in capsys.readouterr().out.lower()
         assert not sfd.meta_path.exists()
+
+    def test_type_corrupt_meta_resets_every_partially_loaded_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Mutation hardening (#124): _reset_loaded_fields must clear EVERY
+        # field load may have populated before the corruption hit — and the
+        # corruption warning is pinned verbatim (diagnostics are contract).
+        _project(tmp_path, monkeypatch)
+        sfd = SourceFileMutationData(path="src/mod.py")
+        sfd.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        sfd.meta_path.write_text(
+            "{"
+            '"exit_code_by_key": {"a": 1},'
+            '"durations_by_key": {"a": 1.5},'
+            '"type_check_error_by_key": {"a": "boom"},'
+            '"estimated_durations_by_key": {"a": null},'
+            '"source_mtime": 1.0, "source_size": 2'
+            "}",
+            encoding="utf-8",
+        )
+
+        sfd.load()  # estimated_durations hits float(None) AFTER other fields loaded
+
+        assert sfd.exit_code_by_key == {}
+        assert sfd.durations_by_key == {}
+        assert sfd.estimated_time_of_tests_by_mutant == {}
+        assert sfd.type_check_error_by_key == {}
+        assert sfd.source_mtime is None
+        assert sfd.source_size is None
+        expected_warning = (
+            f"Warning: corrupted meta file {sfd.meta_path} — rebuilding from scratch."
+        )
+        assert expected_warning in capsys.readouterr().out.splitlines()
+
+    def test_meta_roundtrip_preserves_every_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening (#124): a full save→load roundtrip pins every
+        # JSON key string and both fingerprint fields — key-string mutants
+        # in save OR load break it.
+        _project(tmp_path, monkeypatch)
+        original = SourceFileMutationData(path="src/mod.py")
+        # The class-method key carries ǁ (U+01C1): on non-UTF-8 locales an
+        # encoding=None regression breaks THIS roundtrip, not just exotics.
+        original.exit_code_by_key = {
+            "mod.x_f__mutmut_1": 1,
+            "mod.x_f__mutmut_2": None,
+            "mod.xǁClsǁm__mutmut_1": 0,
+        }
+        original.durations_by_key = {"mod.x_f__mutmut_1": 2.5}
+        original.estimated_time_of_tests_by_mutant = {"mod.x_f__mutmut_1": 0.75}
+        original.type_check_error_by_key = {"mod.x_f__mutmut_2": "incompatible type"}
+        original.source_mtime = 1718180000.125
+        original.source_size = 6919
+        original.meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        original.save()
+        loaded = SourceFileMutationData(path="src/mod.py")
+        loaded.load()
+
+        assert loaded.exit_code_by_key == original.exit_code_by_key
+        assert loaded.durations_by_key == original.durations_by_key
+        assert loaded.estimated_time_of_tests_by_mutant == (
+            original.estimated_time_of_tests_by_mutant
+        )
+        assert loaded.type_check_error_by_key == original.type_check_error_by_key
+        assert loaded.source_mtime == original.source_mtime
+        assert loaded.source_size == original.source_size
+
+    @given(
+        exit_codes=st.dictionaries(
+            st.text(min_size=1), st.one_of(st.none(), st.integers(-(2**31), 2**32)), max_size=4
+        ),
+        durations=st.dictionaries(
+            st.text(min_size=1),
+            st.floats(min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False),
+            max_size=4,
+        ),
+        mtime=st.one_of(
+            st.none(),
+            st.floats(min_value=0.0, max_value=4e9, allow_nan=False, allow_infinity=False),
+        ),
+        size=st.one_of(st.none(), st.integers(min_value=0, max_value=2**40)),
+    )
+    @settings(
+        max_examples=25,
+        deadline=None,
+        # tmp_path/monkeypatch are function-scoped on purpose: every example
+        # overwrites the SAME meta file, so reuse across examples is safe.
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_meta_roundtrip_property(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exit_codes: dict[str, int | None],
+        durations: dict[str, float],
+        mtime: float | None,
+        size: int | None,
+    ) -> None:
+        # CLAUDE.md serialisation invariant (hypothesis): save→load is the
+        # identity for every well-formed meta payload. Setup is inline and
+        # idempotent — hypothesis reuses the function-scoped tmp_path for
+        # every example (the suppressed health check above).
+        monkeypatch.chdir(tmp_path)
+        original = SourceFileMutationData(path="src/mod.py")
+        original.exit_code_by_key = exit_codes
+        original.durations_by_key = durations
+        original.source_mtime = mtime
+        original.source_size = size
+        original.meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        original.save()
+        loaded = SourceFileMutationData(path="src/mod.py")
+        loaded.load()
+
+        assert loaded.exit_code_by_key == exit_codes
+        assert loaded.durations_by_key == durations
+        assert loaded.source_mtime == mtime
+        assert loaded.source_size == size
 
     def test_save_is_atomic_via_tmp_and_replace(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
