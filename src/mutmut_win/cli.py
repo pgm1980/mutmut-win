@@ -81,7 +81,9 @@ def _load_config_or_exit() -> MutmutConfig:
 )
 @click.option(
     "--min-score",
-    type=float,
+    # FloatRange: 150 used to execute the FULL run before the gate
+    # trivially failed; -5 made the gate a no-op (issue #120 / CLI-001).
+    type=click.FloatRange(0, 100),
     default=None,
     help="Exit with code 1 if mutation score is below this threshold (0-100).",
 )
@@ -207,7 +209,10 @@ def run(
                 else:
                     click.echo(f"Removed {dirname}/")
 
-    config = load_config()
+    # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
+    # escape as a 47-line traceback with exit 1 while CLI flags with the
+    # SAME rules exited 2 — one config-error contract for every command.
+    config = _load_config_or_exit()
 
     # --- Apply CLI overrides to config ---
     overrides: dict[str, object] = {}
@@ -277,11 +282,26 @@ def run(
             click.echo(f"Invalid option value:\n{exc}", err=True)
             sys.exit(2)
 
+    # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
+    # yield "No mutants generated." with exit 0 — a false CI success. A
+    # missing path is a configuration error per the documented contract.
+    missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
+    if missing_paths:
+        plural = "ies do" if len(missing_paths) > 1 else "y does"
+        click.echo(
+            f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}",
+            err=True,
+        )
+        sys.exit(2)
+
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
     # Only a FULL run may purge stale DB rows (issue #96): subset runs know
     # just a slice of the valid mutant set and must never delete history.
-    is_full_run = not mutant_names and since_commit is None
+    # A --paths-to-mutate override narrows the staging to that slice, so it
+    # counts as a subset run too (issue #120 / RUN-002 — the purge used to
+    # delete every result outside the given paths).
+    is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
     orchestrator = MutationOrchestrator(
         config,
         runner=runner,
