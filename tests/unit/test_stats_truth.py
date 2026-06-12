@@ -221,3 +221,128 @@ class TestChangedTestFileInvalidation:
         collect_or_load_stats(runner, mutants)
 
         runner.run_stats.assert_called_once()  # legacy heal
+
+
+class TestFingerprintHardening:
+    """Mutation-hardening pins for the #130 fingerprint machinery."""
+
+    def test_fingerprint_format_is_pinned(self, tmp_path: Path) -> None:
+        # The "mtime_ns:size" format is a cache contract: a silent format
+        # change would read every cached entry as 'changed' once per run.
+        from mutmut_win.stats import _fingerprint_test_files
+
+        test_file = tmp_path / "test_a.py"
+        test_file.write_text("def test_one(): pass\n", encoding="utf-8")
+        stat = test_file.stat()
+        fps = _fingerprint_test_files([f"{test_file}::test_one"])
+        assert fps == {str(test_file): f"{stat.st_mtime_ns}:{stat.st_size}"}
+
+    def test_missing_file_fingerprints_as_the_pinned_sentinel(self) -> None:
+        from mutmut_win.stats import _fingerprint_test_files
+
+        fps = _fingerprint_test_files(["does/not/exist_test.py::test_x"])
+        assert fps == {"does/not/exist_test.py": "missing"}
+
+    def test_class_node_ids_and_multiple_files(self, tmp_path: Path) -> None:
+        # 'file::Class::test' must key on the FILE (first '::' split, not
+        # the last), and the dedupe skip must not abort later files.
+        from mutmut_win.stats import _fingerprint_test_files
+
+        for name in ("test_a.py", "test_b.py"):
+            (tmp_path / name).write_text("def test_one(): pass\n", encoding="utf-8")
+        fps = _fingerprint_test_files(
+            [
+                f"{tmp_path}/test_a.py::TestC::test_one",
+                f"{tmp_path}/test_a.py::TestC::test_two",
+                f"{tmp_path}/test_b.py::test_three",
+            ]
+        )
+        assert set(fps) == {f"{tmp_path}/test_a.py", f"{tmp_path}/test_b.py"}
+
+    def test_recollection_persists_fingerprints_into_the_given_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The success path must re-save INTO mutants_dir — without it the
+        # plugin JSON stays fingerprint-free and every later run re-collects.
+        import json as json_module
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
+        mutants = tmp_path / "custom_mutants"
+        mutants.mkdir()
+        (mutants / "mutmut-stats.json").write_text(
+            json_module.dumps(
+                {
+                    "tests_by_mangled_function_name": {},
+                    "duration_by_test": {"tests/test_a.py::test_one": 1.0},
+                    "stats_time": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        runner = _runner(collected=["tests/test_a.py::test_one"])
+
+        collect_or_load_stats(runner, mutants)
+
+        runner.run_stats.assert_called_once()  # legacy cache → re-collection
+        on_disk = json_module.loads((mutants / "mutmut-stats.json").read_text(encoding="utf-8"))
+        assert on_disk.get("test_file_fingerprints", {}).get("tests/test_a.py") not in (
+            None,
+            "missing",
+        )
+
+    def test_corrupt_fingerprint_field_loads_as_empty_dict(self, tmp_path: Path) -> None:
+        import json as json_module
+
+        mutants = tmp_path / "mutants"
+        mutants.mkdir()
+        (mutants / "mutmut-stats.json").write_text(
+            json_module.dumps(
+                {
+                    "tests_by_mangled_function_name": {},
+                    "duration_by_test": {},
+                    "stats_time": 0.0,
+                    "test_file_fingerprints": ["not", "a", "dict"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = load_stats(mutants)
+        assert loaded is not None
+        assert loaded.test_file_fingerprints == {}
+
+    def test_new_tests_message_is_word_exact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
+        mutants = tmp_path / "mutants"
+        save_stats(
+            MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
+            mutants,
+        )
+        runner = _runner(collected=["tests/test_a.py::test_one", "tests/test_a.py::test_two_new"])
+        collect_or_load_stats(runner, mutants)
+        assert (
+            "Found 1 new tests — re-collecting the full stats run "
+            "(per-test collection is not implemented; the run is always complete).\n"
+        ) in capsys.readouterr().out
+
+    def test_changed_files_message_is_word_exact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        test_file = tmp_path / "tests" / "test_a.py"
+        test_file.parent.mkdir()
+        test_file.write_text("def test_one(): pass\n", encoding="utf-8")
+        mutants = tmp_path / "mutants"
+        save_stats(
+            MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
+            mutants,
+        )
+        test_file.write_text("def test_one(): assert True\n", encoding="utf-8")
+        runner = _runner(collected=["tests/test_a.py::test_one"])
+        collect_or_load_stats(runner, mutants)
+        assert ("1 test file(s) changed in place — re-collecting ") in capsys.readouterr().out

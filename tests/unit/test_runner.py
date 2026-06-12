@@ -219,6 +219,56 @@ class TestCollectTests:
             runner.collect_tests()
         assert mock_run.call_args[1].get("cwd") is None
 
+    def test_subprocess_contract_is_pinned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening (#130 gate): the collection contract — exact
+        # flags, decoding and staging env — is load-bearing for stats-phase
+        # parity; pin every piece.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(_config())
+        with patch(
+            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+        ) as mock_run:
+            runner.collect_tests()
+        cmd = mock_run.call_args[0][0]
+        index = cmd.index("--collect-only")
+        assert cmd[index : index + 3] == ["--collect-only", "-q", "--no-header"]
+        kwargs = mock_run.call_args[1]
+        assert kwargs["capture_output"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        env = kwargs["env"]
+        assert env["PYTHONIOENCODING"] == "utf-8"
+        assert env["MUTANT_UNDER_TEST"] == ""
+
+    def test_fallback_passes_inherited_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without staging there is no env override — the subprocess must
+        # inherit the parent environment (env=None), not an empty one.
+        isolated = tmp_path / "isolated"
+        isolated.mkdir()
+        monkeypatch.chdir(isolated)
+        runner = PytestRunner(_config())
+        with patch(
+            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+        ) as mock_run:
+            runner.collect_tests()
+        assert mock_run.call_args[1].get("env") is None
+
+    def test_filter_pins_summary_and_warning_prefixes(self) -> None:
+        # Only '='-summaries and UPPERCASE pytest WARNINGs are filtered; a
+        # lowercase 'warning:'-style node id must survive untouched.
+        stdout = (
+            "tests/a.py::t1\n= 1 test collected =\nWARNING: noise::ignored\nwarning: keep::this\n"
+        )
+        runner = PytestRunner(_config())
+        with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
+            tests = runner.collect_tests()
+        assert tests == ["tests/a.py::t1", "warning: keep::this"]
+
 
 # ---------------------------------------------------------------------------
 # run_stats
