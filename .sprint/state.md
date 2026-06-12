@@ -4,30 +4,30 @@ sprint_goal: "v2.13.0 Maintenance 3: External QA — alle 15 Findings des extern
 branch: "feature/v2.13.0-maintenance-3"
 started_at: "2026-06-12"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State (Sprint 35 opened 2026-06-12)
 
 ## Current Focus
-Sprint 35 — **v2.13.0 Maintenance 3: External QA** — Unterbrechung der
-Entwicklungspause auf User-Entscheid: Ein externer 360°-QA-Report gegen
-v2.12.0 lieferte 15 Findings (6 Medium, 9 Low), alle am Code
-verifiziert (Archiv: `_docs/audit/external_qa_report_v2.12.0.md`,
-Repro-Projekte unversioniert unter `_bug_reports/`).
-6 Issues (#118–#123, 29 SP), Reihenfolge 118 → 120 → 119 → 122 → 121
-→ 123 (Purge-Fix vor Reuse-Feature vor skipped-Producer), dann
-Abschluss-Dogfooding inkl. **Reuse-Demo** (unveränderter Lauf B
-dispatcht 0 Tasks). User-Entscheidungen: RUN-001 als FEATURE
-(Result-Reuse + --rerun-all), skipped bekommt echten Producer
-(Filter-Subset-Läufe, nie Verdicts überschreiben).
-Release v2.13.0 nur auf explizites User-„Release"; danach
-**zurück in die Entwicklungspause**.
+Sprint 35 — **v2.13.0 Maintenance 3: External QA** —
+**IMPLEMENTIERUNG KOMPLETT** (alle 6 Issues #118–#123, 29/29 SP,
+Commits `a504b3c`..`ba7e28c`). **15/15 externe QA-Findings
+geschlossen.** Highlight: Result-Reuse live — Pilot-Lauf C: „Reused
+256 cached verdicts (0 dispatched)", 40 s statt 106 s (RUN-001-Repro
+als Feature). Gates: 1016 passed (+65), ruff/format 0, mypy 14 =
+Baseline, semgrep 0 (voller Sweep), lint-imports KEPT; Pilot settled
+**82,8 % ≥ 80 %** (roh 78,1 %: +15 ehrliche f-String-Mutanten durch
+MUT-001 — ~14 neue Survivors der dokumentierten Fehlertext-Klasse —
+plus 12 Kaltstart-Timeouts, designgemäß in Lauf B re-run und 12/12
+gekillt). pip-audit-Limitation unverändert. Release v2.13.0 wartet
+auf explizites User-„Release" (Merge → Auto-Close #118–#123 →
+housekeeping_done); **danach zurück in die Entwicklungspause**.
 
 ## Sprint 35 Backlog (29 SP — Must 24, Should 5)
 1. **#118 (Must, 1 SP):** Intake + DOC-001 — User-Hotfix committen,

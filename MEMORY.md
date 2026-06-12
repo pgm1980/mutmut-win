@@ -26,6 +26,32 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - Distributed as `mutmut-win` on PyPI. Console script: `mutmut-win`.
 
 ## Where we are
+- **Sprint**: 35 — *v2.13.0 Maintenance 3: External QA* — implementation
+  complete 2026-06-12 (6 issues #118–#123, 29/29 SP, commits
+  a504b3c..ba7e28c on `feature/v2.13.0-maintenance-3`): the development
+  pause was interrupted on user decision after an external 360° QA
+  report against v2.12.0 (15 findings, 6 Medium / 9 Low — ALL verified,
+  zero false claims; archived as
+  `_docs/audit/external_qa_report_v2.12.0.md`, repro projects untracked
+  under `_bug_reports/`). **All 15 findings closed.** Headline:
+  RUN-001 became the **result-reuse feature** (#119: verdicts reused
+  iff file fast-path + config match + tests_fingerprint match (sorted
+  node IDs + per-test-file mtime/size, new DB column, #100-style
+  migration) + status in {killed, survived, segfault, IL-killed};
+  --rerun-all opts out; reuse is loud) — pilot run C: "Reused 256
+  cached verdicts (0 dispatched)", 40s instead of 106s. Also: subset
+  purge fix + path/min-score/config exit-2 contract (#120), skipped
+  producer for name-filtered staging mutants + scoreable export line +
+  separate Type-check rendering (#122), f-strings join the mutation
+  surface (return-None + text-part XX-wrap, specs provably untouched)
+  and function-granular mangling skip (#121), StaleStagingError +
+  no-match exclusion warning + staging docs + WER suppression in the
+  worker (#123). Gates: 1016 passed (+65), ruff/format 0, mypy 14 =
+  baseline, semgrep 0 (full sweep); pilot settled **82.8% >= 80%**
+  (raw 78.1%: +15 honest f-string mutants — ~14 new survivors of the
+  documented error-text class — and 12 cold-start timeouts, re-run
+  killed by design in run B). Release v2.13.0 pending user approval —
+  back to the documented pause afterwards.
 - **Version**: **v2.12.0** released 2026-06-12
   ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0),
   bump 932f90e) — Maintenance 2: Final Sweep, THE LAST RELEASE before

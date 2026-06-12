@@ -712,20 +712,20 @@ als echtes Result-Reuse implementiert (User-Option b). Detail:
 
 | Issue | Typ | Findings | Priorität | SP | Status |
 |-------|-----|----------|-----------|-----|--------|
-| #118 | Chore | DOC-001 + Report-Intake | Must | 1 | Open |
-| #119 | Feature | RUN-001 → Result-Reuse (`--rerun-all`-Opt-out) | Must | 8 | Open |
-| #120 | Bug | RUN-002, CLI-002, CLI-001, CFG-001 | Must | 5 | Open |
-| #121 | Bug | MUT-001, MUT-002 | Must | 5 | Open |
-| #122 | Bug | SCO-002 (Producer!), SCO-001, SCO-003 | Must | 5 | Open |
-| #123 | Bug | CLI-003, CFG-002, DOC-002, WIN-001 | Should | 5 | Open |
+| #118 | Chore | DOC-001 + Report-Intake | Must | 1 | Done (`a504b3c`) |
+| #119 | Feature | RUN-001 → Result-Reuse (`--rerun-all`-Opt-out) | Must | 8 | Done (`b45f38e`) |
+| #120 | Bug | RUN-002, CLI-002, CLI-001, CFG-001 | Must | 5 | Done (`e5e69ed`) |
+| #121 | Bug | MUT-001, MUT-002 | Must | 5 | Done (`babcd32`) |
+| #122 | Bug | SCO-002 (Producer!), SCO-001, SCO-003 | Must | 5 | Done (`42315a9`) |
+| #123 | Bug | CLI-003, CFG-002, DOC-002, WIN-001 | Should | 5 | Done (`ba7e28c`) |
 
 **Acceptance Criteria (Sprint-Ebene):**
-- [ ] 15/15 Report-Findings geschlossen (Fix; Doku-Fix nur bei DOC-001/DOC-002)
-- [ ] Reuse-Demo: unveränderter Wiederholungslauf dispatcht 0 Tasks bei identischen Buckets (RUN-001-Repro)
-- [ ] `skipped` ist erreichbar (Producer) und über alle drei Kanäle konsistent
-- [ ] Dogfooding-Pilot hält brutto ≥ 80 %; Score-Verschiebungen (f-String-Surface) im Changelog
-- [ ] Quality Gates: pytest grün, ruff 0, format 0, mypy ≤ 14 (0 neue), semgrep 0, lint-imports KEPT
-- [ ] Nach Release: Pausenzustand wiederhergestellt
+- [x] 15/15 Report-Findings geschlossen (Fix; Doku-Fix nur bei DOC-001/DOC-002)
+- [x] Reuse-Demo: unveränderter Wiederholungslauf dispatcht 0 Tasks bei identischen Buckets — Lauf C: „Reused 256 (0 dispatched)", 40 s
+- [x] `skipped` ist erreichbar (Producer: Namens-Filter-Subset-Läufe) und über alle Kanäle konsistent (Drei-Kanal-Test)
+- [x] Dogfooding-Pilot: settled **82,8 % ≥ 80 %** (roh 78,1 % — +15 f-String-Mutanten, 12 Kaltstart-Timeouts designgemäß re-run, 12/12 gekillt); Verschiebung im Protokoll/Changelog
+- [x] Quality Gates: pytest 1016 grün, ruff 0, format 0, mypy 14 = Baseline (0 neue), semgrep 0 (voller Sweep), lint-imports KEPT
+- [ ] Nach Release: Pausenzustand wiederhergestellt (bei v2.13.0-Release)
 
 ---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
@@ -835,6 +835,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Sprint 32 | 36 | 36 | 100% | v2.10.0 Pipeline Hygiene (#98–#104) |
 | Sprint 33 | 31 | 31 | 100% | v2.11.0 Maintenance 1 (#105–#110) — Pilot 24,2 % → 86,9 % brutto |
 | Sprint 34 | 27 | 27 | 100% | v2.12.0 Maintenance 2: Final Sweep (#111–#117) — Pool 13 → 0, Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten |
+| Sprint 35 | 29 | 29 | 100% | v2.13.0 Maintenance 3: External QA (#118–#123) — 15/15 Findings geschlossen, Result-Reuse-Feature (Lauf C: 0 dispatcht), Pilot settled 82,8 % |
 
 **Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
 
@@ -877,3 +878,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.5.0 | 2026-06-11 | Claude Code Agent | Sprint 34 implementiert (Epic 25 Done, Velocity 27/27): **Maintenance-Pool 13 → 0, Entscheidungsregister 4 → 0**, mypy-Baseline 20 → 14, 5 stale GitHub-Milestones geschlossen; Gates: 951 passed (+83), ruff/format 0, semgrep 0 (voller Sweep), lint-imports KEPT; Pilot **85,1 % brutto gehalten** (6 Kaltstart-Timeouts re-run-verifiziert als Kills). Release v2.12.0 ausstehend; danach Entwicklungspause. |
 | 2.6.0 | 2026-06-12 | Claude Code Agent | Sprint 34 geschlossen (v2.12.0 released, Merge schloss #111–#117 automatisch): annotated Tag + GitHub-Release; **PROJEKT IN ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Pool-Einträge, 0 offene Entscheidungen, 0 offene Milestones; Vollvermessungs-Baseline (7800 Mutanten, 68,3 %) als Wiederaufnahme-Startpunkt dokumentiert. |
 | 2.7.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geplant (Pausen-Unterbrechung auf User-Entscheid): Epic 26 (Maintenance 3: External QA, #118–#123, 29 SP) per 10-Schritt-CoT — alle 15 Findings des externen QA-Reports (verifiziert, 0 Falschmeldungen); Entscheidungen: RUN-001 als Result-Reuse-FEATURE, skipped-Producer, Report-Intake nach _docs/audit/; Reihenfolge 118→120→119→122→121→123 (Purge vor Reuse vor Producer). |
+| 2.8.0 | 2026-06-12 | Claude Code Agent | Sprint 35 implementiert (Epic 26 Done, Velocity 29/29): **15/15 externe QA-Findings geschlossen**; Result-Reuse live (Lauf B: 244 reused/12 dispatcht, Lauf C: 256 reused/**0 dispatcht**); skipped erreichbar; f-Strings in der Mutationsoberfläche (+15 Pilot-Mutanten, Verschiebung dokumentiert); Gates: 1016 passed (+65), ruff/format 0, mypy 14, semgrep 0; Pilot settled 82,8 %. Release v2.13.0 ausstehend; danach zurück in die Pause. |
