@@ -91,12 +91,17 @@ class TestApplyTimeouts:
         result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=5.0)
         assert result[0].timeout_seconds >= 5.0  # _MIN_TIMEOUT
 
-    def test_uses_mean_when_no_test_assignment(self) -> None:
+    def test_unassigned_task_gets_full_suite_budget_even_with_stats(self) -> None:
+        # 360°-B3 (#130): tests=[] + non-empty durations used to budget a
+        # FULL-SUITE run with a single-test MEAN — a guaranteed timeout
+        # flood (e.g. empty mapping from broken hit recording). The mean
+        # still feeds the fast-first SORT; the budget is the full-suite
+        # fallback.
         tasks = [_task()]  # no tests assigned
         stats = {"tests/test_a.py::test_x": 2.0, "tests/test_b.py::test_y": 4.0}
-        result = _apply_timeouts(tasks, stats, 2.0, startup_floor=5.0, clean_wall_seconds=11.0)
-        # floor 5.0 + mean 3.0 * 2.0 = 11.0
-        assert result[0].timeout_seconds == pytest.approx(11.0)
+        result = _apply_timeouts(tasks, stats, 2.0, startup_floor=5.0, clean_wall_seconds=100.0)
+        assert result[0].estimated_time == pytest.approx(3.0)  # mean keeps sorting
+        assert result[0].timeout_seconds == pytest.approx(200.0)  # clean_wall x mult
 
     def test_does_not_mutate_original_tasks(self) -> None:
         original = _task()

@@ -859,9 +859,15 @@ def _apply_timeouts(
         else:
             estimated = 0.0
 
-        if estimated > 0:
+        if task.tests and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
         else:
+            # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
+            # FULL suite (no node-id args) — budget it like one. The old
+            # mean-of-all-durations budget was a guaranteed timeout flood
+            # whenever the mapping was empty (broken hit recording, package
+            # never imported by tests). The mean still feeds the fast-first
+            # sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
 
         updated.append(
@@ -910,6 +916,15 @@ def _filter_with_type_checker(
     contains the error line.  Only that exact mutant is marked — not the
     entire module.
 
+    Baseline subtraction (issue #131 / 360°-B4): a PRE-EXISTING error inside
+    a function body replicates into every mutant copy — without subtraction
+    ALL mutants of that function were falsely "caught". The errors inside
+    the ``__mutmut_orig`` copies are the baseline: a mutant only counts as
+    caught when it carries at least one error that is NOT
+    (function, line-offset, text)-identical to an orig-copy error. A
+    mutation that shifts line counts can dodge the offset match — that
+    residue stays one-sided towards "caught" and is accepted (documented).
+
     Args:
         tasks: All pending mutation tasks.
         source_data_by_file: Updated in-place for caught mutants.
@@ -919,6 +934,7 @@ def _filter_with_type_checker(
         ``(remaining_tasks, caught_mutant_names)``
     """
     import os
+    import sys
 
     import libcst as cst
 
@@ -936,6 +952,10 @@ def _filter_with_type_checker(
     mutants_dir = Path("mutants")
     if not mutants_dir.exists():
         return tasks, caught
+
+    # Issue #131 / 360°-A5: the documented plain command aborts in the JSON
+    # parser — say so with the concrete flag BEFORE the checker runs.
+    _warn_missing_json_flag(type_check_command)
 
     orig_cwd = Path.cwd()
     try:
@@ -966,6 +986,7 @@ def _filter_with_type_checker(
 
     errors_by_path = group_by_path(normalized)
     mutants_to_skip: dict[str, FailedTypeCheckMutant] = {}
+    replicated_skips = 0
 
     for path, errors_of_file in errors_by_path.items():
         try:
@@ -979,6 +1000,27 @@ def _filter_with_type_checker(
         wrapper.visit(visitor)
         mutated_methods = visitor.found_mutants
 
+        # Baseline (issue #131 / 360°-B4): errors inside the orig copies,
+        # keyed by (function base, line offset within the copy, text).
+        orig_ranges = [
+            loc for loc in mutated_methods if loc.function_name.endswith("__mutmut_orig")
+        ]
+        baseline: set[tuple[str, int, str]] = set()
+        for error in errors_of_file:
+            owner = next(
+                (
+                    loc
+                    for loc in orig_ranges
+                    if loc.line_number_start <= error.line_number <= loc.line_number_end
+                ),
+                None,
+            )
+            if owner is not None:
+                base = owner.function_name[: -len("__mutmut_orig")]
+                baseline.add(
+                    (base, error.line_number - owner.line_number_start, error.error_description)
+                )
+
         for error in errors_of_file:
             mutant = next(
                 (
@@ -988,8 +1030,20 @@ def _filter_with_type_checker(
                 ),
                 None,
             )
-            if mutant is None:
-                # Error outside any mutated method — skip (don't crash)
+            if mutant is None or mutant.function_name.endswith("__mutmut_orig"):
+                # Error outside any mutated method, or inside the baseline
+                # copy itself — skip (don't crash, don't catch).
+                continue
+
+            base = mutant.function_name.rpartition("__mutmut_")[0]
+            signature = (
+                base,
+                error.line_number - mutant.line_number_start,
+                error.error_description,
+            )
+            if signature in baseline:
+                # Replicated pre-existing error — NOT a kill (360°-B4).
+                replicated_skips += 1
                 continue
 
             mutant_name = get_mutant_name(path, mutant.function_name)
@@ -998,6 +1052,13 @@ def _filter_with_type_checker(
                 name=mutant_name,
                 error=error,
             )
+
+    if replicated_skips:
+        print(
+            f"Type-check filter: ignored {replicated_skips} pre-existing error(s) "
+            "replicated from the original code — not counted as kills (issue #131).",
+            file=sys.stderr,
+        )
 
     # Only mutants that are part of THIS run count as caught — without the
     # intersection, subset runs (--mutant-names/--since-commit) booked
@@ -1014,6 +1075,35 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _warn_missing_json_flag(type_check_command: list[str]) -> None:
+    """Warn when a known checker lacks its JSON flag (issue #131 / 360°-A5).
+
+    The report parser hard-requires JSON; the previously documented plain
+    command (``["mypy", "src/"]``) aborted every run with a parser error
+    that never named the missing flag. No auto-append — the configured
+    command stays the user's truth; the parser still aborts loudly.
+    """
+    import sys
+
+    from mutmut_win.type_checking import _detect_checker
+
+    checker = _detect_checker(type_check_command)
+    hint: str | None = None
+    if checker == "mypy" and not any(arg.startswith("--output") for arg in type_check_command):
+        hint = (
+            "--output=json (requires mypy >= 1.11), e.g. "
+            'type_check_command = ["mypy", "--output=json", "src/"]'
+        )
+    elif checker == "pyright" and "--outputjson" not in type_check_command:
+        hint = '--outputjson, e.g. type_check_command = ["pyright", "--outputjson", "."]'
+    if hint:
+        print(
+            f"Warning: type_check_command uses {checker} without its JSON output "
+            f"flag — the report parser will abort. Add {hint}.",
+            file=sys.stderr,
+        )
 
 
 def _ensure_tolerant_stdout() -> None:

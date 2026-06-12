@@ -188,7 +188,11 @@ pytest_add_cli_args_test_selection = []   # extra args for test-selection runs
 
 # Filters
 mutate_only_covered_lines = false     # only mutate lines your tests execute
-type_check_command = ["mypy", "src/"] # mutants the checker rejects count as caught
+type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
+                                      # (mypy >= 1.11; pyright: --outputjson).
+                                      # Checker-rejected mutants count as caught;
+                                      # errors replicated from the original code
+                                      # are subtracted, not counted as kills.
 
 # Advanced
 max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited (0 is rejected)

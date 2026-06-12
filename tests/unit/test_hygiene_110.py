@@ -153,10 +153,11 @@ class TestWindowHintOncePerRun:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        # Mocked clean run -> floor clamps to 5s; mean budget ~6s. A 10s
-        # window covers >= 50% of the smallest budget -> hint, exactly once
+        # Mocked stats leave every task unassigned — since #130/B3 their
+        # budget is the full-suite fallback (60s). A 40s window covers
+        # >= 50% of that smallest budget -> hint, exactly once
         # (multiple mutants, max_children=4 — per-worker would print 4x).
-        self._run(tmp_path, window_seconds=10.0)
+        self._run(tmp_path, window_seconds=40.0)
         out = capsys.readouterr().out
         assert out.count("IL window covers") == 1
 

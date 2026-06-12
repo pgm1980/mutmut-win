@@ -139,3 +139,85 @@ class TestPluginStatsTimeIsPreserved:
         on_disk = load_stats(tmp_path)
         assert on_disk is not None
         assert on_disk.stats_time == 42.5
+
+
+class TestChangedTestFileInvalidation:
+    """Issue #130 / 360°-B1: in-place test edits must refresh the mapping.
+
+    Only new/removed node IDs used to trigger a re-collection — an edited
+    test (same ID, different body) kept the STALE test↔function mapping:
+    newly covered functions stayed 'no tests', strengthened tests reached
+    their mutants with the old assignment.
+    """
+
+    def test_changed_test_file_triggers_full_recollection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        test_file = tmp_path / "tests" / "test_a.py"
+        test_file.parent.mkdir()
+        test_file.write_text("def test_one(): pass\n", encoding="utf-8")
+        mutants = tmp_path / "mutants"
+        save_stats(
+            MutmutStats(
+                tests_by_mangled_function_name={"x_f__mutmut_1": {"tests/test_a.py::test_one"}},
+                duration_by_test={"tests/test_a.py::test_one": 1.5},
+                stats_time=2.0,
+            ),
+            mutants,
+        )
+        runner = _runner(collected=["tests/test_a.py::test_one"])  # same node IDs
+        collect_or_load_stats(runner, mutants)
+        runner.run_stats.assert_not_called()  # unchanged file → cache served
+
+        test_file.write_text("def test_one(): assert True\n", encoding="utf-8")  # in-place edit
+        runner2 = _runner(collected=["tests/test_a.py::test_one"])
+        collect_or_load_stats(runner2, mutants)
+
+        runner2.run_stats.assert_called_once()  # mapping refresh forced
+        assert "changed" in capsys.readouterr().out.lower()
+
+    def test_fingerprints_are_persisted_with_the_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
+
+        save_stats(
+            MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
+            tmp_path / "mutants",
+        )
+
+        loaded = load_stats(tmp_path / "mutants")
+        assert loaded is not None
+        assert "tests/test_a.py" in loaded.test_file_fingerprints
+        assert loaded.test_file_fingerprints["tests/test_a.py"] != "missing"
+
+    def test_legacy_cache_without_fingerprints_recollects_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pre-#130 caches carry no fingerprint field: treat everything as
+        # changed ONCE (self-healing), then settle.
+        import json as json_module
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
+        mutants = tmp_path / "mutants"
+        mutants.mkdir()
+        (mutants / "mutmut-stats.json").write_text(
+            json_module.dumps(
+                {
+                    "tests_by_mangled_function_name": {},
+                    "duration_by_test": {"tests/test_a.py::test_one": 1.0},
+                    "stats_time": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        runner = _runner(collected=["tests/test_a.py::test_one"])
+
+        collect_or_load_stats(runner, mutants)
+
+        runner.run_stats.assert_called_once()  # legacy heal

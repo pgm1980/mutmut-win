@@ -182,15 +182,38 @@ class PytestRunner:
     def collect_tests(self) -> list[str]:
         """Collect test node IDs via ``pytest --collect-only``.
 
+        Scope parity with the stats phase (issue #130 / 360°-B2): the
+        collection runs inside ``mutants/`` with the staging env and BOTH
+        cli-arg lists plus ``tests_dir`` — a marker filter visible only to
+        the stats run used to make every collection see "new" tests and
+        re-collect the full stats run forever. Falls back to the project
+        root when no staging exists (ad-hoc callers, unit tests). The pipe
+        decodes utf-8 with replacement: a cp1252 console with non-ASCII
+        test IDs crashed the strict reader.
+
         Returns:
             Sorted list of test node ID strings (e.g. ``tests/unit/test_foo.py::test_bar``).
         """
         cmd = [*self._base_pytest_cmd(), "--collect-only", "-q", "--no-header"]
+        cmd.extend(self._config.pytest_add_cli_args)
         cmd.extend(self._config.pytest_add_cli_args_test_selection)
+        if self._config.tests_dir:
+            cmd.extend(self._config.tests_dir)
+
+        staging_exists = Path("mutants").is_dir()
+        env: dict[str, str] | None = None
+        if staging_exists:
+            env = self._mutants_env()
+            env[MUTANT_ENV_VAR] = ""
+            env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd,
             capture_output=True,
             encoding="utf-8",
+            errors="replace",
+            cwd="mutants" if staging_exists else None,
+            env=env,
         )
         tests: list[str] = []
         for line in result.stdout.splitlines():

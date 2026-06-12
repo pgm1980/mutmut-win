@@ -177,6 +177,48 @@ class TestCollectTests:
         cmd = mock_run.call_args[0][0]
         assert "tests/unit/" in cmd
 
+    def test_collection_scope_matches_the_stats_phase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-B2 (#130): collection ran in the PROJECT root without
+        # tests_dir or pytest_add_cli_args — marker filters or missing
+        # testpaths made every run see "new" tests → permanent full
+        # re-collection; strict utf-8 decoding crashed on cp1252 pipes.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(_config(pytest_add_cli_args=["-m", "not slow"], tests_dir=["tests/"]))
+        with patch(
+            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+        ) as mock_run:
+            runner.collect_tests()
+
+        cmd = mock_run.call_args[0][0]
+        kwargs = mock_run.call_args[1]
+        assert "-m" in cmd
+        assert "not slow" in cmd
+        assert "tests/" in cmd
+        assert kwargs.get("cwd") == "mutants"
+        assert kwargs.get("errors") == "replace"
+        env = kwargs.get("env")
+        assert env is not None
+        assert env.get("MUTANT_UNDER_TEST") == ""
+
+    def test_collection_falls_back_to_project_root_without_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defensive: callers outside the pipeline (unit tests, ad-hoc use)
+        # may collect before any staging exists. A nested dir sidesteps the
+        # module fixture that pre-creates mutants/ in tmp_path.
+        isolated = tmp_path / "isolated"
+        isolated.mkdir()
+        monkeypatch.chdir(isolated)  # no mutants/ here
+        runner = PytestRunner(_config())
+        with patch(
+            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+        ) as mock_run:
+            runner.collect_tests()
+        assert mock_run.call_args[1].get("cwd") is None
+
 
 # ---------------------------------------------------------------------------
 # run_stats

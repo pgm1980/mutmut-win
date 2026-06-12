@@ -49,6 +49,13 @@ class MutmutStats:
     tests_by_mangled_function_name: dict[str, set[str]] = field(default_factory=dict)
     duration_by_test: dict[str, float] = field(default_factory=dict)
     stats_time: float = 0.0
+    # Issue #130 / 360°-B1: per-test-FILE fingerprints (mtime_ns:size, or
+    # "missing") recorded when the cache was written. In-place edits keep
+    # node IDs identical — without the file fingerprint the mapping never
+    # refreshed and newly covered functions stayed 'no tests'. Known limit
+    # (documented): conftest.py edits don't appear in node IDs and are not
+    # fingerprinted — heal via --force / deleting the stats cache.
+    test_file_fingerprints: dict[str, str] = field(default_factory=dict)
 
 
 def load_stats(mutants_dir: Path = Path("mutants")) -> MutmutStats | None:
@@ -85,11 +92,37 @@ def load_stats(mutants_dir: Path = Path("mutants")) -> MutmutStats | None:
     raw_time = data.pop("stats_time", 0.0)
     stats_time = float(raw_time) if isinstance(raw_time, (int, float)) else 0.0
 
+    raw_fps = data.pop("test_file_fingerprints", {})
+    test_file_fingerprints: dict[str, str] = {}
+    if isinstance(raw_fps, dict):
+        test_file_fingerprints = {str(k): str(v) for k, v in raw_fps.items()}
+
     return MutmutStats(
         tests_by_mangled_function_name=tests_by_mangled,
         duration_by_test=duration_by_test,
         stats_time=stats_time,
+        test_file_fingerprints=test_file_fingerprints,
     )
+
+
+def _fingerprint_test_files(node_ids: object) -> dict[str, str]:
+    """Stat every test FILE behind *node_ids* — ``mtime_ns:size`` or ``missing``.
+
+    Same derivation and stat basis (project root) as the per-mutant
+    ``tests_fingerprint`` of issue #119 — deliberately one semantics for
+    both reuse and mapping invalidation (issue #130 / 360°-B1).
+    """
+    fingerprints: dict[str, str] = {}
+    for node_id in node_ids:  # type: ignore[attr-defined]
+        file_part = str(node_id).split("::", 1)[0]
+        if file_part in fingerprints:
+            continue
+        try:
+            stat = Path(file_part).stat()
+            fingerprints[file_part] = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            fingerprints[file_part] = "missing"
+    return fingerprints
 
 
 def save_stats(stats: MutmutStats, mutants_dir: Path = Path("mutants")) -> None:
@@ -104,12 +137,18 @@ def save_stats(stats: MutmutStats, mutants_dir: Path = Path("mutants")) -> None:
     """
     mutants_dir.mkdir(parents=True, exist_ok=True)
     stats_path = mutants_dir / _STATS_FILENAME
+    # Fingerprints are ALWAYS refreshed from the current duration keys at
+    # save time (issue #130 / 360°-B1): the write moment is the measurement
+    # truth, and files whose node IDs left the cache drop out automatically
+    # (no stale entries to re-trigger collection forever).
+    stats.test_file_fingerprints = _fingerprint_test_files(stats.duration_by_test)
     payload = {
         "tests_by_mangled_function_name": {
             k: sorted(v) for k, v in stats.tests_by_mangled_function_name.items()
         },
         "duration_by_test": stats.duration_by_test,
         "stats_time": stats.stats_time,
+        "test_file_fingerprints": stats.test_file_fingerprints,
     }
     with stats_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=4)
@@ -156,10 +195,27 @@ def collect_or_load_stats(
         result.clear_out_obsolete_test_names(mutants_dir)
         save_stats(cached, mutants_dir)
 
+    # Issue #130 / 360°-B1: in-place edits keep node IDs identical — compare
+    # the per-file fingerprints recorded with the cache. A legacy cache
+    # without the field reports every file as changed ONCE (self-healing:
+    # the refreshed cache persists fingerprints).
+    current_fps = _fingerprint_test_files(cached.duration_by_test.keys())
+    changed_files = sorted(
+        f for f, fp in current_fps.items() if cached.test_file_fingerprints.get(f) != fp
+    )
+
     if new_tests:
-        print(f"Found {len(new_tests)} new tests, re-running stats collection for them")
-        # Re-run stats for new tests only.
-        return _run_stats_collection(runner, mutants_dir, tests=list(new_tests), cached=cached)
+        print(
+            f"Found {len(new_tests)} new tests — re-collecting the full stats run "
+            "(per-test collection is not implemented; the run is always complete)."
+        )
+    elif changed_files:
+        print(
+            f"{len(changed_files)} test file(s) changed in place — re-collecting "
+            "the full stats run so the test↔function mapping stays honest (issue #130)."
+        )
+    if new_tests or changed_files:
+        return _run_stats_collection(runner, mutants_dir, cached=cached)
 
     return cached
 
@@ -167,7 +223,6 @@ def collect_or_load_stats(
 def _run_stats_collection(
     runner: PytestRunner,
     mutants_dir: Path,
-    tests: list[str] | None = None,  # noqa: ARG001 — reserved for future per-test stats collection
     cached: MutmutStats | None = None,
 ) -> MutmutStats:
     """Run a fresh stats collection; never let a failure poison the cache.
@@ -176,7 +231,16 @@ def _run_stats_collection(
     plugin; the plugin writes ``mutmut-stats.json`` at session end — that
     file is the single source of truth (its ``stats_time`` is the accurate
     in-subprocess measurement, issue #99 / A2-RN-008: the parent used to
-    re-save it with a near-zero ``process_time()``).
+    re-save it with a near-zero ``process_time()``). The collection is
+    ALWAYS the full suite — the former ``tests`` parameter was reserved-
+    but-unused and its message a lie (issue #130 / 360°-B1; a targeted
+    partial collection stays a documented future option in #132/C3).
+
+    On success the loaded plugin JSON is re-saved once: the plugin knows
+    nothing about test-FILE fingerprints, and without persisting them every
+    later run would see "everything changed" (issue #130 / 360°-B1).
+    ``stats_time`` is the loaded plugin value, so the RN-008 guarantee
+    survives the re-save.
 
     On a FAILED run (issue #99 / A3-OS-006 + A2-RN-003): the freshly
     written JSON may be partial — it is neither loaded nor trusted; the
@@ -187,7 +251,6 @@ def _run_stats_collection(
     Args:
         runner: ``PytestRunner`` used to execute the stats run.
         mutants_dir: Directory where the stats JSON file lives.
-        tests: Reserved for future per-test collection.
         cached: The pre-run cache, used as fallback on failure.
 
     Returns:
@@ -215,6 +278,8 @@ def _run_stats_collection(
             "run the full test suite (slow)."
         )
         return cached if cached is not None else MutmutStats()
+    # Persist the file fingerprints alongside the plugin data (see above).
+    save_stats(stats, mutants_dir)
     return stats
 
 
