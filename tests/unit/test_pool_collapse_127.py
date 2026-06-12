@@ -21,8 +21,8 @@ from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig, load_config
-from mutmut_win.models import MutationRunResult, TaskCompleted
-from mutmut_win.orchestrator import _print_summary
+from mutmut_win.models import MutationRunResult, MutationTask, TaskCompleted
+from mutmut_win.orchestrator import MutationOrchestrator, _print_summary
 from mutmut_win.process.executor import SpawnPoolExecutor
 
 if TYPE_CHECKING:
@@ -60,7 +60,12 @@ class TestExecutorPoolCollapse:
         assert executor.abort_reason is not None
         assert "2 task(s)" in executor.abort_reason
         captured = capsys.readouterr()
-        assert "workers died" in captured.err  # error prose belongs on stderr
+        # Verbatim pin (mutation hardening): diagnostics are contract.
+        expected = (
+            "Error: all 1 workers died; 2 task(s) were never started — "
+            "aborting the run. Their mutants remain unchecked."
+        )
+        assert expected in captured.err.splitlines()
         assert "workers died" not in captured.out
 
     def test_healthy_completion_leaves_aborted_false(self) -> None:
@@ -111,14 +116,96 @@ class TestExecutorAbortedSeam:
 
 
 class TestSummaryAbortedLine:
-    def test_print_summary_announces_the_abort(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_print_summary_announces_the_abort_verbatim(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         summary = MutationRunResult(total_mutants=5, killed=1, unchecked=4, run_aborted=True)
 
         _print_summary(summary)
 
         out = capsys.readouterr().out
-        assert "ABORTED" in out
-        assert "checked 1 of 5" in out
+        # Verbatim pin (mutation hardening): the line is contract.
+        assert "ABORTED       : worker pool collapsed — checked 1 of 5 mutants" in out.splitlines()
+
+    def test_no_aborted_line_for_a_normal_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Kills the and→or guard mutant: a healthy summary must NOT carry
+        # the ABORTED banner.
+        _print_summary(MutationRunResult(total_mutants=5, killed=5))
+        assert "ABORTED" not in capsys.readouterr().out
+
+    def test_interrupt_banner_wins_over_aborted_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Both flags true → INTERRUPTED banner only (no duplicate header).
+        summary = MutationRunResult(
+            total_mutants=5, unchecked=5, was_interrupted=True, run_aborted=True
+        )
+        _print_summary(summary)
+        out = capsys.readouterr().out
+        assert "INTERRUPTED" in out
+        assert "ABORTED" not in out
+
+
+class _AbortedFakeExecutor:
+    """Real object (not MagicMock) — getattr must see LITERAL attribute values."""
+
+    aborted = True
+    abort_reason = "all 1 workers died; 1 task(s) were never started"
+
+    def start(self, tasks: Any) -> None:
+        self.started = list(tasks)
+
+    def get_events(self) -> Any:
+        return iter(())
+
+    def shutdown(self, timeout: float = 10.0) -> None:
+        pass
+
+
+def _make_runner() -> MagicMock:
+    runner = MagicMock()
+    runner.run_clean_test.return_value = 0
+    runner.run_forced_fail.return_value = 1
+    runner.run_stats.return_value = 0
+    runner.collect_tests.return_value = []
+    return runner
+
+
+class TestRunAbortedWiring:
+    """End-to-end seam: run() must read the EXECUTOR's collapse declaration."""
+
+    def _run_with_executor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, executor: Any
+    ) -> MutationRunResult:
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        orch = MutationOrchestrator(
+            _config(),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "db",
+        )
+        return orch.run()
+
+    def test_collapsed_executor_sets_run_aborted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Kills the run() wiring mutants (assignment → None / wrong arg):
+        # the literal True of the REAL executor must reach the summary.
+        result = self._run_with_executor(tmp_path, monkeypatch, _AbortedFakeExecutor())
+        assert result.run_aborted is True
+        assert result.unchecked >= 1  # never-started remainder stays unchecked
+
+    def test_magicmock_executor_keeps_run_aborted_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end pin of the MagicMock-truthiness hardening.
+        executor = MagicMock()
+        executor.get_events.return_value = iter(())
+        result = self._run_with_executor(tmp_path, monkeypatch, executor)
+        assert result.run_aborted is False
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +340,39 @@ class TestWorkerDiagnosticsChannel:
         captured = capsys.readouterr()
         assert "WORKER RECOVERY" in captured.err
         assert "WORKER RECOVERY" not in captured.out
+
+    def test_worker_error_print_is_verbatim_on_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The OSError diagnostic of _process_task — verbatim pin + channel.
+        from mutmut_win.process.worker import worker_main
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()  # _process_task creates its log here
+        task_q = _SimpleQueue()
+        event_q = _SimpleQueue()
+        task_q.put(MutationTask(mutant_name="m.x_f__mutmut_1").model_dump())
+        task_q.put(None)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=OSError("boom")):
+            worker_main(task_q, event_q, {"pytest_add_cli_args": []})  # type: ignore[arg-type]
+
+        captured = capsys.readouterr()
+        assert "WORKER ERROR for m.x_f__mutmut_1: boom" in captured.err.splitlines()
+        assert "WORKER ERROR" not in captured.out
+
+    def test_monitor_start_failure_print_is_verbatim_on_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mutmut_win.process.worker import _maybe_start_loop_monitor
+
+        with patch(
+            "mutmut_win.process.loop_monitor.ProcessMonitor",
+            side_effect=RuntimeError("boom"),
+        ):
+            monitor = _maybe_start_loop_monitor(True, 1234, tmp_path / "x.log")
+
+        assert monitor is None  # graceful degradation, never poison the worker
+        captured = capsys.readouterr()
+        assert "WORKER MONITOR start failed: boom" in captured.err.splitlines()
+        assert "MONITOR" not in captured.out
