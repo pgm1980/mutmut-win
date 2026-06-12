@@ -626,12 +626,18 @@ def create_mutants_for_file(
     generated: str
     try:
         buf = StringIO()
-        mutant_names = write_all_mutants_to_file(
-            out=buf,
-            source=source,
-            filename=filename,
-            covered_lines=covered_lines,
-        )
+        # Record engine-level warnings (e.g. the function-granular
+        # mangling-separator skip, issue #121 / MUT-002) so they reach the
+        # orchestrator's warning channel like the file-level ones.
+        with warnings.catch_warnings(record=True) as engine_warnings:
+            warnings.simplefilter("always")
+            mutant_names = write_all_mutants_to_file(
+                out=buf,
+                source=source,
+                filename=filename,
+                covered_lines=covered_lines,
+            )
+        collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()
     except (cst.ParserSyntaxError, cst.CSTValidationError, ValueError) as exc:
         # libcst cannot parse this file, or the engine hit an unmutatable

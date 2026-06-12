@@ -43,7 +43,21 @@ def operator_number(
 def operator_string(
     node: cst.BaseString,
 ) -> Iterable[cst.BaseString]:
-    """Mutate string literals: prepend/append XX, lowercase, uppercase."""
+    """Mutate string literals: prepend/append XX, lowercase, uppercase.
+
+    f-strings mutate their literal TEXT parts only (one mutant per part,
+    XX-wrapped) — format specs and expressions live in
+    ``FormattedStringExpression`` nodes and are provably untouched
+    (issue #121 / external QA MUT-001: upstream 3.5.0 mutates only
+    ``SimpleString``, leaving f-strings outside the mutation surface).
+    """
+    if isinstance(node, cst.FormattedString):
+        for index, part in enumerate(node.parts):
+            if isinstance(part, cst.FormattedStringText):
+                new_parts = list(node.parts)
+                new_parts[index] = part.with_changes(value=f"XX{part.value}XX")
+                yield node.with_changes(parts=new_parts)
+        return
     if isinstance(node, cst.SimpleString):
         value = node.value
         old_value = value
@@ -478,12 +492,18 @@ def operator_return_value(node: cst.Return) -> Iterable[cst.Return]:
     """Replace non-literal return values with ``None``.
 
     Skips bare ``return``, ``return None``, and literal values (numbers,
-    strings, booleans) which are already mutated by other operators.
+    strings, booleans) which are already mutated by other operators —
+    EXCEPT f-strings: their expression parts are not covered by
+    ``operator_string``, and skipping them made f-string-only functions
+    vanish from the mutation surface entirely (issue #121 / external QA
+    MUT-001: no trampoline, no mutants, invisible in every report).
     """
     if node.value is None:
         return  # bare return
     # Skip literals already covered by other operators
-    if isinstance(node.value, (cst.BaseNumber, cst.BaseString)):
+    if isinstance(node.value, (cst.BaseNumber, cst.BaseString)) and not isinstance(
+        node.value, cst.FormattedString
+    ):
         return
     if isinstance(node.value, cst.Name) and node.value.value in ("None", "True", "False"):
         return

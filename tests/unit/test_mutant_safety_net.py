@@ -66,7 +66,10 @@ class TestValidateThenWrite:
 
     def test_u01c1_identifier_does_not_crash_run(self, tmp_path: Path) -> None:
         """A legal identifier containing U+01C1 (the mangling separator) must
-        not crash mutant generation (A1-MT-011) — file is copied unmutated."""
+        not crash mutant generation (A1-MT-011). Since issue #121 / MUT-002
+        the skip is function-granular: the offending function survives
+        verbatim (no mutants), the file as a whole stays compilable, and the
+        warning names the engine limitation."""
         source = "def aǁb():\n    return 1\n"
         src_file = tmp_path / "mod.py"
         src_file.write_text(source, encoding="utf-8")
@@ -75,8 +78,10 @@ class TestValidateThenWrite:
         names, warns, _ = create_mutants_for_file(src_file, out_file)
 
         assert names == []
-        assert out_file.read_text(encoding="utf-8") == source
-        assert len(warns) >= 1
+        written = out_file.read_text(encoding="utf-8")
+        assert "def aǁb():" in written  # original function kept verbatim
+        ast.parse(written)  # must compile
+        assert any("mangling separator" in str(w.message) for w in warns)
 
 
 # ---------------------------------------------------------------------------
