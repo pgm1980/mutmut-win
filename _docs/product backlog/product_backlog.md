@@ -31,7 +31,7 @@
 | v2.10.0 | Pipeline Hygiene | Sprint 32 | Done | Audit C8+C9-Top (LETZTER Audit-Sprint): Selbst-Hygiene+Dogfooding-Premiere (#98), Runner/Stats-Wahrheit (#99), DB-Härtung (#100), Staging-Hygiene (#101), Config/CLI (#102), CI-Output (#103), C9-Rest-Triage (#104) — released 2026-06-11; **Audit-Zyklus beendet** |
 | v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Done | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — released 2026-06-11; **Pilot 24,2 % → 86,9 % brutto, 0 Timeouts statt 175; Architektur-Skip im Artefakt entfernt** |
 | v2.12.0 | Maintenance 2: Final Sweep | Sprint 34 | Done | VOLLSTÄNDIGER Pool-Rest (13 Einträge) + Entscheidungsregister: Runner-Wahrheit (#111), Arg-Koerzierung (#112), Sanitiser-Subtables (#113), Exception-Hygiene (#114), CLI-Konsistenz (#115), sitecustomize (#116), Abschluss-Dossier (#117) — released 2026-06-12; **Pool 13 → 0, Register 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten, Vollvermessung 68,3 % als Pausen-Baseline; danach ENTWICKLUNGSPAUSE** |
-| v2.13.0 | Maintenance 3: External QA | Sprint 35 | Planned | Pausen-Unterbrechung auf User-Entscheid: alle 15 Findings des externen 360°-QA-Reports (6 Medium, 9 Low, alle verifiziert) — Intake/DOC-001 (#118), **Result-Reuse-Feature** (#119), CLI/Config-Vertrag (#120), Mutationsoberfläche/f-Strings (#121), skipped-Producer + Score-Darstellung (#122), Robustheit/WER (#123); danach zurück in die Pause |
+| v2.13.0 | Maintenance 3: External QA | Sprint 35 | Done | Pausen-Unterbrechung auf User-Entscheid: alle 15 Findings des externen 360°-QA-Reports (6 Medium, 9 Low, alle verifiziert) — Intake/DOC-001 (#118), **Result-Reuse-Feature** (#119), CLI/Config-Vertrag (#120), Mutationsoberfläche/f-Strings (#121), skipped-Producer + Score-Darstellung (#122), Robustheit/WER (#123) — released 2026-06-12; **15/15 geschlossen, Reuse-Demo: Lauf C dispatcht 0, Pilot settled 82,8 %; danach zurück in die ENTWICKLUNGSPAUSE** |
 
 ---
 
@@ -725,7 +725,7 @@ als echtes Result-Reuse implementiert (User-Option b). Detail:
 - [x] `skipped` ist erreichbar (Producer: Namens-Filter-Subset-Läufe) und über alle Kanäle konsistent (Drei-Kanal-Test)
 - [x] Dogfooding-Pilot: settled **82,8 % ≥ 80 %** (roh 78,1 % — +15 f-String-Mutanten, 12 Kaltstart-Timeouts designgemäß re-run, 12/12 gekillt); Verschiebung im Protokoll/Changelog
 - [x] Quality Gates: pytest 1016 grün, ruff 0, format 0, mypy 14 = Baseline (0 neue), semgrep 0 (voller Sweep), lint-imports KEPT
-- [ ] Nach Release: Pausenzustand wiederhergestellt (bei v2.13.0-Release)
+- [x] Nach Release: Pausenzustand wiederhergestellt (v2.13.0 released 2026-06-12)
 
 ---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
@@ -794,7 +794,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Pipeline Hygiene v2.10.0 | v2.10.0 | Epic 23 | #98–#104 | Done |
 | Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
 | Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Done |
-| Maintenance 3 v2.13.0 | v2.13.0 | Epic 26 | #118–#123 | Planned |
+| Maintenance 3 v2.13.0 | v2.13.0 | Epic 26 | #118–#123 | Done |
 
 ---
 
@@ -879,3 +879,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.6.0 | 2026-06-12 | Claude Code Agent | Sprint 34 geschlossen (v2.12.0 released, Merge schloss #111–#117 automatisch): annotated Tag + GitHub-Release; **PROJEKT IN ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Pool-Einträge, 0 offene Entscheidungen, 0 offene Milestones; Vollvermessungs-Baseline (7800 Mutanten, 68,3 %) als Wiederaufnahme-Startpunkt dokumentiert. |
 | 2.7.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geplant (Pausen-Unterbrechung auf User-Entscheid): Epic 26 (Maintenance 3: External QA, #118–#123, 29 SP) per 10-Schritt-CoT — alle 15 Findings des externen QA-Reports (verifiziert, 0 Falschmeldungen); Entscheidungen: RUN-001 als Result-Reuse-FEATURE, skipped-Producer, Report-Intake nach _docs/audit/; Reihenfolge 118→120→119→122→121→123 (Purge vor Reuse vor Producer). |
 | 2.8.0 | 2026-06-12 | Claude Code Agent | Sprint 35 implementiert (Epic 26 Done, Velocity 29/29): **15/15 externe QA-Findings geschlossen**; Result-Reuse live (Lauf B: 244 reused/12 dispatcht, Lauf C: 256 reused/**0 dispatcht**); skipped erreichbar; f-Strings in der Mutationsoberfläche (+15 Pilot-Mutanten, Verschiebung dokumentiert); Gates: 1016 passed (+65), ruff/format 0, mypy 14, semgrep 0; Pilot settled 82,8 %. Release v2.13.0 ausstehend; danach zurück in die Pause. |
+| 2.9.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geschlossen (v2.13.0 released, Merge schloss #118–#123 automatisch): annotated Tag + GitHub-Release (Result-Reuse als Headline, Score-Verschiebung ausgewiesen); Versionspins (README/Install-Guide/CLAUDE.md) im Bump-Commit; **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Backlog-Einträge, externes QA-Archiv unter _docs/audit/. |

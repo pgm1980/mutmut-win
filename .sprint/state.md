@@ -3,9 +3,9 @@ current_sprint: "35"
 sprint_goal: "v2.13.0 Maintenance 3: External QA — alle 15 Findings des externen 360°-QA-Reports (6 Medium, 9 Low; #118–#123) inkl. Result-Reuse-Feature (RUN-001) und skipped-Producer (SCO-002); danach zurück in die Entwicklungspause. Messziele: 15/15 geschlossen, Pilot >= 80 %, Reuse-Demo (Lauf B dispatcht 0)."
 branch: "feature/v2.13.0-maintenance-3"
 started_at: "2026-06-12"
-housekeeping_done: false
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -16,18 +16,21 @@ documentation_updated: true
 
 ## Current Focus
 Sprint 35 — **v2.13.0 Maintenance 3: External QA** —
-**IMPLEMENTIERUNG KOMPLETT** (alle 6 Issues #118–#123, 29/29 SP,
-Commits `a504b3c`..`ba7e28c`). **15/15 externe QA-Findings
-geschlossen.** Highlight: Result-Reuse live — Pilot-Lauf C: „Reused
-256 cached verdicts (0 dispatched)", 40 s statt 106 s (RUN-001-Repro
-als Feature). Gates: 1016 passed (+65), ruff/format 0, mypy 14 =
-Baseline, semgrep 0 (voller Sweep), lint-imports KEPT; Pilot settled
-**82,8 % ≥ 80 %** (roh 78,1 %: +15 ehrliche f-String-Mutanten durch
-MUT-001 — ~14 neue Survivors der dokumentierten Fehlertext-Klasse —
-plus 12 Kaltstart-Timeouts, designgemäß in Lauf B re-run und 12/12
-gekillt). pip-audit-Limitation unverändert. Release v2.13.0 wartet
-auf explizites User-„Release" (Merge → Auto-Close #118–#123 →
-housekeeping_done); **danach zurück in die Entwicklungspause**.
+**GESCHLOSSEN, v2.13.0 RELEASED 2026-06-12** (User-„Release"; Merge
+`0c5a8bf`, Bump `81d79f9` inkl. Versionspins, annotated Tag v2.13.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.13.0),
+#118–#123 via Merge auto-geschlossen — 0 offene Issues). Gates vor dem
+Merge frisch verifiziert: 1016 passed / 5 skipped, ruff/format 0,
+mypy 14 = Baseline. 15/15 externe QA-Findings geschlossen; Result-
+Reuse live (Lauf C: 256 reused, 0 dispatcht).
+
+**PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE (User-Entscheidung):**
+0 offene Issues · 0 Backlog-Einträge · 0 offene Entscheidungen ·
+0 offene Milestones. Wiederaufnahme-Startpunkte: Sprint-34-Pausen-
+Baseline (Vollvermessung 7800 Mutanten / 68,3 %) und das externe
+QA-Archiv (`_docs/audit/external_qa_report_v2.12.0.md`). Kein neuer
+Sprint geplant — nächster Sprint-State entsteht erst bei
+Wiederaufnahme.
 
 ## Sprint 35 Backlog (29 SP — Must 24, Should 5)
 1. **#118 (Must, 1 SP):** Intake + DOC-001 — User-Hotfix committen,

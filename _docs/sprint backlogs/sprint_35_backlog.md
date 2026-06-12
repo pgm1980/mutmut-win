@@ -209,13 +209,16 @@ Pilot identisch zu Sprint 32–34: `code_coverage.py` + `type_checking.py`.
 
 ---
 
-## Release v2.13.0 (nur auf explizites User-„Release")
+## Release v2.13.0 (ausgelöst durch explizites User-„Release" am 2026-06-12)
 
 | Task | Status |
 |------|--------|
-| pyproject.toml + uv.lock auf 2.13.0 (`uv lock --system-certs`) | 🔲 |
-| README/Install-Guide-Versionspins auf v2.13.0 | 🔲 |
-| Annotated Tag v2.13.0 | 🔲 |
-| GitHub Release (Changelog: External QA, Result-Reuse, Score-Verschiebungen, skipped erreichbar) | 🔲 |
-| Auto-close #118–#123 via Merge | 🔲 |
-| MEMORY.md + product_backlog.md + state.md: **zurück in die Entwicklungspause** | 🔲 |
+| pyproject.toml + uv.lock auf 2.13.0 (`uv lock --system-certs`) | ✅ `81d79f9` |
+| README/Install-Guide-Versionspins auf v2.13.0 (+ CLAUDE.md) | ✅ (im Bump-Commit — der Tag trägt konsistente Pins) |
+| Annotated Tag v2.13.0 | ✅ |
+| GitHub Release (Changelog: External QA, Result-Reuse, Score-Verschiebungen, skipped erreichbar) | ✅ [Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.13.0) |
+| Auto-close #118–#123 via Merge | ✅ (verifiziert: 0 offene Issues) |
+| MEMORY.md + product_backlog.md + state.md: **zurück in die Entwicklungspause** | ✅ |
+
+Vor dem Merge frisch verifizierte Gates: 1016 passed / 5 skipped (197 s),
+ruff 0, format-check 0, mypy 14 = Baseline (0 neue).

@@ -4,12 +4,13 @@
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 
-> **STATUS: DEVELOPMENT PAUSED** (user decision, 2026-06-12, after the
-> v2.12.0 "Final Sweep" release): 0 open issues, 0 maintenance-pool
-> entries, 0 open decisions, 0 open milestones. Resumption starting
-> points: the documented pause baseline (full self-run, 7800 mutants,
-> 68.3% gross — 2337 survivors + 45 timeouts in the Sprint-34 dogfooding
-> protocol) and the stats-fingerprint observation noted there.
+> **STATUS: DEVELOPMENT PAUSED** (user decision; re-entered 2026-06-12
+> after the v2.13.0 "External QA" release — the pause was interrupted
+> once for Sprint 35, which closed all 15 findings of an external QA
+> report): 0 open issues, 0 backlog entries, 0 open decisions, 0 open
+> milestones. Resumption starting points: the Sprint-34 pause baseline
+> (full self-run, 7800 mutants, 68.3% gross — 2337 survivors + 45
+> timeouts) and the external QA archive under `_docs/audit/`.
 
 ## What it is
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
@@ -23,7 +24,9 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - Stack: click (CLI), libcst (mutations), pydantic v2 (config), textual (TUI),
   coverage (coverage-guided), psutil (IL detection), SQLite (results),
   pytest (test runner).
-- Distributed as `mutmut-win` on PyPI. Console script: `mutmut-win`.
+- Distributed via Git release tags (NOT on PyPI — DOC-001/external QA;
+  the release policy excludes PyPI publishing). Console script:
+  `mutmut-win`.
 
 ## Where we are
 - **Sprint**: 35 — *v2.13.0 Maintenance 3: External QA* — implementation
@@ -50,8 +53,10 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   baseline, semgrep 0 (full sweep); pilot settled **82.8% >= 80%**
   (raw 78.1%: +15 honest f-string mutants — ~14 new survivors of the
   documented error-text class — and 12 cold-start timeouts, re-run
-  killed by design in run B). Release v2.13.0 pending user approval —
-  back to the documented pause afterwards.
+  killed by design in run B). **Released as v2.13.0 on 2026-06-12 —
+  sprint fully closed (29/29 SP; merge auto-closed #118–#123, 0 open
+  issues; gates re-verified pre-merge: 1016 passed). BACK IN THE
+  DOCUMENTED DEVELOPMENT PAUSE.**
 - **Version**: **v2.12.0** released 2026-06-12
   ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0),
   bump 932f90e) — Maintenance 2: Final Sweep, THE LAST RELEASE before
