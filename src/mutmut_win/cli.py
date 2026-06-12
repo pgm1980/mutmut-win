@@ -261,9 +261,13 @@ def run(
         if since_commit is not None:
             import subprocess as sp
 
-            # git command is fully controlled — commit hash is validated by git itself
+            # git command is fully controlled — commit hash is validated by git itself.
+            # Diff against the REF alone (no ..HEAD): committed AND
+            # working-tree changes count — the documented "check what you
+            # just changed" workflow includes uncommitted edits (issue #128
+            # / 360°-A4). Untracked files stay invisible to git diff.
             git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-                ["git", "diff", "--name-only", f"{since_commit}..HEAD"],  # noqa: S607 — git is a well-known executable
+                ["git", "diff", "--name-only", since_commit],  # noqa: S607 — git is a well-known executable
                 capture_output=True,
                 encoding="utf-8",
             )
@@ -275,14 +279,18 @@ def run(
                     err=True,
                 )
                 sys.exit(2)
-            tests_dirs = tuple(d.strip("/").strip("\\") for d in config.tests_dir)
+            tests_dir_parts = tuple(Path(d.strip("/").strip("\\")).parts for d in config.tests_dir)
 
             def _is_mutation_target(name: str) -> bool:
                 # Deleted files and test files used to become mutation targets.
                 if not name.endswith(".py") or not Path(name).exists():
                     return False
                 parts = Path(name).parts
-                return all(parts[0] != td for td in tests_dirs)
+                # Component-prefix match (issue #128 / 360°-A4): the old
+                # parts[0] comparison against the FULL tests_dir string never
+                # matched nested dirs like "tests/unit/" — changed TEST files
+                # became mutation targets.
+                return all(parts[: len(td)] != td for td in tests_dir_parts)
 
             changed_py = [
                 f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)

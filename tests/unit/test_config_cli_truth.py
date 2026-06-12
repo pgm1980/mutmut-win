@@ -144,6 +144,78 @@ class TestSinceCommitTruth:
         assert result.exit_code == 0, result.output
         assert captured["paths"] == ["src/mod.py"]  # deleted + test files filtered
 
+    def test_nested_tests_dir_excludes_changed_test_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-A4 (#128): parts[0] was compared against the FULL tests_dir
+        # string — with tests_dir='tests/unit/' (this project's own
+        # config!) changed TEST files became mutation targets.
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        nested = tmp_path / "tests" / "unit"
+        nested.mkdir(parents=True)
+        (nested / "test_mod.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/unit/"]\n',
+            encoding="utf-8",
+        )
+
+        captured: dict[str, Any] = {}
+
+        def fake_orchestrator(config: Any, **_kwargs: Any) -> MagicMock:
+            captured["paths"] = list(config.paths_to_mutate)
+            instance = MagicMock()
+            from mutmut_win.models import MutationRunResult
+
+            instance.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            return instance
+
+        git_output = "src/mod.py\ntests/unit/test_mod.py\n"
+        with (
+            patch("subprocess.run", return_value=self._git(stdout=git_output)),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]  # nested test dir excluded
+
+    def test_diff_includes_the_working_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-A4 (#128): 'ref..HEAD' compared two COMMITS — uncommitted
+        # edits were invisible and the documented 'check what you just
+        # changed' workflow reported 'No .py files changed'. Diffing
+        # against the ref alone includes the working tree.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+
+        seen: dict[str, Any] = {}
+
+        def spy_run(cmd: Any, **_kwargs: Any) -> MagicMock:
+            seen["cmd"] = list(cmd)
+            return self._git(stdout="src/mod.py\n")
+
+        with (
+            patch("subprocess.run", side_effect=spy_run),
+            patch("mutmut_win.cli.MutationOrchestrator") as orch,
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            from mutmut_win.models import MutationRunResult
+
+            orch.return_value.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["cmd"][:4] == ["git", "diff", "--name-only", "HEAD~1"]
+        assert "HEAD~1..HEAD" not in seen["cmd"]
+
 
 class TestDebugIsReal:
     # Since issue #114 / A4-QX-006 the run-level except only handles DOMAIN

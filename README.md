@@ -143,7 +143,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | Option | Effect |
 |---|---|
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
-| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) |
+| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
 | `--min-score N` | Exit 1 if the score is below N percent (CI gate) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
@@ -212,7 +212,11 @@ Notes:
   `uv.lock`, scratch files) are copied into `mutants/`, and projects
   with large root-level assets pay that copy on the first run
   (unchanged files are skipped afterwards). Keep secrets and bulk data
-  out of the project root or source roots.
+  out of the project root or source roots. The `src.`/`source.` prefix is
+  stripped from mutant names to match the import path — a project whose
+  tests import a root *package* literally named `src`/`source`
+  (`import src.foo`) is therefore not supported; the layout convention
+  wins.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of

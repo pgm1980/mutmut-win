@@ -18,6 +18,17 @@ MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
 #: resolver, and a pin test keeps both in sync (the #110 pattern).
 MINIMUM_PYTEST_VERSION: tuple[int, int] = (8, 2)
 
+#: Source roots whose name is stripped from module paths AND mirrored into
+#: the staging / put on the worker PYTHONPATH (issue #126 / 360°-A3).
+#: Single source of truth: ``get_mutant_name`` strips exactly these
+#: prefixes, and ``copy_src_dir``, ``setup_source_paths``,
+#: ``runner._mutants_env`` and the worker build their root lists from this
+#: tuple — the old per-site literals let ``source/`` be importable but
+#: never name-stripped, so every mutant of a source/-layout was 'no tests'.
+#: ``"."`` is deliberately NOT part of this tuple: modules under the
+#: project root carry no prefix to strip.
+SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
+
 # Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
 # deviations (issue #91, audit A2-EW-020 / A4-QX-025):
 #

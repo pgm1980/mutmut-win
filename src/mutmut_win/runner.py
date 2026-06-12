@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
+from mutmut_win.constants import SOURCE_ROOT_NAMES
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -409,7 +410,7 @@ class PytestRunner:
         # (issue #99 / A2-RN-002): affected projects failed the clean gate
         # with an ImportError nobody could see.
         extra_paths = []
-        for subdir in ["src", "source", ".", *self._config.extra_paths]:
+        for subdir in [*SOURCE_ROOT_NAMES, ".", *self._config.extra_paths]:
             candidate = mutants_abs / subdir
             if candidate.exists():
                 extra_paths.append(str(candidate))
@@ -512,7 +513,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         # Collect real source dirs that should be removed from sys.path,
         # pre-normalized to match the generated code's normalization.
         real_src_dirs: list[str] = []
-        for subdir in ["src", "source"]:
+        for subdir in SOURCE_ROOT_NAMES:
             candidate = Path(subdir).absolute()
             if candidate.exists():
                 real_src_dirs.append(os.path.normcase(os.path.realpath(candidate)))

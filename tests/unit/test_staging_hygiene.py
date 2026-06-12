@@ -411,6 +411,128 @@ class TestMetaRobustness:
         assert leftovers == []  # no temp residue
 
 
+class TestWave3StagingHygiene:
+    """Issue #129 / 360°-A8 + B6 + C2 + C4 — fingerprints and mirror truth."""
+
+    def test_engine_version_change_invalidates_config_fingerprint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-A8: upgrading mutmut-win used to leave the old mutant
+        # universe (and its reuse candidates) silently in place — v2.13's
+        # f-string mutants never appeared on unchanged files.
+        _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        assert config_fingerprint_matches(cfg) is False  # first run persists
+        assert config_fingerprint_matches(cfg) is True  # unchanged → fast path
+
+        import mutmut_win
+
+        monkeypatch.setattr(mutmut_win, "__version__", "99.0.0")
+        assert config_fingerprint_matches(cfg) is False  # upgrade invalidates
+
+    def test_backdated_restore_of_unmutated_mirror_is_synced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-B6a: a git-restore with an OLD timestamp escaped the
+        # mtime-'>' comparison — the staging kept serving the stale copy
+        # and the clean run validated against outdated code.
+        project = _project(tmp_path, monkeypatch)
+        helper = project / "src" / "helper.py"
+        helper.write_text("VALUE = 1\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "src" / "helper.py"
+        assert staged.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+        helper.write_text("VALUE = 2\n", encoding="utf-8")
+        os.utime(helper, (1_000_000_000, 1_000_000_000))  # restore with OLD mtime
+        copy_src_dir(cfg)
+
+        assert staged.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+    def test_mutated_file_with_meta_keeps_newer_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The '>' path must SURVIVE for mutated files: their staging is the
+        # trampolined output (newer) and the .meta fingerprint is the truth
+        # there — an equality mirror would overwrite the trampoline with
+        # the plain source and break the forced-fail gate.
+        project = _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "src" / "mod.py"
+        staged.write_text("# trampolined output\n", encoding="utf-8")
+        staged.with_name(staged.name + ".meta").write_text("{}", encoding="utf-8")
+
+        copy_src_dir(cfg)  # source unchanged since the first mirror
+
+        assert staged.read_text(encoding="utf-8") == "# trampolined output\n"
+
+    def test_also_copy_tree_syncs_updates_and_deletions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-B6b + C2: copytree re-copied everything every run and never
+        # deleted — removed test files kept RUNNING inside the staging.
+        project = _project(tmp_path, monkeypatch)
+        tests_src = project / "tests"
+        tests_src.mkdir()
+        (tests_src / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        (tests_src / "test_gone.py").write_text("def test_b(): pass\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        copy_also_copy_files(cfg)
+        staged_tests = project / "mutants" / "tests"
+        assert (staged_tests / "test_gone.py").exists()
+
+        (tests_src / "test_gone.py").unlink()
+        (tests_src / "test_keep.py").write_text("def test_a(): assert True\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert not (staged_tests / "test_gone.py").exists()  # deletion synced
+        assert "assert True" in (staged_tests / "test_keep.py").read_text(encoding="utf-8")
+
+    def test_also_copy_skips_unchanged_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # C2: the sync must be mtime-aware — unchanged files are not
+        # re-copied (observable via the copy primitive, since copy2
+        # preserves mtimes and hides the difference).
+        import mutmut_win.file_setup as fs
+
+        project = _project(tmp_path, monkeypatch)
+        tests_src = project / "tests"
+        tests_src.mkdir()
+        (tests_src / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        copy_also_copy_files(cfg)
+
+        calls: list[str] = []
+        real_copy = fs._copy_with_retry
+
+        def spying_copy(src: Path, dst: Path, **kwargs: object) -> None:
+            calls.append(str(src))
+            real_copy(src, dst, **kwargs)
+
+        monkeypatch.setattr(fs, "_copy_with_retry", spying_copy)
+        copy_also_copy_files(cfg)
+
+        assert [c for c in calls if "test_keep" in c] == []  # unchanged → untouched
+
+    def test_tooling_dirs_are_not_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-C4: tooling/cache trees have no business in the staging.
+        project = _project(tmp_path, monkeypatch)
+        (project / "node_modules").mkdir()
+        (project / "node_modules" / "big.js").write_text("x", encoding="utf-8")
+        (project / ".claude").mkdir()
+        (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+
+        copy_src_dir(MutmutConfig(paths_to_mutate=["src"]))
+
+        assert not (project / "mutants" / "node_modules").exists()
+        assert not (project / "mutants" / ".claude").exists()
+
+
 class TestForceHonesty:
     def test_partial_removal_is_reported_not_sold_as_clean(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

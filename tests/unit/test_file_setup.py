@@ -133,7 +133,12 @@ class TestCopySrcDir:
         finally:
             os.chdir(original_cwd)
 
-    def test_skips_existing_files(self, tmp_path: Path) -> None:
+    def test_skips_unchanged_files_but_heals_tampered_mirrors(self, tmp_path: Path) -> None:
+        # Issue #129 / 360°-B6a flipped the mirror rule for files WITHOUT a
+        # .meta sibling: the staging copy must equal the source (mtime+size
+        # fingerprint). An unchanged source is not re-copied; a tampered or
+        # stale staging copy (the old test pinned it as untouchable) is
+        # healed back to the source of truth.
         src = tmp_path / "src_pkg"
         src.mkdir()
         source_file = src / "bar.py"
@@ -145,14 +150,19 @@ class TestCopySrcDir:
             cfg = _config(paths_to_mutate=["src_pkg"])
             copy_src_dir(cfg)
 
-            # Find the copied file and overwrite it with different content.
             targets = list((tmp_path / "mutants").rglob("bar.py"))
             assert targets
-            targets[0].write_text("OVERWRITTEN", encoding="utf-8")
+            staged = targets[0]
+            staged_mtime = staged.stat().st_mtime
 
-            # Second call should not overwrite.
+            # Unchanged source → mirror untouched (mtime equality holds).
             copy_src_dir(cfg)
-            assert targets[0].read_text(encoding="utf-8") == "OVERWRITTEN"
+            assert staged.stat().st_mtime == staged_mtime
+
+            # Tampered mirror (no .meta) → healed back to the source.
+            staged.write_text("OVERWRITTEN", encoding="utf-8")
+            copy_src_dir(cfg)
+            assert staged.read_text(encoding="utf-8") == _SIMPLE_SOURCE
         finally:
             os.chdir(original_cwd)
 
@@ -335,6 +345,25 @@ class TestGetMutantName:
         path = Path("src") / "a" / "b" / "c.py"
         result = get_mutant_name(path, "x__mutmut_3")
         assert result == "a.b.c.x__mutmut_3"
+
+    def test_source_root_is_stripped(self) -> None:
+        # 360°-A3 (#126): source/ is a supported staging root everywhere
+        # else (copy roots, PYTHONPATH, sitecustomize) — its prefix must
+        # strip exactly like src., or every mutant ends up 'no tests'.
+        path = Path("source") / "pkg" / "mod.py"
+        result = get_mutant_name(path, "x_f__mutmut_1")
+        assert result == "pkg.mod.x_f__mutmut_1"
+
+    def test_only_one_root_prefix_is_stripped(self) -> None:
+        # src/source/… must become source.… — one strip, no cascade.
+        path = Path("src") / "source" / "mod.py"
+        result = get_mutant_name(path, "x_f__mutmut_1")
+        assert result == "source.mod.x_f__mutmut_1"
+
+    def test_flat_layout_keeps_full_module_path(self) -> None:
+        path = Path("mypkg") / "mod.py"
+        result = get_mutant_name(path, "x_f__mutmut_1")
+        assert result == "mypkg.mod.x_f__mutmut_1"
 
 
 # ---------------------------------------------------------------------------

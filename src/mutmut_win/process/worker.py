@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT
+from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT, SOURCE_ROOT_NAMES
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
@@ -186,7 +186,7 @@ def _process_task(
     # Set PYTHONPATH so subprocess can import from mutants/src etc.
     env = os.environ.copy()
     pythonpath_dirs: list[str] = []
-    for subdir in ["src", "source", "."]:
+    for subdir in [*SOURCE_ROOT_NAMES, "."]:
         candidate = Path("mutants") / subdir
         if candidate.exists():
             pythonpath_dirs.append(str(candidate.absolute()))
