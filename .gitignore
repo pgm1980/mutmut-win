@@ -64,3 +64,8 @@ html/
 
 # Local bug-report scratchpad (downstream findings before they become GitHub issues)
 _issues/
+
+# External QA drop zone: repro projects ship their own venvs and stay
+# untracked as a manual reference — the report itself is archived under
+# _docs/audit/ (Sprint 35 / #118).
+_bug_reports/

@@ -70,14 +70,18 @@ mutmut-compatible: if you know mutmut, you know mutmut-win.
 
 ## Installation
 
+mutmut-win is distributed via the Git repository — PyPI publishing is
+not part of the release sequence (see *Release policy* below). Install
+a pinned release tag:
+
 ```bash
-pip install mutmut-win
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add mutmut-win --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0" --dev
 ```
 
 ## Quick start

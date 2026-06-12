@@ -420,9 +420,9 @@ asyncio_mode = "auto"
 
 mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität der Tests zu verifizieren. mutmut-win ist der Windows-native Port von mutmut 3.5.0.
 
-**Installation:**
+**Installation** (PyPI-Publishing ist nicht Teil der Release-Sequenz — Installation erfolgt über die Git-URL; führendes Dokument: `_config\mutmut-win-install.md`):
 ```bash
-uv add mutmut-win --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0" --dev
 ```
 
 **Wann mutmut-win verwenden (PFLICHT):**
@@ -439,6 +439,7 @@ mutmut-win results
 **VERBOTEN:**
 - **NICHT** einen Sprint abschließen ohne Mutation Testing auf neuen/geänderten Code
 - **NICHT** surviving Mutants ignorieren ohne dokumentierte Begründung
+
 
 ### import-linter — Architektur-Durchsetzung
 
