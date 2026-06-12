@@ -11,8 +11,11 @@ Based on [mutmut 3.5.0](https://github.com/boxed/mutmut), rebuilt for
 Windows: upstream mutmut explicitly blocks Windows
 ([mutmut#397](https://github.com/boxed/mutmut/issues/397)).
 
-**Requirements:** Python ≥ 3.12, Windows 10/11 (primary target; the
-POSIX code paths are kept functional for WSL/Linux CI).
+**Requirements:** Python ≥ 3.12, pytest ≥ 8.2 in the target project
+(the worker hands tests to pytest via the `@argfile` syntax, available
+since 8.2 — older versions abort with a clear error before the first
+mutant), Windows 10/11 (primary target; the POSIX code paths are kept
+functional for WSL/Linux CI).
 
 ---
 

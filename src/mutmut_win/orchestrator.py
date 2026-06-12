@@ -14,12 +14,18 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mutmut_win.constants import EXIT_CODE_TIMEOUT, EXIT_CODE_TYPE_CHECK, status_by_exit_code
+from mutmut_win.constants import (
+    EXIT_CODE_TIMEOUT,
+    EXIT_CODE_TYPE_CHECK,
+    MINIMUM_PYTEST_VERSION,
+    status_by_exit_code,
+)
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
 from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
     MutationResult,
@@ -127,6 +133,10 @@ class MutationOrchestrator:
         if not sys.stdout.line_buffering:
             sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         _ensure_tolerant_stdout()
+
+        # Issue #125 / 360°-A2: fail fast on a pytest that cannot take the
+        # worker's @argfile hand-off — BEFORE any staging work happens.
+        _ensure_supported_pytest()
 
         wall_start = time.monotonic()
 
@@ -711,6 +721,50 @@ def _filter_tasks_by_names(
     return [task for task in tasks if task.mutant_name in matched]
 
 
+def _ensure_supported_pytest() -> None:
+    """Abort before the first mutant when the venv's pytest predates 8.2.
+
+    The worker hands per-mutant tests to pytest via the ``@argfile`` syntax
+    — deliberately the ONLY transfer path (no dual code paths) — and that
+    syntax exists since pytest 8.2. Under an older pytest every covered
+    mutant exits with a usage error and floods ``suspicious`` although the
+    clean run was green (issue #125 / 360°-A2). The in-process version is
+    authoritative: mutmut-win and the workers run the same interpreter
+    (``sys.executable -m pytest``), hence the same pytest installation.
+
+    Unparseable version strings fail OPEN with a warning: the dependency
+    floor (``pytest>=8.2``) is the primary defence, and an exotic dev
+    build must not block a run the resolver already vetted.
+
+    Raises:
+        UnsupportedPytestVersionError: If the detected pytest version is
+            older than :data:`mutmut_win.constants.MINIMUM_PYTEST_VERSION`.
+    """
+    import re
+
+    import pytest
+
+    version = pytest.__version__
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        print(
+            f"Warning: could not parse pytest version {version!r} — proceeding "
+            "(the pytest>=8.2 dependency floor is the primary guard)."
+        )
+        return
+    found = (int(match.group(1)), int(match.group(2)))
+    if found < MINIMUM_PYTEST_VERSION:
+        required = ".".join(str(part) for part in MINIMUM_PYTEST_VERSION)
+        msg = (
+            f"pytest {version} is too old for mutation runs: the worker "
+            f"passes per-mutant tests via pytest's @argfile syntax, which "
+            f"exists since pytest {required}. Upgrade pytest in this "
+            f'project\'s environment (e.g. `uv add "pytest>={required}" --dev` '
+            f"or `pip install -U pytest`) and re-run."
+        )
+        raise UnsupportedPytestVersionError(msg)
+
+
 def _compute_startup_floor(
     clean_wall_seconds: float,
     duration_by_test: dict[str, float],
@@ -1286,20 +1340,24 @@ def _update_source_data(
 ) -> None:
     """Write exit code and duration into the matching ``SourceFileMutationData``.
 
+    Ownership is decided by exact key membership: every ``sfd`` already
+    carries the full set of its qualified mutant names in
+    ``exit_code_by_key`` — initialised by generation, loaded by the fast
+    path, produced by the same ``get_mutant_name`` that named the task.
+    The previous prefix heuristic kept the ``src.`` prefix the real names
+    do not have, so on src-layouts NO result ever reached a meta file
+    (real ``.meta`` stayed all-``None`` while the DB held verdicts), and
+    its unanchored ``startswith`` could attribute results to a sibling
+    module (``pkg.util`` vs ``pkg.utils``) — issue #124 / 360°-A1.
+
     Args:
         mutant_name: Mutant identifier used to locate the owning source file.
         exit_code: Pytest exit code.
         duration: Test run duration in seconds, or ``None``.
         source_data_by_file: Mapping of file path to ``SourceFileMutationData``.
     """
-    # Derive file path from mutant_name: the mutant name format is
-    # "<module>.<mangled_name>__mutmut_<n>" where module comes from the
-    # source file path.  We match by checking which sfd key the mutant
-    # appears to belong to via a prefix comparison.
-    for file_path, sfd in source_data_by_file.items():
-        # Normalise path separator for comparison.
-        norm_path = file_path.replace("\\", "/").replace("/", ".").removesuffix(".py")
-        if mutant_name.startswith(norm_path):
+    for sfd in source_data_by_file.values():
+        if mutant_name in sfd.exit_code_by_key:
             sfd.exit_code_by_key[mutant_name] = exit_code
             if duration is not None:
                 sfd.durations_by_key[mutant_name] = duration

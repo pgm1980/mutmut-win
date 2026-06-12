@@ -164,30 +164,159 @@ class TestIncrementSummary:
 
 
 class TestUpdateSourceData:
-    def test_updates_matching_file(self) -> None:
+    """Issue #124 / A1: exact key membership instead of the prefix heuristic.
+
+    Real mutant names are src-stripped by ``get_mutant_name`` while the old
+    ``startswith(norm_path)`` heuristic kept the ``src.`` prefix — on
+    src-layouts NOTHING ever matched (real .meta files stayed all-``None``),
+    and the unanchored prefix let ``pkg.util`` swallow ``pkg.utils`` mutants.
+    """
+
+    def test_updates_file_with_src_stripped_name(self) -> None:
+        # A1 regression: src/pkg/mod.py owns 'pkg.mod.…' (stripped) names.
         from mutmut_win.models import SourceFileMutationData
 
-        sfd = SourceFileMutationData(path="src/foo.py")
-        source_data = {"src/foo.py": sfd}
-        _update_source_data("src.foo.bar__mutmut_1", 1, 0.5, source_data)
-        assert "src.foo.bar__mutmut_1" in sfd.exit_code_by_key
+        sfd = SourceFileMutationData(path="src/pkg/mod.py")
+        sfd.exit_code_by_key = {"pkg.mod.x_f__mutmut_1": None}
+        source_data = {"src/pkg/mod.py": sfd}
 
-    def test_skips_when_no_match(self) -> None:
+        _update_source_data("pkg.mod.x_f__mutmut_1", 1, 0.5, source_data)
+
+        assert sfd.exit_code_by_key["pkg.mod.x_f__mutmut_1"] == 1
+        assert sfd.durations_by_key["pkg.mod.x_f__mutmut_1"] == 0.5
+
+    def test_no_cross_match_between_similar_module_names(self) -> None:
+        # A1 regression: 'pkg.util' must not swallow 'pkg.utils' results.
+        from mutmut_win.models import SourceFileMutationData
+
+        util = SourceFileMutationData(path="src/pkg/util.py")
+        util.exit_code_by_key = {"pkg.util.x_g__mutmut_1": None}
+        utils = SourceFileMutationData(path="src/pkg/utils.py")
+        utils.exit_code_by_key = {"pkg.utils.x_f__mutmut_1": None}
+        source_data = {"src/pkg/util.py": util, "src/pkg/utils.py": utils}
+
+        _update_source_data("pkg.utils.x_f__mutmut_1", 1, 0.5, source_data)
+
+        assert utils.exit_code_by_key["pkg.utils.x_f__mutmut_1"] == 1
+        assert util.exit_code_by_key == {"pkg.util.x_g__mutmut_1": None}
+
+    def test_skips_unknown_name_without_guessing(self) -> None:
+        # Membership-only semantics: an unknown name must not be attributed
+        # to any file (no fallback guessing).
         from mutmut_win.models import SourceFileMutationData
 
         sfd = SourceFileMutationData(path="src/baz.py")
+        sfd.exit_code_by_key = {"baz.x_known__mutmut_1": None}
         source_data = {"src/baz.py": sfd}
-        # mutant_name belongs to a different module
-        _update_source_data("src.foo.bar__mutmut_1", 1, 0.5, source_data)
-        assert sfd.exit_code_by_key == {}
+
+        _update_source_data("foo.x_other__mutmut_1", 1, 0.5, source_data)
+
+        assert sfd.exit_code_by_key == {"baz.x_known__mutmut_1": None}
+        assert sfd.durations_by_key == {}
 
     def test_duration_none_not_stored(self) -> None:
         from mutmut_win.models import SourceFileMutationData
 
         sfd = SourceFileMutationData(path="src/foo.py")
+        sfd.exit_code_by_key = {"foo.bar__mutmut_1": None}
         source_data = {"src/foo.py": sfd}
-        _update_source_data("src.foo.bar__mutmut_1", 1, None, source_data)
-        assert "src.foo.bar__mutmut_1" not in sfd.durations_by_key
+
+        _update_source_data("foo.bar__mutmut_1", 1, None, source_data)
+
+        assert sfd.exit_code_by_key["foo.bar__mutmut_1"] == 1
+        assert "foo.bar__mutmut_1" not in sfd.durations_by_key
+
+
+# ---------------------------------------------------------------------------
+# _ensure_supported_pytest (issue #125 / A2)
+# ---------------------------------------------------------------------------
+
+
+class TestPytestVersionGuard:
+    """Issue #125 / A2: @argfile needs pytest >= 8.2 — fail fast, not per task.
+
+    The worker hands tests to pytest via ``@argfile`` (the only path — no
+    dual code paths by design); that syntax exists since pytest 8.2. The
+    resolver floor is the primary defence, the guard catches bypassed
+    resolvers (``pip --no-deps``, hand-patched envs) BEFORE the first mutant.
+    """
+
+    @staticmethod
+    def _guard() -> Any:
+        # Late import: in the red phase only these tests fail, not collection.
+        from mutmut_win.orchestrator import _ensure_supported_pytest
+
+        return _ensure_supported_pytest
+
+    def test_accepts_minimum_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(pytest, "__version__", "8.2.0")
+        self._guard()()  # must not raise
+
+    def test_rejects_last_pre_argfile_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mutmut_win.exceptions import UnsupportedPytestVersionError
+
+        monkeypatch.setattr(pytest, "__version__", "8.1.2")
+        with pytest.raises(UnsupportedPytestVersionError) as excinfo:
+            self._guard()()
+        message = str(excinfo.value)
+        assert "8.1.2" in message  # the version that was found
+        assert "8.2" in message  # the version that is required
+        assert "@" in message  # names the @argfile mechanism as the reason
+
+    def test_rejects_old_major(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mutmut_win.exceptions import UnsupportedPytestVersionError
+
+        monkeypatch.setattr(pytest, "__version__", "7.4.4")
+        with pytest.raises(UnsupportedPytestVersionError):
+            self._guard()()
+
+    def test_accepts_dev_and_rc_suffixes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(pytest, "__version__", "9.0.0.dev0")
+        self._guard()()
+        monkeypatch.setattr(pytest, "__version__", "8.2.0rc1")
+        self._guard()()
+
+    def test_unparseable_version_warns_and_proceeds(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Fail-open by design: the resolver floor is the primary defence; an
+        # exotic dev build must not block the run (documented trade-off).
+        monkeypatch.setattr(pytest, "__version__", "exotic-build")
+        self._guard()()  # must not raise
+        assert "could not parse" in capsys.readouterr().out.lower()
+
+    def test_floor_pin_matches_guard_constant(self) -> None:
+        # Drift protection (the #110 pin-test pattern): the pyproject runtime
+        # floor must encode exactly MINIMUM_PYTEST_VERSION.
+        import tomllib
+        from pathlib import Path as _Path
+
+        from mutmut_win.constants import MINIMUM_PYTEST_VERSION
+
+        pyproject = _Path(__file__).parents[2] / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        pytest_dep = next(
+            dep for dep in data["project"]["dependencies"] if dep.startswith("pytest")
+        )
+        major, minor = MINIMUM_PYTEST_VERSION
+        assert pytest_dep == f"pytest>={major}.{minor}"
+
+    def test_run_aborts_before_any_staging(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Integration: the guard fires BEFORE copy_src_dir — an unsupported
+        # environment must not touch the filesystem.
+        from mutmut_win.exceptions import UnsupportedPytestVersionError
+
+        monkeypatch.setattr(pytest, "__version__", "8.1.0")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+
+        orch = MutationOrchestrator(_config())
+        with pytest.raises(UnsupportedPytestVersionError):
+            orch.run()
+        assert not (tmp_path / "mutants").exists()
 
 
 # ---------------------------------------------------------------------------

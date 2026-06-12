@@ -254,6 +254,26 @@ class TestMetaRobustness:
         assert "corrupt" in capsys.readouterr().out.lower()
         assert not sfd.meta_path.exists()  # cleared so the fast path rebuilds
 
+    def test_type_corrupt_meta_values_warn_and_rebuild(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Issue #124 / B10: valid JSON with type-corrupt values (duration:
+        # null → float(None) TypeError) used to escape the A3-CM-009 healing
+        # and block every subsequent run — same warn+unlink+rebuild path now.
+        _project(tmp_path, monkeypatch)
+        sfd = SourceFileMutationData(path="src/mod.py")
+        sfd.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        sfd.meta_path.write_text(
+            '{"exit_code_by_key": {"a": 1}, "durations_by_key": {"a": null}}',
+            encoding="utf-8",
+        )
+
+        sfd.load()  # must not raise
+
+        assert sfd.exit_code_by_key == {}
+        assert "corrupt" in capsys.readouterr().out.lower()
+        assert not sfd.meta_path.exists()
+
     def test_save_is_atomic_via_tmp_and_replace(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

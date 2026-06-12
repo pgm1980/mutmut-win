@@ -9,6 +9,15 @@ from collections import defaultdict
 #: import mutmut_win for the env read) and is pinned against this value.
 MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
 
+#: Minimum pytest version in the TARGET venv (issue #125 / 360°-A2). The
+#: worker hands per-mutant tests to pytest via the ``@argfile`` syntax — the
+#: only transfer path by design (no dual code paths, no 32k-limit
+#: thresholds) — and that syntax exists since pytest 8.2 ("Added in
+#: version 8.2"). Single source of truth: the orchestrator guard enforces
+#: it at run start, the pyproject dependency floor encodes it for the
+#: resolver, and a pin test keeps both in sync (the #110 pattern).
+MINIMUM_PYTEST_VERSION: tuple[int, int] = (8, 2)
+
 # Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
 # deviations (issue #91, audit A2-EW-020 / A4-QX-025):
 #

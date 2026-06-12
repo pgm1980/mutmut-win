@@ -157,6 +157,9 @@ def _process_task(
     # (WinError 206) regardless of how many tests are assigned — no magic
     # thresholds, no dual code paths, predictable behavior at any scale.
     # pytest reads arguments from the file, one per line.
+    # Requires pytest >= 8.2 (issue #125 / 360°-A2): enforced by the
+    # dependency floor AND the orchestrator's run-start guard against
+    # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
     tests_argfile: Path | None = None
     if task.tests:
         fd, argfile_path = tempfile.mkstemp(

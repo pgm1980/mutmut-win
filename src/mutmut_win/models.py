@@ -150,6 +150,9 @@ class SourceFileMutationData(BaseModel):
         an uncaught ``JSONDecodeError`` and block EVERY subsequent run
         until manual deletion. A corrupt file now warns, is removed (so the
         generation fast path rebuilds cleanly), and loading starts empty.
+        Value coercion takes the same healing path (issue #124 / 360°-B10):
+        structurally valid JSON with type-corrupt values (``"duration":
+        null``) used to escape this net as an unhandled ``TypeError``.
         """
         try:
             with self.meta_path.open(encoding="utf-8") as f:
@@ -157,33 +160,55 @@ class SourceFileMutationData(BaseModel):
         except FileNotFoundError:
             return
         except (json.JSONDecodeError, UnicodeDecodeError):
-            import contextlib
-
-            print(f"Warning: corrupted meta file {self.meta_path} — rebuilding from scratch.")
-            with contextlib.suppress(OSError):
-                self.meta_path.unlink()
+            self._discard_corrupt_meta()
             return
 
-        raw_exit = meta.pop("exit_code_by_key", {})
-        if isinstance(raw_exit, dict):
-            self.exit_code_by_key = {str(k): v for k, v in raw_exit.items()}
+        try:
+            raw_exit = meta.pop("exit_code_by_key", {})
+            if isinstance(raw_exit, dict):
+                self.exit_code_by_key = {str(k): v for k, v in raw_exit.items()}
 
-        raw_dur = meta.pop("durations_by_key", {})
-        if isinstance(raw_dur, dict):
-            self.durations_by_key = {str(k): float(v) for k, v in raw_dur.items()}
+            raw_dur = meta.pop("durations_by_key", {})
+            if isinstance(raw_dur, dict):
+                self.durations_by_key = {str(k): float(v) for k, v in raw_dur.items()}
 
-        raw_est = meta.pop("estimated_durations_by_key", {})
-        if isinstance(raw_est, dict):
-            self.estimated_time_of_tests_by_mutant = {str(k): float(v) for k, v in raw_est.items()}
+            raw_est = meta.pop("estimated_durations_by_key", {})
+            if isinstance(raw_est, dict):
+                self.estimated_time_of_tests_by_mutant = {
+                    str(k): float(v) for k, v in raw_est.items()
+                }
 
-        raw_tc = meta.pop("type_check_error_by_key", {})
-        if isinstance(raw_tc, dict):
-            self.type_check_error_by_key = {str(k): str(v) for k, v in raw_tc.items()}
+            raw_tc = meta.pop("type_check_error_by_key", {})
+            if isinstance(raw_tc, dict):
+                self.type_check_error_by_key = {str(k): str(v) for k, v in raw_tc.items()}
 
-        raw_mtime = meta.pop("source_mtime", None)
-        self.source_mtime = float(raw_mtime) if isinstance(raw_mtime, (int, float)) else None
-        raw_size = meta.pop("source_size", None)
-        self.source_size = int(raw_size) if isinstance(raw_size, int) else None
+            raw_mtime = meta.pop("source_mtime", None)
+            self.source_mtime = float(raw_mtime) if isinstance(raw_mtime, (int, float)) else None
+            raw_size = meta.pop("source_size", None)
+            self.source_size = int(raw_size) if isinstance(raw_size, int) else None
+        except (TypeError, ValueError):
+            # Type-corrupt values inside structurally valid JSON (issue #124
+            # / 360°-B10) heal exactly like decode corruption — partial
+            # state is reset so the fast path rebuilds from scratch.
+            self._reset_loaded_fields()
+            self._discard_corrupt_meta()
+
+    def _reset_loaded_fields(self) -> None:
+        """Reset every field ``load`` may have partially populated."""
+        self.exit_code_by_key = {}
+        self.durations_by_key = {}
+        self.estimated_time_of_tests_by_mutant = {}
+        self.type_check_error_by_key = {}
+        self.source_mtime = None
+        self.source_size = None
+
+    def _discard_corrupt_meta(self) -> None:
+        """Warn about and remove a corrupt ``.meta`` so the fast path rebuilds."""
+        import contextlib
+
+        print(f"Warning: corrupted meta file {self.meta_path} — rebuilding from scratch.")
+        with contextlib.suppress(OSError):
+            self.meta_path.unlink()
 
     def save(self) -> None:
         """Save mutation metadata to the JSON meta file (atomically).
