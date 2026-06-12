@@ -439,6 +439,10 @@ class TestWave3StagingHygiene:
         project = _project(tmp_path, monkeypatch)
         helper = project / "src" / "helper.py"
         helper.write_text("VALUE = 1\n", encoding="utf-8")
+        # A nested package exercises the deletion-sync walk filter with a
+        # non-empty dirs list (mutation hardening for the skip-set arg).
+        (project / "src" / "pkg").mkdir()
+        (project / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
         cfg = MutmutConfig(paths_to_mutate=["src"])
         copy_src_dir(cfg)
         staged = project / "mutants" / "src" / "helper.py"
@@ -517,6 +521,37 @@ class TestWave3StagingHygiene:
 
         assert [c for c in calls if "test_keep" in c] == []  # unchanged → untouched
 
+    def test_also_copy_single_file_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening (#129/C2): the single-file branch shares the
+        # mirror rule — first copy, no re-copy when unchanged, re-copy on
+        # change. (Trees are covered above; this pins the file branch.)
+        import mutmut_win.file_setup as fs
+
+        project = _project(tmp_path, monkeypatch)
+        single = project / "extra.cfg"
+        single.write_text("v1", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["extra.cfg"])
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "extra.cfg"
+        assert staged.read_text(encoding="utf-8") == "v1"  # first copy happened
+
+        calls: list[str] = []
+        real_copy = fs._copy_with_retry
+
+        def spying_copy(src: Path, dst: Path, **kwargs: object) -> None:
+            calls.append(str(src))
+            real_copy(src, dst, **kwargs)
+
+        monkeypatch.setattr(fs, "_copy_with_retry", spying_copy)
+        copy_also_copy_files(cfg)
+        assert [c for c in calls if "extra.cfg" in c] == []  # unchanged → untouched
+
+        single.write_text("v2-changed", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        assert staged.read_text(encoding="utf-8") == "v2-changed"  # change synced
+
     def test_tooling_dirs_are_not_mirrored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -531,6 +566,53 @@ class TestWave3StagingHygiene:
 
         assert not (project / "mutants" / "node_modules").exists()
         assert not (project / "mutants" / ".claude").exists()
+
+    def test_mirror_unstatable_target_is_stale(self, tmp_path: Path) -> None:
+        # Mutation hardening: a missing/unstatable target must refresh.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        src.write_text("x", encoding="utf-8")
+        assert _mirror_is_stale(src, tmp_path / "missing.py") is True
+
+    def test_mirror_meta_owned_equal_mtime_is_not_stale(self, tmp_path: Path) -> None:
+        # Boundary pin: with a .meta sibling the rule is STRICTLY newer —
+        # an equal mtime (copy + immediate generation) must not refresh.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("x", encoding="utf-8")
+        tgt.write_text("trampolined", encoding="utf-8")
+        tgt.with_name(tgt.name + ".meta").write_text("{}", encoding="utf-8")
+        os.utime(src, (1_000, 1_000))
+        os.utime(tgt, (1_000, 1_000))
+        assert _mirror_is_stale(src, tgt) is False
+
+    def test_mirror_meta_owned_newer_source_is_stale(self, tmp_path: Path) -> None:
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("x", encoding="utf-8")
+        tgt.write_text("trampolined", encoding="utf-8")
+        tgt.with_name(tgt.name + ".meta").write_text("{}", encoding="utf-8")
+        os.utime(tgt, (1_000, 1_000))
+        os.utime(src, (2_000, 2_000))
+        assert _mirror_is_stale(src, tgt) is True
+
+    def test_mirror_plain_size_change_with_equal_mtime_is_stale(self, tmp_path: Path) -> None:
+        # The size term is load-bearing: equal mtimes with different sizes
+        # (content swap + timestamp restore) must refresh a plain mirror.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("xx", encoding="utf-8")
+        tgt.write_text("x", encoding="utf-8")
+        os.utime(src, (1_000, 1_000))
+        os.utime(tgt, (1_000, 1_000))
+        assert _mirror_is_stale(src, tgt) is True
 
 
 class TestForceHonesty:
