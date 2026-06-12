@@ -153,9 +153,11 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
 | `--debug` | Full tracebacks on errors |
 
-Exit codes of `run`: `0` success, `1` runtime failure or `--min-score`
-gate failed, `2` invalid configuration or option value, `130` interrupted
-(Ctrl-C — partial results are persisted, the score gate is skipped).
+Exit codes of `run`: `0` success, `1` runtime failure, failed
+`--min-score` gate or aborted run (worker pool collapsed — the unchecked
+remainder is reported and the score gate is skipped), `2` invalid
+configuration or option value, `130` interrupted (Ctrl-C — partial
+results are persisted, the score gate is skipped).
 
 ## Configuration
 

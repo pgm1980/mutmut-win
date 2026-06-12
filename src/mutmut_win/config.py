@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
 from pathlib import Path
@@ -465,9 +466,12 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     for key, value in tool_config.items():
         normalized_key = key.replace("-", "_")
         if normalized_key in normalized:
+            # Warnings live on stderr (issue #127 / 360°-A6): load_config
+            # runs BEFORE the CLI's json redirect and in every subcommand.
             print(
                 f"Warning: [tool.mutmut] declares '{normalized_key}' twice "
-                f"(hyphen/underscore twins) — the last one wins."
+                f"(hyphen/underscore twins) — the last one wins.",
+                file=sys.stderr,
             )
         normalized[normalized_key] = value
 
@@ -480,7 +484,7 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     for unknown in sorted(set(normalized) - known_keys):
         matches = difflib.get_close_matches(unknown, sorted(known_keys), n=1)
         hint = f" — did you mean '{matches[0]}'?" if matches else ""
-        print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}")
+        print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}", file=sys.stderr)
 
     try:
         config = MutmutConfig.model_validate(normalized)

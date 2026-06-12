@@ -78,6 +78,12 @@ class SpawnPoolExecutor:
         self._workers: list[multiprocessing.process.BaseProcess] = []
         self._num_tasks: int = 0
         self._shutdown_done: bool = False
+        # Pool-collapse declaration (issue #127 / 360°-A7): set by
+        # ``get_events`` when every worker died while tasks were never
+        # started. The orchestrator maps it onto ``run_aborted`` so the run
+        # cannot end like a success (exit 0 / gate over the remainder).
+        self.aborted: bool = False
+        self.abort_reason: str | None = None
 
         # Orphan protection: Windows Job Object kills all children when parent dies.
         self._job_handle: int | None = None
@@ -184,10 +190,17 @@ class SpawnPoolExecutor:
                 if not any(worker.is_alive() for worker in self._workers):
                     remaining = self._num_tasks - finished
                     if remaining > 0:
+                        # Issue #127 / 360°-A7: declare the collapse as run
+                        # state — the silent break used to read as success.
+                        self.aborted = True
+                        self.abort_reason = (
+                            f"all {len(self._workers)} workers died; "
+                            f"{remaining} task(s) were never started"
+                        )
                         print(
-                            f"Error: all {len(self._workers)} workers died; "
-                            f"{remaining} task(s) were never started — aborting the run. "
-                            "Their mutants remain unchecked."
+                            f"Error: {self.abort_reason} — aborting the run. "
+                            "Their mutants remain unchecked.",
+                            file=sys.stderr,
                         )
                         break
                 continue

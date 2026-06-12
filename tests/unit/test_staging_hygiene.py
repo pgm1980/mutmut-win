@@ -254,7 +254,7 @@ class TestMetaRobustness:
         sfd.load()  # must not raise
 
         assert sfd.exit_code_by_key == {}
-        assert "corrupt" in capsys.readouterr().out.lower()
+        assert "corrupt" in capsys.readouterr().err.lower()  # warnings live on stderr (#127/A6)
         assert not sfd.meta_path.exists()  # cleared so the fast path rebuilds
 
     def test_type_corrupt_meta_values_warn_and_rebuild(
@@ -274,7 +274,7 @@ class TestMetaRobustness:
         sfd.load()  # must not raise
 
         assert sfd.exit_code_by_key == {}
-        assert "corrupt" in capsys.readouterr().out.lower()
+        assert "corrupt" in capsys.readouterr().err.lower()  # warnings live on stderr (#127/A6)
         assert not sfd.meta_path.exists()
 
     def test_type_corrupt_meta_resets_every_partially_loaded_field(
@@ -308,7 +308,7 @@ class TestMetaRobustness:
         expected_warning = (
             f"Warning: corrupted meta file {sfd.meta_path} — rebuilding from scratch."
         )
-        assert expected_warning in capsys.readouterr().out.splitlines()
+        assert expected_warning in capsys.readouterr().err.splitlines()
 
     def test_meta_roundtrip_preserves_every_field(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

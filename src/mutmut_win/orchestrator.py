@@ -435,6 +435,9 @@ class MutationOrchestrator:
         # scored over what it checked) and keeps the sum invariant.
         summary.was_interrupted = interrupted
         summary.unchecked = max(0, total - completed)
+        # Issue #127 / 360°-A7: a collapsed pool must not end like success —
+        # the CLI turns this into exit 1 and skips the score gate.
+        summary.run_aborted = _executor_aborted(executor)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
@@ -763,6 +766,17 @@ def _ensure_supported_pytest() -> None:
             f"or `pip install -U pytest`) and re-run."
         )
         raise UnsupportedPytestVersionError(msg)
+
+
+def _executor_aborted(executor: object) -> bool:
+    """True iff the executor declared a worker-pool collapse (#127 / 360°-A7).
+
+    Identity check on purpose: the DI test doubles (``MagicMock``) answer
+    every attribute access with a truthy mock object — only a literal
+    ``True`` may count as a collapse declaration, or every mocked run would
+    turn ``run_aborted``.
+    """
+    return getattr(executor, "aborted", False) is True
 
 
 def _compute_startup_floor(
@@ -1399,6 +1413,12 @@ def _print_summary(result: MutationRunResult) -> None:
     if result.was_interrupted:
         checked = result.total_mutants - result.unchecked
         print(f"INTERRUPTED   : checked {checked} of {result.total_mutants} mutants")
+    if result.run_aborted and not result.was_interrupted:
+        checked = result.total_mutants - result.unchecked
+        print(
+            f"ABORTED       : worker pool collapsed — "
+            f"checked {checked} of {result.total_mutants} mutants"
+        )
     print(f"Total mutants : {result.total_mutants}")
     print(f"Killed        : {result.killed}")
     if result.type_check_caught:

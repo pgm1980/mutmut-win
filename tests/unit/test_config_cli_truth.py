@@ -78,7 +78,7 @@ class TestConfigTypoWarning:
             '[tool.mutmut]\npaths_to_mutat = ["src"]\n', encoding="utf-8"
         )
         load_config(tmp_path)
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err  # warnings live on stderr (#127/A6)
         assert "paths_to_mutat" in out
         assert "paths_to_mutate" in out  # difflib suggestion
 

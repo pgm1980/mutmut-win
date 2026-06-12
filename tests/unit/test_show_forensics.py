@@ -9,6 +9,7 @@ before v2.8.0 (forensics column is NULL there).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
@@ -78,7 +79,12 @@ class TestShowCommandForensics:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(cli_module, "DEFAULT_DB_PATH", db_path)
         monkeypatch.setattr(cli_module, "load_config", lambda: None)
-        monkeypatch.setattr(cli_module, "get_diff_for_mutant", lambda _name, _config: "-old\n+new")
+        monkeypatch.setattr(
+            cli_module,
+            "resolve_mutant",
+            lambda _pattern, _config: ("pkg.x_f__mutmut_1", SimpleNamespace(path="src/pkg.py")),
+        )
+        monkeypatch.setattr(cli_module, "render_function_diff", lambda _path, _name: "-old\n+new")
         result = CliRunner().invoke(cli_module.show, ["pkg.x_f__mutmut_1"])
         assert result.exit_code == 0, result.output
         return result.output
@@ -97,3 +103,34 @@ class TestShowCommandForensics:
         output = self._invoke_show(tmp_path, monkeypatch, with_db_row=False)
         assert "-old\n+new" in output
         assert "Infinite-loop verdict" not in output
+
+    def test_show_with_glob_pattern_finds_forensics_panel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-A9 (#127): the DB lookup used the RAW user pattern — `show`
+        # with a glob rendered the diff but silently lost the forensics
+        # panel. The pattern is resolved ONCE; header, diff and DB lookup
+        # all use the resolved name.
+        from types import SimpleNamespace
+
+        db_path = tmp_path / "results.sqlite"
+        create_db(db_path)
+        save_result(
+            db_path, "pkg.x_f__mutmut_1", "killed_by_infinite_loop", 38, 60.0, None, _FORENSICS
+        )
+        (tmp_path / "mutants").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli_module, "DEFAULT_DB_PATH", db_path)
+        monkeypatch.setattr(cli_module, "load_config", lambda: None)
+        monkeypatch.setattr(
+            cli_module,
+            "resolve_mutant",
+            lambda _pattern, _config: ("pkg.x_f__mutmut_1", SimpleNamespace(path="src/pkg.py")),
+        )
+        monkeypatch.setattr(cli_module, "render_function_diff", lambda _path, _name: "-old\n+new")
+
+        result = CliRunner().invoke(cli_module.show, ["pkg.x_f__mutmut_*"])
+
+        assert result.exit_code == 0, result.output
+        assert "# pkg.x_f__mutmut_1" in result.output  # header shows the RESOLVED name
+        assert "Infinite-loop verdict" in result.output

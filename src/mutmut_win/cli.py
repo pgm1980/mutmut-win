@@ -16,7 +16,7 @@ from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
 from mutmut_win.exceptions import MutmutWinError
-from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
+from mutmut_win.mutant_diff import apply_mutant, render_function_diff, resolve_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.runner import PytestRunner
@@ -196,156 +196,158 @@ def run(
 
     Optionally filter to specific MUTANT_NAMES. When omitted, all mutants are tested.
     """
+    import contextlib
+
     if treat_timeout_as_kill:
         _warn_treat_timeout_as_kill_deprecated()
 
-    # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
-    if force:
-        import shutil
+    # Issue #103 / A4-UI-006 + issue #127 / 360°-A6: with --output json the
+    # stdout stream must carry EXACTLY the JSON. The redirect therefore
+    # starts BEFORE the --force echo and the config load — both used to
+    # print prose to stdout ahead of the old, run()-only redirect scope.
+    # (Child-process diagnostics are born on stderr instead: the workers'
+    # OS-level fd 1 is beyond any parent redirect.)
+    with contextlib.ExitStack() as prose_stack:
+        if output == "json":
+            prose_stack.enter_context(contextlib.redirect_stdout(sys.stderr))
 
-        for dirname in ("mutants", ".mutmut-cache"):
-            p = Path(dirname)
-            if p.exists():
-                shutil.rmtree(p, ignore_errors=True)
-                # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
-                # unconditional success message sold a PARTIAL deletion
-                # (files locked by another process) as a clean slate.
+        # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
+        if force:
+            import shutil
+
+            for dirname in ("mutants", ".mutmut-cache"):
+                p = Path(dirname)
                 if p.exists():
-                    click.echo(
-                        f"Warning: could not fully remove {dirname}/ "
-                        f"(files in use?) — the run may see stale state.",
-                        err=True,
-                    )
-                else:
-                    click.echo(f"Removed {dirname}/")
+                    shutil.rmtree(p, ignore_errors=True)
+                    # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
+                    # unconditional success message sold a PARTIAL deletion
+                    # (files locked by another process) as a clean slate.
+                    if p.exists():
+                        click.echo(
+                            f"Warning: could not fully remove {dirname}/ "
+                            f"(files in use?) — the run may see stale state.",
+                            err=True,
+                        )
+                    else:
+                        click.echo(f"Removed {dirname}/")
 
-    # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
-    # escape as a 47-line traceback with exit 1 while CLI flags with the
-    # SAME rules exited 2 — one config-error contract for every command.
-    config = _load_config_or_exit()
+        # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
+        # escape as a 47-line traceback with exit 1 while CLI flags with the
+        # SAME rules exited 2 — one config-error contract for every command.
+        config = _load_config_or_exit()
 
-    # --- Apply CLI overrides to config ---
-    overrides: dict[str, object] = {}
-    if max_children is not None:
-        overrides["max_children"] = max_children
-    if paths_to_mutate:
-        overrides["paths_to_mutate"] = list(paths_to_mutate)
-    if tests_dir is not None:
-        overrides["tests_dir"] = [tests_dir]
-    if timeout_multiplier is not None:
-        overrides["timeout_multiplier"] = timeout_multiplier
-    if debug:
-        overrides["debug"] = True
-    if do_not_mutate:
-        overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
-    if extra_paths_to_copy:
-        overrides["extra_paths"] = list(extra_paths_to_copy)
-    if no_infinite_loop_detection:
-        overrides["infinite_loop_detection"] = False
-    if infinite_loop_cpu_threshold is not None:
-        overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
+        # --- Apply CLI overrides to config ---
+        overrides: dict[str, object] = {}
+        if max_children is not None:
+            overrides["max_children"] = max_children
+        if paths_to_mutate:
+            overrides["paths_to_mutate"] = list(paths_to_mutate)
+        if tests_dir is not None:
+            overrides["tests_dir"] = [tests_dir]
+        if timeout_multiplier is not None:
+            overrides["timeout_multiplier"] = timeout_multiplier
+        if debug:
+            overrides["debug"] = True
+        if do_not_mutate:
+            overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
+        if extra_paths_to_copy:
+            overrides["extra_paths"] = list(extra_paths_to_copy)
+        if no_infinite_loop_detection:
+            overrides["infinite_loop_detection"] = False
+        if infinite_loop_cpu_threshold is not None:
+            overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
 
-    # --since-commit: resolve changed .py files via git
-    if since_commit is not None:
-        import subprocess as sp
+        # --since-commit: resolve changed .py files via git
+        if since_commit is not None:
+            import subprocess as sp
 
-        # git command is fully controlled — commit hash is validated by git itself
-        git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-            ["git", "diff", "--name-only", f"{since_commit}..HEAD"],  # noqa: S607 — git is a well-known executable
-            capture_output=True,
-            encoding="utf-8",
-        )
-        # Issue #102 / A3-CM-006: the returncode was never checked — an
-        # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
-        if git_result.returncode != 0:
+            # git command is fully controlled — commit hash is validated by git itself
+            git_result = sp.run(  # noqa: S603 — git CLI with controlled args
+                ["git", "diff", "--name-only", f"{since_commit}..HEAD"],  # noqa: S607 — git is a well-known executable
+                capture_output=True,
+                encoding="utf-8",
+            )
+            # Issue #102 / A3-CM-006: the returncode was never checked — an
+            # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
+            if git_result.returncode != 0:
+                click.echo(
+                    f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}",
+                    err=True,
+                )
+                sys.exit(2)
+            tests_dirs = tuple(d.strip("/").strip("\\") for d in config.tests_dir)
+
+            def _is_mutation_target(name: str) -> bool:
+                # Deleted files and test files used to become mutation targets.
+                if not name.endswith(".py") or not Path(name).exists():
+                    return False
+                parts = Path(name).parts
+                return all(parts[0] != td for td in tests_dirs)
+
+            changed_py = [
+                f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)
+            ]
+            if not changed_py:
+                click.echo("No .py files changed since the given commit.", err=True)
+                sys.exit(0)
+            overrides["paths_to_mutate"] = changed_py
+
+        if overrides:
+            # Issue #102 / A3-CM-004: model_copy(update=...) bypasses ALL pydantic
+            # constraints — '--max-children 0' was an accepted hang. Re-validate
+            # the merged config so the field constraints apply to CLI input too.
+            from pydantic import ValidationError
+
+            try:
+                config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
+            except ValidationError as exc:
+                click.echo(f"Invalid option value:\n{exc}", err=True)
+                sys.exit(2)
+
+        # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
+        # yield "No mutants generated." with exit 0 — a false CI success. A
+        # missing path is a configuration error per the documented contract.
+        missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
+        if missing_paths:
+            plural = "ies do" if len(missing_paths) > 1 else "y does"
             click.echo(
-                f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}",
+                f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}",
                 err=True,
             )
             sys.exit(2)
-        tests_dirs = tuple(d.strip("/").strip("\\") for d in config.tests_dir)
 
-        def _is_mutation_target(name: str) -> bool:
-            # Deleted files and test files used to become mutation targets.
-            if not name.endswith(".py") or not Path(name).exists():
-                return False
-            parts = Path(name).parts
-            return all(parts[0] != td for td in tests_dirs)
-
-        changed_py = [
-            f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)
-        ]
-        if not changed_py:
-            click.echo("No .py files changed since the given commit.", err=True)
-            sys.exit(0)
-        overrides["paths_to_mutate"] = changed_py
-
-    if overrides:
-        # Issue #102 / A3-CM-004: model_copy(update=...) bypasses ALL pydantic
-        # constraints — '--max-children 0' was an accepted hang. Re-validate
-        # the merged config so the field constraints apply to CLI input too.
-        from pydantic import ValidationError
+        runner = PytestRunner(config)
+        executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
+        # Only a FULL run may purge stale DB rows (issue #96): subset runs know
+        # just a slice of the valid mutant set and must never delete history.
+        # A --paths-to-mutate override narrows the staging to that slice, so it
+        # counts as a subset run too (issue #120 / RUN-002 — the purge used to
+        # delete every result outside the given paths).
+        is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
+        orchestrator = MutationOrchestrator(
+            config,
+            runner=runner,
+            executor=executor,
+            mutant_names=mutant_names if mutant_names else None,
+            no_progress=no_progress,
+            purge_stale_results=is_full_run,
+            rerun_all=rerun_all,
+        )
 
         try:
-            config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
-        except ValidationError as exc:
-            click.echo(f"Invalid option value:\n{exc}", err=True)
-            sys.exit(2)
-
-    # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
-    # yield "No mutants generated." with exit 0 — a false CI success. A
-    # missing path is a configuration error per the documented contract.
-    missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
-    if missing_paths:
-        plural = "ies do" if len(missing_paths) > 1 else "y does"
-        click.echo(
-            f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}",
-            err=True,
-        )
-        sys.exit(2)
-
-    runner = PytestRunner(config)
-    executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
-    # Only a FULL run may purge stale DB rows (issue #96): subset runs know
-    # just a slice of the valid mutant set and must never delete history.
-    # A --paths-to-mutate override narrows the staging to that slice, so it
-    # counts as a subset run too (issue #120 / RUN-002 — the purge used to
-    # delete every result outside the given paths).
-    is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
-    orchestrator = MutationOrchestrator(
-        config,
-        runner=runner,
-        executor=executor,
-        mutant_names=mutant_names if mutant_names else None,
-        no_progress=no_progress,
-        purge_stale_results=is_full_run,
-        rerun_all=rerun_all,
-    )
-
-    try:
-        if output == "json":
-            # Issue #103 / A4-UI-006: stdout used to carry step headers,
-            # warnings and the summary BEFORE the JSON — json.loads(stdout)
-            # failed for every real CI consumer. With --output json the
-            # run's prose goes to stderr; stdout carries EXACTLY the JSON.
-            import contextlib
-
-            with contextlib.redirect_stdout(sys.stderr):
-                result = orchestrator.dry_run() if dry_run else orchestrator.run()
-        else:
             result = orchestrator.dry_run() if dry_run else orchestrator.run()
-    except MutmutWinError as exc:
-        # Issue #102 / A4-UI-005: --debug was a dead flag while this except
-        # swallowed tracebacks exactly where debug should help.
-        # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
-        # rendering — a foreign exception is a mutmut-win bug and propagates
-        # with its full traceback instead of masquerading as a clean error.
-        if debug or config.debug:
-            import traceback
+        except MutmutWinError as exc:
+            # Issue #102 / A4-UI-005: --debug was a dead flag while this except
+            # swallowed tracebacks exactly where debug should help.
+            # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
+            # rendering — a foreign exception is a mutmut-win bug and propagates
+            # with its full traceback instead of masquerading as a clean error.
+            if debug or config.debug:
+                import traceback
 
-            click.echo(traceback.format_exc(), err=True)
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+                click.echo(traceback.format_exc(), err=True)
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(1)
 
     # --- Output ---
     if output == "json":
@@ -364,6 +366,20 @@ def run(
             err=True,
         )
         sys.exit(130)
+
+    # --- Pool-collapse honesty (issue #127 / 360°-A7) ---
+    if result.run_aborted:
+        # The collapse is the failure — fail closed regardless of any gate.
+        # Exit 1 (runtime failure), NOT 130: that code is reserved for user
+        # interrupts and CI tells the two apart exactly there.
+        if min_score is not None:
+            click.echo("Run was aborted — score gate skipped.", err=True)
+        click.echo(
+            f"Run aborted: worker pool collapsed — checked "
+            f"{result.total_mutants - result.unchecked} of {result.total_mutants} mutants.",
+            err=True,
+        )
+        sys.exit(1)
 
     # --- Score gate ---
     if min_score is not None:
@@ -547,19 +563,26 @@ def show(mutant_name: str) -> None:
 
     config = _load_config_or_exit()
     try:
-        diff = get_diff_for_mutant(mutant_name, config)
+        # Resolve the pattern ONCE (issue #127 / 360°-A9): header, diff AND
+        # the forensics DB lookup below all use the resolved name — the old
+        # flow resolved inside the diff helper only, so a glob rendered the
+        # diff but silently lost the forensics panel.
+        resolved_name, data = resolve_mutant(mutant_name, config)
+        diff = render_function_diff(data.path, resolved_name)
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
     if diff:
-        click.echo(f"# {mutant_name}")
+        click.echo(f"# {resolved_name}")
         click.echo(diff)
     else:
-        click.echo(f"No diff found for '{mutant_name}'.")
+        click.echo(f"No diff found for '{resolved_name}'.")
 
     if DEFAULT_DB_PATH.exists():
-        row = next((r for r in load_results(DEFAULT_DB_PATH) if r.mutant_name == mutant_name), None)
+        row = next(
+            (r for r in load_results(DEFAULT_DB_PATH) if r.mutant_name == resolved_name), None
+        )
         if row is not None:
             panel = _format_forensics_panel(row.status, row.forensics)
             if panel is not None:

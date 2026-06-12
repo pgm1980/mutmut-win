@@ -111,8 +111,11 @@ def worker_main(
             # hang in get_events() waiting for a TaskCompleted that will never
             # arrive. Emit a synthetic completion so progress can be made, and
             # continue the loop.
+            # stderr: workers inherit OS fd 1 — the parent's --output json
+            # redirect can never catch child prints (issue #127 / 360°-A6).
             print(
                 f"WORKER RECOVERY (#12): uncaught {type(exc).__name__} on {fallback_name}: {exc}",
+                file=sys.stderr,
                 flush=True,
             )
             event_queue.put(
@@ -291,7 +294,7 @@ def _process_task(
             else:
                 exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:
-        print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
+        print(f"WORKER ERROR for {task.mutant_name}: {exc}", file=sys.stderr, flush=True)
         exit_code = 35  # suspicious
     finally:
         if task_job_handle is not None:
@@ -387,7 +390,7 @@ def _maybe_start_loop_monitor(
         monitor = ProcessMonitor(pid=pid, log_path=log_path, window_seconds=window_seconds)
         monitor.start()
     except Exception as exc:  # graceful degradation: never poison the run
-        print(f"WORKER MONITOR start failed: {exc}", flush=True)
+        print(f"WORKER MONITOR start failed: {exc}", file=sys.stderr, flush=True)
         return None
     return monitor
 

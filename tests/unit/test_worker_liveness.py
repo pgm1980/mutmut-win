@@ -78,7 +78,7 @@ class TestDeadWorkerSynthesis:
         assert synthetic.last_output is not None
         assert "died" in synthetic.last_output
         # Second task never started and the pool is dead -> loud abort.
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err  # abort prose lives on stderr (#127/A6+A7)
         assert "never started" in out
 
     def test_late_real_completion_after_synthetic_is_dropped(self) -> None:
@@ -127,7 +127,7 @@ class TestDeadWorkerSynthesis:
         events = _drain(ex.get_events())
 
         assert events == []  # nothing started, nothing fabricated
-        out = capsys.readouterr().out
+        out = capsys.readouterr().err  # abort prose lives on stderr (#127/A6+A7)
         assert "never started" in out
 
     def test_unknown_recovery_event_counts_but_is_not_persisted(

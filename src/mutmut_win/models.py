@@ -205,8 +205,14 @@ class SourceFileMutationData(BaseModel):
     def _discard_corrupt_meta(self) -> None:
         """Warn about and remove a corrupt ``.meta`` so the fast path rebuilds."""
         import contextlib
+        import sys
 
-        print(f"Warning: corrupted meta file {self.meta_path} — rebuilding from scratch.")
+        # stderr: this also runs inside the GENERATION pool children, whose
+        # OS fd 1 bypasses any parent redirect (issue #127 / 360°-A6).
+        print(
+            f"Warning: corrupted meta file {self.meta_path} — rebuilding from scratch.",
+            file=sys.stderr,
+        )
         with contextlib.suppress(OSError):
             self.meta_path.unlink()
 
@@ -256,6 +262,13 @@ class MutationRunResult(BaseModel):
     # the score denominator — a partial run is scored over what it checked.
     was_interrupted: bool = False
     unchecked: int = 0
+    # New in v2.14.0 (#127, 360°-A7): a collapsed worker pool (all workers
+    # dead, tasks never started) used to end exactly like a successful run —
+    # exit 0, gate judged over the checked remainder. `run_aborted` marks a
+    # run that ended prematurely WITHOUT a user interrupt; the never-checked
+    # remainder stays in `unchecked` (sum invariant as for interrupts).
+    # Producer: the orchestrator reads the executor's collapse declaration.
+    run_aborted: bool = False
     duration_seconds: float = 0.0
 
     # Serialized into model_dump()/JSON (issue #97 / A3-OS-014: the CI
