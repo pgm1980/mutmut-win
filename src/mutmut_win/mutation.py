@@ -1,5 +1,6 @@
 """This module contains code for managing mutant creation for whole files."""
 
+import warnings
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -279,6 +280,23 @@ trampoline_impl_cst[-1] = trampoline_impl_cst[-1].with_changes(
 )
 
 
+def _warn_unmanglable_function(qualified_name: str, exc: ValueError) -> None:
+    """Warn that one function stays unmutated due to the mangling limitation.
+
+    The wording names the ENGINE limitation — the source is valid Python
+    (U+01C1 is a legal identifier character); calling it "Unsupported
+    syntax" sent users hunting for a syntax error that does not exist
+    (issue #121 / external QA MUT-002).
+    """
+    warnings.warn(
+        f"cannot mutate function '{qualified_name}': its name collides with "
+        f"the internal mangling separator (U+01C1) — function left unmutated "
+        f"({exc})",
+        SyntaxWarning,
+        stacklevel=3,
+    )
+
+
 def combine_mutations_to_source(
     module: cst.Module, mutations: Sequence[Mutation]
 ) -> tuple[str, Sequence[str]]:
@@ -310,9 +328,18 @@ def combine_mutations_to_source(
             if not func_mutants:
                 result.append(func)
                 continue
-            nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
-                func, func_mutants, class_name=None
-            )
+            try:
+                nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
+                    func, func_mutants, class_name=None
+                )
+            except ValueError as exc:
+                # Issue #121 / external QA MUT-002: an unmanglable identifier
+                # (U+01C1 collides with the internal mangling separator) used
+                # to drop the WHOLE file as "Unsupported syntax" — the skip is
+                # function-granular now and names the engine limitation.
+                _warn_unmanglable_function(func.name.value, exc)
+                result.append(func)
+                continue
             result.extend(nodes)
             result.extend(lookup_nodes)
             mutation_names.extend(mutant_names)
@@ -336,9 +363,17 @@ def combine_mutations_to_source(
                         # leave them unmutated (issue #76 / A1-MT-001/003).
                         mutated_body.append(method)
                         continue
-                    nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
-                        method, method_mutants, class_name=cls.name.value
-                    )
+                    try:
+                        nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
+                            method, method_mutants, class_name=cls.name.value
+                        )
+                    except ValueError as exc:
+                        # Same function-granular skip for methods/classes
+                        # whose names collide with the mangling separator
+                        # (issue #121 / MUT-002).
+                        _warn_unmanglable_function(f"{cls.name.value}.{method.name.value}", exc)
+                        mutated_body.append(method)
+                        continue
                     mutated_body.extend(nodes)
                     class_lookup_nodes.extend(lookup_nodes)
                     mutation_names.extend(mutant_names)

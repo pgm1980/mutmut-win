@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, cast
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 
-from mutmut_win.exceptions import AmbiguousMutantNameError, MutationParseError
+from mutmut_win.exceptions import (
+    AmbiguousMutantNameError,
+    MutationParseError,
+    StaleStagingError,
+)
 from mutmut_win.file_setup import walk_source_files
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.test_mapping import (
@@ -386,8 +390,9 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             found.
         AmbiguousMutantNameError: If a glob pattern matches more than one
             mutant (issue #115 / A4-UI-012 — apply never applies a set).
-        RuntimeError: If the source file is newer than its ``mutants/`` copy
-            (stale staging — re-run ``mutmut-win run`` first).
+        StaleStagingError: If the source file is newer than its ``mutants/``
+            copy (stale staging — re-run ``mutmut-win run`` first; was a raw
+            ``RuntimeError`` traceback until issue #123 / CLI-003).
     """
     mutant_name, data = resolve_mutant(mutant_name, config)
     path = data.path
@@ -399,7 +404,7 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             f"{source_path} changed after its mutants were generated — "
             "re-run 'mutmut-win run' before applying mutants."
         )
-        raise RuntimeError(msg)
+        raise StaleStagingError(msg)
 
     orig_function_name, class_name = orig_function_and_class_names_from_key(mutant_name)
     orig_function_name = orig_function_name.rpartition(".")[-1]

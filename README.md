@@ -50,7 +50,9 @@ POSIX code paths are kept functional for WSL/Linux CI).
   runs, and a machine-readable stats export.
 - **Caches aggressively.** Results live in SQLite, per-file mutant
   staging is fingerprinted (source + configuration) — unchanged files
-  are not regenerated, unchanged mutants are not re-run.
+  are not regenerated, and verdicts of unchanged mutants (same source,
+  same covering tests) are reused instead of re-run
+  (`--rerun-all` opts out).
 
 ## Why mutmut-win over other tools
 
@@ -70,14 +72,18 @@ mutmut-compatible: if you know mutmut, you know mutmut-win.
 
 ## Installation
 
+mutmut-win is distributed via the Git repository — PyPI publishing is
+not part of the release sequence (see *Release policy* below). Install
+a pinned release tag:
+
 ```bash
-pip install mutmut-win
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add mutmut-win --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.12.0" --dev
 ```
 
 ## Quick start
@@ -139,6 +145,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
 | `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
+| `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
 | `--debug` | Full tracebacks on errors |
@@ -191,6 +198,16 @@ infinite_loop_window_seconds = 10.0   # rolling sample window
 
 Notes:
 
+- **Staging mirrors your whole project tree.** `mutants/` is built from
+  ALL files under the source roots (`src/`, `source/`, or the project
+  root `.`) minus a fixed skip list (`.venv`, `.git`, caches,
+  `mutants/` itself, …) — not just `paths_to_mutate` + `also_copy`.
+  Tests must be able to import and read everything they normally can.
+  Two consequences worth knowing: root-level files (e.g. `.env`,
+  `uv.lock`, scratch files) are copied into `mutants/`, and projects
+  with large root-level assets pay that copy on the first run
+  (unchanged files are skipped afterwards). Keep secrets and bulk data
+  out of the project root or source roots.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of

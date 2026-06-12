@@ -63,6 +63,7 @@ class TestOverrideRevalidation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()  # #120 / CLI-002 validates path existence
         exit_code, _ = _invoke_run("--max-children", "2")
         assert exit_code == 0
 
@@ -158,6 +159,7 @@ class TestDebugIsReal:
         from mutmut_win.exceptions import CleanTestFailedError
 
         monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()  # #120 / CLI-002 validates path existence
         exit_code, output = _invoke_run(
             "--debug", orchestrator_error=CleanTestFailedError("kaboom in step 3")
         )
@@ -171,6 +173,7 @@ class TestDebugIsReal:
         from mutmut_win.exceptions import CleanTestFailedError
 
         monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()  # #120 / CLI-002 validates path existence
         exit_code, output = _invoke_run(orchestrator_error=CleanTestFailedError("kaboom"))
         assert exit_code != 0
         assert "kaboom" in output

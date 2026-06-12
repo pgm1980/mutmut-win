@@ -85,7 +85,7 @@ def _setup_two_class_project(tmp_path: Path, newline: str = "\n") -> tuple[str, 
     mutants_out = tmp_path / "mutants" / "src"
     mutants_out.mkdir(parents=True)
 
-    names, _warns = create_mutants_for_file(Path("src/mod.py"), Path("mutants/src/mod.py"))
+    names, _warns, _ = create_mutants_for_file(Path("src/mod.py"), Path("mutants/src/mod.py"))
     b_local = next(n for n in names if "ǁBǁ" in n)
     qualified = get_mutant_name(Path("src/mod.py"), b_local)
     cfg = MutmutConfig(paths_to_mutate=["src"], tests_dir=["tests/"])
@@ -153,6 +153,10 @@ class TestApplySafety:
         future = time.time() + 60
         os.utime(src_file, (future, future))
 
-        with pytest.raises(RuntimeError, match="re-run"):
+        # StaleStagingError since issue #123 / CLI-003 (was a raw
+        # RuntimeError that escaped the CLI's domain-error rendering).
+        from mutmut_win.exceptions import StaleStagingError
+
+        with pytest.raises(StaleStagingError, match="re-run"):
             apply_mutant(b_mutant, cfg)
         assert src_file.read_bytes() == before  # untouched

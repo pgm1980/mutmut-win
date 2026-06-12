@@ -81,7 +81,9 @@ def _load_config_or_exit() -> MutmutConfig:
 )
 @click.option(
     "--min-score",
-    type=float,
+    # FloatRange: 150 used to execute the FULL run before the gate
+    # trivially failed; -5 made the gate a no-op (issue #120 / CLI-001).
+    type=click.FloatRange(0, 100),
     default=None,
     help="Exit with code 1 if mutation score is below this threshold (0-100).",
 )
@@ -117,6 +119,15 @@ def _load_config_or_exit() -> MutmutConfig:
     is_flag=True,
     default=False,
     help="Delete mutants/ and .mutmut-cache/ before running (clean slate).",
+)
+@click.option(
+    "--rerun-all",
+    is_flag=True,
+    default=False,
+    help=(
+        "Execute every mutant even when a cached verdict could be reused "
+        "(unchanged source + unchanged covering tests)."
+    ),
 )
 @click.option(
     "--treat-timeout-as-kill",
@@ -174,6 +185,7 @@ def run(
     timeout_multiplier: float | None,
     do_not_mutate: tuple[str, ...],
     force: bool,
+    rerun_all: bool,
     treat_timeout_as_kill: bool,
     extra_paths_to_copy: tuple[str, ...],
     no_infinite_loop_detection: bool,
@@ -207,7 +219,10 @@ def run(
                 else:
                     click.echo(f"Removed {dirname}/")
 
-    config = load_config()
+    # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
+    # escape as a 47-line traceback with exit 1 while CLI flags with the
+    # SAME rules exited 2 — one config-error contract for every command.
+    config = _load_config_or_exit()
 
     # --- Apply CLI overrides to config ---
     overrides: dict[str, object] = {}
@@ -277,11 +292,26 @@ def run(
             click.echo(f"Invalid option value:\n{exc}", err=True)
             sys.exit(2)
 
+    # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
+    # yield "No mutants generated." with exit 0 — a false CI success. A
+    # missing path is a configuration error per the documented contract.
+    missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
+    if missing_paths:
+        plural = "ies do" if len(missing_paths) > 1 else "y does"
+        click.echo(
+            f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}",
+            err=True,
+        )
+        sys.exit(2)
+
     runner = PytestRunner(config)
     executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
     # Only a FULL run may purge stale DB rows (issue #96): subset runs know
     # just a slice of the valid mutant set and must never delete history.
-    is_full_run = not mutant_names and since_commit is None
+    # A --paths-to-mutate override narrows the staging to that slice, so it
+    # counts as a subset run too (issue #120 / RUN-002 — the purge used to
+    # delete every result outside the given paths).
+    is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
     orchestrator = MutationOrchestrator(
         config,
         runner=runner,
@@ -289,6 +319,7 @@ def run(
         mutant_names=mutant_names if mutant_names else None,
         no_progress=no_progress,
         purge_stale_results=is_full_run,
+        rerun_all=rerun_all,
     )
 
     try:
@@ -390,9 +421,12 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         counts[result.status] = counts.get(result.status, 0) + 1
 
     total = len(all_results)
+    # Issue #122 / external QA SCO-003: `results` used to fold type-check
+    # kills into "Killed" with no line of their own, while the run summary
+    # and the CI JSON keep the category separate — one scheme everywhere.
+    type_check = counts.get("caught by type check", 0)
     kill_aggregate = (
         counts.get("killed", 0)
-        + counts.get("caught by type check", 0)
         + counts.get("killed_by_infinite_loop", 0)  # Issue #71 — IL classification
     )
     il_killed = counts.get("killed_by_infinite_loop", 0)
@@ -404,7 +438,9 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     denominator = total - skipped - no_tests
     # Kill class mirrors MutationRunResult.score / CicdStats.score (#91):
     # a crash under a mutant is a detection.
-    effective_killed = kill_aggregate + segfault + (timeout if treat_timeout_as_kill else 0)
+    effective_killed = (
+        kill_aggregate + type_check + segfault + (timeout if treat_timeout_as_kill else 0)
+    )
     score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
 
     click.echo(f"Total:      {total}")
@@ -412,6 +448,8 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         click.echo(f"Killed:     {kill_aggregate}  (incl. {il_killed} infinite-loop)")
     else:
         click.echo(f"Killed:     {kill_aggregate}")
+    if type_check > 0:
+        click.echo(f"Type-check:  {type_check}")
     # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
     # interrupted and not-checked rows used to count in Total and the score
     # denominator while appearing in no output line). The fixed list keeps
@@ -667,4 +705,9 @@ def export_cicd_stats_cmd() -> None:
     mutants_dir = Path("mutants")
     cicd = save_cicd_stats(pairs, mutants_dir)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
-    click.echo(f"Score: {cicd.score:.1f}%  ({cicd.killed} killed / {cicd.total} total)")
+    # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a
+    # 71.4% score invited verifying it with the WRONG denominator — the
+    # parenthetical now shows the kill class over the scoreable set.
+    click.echo(
+        f"Score: {cicd.score:.1f}%  ({cicd.effective_killed} killed / {cicd.scoreable} scoreable)"
+    )

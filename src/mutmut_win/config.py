@@ -318,6 +318,26 @@ class MutmutConfig(BaseModel):
             return True
         return any(fnmatch.fnmatch(path_str, pattern) for pattern in self.do_not_mutate)
 
+    def unmatched_exclusion_patterns(self, walked_paths: list[str]) -> list[str]:
+        """Return ``do_not_mutate`` patterns that match none of *walked_paths*.
+
+        The single source for the no-match warning (issue #123 / external QA
+        CFG-002): a typo'd exclusion glob silently re-enabled mutation of
+        "excluded" files — discoverable only by noticing unexpected mutants.
+        Uses the same ``fnmatch`` rule as :meth:`should_ignore_for_mutation`.
+
+        Args:
+            walked_paths: Every source path the generation walk saw.
+
+        Returns:
+            The unmatched patterns, in configuration order.
+        """
+        return [
+            pattern
+            for pattern in self.do_not_mutate
+            if not any(fnmatch.fnmatch(path, pattern) for path in walked_paths)
+        ]
+
 
 def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutConfig:
     """Append default also_copy entries to *config* (mirrors mutmut 3.5.0).

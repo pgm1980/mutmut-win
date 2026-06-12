@@ -539,15 +539,18 @@ def create_mutants_for_file(
     covered_lines: set[int] | None = None,
     *,
     allow_fast_path: bool = True,
-) -> tuple[list[str], list[warnings.WarningMessage]]:
+) -> tuple[list[str], list[warnings.WarningMessage], bool]:
     """Generate mutants for a single source file and write to *output_path*.
 
     Reads the source, runs the mutation engine, writes the mutated code to
     *output_path*, validates the generated syntax, and saves a
     ``SourceFileMutationData`` meta file.
 
-    If the source file is unmodified since the last mutant generation (detected
-    via mtime comparison) the function returns early with an empty list.
+    If the source file is unmodified since the last mutant generation
+    (source fingerprint match) the cached mutant names from ``.meta`` are
+    returned without regenerating — signalled via the third return element
+    so the orchestrator knows which files are candidates for result reuse
+    (issue #119 / external QA RUN-001).
 
     Args:
         filename: Path to the original source file.
@@ -555,8 +558,10 @@ def create_mutants_for_file(
         covered_lines: Optional set of line numbers to restrict mutations to.
 
     Returns:
-        A tuple of (mutant_names, warnings) where *mutant_names* is a list of
-        mangled method names and *warnings* is a list of any parse warnings.
+        A tuple of ``(mutant_names, warnings, took_fast_path)`` where
+        *mutant_names* is a list of mangled method names, *warnings* is a
+        list of any parse warnings, and *took_fast_path* is ``True`` iff the
+        names came from the unchanged-staging fast path.
     """
     collected_warnings: list[warnings.WarningMessage] = []
 
@@ -610,7 +615,7 @@ def create_mutants_for_file(
                 if local:
                     existing_local.append(local)
             if existing_local:
-                return existing_local, collected_warnings
+                return existing_local, collected_warnings, True
             # No names in meta → fall through to regenerate
     except (OSError, _FastPathMissError):
         pass
@@ -621,12 +626,18 @@ def create_mutants_for_file(
     generated: str
     try:
         buf = StringIO()
-        mutant_names = write_all_mutants_to_file(
-            out=buf,
-            source=source,
-            filename=filename,
-            covered_lines=covered_lines,
-        )
+        # Record engine-level warnings (e.g. the function-granular
+        # mangling-separator skip, issue #121 / MUT-002) so they reach the
+        # orchestrator's warning channel like the file-level ones.
+        with warnings.catch_warnings(record=True) as engine_warnings:
+            warnings.simplefilter("always")
+            mutant_names = write_all_mutants_to_file(
+                out=buf,
+                source=source,
+                filename=filename,
+                covered_lines=covered_lines,
+            )
+        collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()
     except (cst.ParserSyntaxError, cst.CSTValidationError, ValueError) as exc:
         # libcst cannot parse this file, or the engine hit an unmutatable
@@ -681,4 +692,4 @@ def create_mutants_for_file(
         pass
     source_file_mutation_data.save()
 
-    return mutant_names, collected_warnings
+    return mutant_names, collected_warnings, False

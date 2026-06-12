@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS mutant (
     exit_code   INTEGER,
     duration    REAL,
     last_output TEXT,
-    forensics   TEXT
+    forensics   TEXT,
+    tests_fingerprint TEXT
 )
 """
 
@@ -37,16 +38,20 @@ _MIGRATE_ADD_LAST_OUTPUT = "ALTER TABLE mutant ADD COLUMN last_output TEXT"
 #: Migration: add forensics JSON column for IL-detection evidence (Issue #71).
 _MIGRATE_ADD_FORENSICS = "ALTER TABLE mutant ADD COLUMN forensics TEXT"
 
+#: Migration: add the result-reuse fingerprint column (issue #119).
+_MIGRATE_ADD_TESTS_FINGERPRINT = "ALTER TABLE mutant ADD COLUMN tests_fingerprint TEXT"
+
 #: INSERT-or-replace statement used by save_result.
 _UPSERT_SQL = """
 INSERT OR REPLACE INTO mutant
-    (mutant_name, status, exit_code, duration, last_output, forensics)
-VALUES (?, ?, ?, ?, ?, ?)
+    (mutant_name, status, exit_code, duration, last_output, forensics, tests_fingerprint)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 """
 
 #: SELECT statement for load_results.
 _SELECT_ALL_SQL = (
-    "SELECT mutant_name, status, exit_code, duration, last_output, forensics FROM mutant"
+    "SELECT mutant_name, status, exit_code, duration, last_output, forensics, "
+    "tests_fingerprint FROM mutant"
 )
 
 
@@ -87,6 +92,8 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
             _add_column_if_missing(conn, _MIGRATE_ADD_LAST_OUTPUT)
         if "forensics" not in columns:
             _add_column_if_missing(conn, _MIGRATE_ADD_FORENSICS)
+        if "tests_fingerprint" not in columns:
+            _add_column_if_missing(conn, _MIGRATE_ADD_TESTS_FINGERPRINT)
         conn.commit()
 
 
@@ -98,6 +105,7 @@ def save_result(
     duration: float | None,
     last_output: str | None = None,
     forensics: dict[str, object] | None = None,
+    tests_fingerprint: str | None = None,
 ) -> None:
     """Persist a single mutation result (upsert semantics).
 
@@ -112,6 +120,8 @@ def save_result(
         duration: Test execution time in seconds, or ``None`` if not measured.
         last_output: Last pytest output lines (captured on timeout/suspicious).
         forensics: Optional IL-detection forensic snapshot, serialised as JSON.
+        tests_fingerprint: Fingerprint of the test basis behind this verdict
+            (issue #119 result reuse); ``None`` for never-reused verdicts.
     """
     create_db(path)
     forensics_json = json.dumps(forensics) if forensics is not None else None
@@ -124,7 +134,15 @@ def save_result(
     with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute(
             _UPSERT_SQL,
-            (mutant_name, status, exit_code, duration, last_output, forensics_json),
+            (
+                mutant_name,
+                status,
+                exit_code,
+                duration,
+                last_output,
+                forensics_json,
+                tests_fingerprint,
+            ),
         )
         conn.commit()
 
@@ -205,6 +223,7 @@ def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
                 duration=row[3],
                 last_output=row[4] if len(row) > 4 else None,
                 forensics=forensics,
+                tests_fingerprint=row[6] if len(row) > 6 else None,
             )
         )
     return out
