@@ -15,13 +15,18 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.process.loop_monitor import (
+    DEFAULT_POLL_INTERVAL,
     EXIT_CODE_INFINITE_LOOP,
+    MIN_SAMPLES_FOR_VERDICT,
     STATUS_KILLED_BY_INFINITE_LOOP,
     IlSample,
     IlThresholds,
     classify_samples,
+    effective_window_seconds,
     has_psutil,
 )
 
@@ -235,3 +240,64 @@ def test_process_monitor_raises_when_psutil_unavailable(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="psutil"):
         ProcessMonitor(pid=1, log_path=tmp_path / "x.log")
+
+
+# ---------------------------------------------------------------------------
+# effective_window_seconds — IL-001 auto-scaling of the sampling window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("configured", "timeout", "expected"),
+    [
+        # Slow suite (large per-task timeout): the 10s default is already
+        # in-band, so it is left untouched.
+        (10.0, 300.0, 10.0),
+        # Fast suite: the window is clamped to timeout/2 so the CPU-priming
+        # samples at the start fall outside the snapshot (IL-001).
+        (10.0, 12.0, 6.0),
+        (10.0, 6.0, 3.0),
+        # A deliberately smaller user value that is already in-band is kept.
+        (3.0, 10.0, 3.0),
+        # A value below the sampling floor is raised to it (otherwise the
+        # snapshot would carry < MIN_SAMPLES and force a timeout verdict).
+        (1.0, 10.0, 2.5),
+        # floor/ceil conflict (timeout/2 < floor): the MIN_SAMPLES floor wins.
+        (10.0, 4.0, 2.5),
+        # At _MIN_TIMEOUT (5s) timeout/2 coincides with the floor.
+        (10.0, 5.0, 2.5),
+    ],
+)
+def test_effective_window_examples(configured: float, timeout: float, expected: float) -> None:
+    """The effective IL window auto-scales into [MIN_SAMPLES*poll, timeout/2] (IL-001)."""
+    assert effective_window_seconds(configured, timeout) == pytest.approx(expected)
+
+
+def test_effective_window_floor_single_sourced_from_classifier_constants() -> None:
+    """The lower bound is MIN_SAMPLES_FOR_VERDICT * DEFAULT_POLL_INTERVAL, not a literal."""
+    floor = MIN_SAMPLES_FOR_VERDICT * DEFAULT_POLL_INTERVAL
+    assert floor == pytest.approx(2.5)
+    # Any timeout whose half is below the floor pins the result to the floor.
+    assert effective_window_seconds(10.0, 1.0) == pytest.approx(floor)
+
+
+def test_effective_window_default_is_unchanged_for_slow_suites() -> None:
+    """The shipped 10s default must survive untouched when the timeout is large."""
+    assert effective_window_seconds(10.0, 600.0) == pytest.approx(10.0)
+
+
+@given(
+    configured=st.floats(min_value=0.01, max_value=120.0),
+    timeout=st.floats(min_value=5.0, max_value=600.0),
+)
+def test_effective_window_invariants(configured: float, timeout: float) -> None:
+    """For realistic per-task timeouts (>= _MIN_TIMEOUT = 5s) the result stays in-band."""
+    floor = MIN_SAMPLES_FOR_VERDICT * DEFAULT_POLL_INTERVAL
+    result = effective_window_seconds(configured, timeout)
+    # Never below the sampling floor (would starve the classifier of samples).
+    assert result >= floor
+    # Never above timeout/2 (would let CPU-priming samples into the snapshot).
+    assert result <= timeout / 2.0 + 1e-9
+    # Never inflates a user value that already sits in-band.
+    if configured >= floor:
+        assert result <= configured + 1e-9

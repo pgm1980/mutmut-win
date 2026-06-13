@@ -218,7 +218,7 @@ class TestWorkerMain:
         event_q: _SimpleQueue = _SimpleQueue()
 
         # 15s timeout vs the default 10s window WOULD have triggered the
-        # old worker-side hint (10 >= 7.5).
+        # old worker-side hint; the notice now lives in the orchestrator.
         task_q.put(_simple_task(timeout_seconds=15.0))
         task_q.put(None)
 
@@ -229,7 +229,7 @@ class TestWorkerMain:
         ):
             worker_main(task_q, event_q, config)  # type: ignore[arg-type]
 
-        assert "IL window covers" not in capsys.readouterr().out
+        assert "IL-MONITOR" not in capsys.readouterr().out
 
     def test_anomalous_exit_captures_the_log_tail(self) -> None:
         """Issue #91 / A4-QX-025: exit 2 (collection error caused by the
@@ -397,6 +397,24 @@ class TestWorkerMain:
 class TestMutantEnvVar:
     def test_constant_value(self) -> None:
         assert MUTANT_ENV_VAR == "MUTANT_UNDER_TEST"
+
+
+
+def test_scale_il_window_clamps_to_task_budget_and_keeps_fields() -> None:
+    """_scale_il_window down-scales the window for a fast task, preserves the
+    other tunables, and is a no-op for a slow task (IL-001)."""
+    from mutmut_win.process.loop_monitor import IlThresholds
+
+    thresholds = IlThresholds(window_seconds=10.0, cpu_threshold=55.0, output_threshold=42)
+
+    fast = worker_module._scale_il_window(thresholds, timeout_seconds=6.0)
+    assert fast.window_seconds == pytest.approx(3.0)  # min(10, 6/2)
+    # the model_copy must leave the other tunables untouched
+    assert fast.cpu_threshold == pytest.approx(55.0)
+    assert fast.output_threshold == 42
+
+    slow = worker_module._scale_il_window(thresholds, timeout_seconds=600.0)
+    assert slow.window_seconds == pytest.approx(10.0)  # default left untouched
 
 
 @pytest.mark.parametrize(

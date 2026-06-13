@@ -237,6 +237,11 @@ def _process_task(
     # ---- IL-detection setup (Issue #71, Sprint 26) ---------------------
     il_enabled = bool(config_data.get("infinite_loop_detection", True))
     il_thresholds = _build_il_thresholds(config_data)
+    # IL-001: clamp the sampling window to THIS task's budget before the monitor
+    # starts and before the classifier reads thresholds.window_seconds — the
+    # default 10s window otherwise spans a fast suite's whole timeout and keeps
+    # CPU-priming samples in the snapshot, mis-scoring real loops as 'timeout'.
+    il_thresholds = _scale_il_window(il_thresholds, timeout_seconds)
     monitor: Any = None  # ProcessMonitor or None — Any avoids loop_monitor import
     # The window-vs-timeout configuration hint (A2-JT-018) is emitted by the
     # orchestrator, once per RUN — a per-worker guard meant N-fold spam on
@@ -431,6 +436,22 @@ def _build_il_thresholds(config_data: dict[str, object]) -> Any:
         running_ratio=_coerce_float("infinite_loop_running_ratio", 0.8),
         window_seconds=_coerce_float("infinite_loop_window_seconds", 10.0),
     )
+
+
+def _scale_il_window(thresholds: Any, timeout_seconds: float) -> Any:
+    """Return *thresholds* with its IL window clamped to this task's budget.
+
+    IL-001: a window wider than the task's wall-clock budget (the shipped 10 s
+    default on a fast suite with a small timeout) keeps CPU-priming samples in
+    the classifier snapshot and dilutes the mean, so a genuine infinite loop is
+    scored ``timeout`` instead of ``killed_by_infinite_loop``. A no-op on slow
+    suites whose timeout is large. See
+    :func:`mutmut_win.process.loop_monitor.effective_window_seconds`.
+    """
+    from mutmut_win.process.loop_monitor import effective_window_seconds
+
+    scaled = effective_window_seconds(thresholds.window_seconds, timeout_seconds)
+    return thresholds.model_copy(update={"window_seconds": scaled})
 
 
 def _classify_with_monitor(
