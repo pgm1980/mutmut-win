@@ -29,9 +29,12 @@ Light maintenance (Wellen-Commits, no GitHub issues — the report IS the spec):
   9 remaining dry_run survivors are pre-existing legacy debt, documented in the commit.
 Per-wave gates: ruff 0, mypy 14 baseline, full suite 1140/5 green, mutation >=80% on
 changed functions (verbatim diagnostic pins kill string mutants). NOT done yet:
-the project MEMORY.md refresh (stale since Sprint 35 — Sprint 36/v2.14.0 missing);
-merge to main + release stay the user's decision. All 6 findings committed:
-353f1c1, 5f2ba06, b2bc19e, ac6a52b, 865140f.
+DONE this session — all 6 findings + the load-flaky busy-loop IL integration
+test hardened (core-pin + warm-up + relaxed confidence band, 5/5 under stress)
++ project MEMORY.md refreshed through Sprint 37. Commits: 353f1c1 (IL-001),
+5f2ba06 (DOC-003/4), b2bc19e (conftest), ac6a52b (WRK-001), 865140f (MUT-003),
+2341631 (memory), e7628ff (IL test hardening), da5b243 (MEMORY.md). NOT merged,
+NOT released — merge to main + release stay the user's decision.
 
 ## TASK 1 — 6 new findings to fix (BUG_REPORT.md §3, §6, §7, §8)
 
