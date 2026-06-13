@@ -72,6 +72,10 @@ exclude = [
     # exclude a bare `ruff check .` reported findings the gates never saw
     # (issue #132 / 360°-B13).
     ".claude",
+    # Rescued external acceptance harness for the nextgen-operator roadmap —
+    # a standalone TDD fixture project (own venv / uv.lock), not subject to our
+    # lint rules; same rationale as tests/e2e_projects.
+    "_docs/nextgen_roadmap",
 ]
 
 [tool.ruff.lint]

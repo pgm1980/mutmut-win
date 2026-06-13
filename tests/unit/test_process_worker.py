@@ -399,7 +399,6 @@ class TestMutantEnvVar:
         assert MUTANT_ENV_VAR == "MUTANT_UNDER_TEST"
 
 
-
 def test_scale_il_window_clamps_to_task_budget_and_keeps_fields() -> None:
     """_scale_il_window down-scales the window for a fast task, preserves the
     other tunables, and is a no-op for a slow task (IL-001)."""
