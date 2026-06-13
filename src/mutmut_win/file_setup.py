@@ -201,12 +201,36 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                         meta_path = Path(str(target_path) + ".meta")
                         if meta_path.exists():
                             meta_path.unlink()
+                        # conftest edits are invisible to verdict-reuse
+                        # fingerprinting (see _conftest_staleness_warning).
+                        warning = _conftest_staleness_warning(source_path)
+                        if warning is not None:
+                            print(warning)
                     continue
 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
                 _copy_with_retry(source_path, target_path)
 
     _sync_deleted_sources(expected_targets, synced_roots, set(_STAGING_SKIP_DIRS))
+
+
+def _conftest_staleness_warning(source_path: Path) -> str | None:
+    """Return a verdict-staleness warning for a changed conftest, else ``None``.
+
+    A conftest.py carries no mutants of its own (no ``.meta`` to drop) but its
+    fixtures drive what the covering tests actually exercise. Such an edit
+    changes no pytest node ID, so the test-file fingerprints that gate verdict
+    reuse (:mod:`mutmut_win.stats`) cannot see it — a plain re-run would reuse
+    stale verdicts. Surfacing a warning lets the user reach for ``--force``
+    instead of trusting a stale score (external QA: conftest-not-fingerprinted).
+    """
+    if source_path.name != "conftest.py":
+        return None
+    return (
+        f"     WARNING: {source_path} changed but is not fingerprinted for "
+        f"verdict reuse — cached results depending on its fixtures may be "
+        f"stale; re-run with --force for an authoritative score."
+    )
 
 
 def _mirror_is_stale(source: Path, target: Path) -> bool:
