@@ -77,6 +77,91 @@ class TestPhaseGrandchildReaping:
         assert exit_code == 5
         kill_tree.assert_not_called()
 
+    def test_phase_job_handle_lifecycle_with_a_real_handle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening: with the handle mocked to None every handle
+        # branch is inert — a sentinel handle pins the lifecycle. Success:
+        # the kill-on-close job MUST be closed (it reaps leftovers).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(MutmutConfig(paths_to_mutate=["src"]))
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.wait.return_value = 0
+        with (
+            patch("subprocess.Popen", return_value=fake_proc),
+            patch("mutmut_win.process.worker._create_task_job", return_value=42),
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+        ):
+            runner._run_phase("clean run", ["pytest"], env={})
+        kill_tree.assert_not_called()
+        close_job.assert_called_once_with(42)
+
+    def test_phase_timeout_passes_the_handle_to_the_sweep_and_closes_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Timeout: the sweep gets the REAL handle (job kill beats psutil
+        # walk) and owns its closing — no double close in finally.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(MutmutConfig(paths_to_mutate=["src"]))
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+        with (
+            patch("subprocess.Popen", return_value=fake_proc),
+            patch("mutmut_win.process.worker._create_task_job", return_value=42),
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+        ):
+            exit_code = runner._run_phase("clean run", ["pytest"], env={}, timeout=1)
+        assert exit_code == 36
+        kill_tree.assert_called_once_with(fake_proc, 42)
+        close_job.assert_not_called()
+
+    def test_coverage_job_handle_lifecycle_with_a_real_handle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(MutmutConfig(paths_to_mutate=["src"]))
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.wait.return_value = 0
+        with (
+            patch("subprocess.Popen", return_value=fake_proc),
+            patch("mutmut_win.process.worker._create_task_job", return_value=42) as job,
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+        ):
+            exit_code = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
+        assert exit_code == 0
+        job.assert_called_once_with(4242)
+        kill_tree.assert_not_called()
+        close_job.assert_called_once_with(42)
+
+    def test_coverage_timeout_passes_the_handle_to_the_sweep_and_closes_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(MutmutConfig(paths_to_mutate=["src"], clean_run_timeout=1))
+        fake_proc = MagicMock()
+        fake_proc.pid = 4242
+        fake_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="coverage", timeout=1)
+        with (
+            patch("subprocess.Popen", return_value=fake_proc),
+            patch("mutmut_win.process.worker._create_task_job", return_value=42),
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+        ):
+            exit_code = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
+        assert exit_code == 36
+        kill_tree.assert_called_once_with(fake_proc, 42)
+        close_job.assert_not_called()
+
 
 class TestExtraPathsStagingParity:
     """360°-B7: PYTHONPATH must use the SAME mapping as the staging copy.
@@ -215,6 +300,27 @@ class TestSetupCfgParity:
         err = capsys.readouterr().err
         assert "infinite_loop_windw" in err
         assert "unknown" in err.lower()
+
+    def test_unknown_key_warning_is_word_exact_and_sorted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Four typo keys written in reverse order: the warning lists them
+        # SORTED in one stable, word-exact line.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\n"
+            "paths_to_mutate = src/\n"
+            "zz_typo = 1\n"
+            "mm_typo = 2\n"
+            "dd_typo = 3\n"
+            "aa_typo = 4\n",
+            encoding="utf-8",
+        )
+        load_config(tmp_path)
+        assert capsys.readouterr().err == (
+            "Warning: setup.cfg [mutmut] contains unknown option(s): "
+            "aa_typo, dd_typo, mm_typo, zz_typo — ignored.\n"
+        )
 
     def test_known_keys_do_not_warn(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
