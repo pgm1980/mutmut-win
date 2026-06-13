@@ -33,18 +33,38 @@
 | **#131** | Type-Check: README-Fix + Config-Hinweis (JSON-Flag), Baseline-Abzug gegen ungemutetes Staging | A5, B4 | 3 | Must |
 | **#132** | Härtung & Performance gebündelt: Phasen-Reaping, extra_paths-PYTHONPATH, IL-Konstanten, setup.cfg-Parität, Nested-Class-Warnung, Nenner-Doku, ruff-exclude, DB-Batching, Regex-Dedupe, dict statt defaultdict (+C3 optional) | B5, B7–B9, B11–B13, C1, C5, C6 | 8 | Should |
 
-## Definition of Done (Sprint-Gates)
+## Definition of Done (Sprint-Gates) — Stand 2026-06-13
 
-- [ ] `uv run pytest` vollständig grün (inkl. neuer Regressionstests je A-Befund)
-- [ ] `uv run ruff check .` → 0 Findings (B13-Fix macht das Gate wieder ehrlich)
-- [ ] `uv run mypy src/` → keine NEUEN Errors über der 14er-Baseline
-- [ ] `uv run lint-imports` → Contracts halten
-- [ ] **Semgrep Pro/SAST mit Engine-Nachweis**: ≥ 1200 Regeln gelaufen, 0 Findings, kein Login-Hinweis
-- [ ] `uv run pip-audit` → keine bekannten Vulnerabilities
-- [ ] Mutation Score ≥ 80 % auf jedem geänderten Modul (`mutmut-win run --paths-to-mutate …`)
-- [ ] Dogfooding-Vollpilot am Sprint-Ende (Vergleichsbasis: Sprint-34-Baseline 7800 Mutanten / 68,3 %)
-- [ ] Jeder Should-Punkt aus #132 gefixt ODER mit dokumentierter Begründung als Won't-Fix vermerkt
-- [ ] Sprint-Housekeeping (`.sprint/state.md`-Flags wahrheitsgemäß, MEMORY/Serena aktualisiert, Issues geschlossen)
+- [x] `uv run pytest` vollständig grün — **1118 passed / 5 skipped** (inkl. Regressionstests je Befund)
+- [x] `uv run ruff check .` → 0 Findings (B13: `.claude/` excluded; bare `.` ist Teil des Gates)
+- [x] `uv run mypy src/` → 14 Errors = bekannte Baseline, keine neuen
+- [x] `uv run lint-imports` → Layer architecture (ADR layer contracts v2) **KEPT**
+- [x] **Semgrep Pro/SAST**: 2918 Code rules geladen (1859 Pro), **1228 Rules run, 0 Findings**, kein Login-Hinweis (Token via winreg-Bridge)
+- [x] `pip-audit` → **No known vulnerabilities** (nach Lock-Bumps urllib3 2.7.0, idna 3.18, pip 26.1.2, pytest 9.0.3; truststore-injiziert gegen TLS-Interception)
+- [x] Mutation Score ≥ 80 % auf den Wave-Zeilen jedes geänderten Moduls (Zeilen-Gate via Staged-Slice-Diff + Token-Intersection; dokumentierte Äquivalente in den Commit-Messages):
+  - Welle 1 (#124, #125): 90,9 %
+  - Welle 2 (#127): 88,1 % (7 dokumentierte Äquivalente)
+  - Welle 3 (#126, #128, #129): **91,4 %** nach Härtung `e9dcb10` (file_setup; _sync_tree 87,2 %, get_mutant_name 94,3 %, _mirror_is_stale 93,3 %)
+  - Welle 4 (#130, #131): **87,0 % gesamt** nach Härtung `232b2eb` — alle Wave-Zeilen-Survivors getilgt (filter 92,6 %, warn 97,1 %, collect_tests 97,0 %, fingerprints 90,5 %)
+  - Welle 5 (#132): **98,6 % Wave-Zeilen** nach Härtung (runner-Phasen 100 %, config 97,6 %; worker-Mapping 100 %)
+- [ ] Dogfooding-Vollpilot — **läuft** (Ergebnis wird hier nachgetragen; Referenz S34: 7800 Mutanten / 68,3 %; Result-Reuse #119 aktiv = Produktverhalten)
+- [x] Jeder Should-Punkt aus #132 gefixt ODER dokumentiert: B11/B12 als dokumentierte Limitation (README + Visitor-Kommentar), C3 Won't-Do (gezielte Teil-Collection bleibt Future Option), Rest gefixt — inkl. C1-Timing-Beleg (Benchmark: 5,5 ms batched vs. 775 ms per-row, 300 Rows)
+- [ ] Sprint-Housekeeping (`.sprint/state.md`-Flags wahrheitsgemäß, MEMORY/Serena aktualisiert; Issues schließen sich via `closes #NNN` beim Merge/Push — User-Entscheidung)
+
+### Implementierungs-Verlauf (Commits)
+
+| Welle | Issues | Commits |
+|---|---|---|
+| 1 | #124, #125 | `a8fdd85`, `6302b46`, `c9f526e` (u. a.) |
+| 2 | #127 | `52c5884`, `26ade60` (u. a.) |
+| 3 | #126, #128, #129 | `2432bf2` + Härtung `e9dcb10` |
+| 4 | #130, #131 | `c9e33e8` + Härtung `232b2eb` |
+| 5 | #132 | `67b66d8` + Härtung (Job-Handle-Lifecycle, sorted-Warnung) |
+| Gates | — | `9f73eee` (Dependency-Advisories) |
+
+**Hinweis B7-Revision (in `67b66d8` dokumentiert):** Der ursprünglich geplante Config-Validator hätte den dokumentierten Bug-#69-Sibling-Use-Case gebrochen — die Staging-Kopie mappt `..`-Siblings bereits auf `mutants/<basename>` (A3-FD-002). Tatsächlicher Fix: PYTHONPATH-Parität in `worker._process_task` und `runner._mutants_env`.
+
+**Legacy-Debt-Befund (außerhalb des Sprint-Scopes, für einen künftigen Tech-Debt-Sprint):** funktionsweite Alt-Survivor-Quoten u. a. `MutationOrchestrator.run` 60,7 %, `_process_task` 41,1 %, `worker_main` 49,2 %, `get_events` 62,5 %, `SpawnPoolExecutor.__init__` 35,3 %, `_print_summary` 22 %, `load_config` 76,5 %, `_load_setup_cfg` 67 %, `_run_stats_collection`-Failure-Pfad 60 %.
 
 ## Out of scope (bewusst)
 

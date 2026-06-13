@@ -14,22 +14,29 @@ Distribution: install from a pinned git tag only
 PyPI publishing is deliberately NOT part of the release sequence.
 Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
 
-## Status (as of 2026-06-12, post-360°-analysis)
+## Status (as of 2026-06-13, Sprint 36 implementation complete)
 - Current release: **v2.13.0** (released 2026-06-12). Sprint 35 "Maintenance 3:
   External QA" closed (15/15 findings, issues #118–#123).
-- **Fable-5 360° code analysis completed the same day**: 9 confirmed bugs (3 High),
+- **Sprint 36 "Maintenance 4: Fable-5 360°" (branch feature/v2.14.0-maintenance-4,
+  issues #124–#132)**: all 28 findings of the 360° analysis implemented in 5 waves
+  (W1 `a8fdd85`+, W2 #127, W3 `2432bf2`, W4 `c9e33e8`, W5 `67b66d8`; hardening
+  commits `e9dcb10`/`232b2eb`; dep bumps `9f73eee`). Progress + gate scores live in
+  memory `sprint_36_progress`. Release v2.14.0 only on explicit user decision.
+- **Fable-5 360° code analysis (2026-06-12)**: 9 confirmed bugs (3 High),
   13 anomalies, 6 optimizations — report `_docs/audit/fable5_360_analysis_v2.13.0.md`,
-  inventory in memory `fable5_360_findings`. A bugfix/maintenance sprint is in planning;
-  it will end the development pause.
+  inventory in memory `fable5_360_findings`. All addressed by Sprint 36
+  (C3 documented Won't-Do; B11/B12 documented limitations).
 - Semgrep gate note: ALL historical semgrep_passed gates (incl. v2.13.0 release) ran on
   Community Edition (logged-out CLI). Since 2026-06-12 the host CLI is Pro
   (SEMGREP_APP_TOKEN as User env var, CLI 1.166.0): SAST active, **1228 rules — still
   0 findings** on this codebase. Gate criterion now: "Rules run" ≥ ~1200, no
   "semgrep login" hint. Sessions inherit the token only after a full Claude Desktop
   restart (workaround: registry bridge via winreg in a Python subprocess).
-- Last verified gates @ v2.13.0: 1016 passed / 5 skipped, ruff 0 on project code
-  (currently red on `.claude/skills/` — finding B13), mypy 14 (known baseline),
-  import-linter clean.
+- Last verified gates @ Sprint 36 (2026-06-13): 1118 passed / 5 skipped, bare
+  `ruff check .` 0 findings (B13: `.claude/` excluded), mypy 14 (known baseline),
+  import-linter KEPT, Semgrep Pro 1228 rules / 0 findings, pip-audit clean
+  (urllib3/idna/pip/pytest lifted past advisories). Runtime floor: pytest>=8.2
+  (A2, @argfile).
 
 ## Key capabilities (vs upstream mutmut)
 - 22 mutmut-3.5.0 operators **+ 7 additional** (regex patterns, math method swaps,
