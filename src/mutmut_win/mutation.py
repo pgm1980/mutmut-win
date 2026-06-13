@@ -10,7 +10,8 @@ import libcst as cst
 import libcst.matchers as m
 from libcst.metadata import MetadataWrapper, PositionProvider
 
-from mutmut_win.node_mutation import OPERATORS_TYPE, mutation_operators
+from mutmut_win.constants import Profile
+from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
 
 NEVER_MUTATE_FUNCTION_NAMES = {
@@ -49,14 +50,21 @@ def mutate_file_contents(
 def create_mutations(
     code: str,
     covered_lines: set[int] | None = None,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> tuple[cst.Module, list[Mutation]]:
-    """Parse the code and create mutations."""
+    """Parse the code and create mutations.
+
+    ``active_profile`` selects which operators run; it defaults to ``advanced``
+    (mutmut-win's historical operator set) so existing callers are unaffected.
+    The full profile value is threaded in from the config by the generation
+    path (file_setup / orchestrator) in a later wave.
+    """
     ignored_lines = pragma_no_mutate_lines(code)
 
     module = cst.parse_module(code)
 
     metadata_wrapper = MetadataWrapper(module)
-    visitor = MutationVisitor(mutation_operators, ignored_lines, covered_lines)
+    visitor = MutationVisitor(operators_for_profile(active_profile), ignored_lines, covered_lines)
     module = metadata_wrapper.visit(visitor)
 
     return module, visitor.mutations
