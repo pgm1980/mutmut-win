@@ -17,10 +17,13 @@ filter. They are the C1 wave of Phase 1.
 from __future__ import annotations
 
 from collections import Counter
+from io import StringIO
 
 import pytest
 
 from mutmut_win.constants import Profile
+from mutmut_win.file_setup import write_all_mutants_to_file
+from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.node_mutation import mutation_operators, operators_for_profile
 
 # The nine mutmut-win extras — everything beyond mutmut's 15-operator base —
@@ -120,3 +123,46 @@ class TestOperatorsForProfile:
         basic = set(operators_for_profile(Profile.BASIC))
         advanced = set(operators_for_profile(Profile.ADVANCED))
         assert basic < advanced  # strict: advanced has the 9 extras on top
+
+
+class TestProfileThreadsThroughGeneration:
+    """C2: the active profile reaches the generator through
+    ``mutate_file_contents`` and ``write_all_mutants_to_file``.
+
+    ``a or b`` is mutated by ``operator_or_default`` — an *advanced* extra — so
+    basic must yield strictly fewer mutants than advanced, while the default
+    stays equal to advanced (behaviour-neutral).
+    """
+
+    _OR_SNIPPET = "def pick(a, b):\n    return a or b\n"
+
+    def test_basic_yields_fewer_mutants_than_advanced(self) -> None:
+        _c1, basic_names = mutate_file_contents(
+            "m.py", self._OR_SNIPPET, active_profile=Profile.BASIC
+        )
+        _c2, advanced_names = mutate_file_contents(
+            "m.py", self._OR_SNIPPET, active_profile=Profile.ADVANCED
+        )
+        assert len(basic_names) < len(advanced_names)
+
+    def test_default_is_behaviour_neutral_equals_advanced(self) -> None:
+        _c1, default_names = mutate_file_contents("m.py", self._OR_SNIPPET)
+        _c2, advanced_names = mutate_file_contents(
+            "m.py", self._OR_SNIPPET, active_profile=Profile.ADVANCED
+        )
+        assert default_names == advanced_names
+
+    def test_write_all_mutants_threads_the_profile(self) -> None:
+        basic = write_all_mutants_to_file(
+            out=StringIO(),
+            source=self._OR_SNIPPET,
+            filename="m.py",
+            active_profile=Profile.BASIC,
+        )
+        advanced = write_all_mutants_to_file(
+            out=StringIO(),
+            source=self._OR_SNIPPET,
+            filename="m.py",
+            active_profile=Profile.ADVANCED,
+        )
+        assert len(basic) < len(advanced)

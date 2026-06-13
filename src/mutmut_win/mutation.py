@@ -38,11 +38,15 @@ def mutate_file_contents(
     filename: str,  # noqa: ARG001 - kept for API compatibility with original mutmut
     code: str,
     covered_lines: set[int] | None = None,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> tuple[str, Sequence[str]]:
     """Create mutations for `code` and merge them to a single mutated file with trampolines.
 
+    ``active_profile`` selects the operator set (default ``advanced`` = the
+    historical behaviour); it is threaded straight through to create_mutations.
+
     :return: A tuple of (mutated code, list of mutant function names)"""
-    module, mutations = create_mutations(code, covered_lines)
+    module, mutations = create_mutations(code, covered_lines, active_profile)
 
     return combine_mutations_to_source(module, mutations)
 

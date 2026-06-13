@@ -24,7 +24,7 @@ from typing import IO, TYPE_CHECKING
 
 import libcst as cst
 
-from mutmut_win.constants import SOURCE_ROOT_NAMES
+from mutmut_win.constants import SOURCE_ROOT_NAMES, Profile
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
@@ -626,6 +626,7 @@ def write_all_mutants_to_file(
     source: str,
     filename: Path | str,
     covered_lines: set[int] | None = None,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> list[str]:
     """Generate mutated code and write it to *out*.
 
@@ -635,13 +636,17 @@ def write_all_mutants_to_file(
         filename: Path to the source file (used by the mutation engine for
             context; the file is not re-read).
         covered_lines: Optional set of line numbers to restrict mutations to.
+        active_profile: Operator profile to apply (default ``advanced`` = the
+            historical operator set).
 
     Returns:
         List of mangled mutant method names (e.g. ``["add__mutmut_1", ...]``).
     """
     from mutmut_win.mutation import mutate_file_contents
 
-    result, mutant_names = mutate_file_contents(str(filename), source, covered_lines)
+    result, mutant_names = mutate_file_contents(
+        str(filename), source, covered_lines, active_profile
+    )
     out.write(result)
     return list(mutant_names)
 
