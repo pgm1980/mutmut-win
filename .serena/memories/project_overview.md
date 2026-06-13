@@ -14,14 +14,19 @@ Distribution: install from a pinned git tag only
 PyPI publishing is deliberately NOT part of the release sequence.
 Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
 
-## Status (as of 2026-06-13, Sprint 36 implementation complete)
-- Current release: **v2.13.0** (released 2026-06-12). Sprint 35 "Maintenance 3:
-  External QA" closed (15/15 findings, issues #118–#123).
-- **Sprint 36 "Maintenance 4: Fable-5 360°" (branch feature/v2.14.0-maintenance-4,
-  issues #124–#132)**: all 28 findings of the 360° analysis implemented in 5 waves
-  (W1 `a8fdd85`+, W2 #127, W3 `2432bf2`, W4 `c9e33e8`, W5 `67b66d8`; hardening
-  commits `e9dcb10`/`232b2eb`; dep bumps `9f73eee`). Progress + gate scores live in
-  memory `sprint_36_progress`. Release v2.14.0 only on explicit user decision.
+## Status (as of 2026-06-13, v2.14.0 RELEASED — back in the development pause)
+- Current release: **v2.14.0** (released 2026-06-13). Sprint 36 "Maintenance 4:
+  Fable-5 360°" closed — all 28 findings of the 360° analysis (9 bugs A1–A9,
+  13 anomalies B1–B13, 6 optimizations C1–C6; issues #124–#132). Merge `5ef27c1`,
+  bump `43a7762`, annotated tag v2.14.0, GitHub release. Dogfooding 69.2 %
+  (> S34 ref 68.3 %). C3 = documented Won't-Do; B11/B12 documented limitations.
+- Prior release: v2.13.0 (2026-06-12, Sprint 35 "Maintenance 3: External QA",
+  issues #118–#123).
+- **Development pause**: 0 open issues / backlog / decisions. Resumption anchors:
+  dogfooding pause baseline (7231 mutants / 69.2 %), the 360° report
+  (`_docs/audit/fable5_360_analysis_v2.13.0.md`, memory `fable5_360_findings`),
+  and the legacy tech-debt inventory in the Sprint 36 backlog (function-wide
+  legacy survivor rates for a future tech-debt sprint).
 - **Fable-5 360° code analysis (2026-06-12)**: 9 confirmed bugs (3 High),
   13 anomalies, 6 optimizations — report `_docs/audit/fable5_360_analysis_v2.13.0.md`,
   inventory in memory `fable5_360_findings`. All addressed by Sprint 36
