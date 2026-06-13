@@ -484,7 +484,11 @@ class MutationOrchestrator:
                 code = src_file.read_text(encoding="utf-8")
                 _mutated_code, mutant_names = mutate_file_contents(rel_path, code)
                 total += len(mutant_names)
-            except Exception:  # noqa: S112 — dry-run must not crash on unparseable files
+            except Exception as exc:  # count-only preview, logged just below
+                # MUT-003: the full run warns about files it cannot mutate
+                # (encoding errors, unparseable syntax); the dry-run preview
+                # must do the same so its count is not a silent under-count.
+                print(f"Warning: could not mutate {rel_path}: {exc}")
                 continue
 
         self._warn_unmatched_exclusions(walked)

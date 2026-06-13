@@ -115,6 +115,32 @@ class TestUnmatchedExclusionWarning:
         assert "matched no files" not in out
         assert result.total_mutants == 0  # control: the pattern really excluded
 
+    def test_dry_run_warns_about_non_utf8_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mutmut_win.orchestrator import MutationOrchestrator
+
+        self._project(tmp_path, monkeypatch)
+        # Two valid-Python-but-Latin-1 files (0xe9 = é), NOT UTF-8 decodable.
+        # The full run warns ("could not mutate ... codec can't decode"); the
+        # dry-run preview must warn for EACH instead of silently dropping them,
+        # so the reported count is not a silent under-count (external QA: MUT-003).
+        (tmp_path / "src" / "latin1_a.py").write_bytes(b"# coding: latin-1\nA = '\xe9'\n")
+        (tmp_path / "src" / "latin1_b.py").write_bytes(b"# coding: latin-1\nB = '\xe9'\n")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        MutationOrchestrator(cfg, runner=MagicMock(), executor=MagicMock()).dry_run()
+
+        out_lines = capsys.readouterr().out.splitlines()
+        warn_lines = [line for line in out_lines if "could not mutate" in line]
+        # BOTH bad files must warn — a `continue`->`break` mutant would stop
+        # after the first. startswith + "<name>: " pins kill the XX-wrap and the
+        # separator string mutants (a wrapped string still CONTAINS the substring).
+        assert len(warn_lines) == 2
+        assert all(line.startswith("Warning: could not mutate ") for line in warn_lines)
+        assert any("latin1_a.py: " in line for line in warn_lines)
+        assert any("latin1_b.py: " in line for line in warn_lines)
+        assert all("codec can't decode" in line for line in warn_lines)
+
 
 # ---------------------------------------------------------------------------
 # WIN-001 — WER suppression in the worker
