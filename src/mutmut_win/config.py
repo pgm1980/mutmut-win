@@ -15,6 +15,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
+from mutmut_win.constants import Profile
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 
 
@@ -183,6 +184,14 @@ class MutmutConfig(BaseModel):
         default=False,
         description="Only mutate lines covered by tests",
     )
+    mutation_profile: Profile = Field(
+        default=Profile.ADVANCED,
+        description=(
+            "Operator profile: 'basic' (mutmut's 15 base operators only), "
+            "'advanced' (default — base plus mutmut-win's extras), or 'all' "
+            "(advanced plus the aggressive operators). See the operator roadmap."
+        ),
+    )
     type_check_command: list[str] = Field(
         default_factory=list,
         description="Type checker command (e.g. ['mypy', 'src/'])",
@@ -236,6 +245,20 @@ class MutmutConfig(BaseModel):
         """Accept a single string and wrap it into a list."""
         if isinstance(v, str):
             return [v]
+        return v
+
+    @field_validator("mutation_profile", mode="before")
+    @classmethod
+    def _coerce_mutation_profile(cls, v: object) -> object:
+        """Accept a profile name ('basic'/'advanced'/'all') or a Profile.
+
+        A string is parsed case-insensitively via :meth:`Profile.from_name`
+        (which raises ValueError on an unknown name, surfaced by pydantic as a
+        ValidationError); a Profile passes through unchanged, as does the int
+        form pydantic emits on a model_dump round-trip.
+        """
+        if isinstance(v, str):
+            return Profile.from_name(v)
         return v
 
     @field_validator("max_stack_depth", mode="after")

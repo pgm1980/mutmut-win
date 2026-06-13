@@ -20,7 +20,11 @@ from collections import Counter
 from io import StringIO
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+from pydantic import ValidationError
 
+from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import Profile
 from mutmut_win.file_setup import write_all_mutants_to_file
 from mutmut_win.mutation import mutate_file_contents
@@ -166,3 +170,35 @@ class TestProfileThreadsThroughGeneration:
             active_profile=Profile.ADVANCED,
         )
         assert len(basic) < len(advanced)
+
+
+class TestMutationProfileConfig:
+    """C3: ``MutmutConfig.mutation_profile`` parses profile names, defaults to
+    advanced, rejects unknown values, and survives a model_dump round-trip.
+    """
+
+    def test_default_is_advanced(self) -> None:
+        assert MutmutConfig().mutation_profile is Profile.ADVANCED
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("basic", Profile.BASIC),
+            ("advanced", Profile.ADVANCED),
+            ("all", Profile.ALL),
+            ("ALL", Profile.ALL),  # case-insensitive, via Profile.from_name
+            (Profile.BASIC, Profile.BASIC),  # an actual Profile passes through
+        ],
+    )
+    def test_parses_name_or_profile(self, value: object, expected: Profile) -> None:
+        assert MutmutConfig(mutation_profile=value).mutation_profile is expected
+
+    def test_rejects_unknown_profile(self) -> None:
+        with pytest.raises(ValidationError):
+            MutmutConfig(mutation_profile="aggressive")
+
+    @given(profile=st.sampled_from(list(Profile)))
+    def test_model_dump_roundtrip(self, profile: Profile) -> None:
+        original = MutmutConfig(mutation_profile=profile)
+        restored = MutmutConfig(**original.model_dump())
+        assert restored.mutation_profile is profile
