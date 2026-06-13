@@ -130,11 +130,24 @@ policy). No push without user request.
   urllib3 2.7.0 / idna 3.18 / pip 26.1.2 / pytest 9.0.3 (`9f73eee`,
   truststore-injected against TLS interception); bare `ruff check .` 0;
   mypy 14 baseline; import-linter KEPT; full suite 1118/5 skipped.
-- **Dogfooding full pilot RUNNING** (background, started 2026-06-13
-  after all wave gates; reference S34: 7800 mutants / 68.3 %; result
-  reuse #119 active by design — note in report). After it: write
-  results into sprint_36_backlog DoD, set .sprint/state.md flags
-  truthfully, REPORT AND WAIT (no merge/release/push without user).
+- **Dogfooding full pilot DONE (2026-06-13): 69.2 %** (3084 killed /
+  1334 survived / 40 timeout / 2773 no-tests; 7231 mutants; ~1.7 h) —
+  ABOVE S34 reference (68.3 %), no regression. A transient stats-
+  collection exit-2 during the full regeneration self-healed via the
+  cache fallback (#99/A3-OS-006) and did NOT affect the score.
+  Verified from a clean state: fresh collection AND re-collection over a
+  pre-existing tree (the dogfooding condition) both succeed — no code
+  regression. The `mutants/mutants`/`No module named hypothesis` seen
+  while diagnosing was self-pollution (ran `uv run` INSIDE mutants/,
+  which built a dev-dep-less .venv there). Lesson: never invoke uv
+  inside the mutants/ staging tree.
+- **SPRINT 36 CONTENT-COMPLETE.** All 28 findings done; every gate
+  green/clean. Remaining = user decision only: merge feature/v2.14.0-
+  maintenance-4 → main, version bump 2.13.0→2.14.0 (pyproject+uv.lock),
+  annotated tag, GitHub release; issues #124–#132 close via the
+  `closes #NNN` commit trailers on merge. .sprint/state.md:
+  github_issues_closed + housekeeping_done stay false until that merge.
+  NO push/merge/release without explicit user go.
 
 ## Gates checklist per wave
 ruff 0 · mypy ≤14 baseline · pytest green · semgrep PRO (≥1200 rules, 0

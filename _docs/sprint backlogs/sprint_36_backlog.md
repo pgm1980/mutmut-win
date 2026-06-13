@@ -47,7 +47,7 @@
   - Welle 3 (#126, #128, #129): **91,4 %** nach Härtung `e9dcb10` (file_setup; _sync_tree 87,2 %, get_mutant_name 94,3 %, _mirror_is_stale 93,3 %)
   - Welle 4 (#130, #131): **87,0 % gesamt** nach Härtung `232b2eb` — alle Wave-Zeilen-Survivors getilgt (filter 92,6 %, warn 97,1 %, collect_tests 97,0 %, fingerprints 90,5 %)
   - Welle 5 (#132): **98,6 % Wave-Zeilen** nach Härtung (runner-Phasen 100 %, config 97,6 %; worker-Mapping 100 %)
-- [ ] Dogfooding-Vollpilot — **läuft** (Ergebnis wird hier nachgetragen; Referenz S34: 7800 Mutanten / 68,3 %; Result-Reuse #119 aktiv = Produktverhalten)
+- [x] Dogfooding-Vollpilot — **69,2 %** (3084 killed / 1334 survived / 40 timeout / 2773 no-tests bei 7231 Mutanten; ~1,7 h) — **über** S34-Referenz (68,3 %). Ein transienter Stats-Collection-Ausfall (exit 2) während der Voll-Regeneration heilte sich per Cache-Fallback (Graceful Degradation #99/A3-OS-006) und verfälschte das Ergebnis nicht. Verifiziert (2026-06-13): aus garantiert sauberem Zustand sammelt die Stats-Phase fehlerfrei — sowohl frische Vollsammlung als auch Re-Collection über vorbestehenden Baum (= die Dogfooding-Bedingung); keine Code-Regression. (Das anfängliche `mutants/mutants`/`ModuleNotFoundError: hypothesis` in der Diagnose war Selbstverschmutzung durch `uv run` *innerhalb* `mutants/`.)
 - [x] Jeder Should-Punkt aus #132 gefixt ODER dokumentiert: B11/B12 als dokumentierte Limitation (README + Visitor-Kommentar), C3 Won't-Do (gezielte Teil-Collection bleibt Future Option), Rest gefixt — inkl. C1-Timing-Beleg (Benchmark: 5,5 ms batched vs. 775 ms per-row, 300 Rows)
 - [ ] Sprint-Housekeeping (`.sprint/state.md`-Flags wahrheitsgemäß, MEMORY/Serena aktualisiert; Issues schließen sich via `closes #NNN` beim Merge/Push — User-Entscheidung)
 

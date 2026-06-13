@@ -37,7 +37,7 @@ def source_layout_project(tmp_path: Path) -> Path:
 @pytest.mark.slow
 def test_source_layout_mutants_are_killed_not_untested(source_layout_project: Path) -> None:
     # S603: command list is fully controlled — no user input reaches this call
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-m", "mutmut_win", "run", "--no-progress"],
         cwd=source_layout_project,
         capture_output=True,
