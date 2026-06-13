@@ -15,6 +15,9 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from mutmut_win.config import MutmutConfig
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
@@ -251,8 +254,148 @@ class TestMetaRobustness:
         sfd.load()  # must not raise
 
         assert sfd.exit_code_by_key == {}
-        assert "corrupt" in capsys.readouterr().out.lower()
+        assert "corrupt" in capsys.readouterr().err.lower()  # warnings live on stderr (#127/A6)
         assert not sfd.meta_path.exists()  # cleared so the fast path rebuilds
+
+    def test_type_corrupt_meta_values_warn_and_rebuild(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Issue #124 / B10: valid JSON with type-corrupt values (duration:
+        # null → float(None) TypeError) used to escape the A3-CM-009 healing
+        # and block every subsequent run — same warn+unlink+rebuild path now.
+        _project(tmp_path, monkeypatch)
+        sfd = SourceFileMutationData(path="src/mod.py")
+        sfd.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        sfd.meta_path.write_text(
+            '{"exit_code_by_key": {"a": 1}, "durations_by_key": {"a": null}}',
+            encoding="utf-8",
+        )
+
+        sfd.load()  # must not raise
+
+        assert sfd.exit_code_by_key == {}
+        assert "corrupt" in capsys.readouterr().err.lower()  # warnings live on stderr (#127/A6)
+        assert not sfd.meta_path.exists()
+
+    def test_type_corrupt_meta_resets_every_partially_loaded_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Mutation hardening (#124): _reset_loaded_fields must clear EVERY
+        # field load may have populated before the corruption hit — and the
+        # corruption warning is pinned verbatim (diagnostics are contract).
+        _project(tmp_path, monkeypatch)
+        sfd = SourceFileMutationData(path="src/mod.py")
+        sfd.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        sfd.meta_path.write_text(
+            "{"
+            '"exit_code_by_key": {"a": 1},'
+            '"durations_by_key": {"a": 1.5},'
+            '"type_check_error_by_key": {"a": "boom"},'
+            '"estimated_durations_by_key": {"a": null},'
+            '"source_mtime": 1.0, "source_size": 2'
+            "}",
+            encoding="utf-8",
+        )
+
+        sfd.load()  # estimated_durations hits float(None) AFTER other fields loaded
+
+        assert sfd.exit_code_by_key == {}
+        assert sfd.durations_by_key == {}
+        assert sfd.estimated_time_of_tests_by_mutant == {}
+        assert sfd.type_check_error_by_key == {}
+        assert sfd.source_mtime is None
+        assert sfd.source_size is None
+        expected_warning = (
+            f"Warning: corrupted meta file {sfd.meta_path} — rebuilding from scratch."
+        )
+        assert expected_warning in capsys.readouterr().err.splitlines()
+
+    def test_meta_roundtrip_preserves_every_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening (#124): a full save→load roundtrip pins every
+        # JSON key string and both fingerprint fields — key-string mutants
+        # in save OR load break it.
+        _project(tmp_path, monkeypatch)
+        original = SourceFileMutationData(path="src/mod.py")
+        # The class-method key carries ǁ (U+01C1): on non-UTF-8 locales an
+        # encoding=None regression breaks THIS roundtrip, not just exotics.
+        original.exit_code_by_key = {
+            "mod.x_f__mutmut_1": 1,
+            "mod.x_f__mutmut_2": None,
+            "mod.xǁClsǁm__mutmut_1": 0,
+        }
+        original.durations_by_key = {"mod.x_f__mutmut_1": 2.5}
+        original.estimated_time_of_tests_by_mutant = {"mod.x_f__mutmut_1": 0.75}
+        original.type_check_error_by_key = {"mod.x_f__mutmut_2": "incompatible type"}
+        original.source_mtime = 1718180000.125
+        original.source_size = 6919
+        original.meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        original.save()
+        loaded = SourceFileMutationData(path="src/mod.py")
+        loaded.load()
+
+        assert loaded.exit_code_by_key == original.exit_code_by_key
+        assert loaded.durations_by_key == original.durations_by_key
+        assert loaded.estimated_time_of_tests_by_mutant == (
+            original.estimated_time_of_tests_by_mutant
+        )
+        assert loaded.type_check_error_by_key == original.type_check_error_by_key
+        assert loaded.source_mtime == original.source_mtime
+        assert loaded.source_size == original.source_size
+
+    @given(
+        exit_codes=st.dictionaries(
+            st.text(min_size=1), st.one_of(st.none(), st.integers(-(2**31), 2**32)), max_size=4
+        ),
+        durations=st.dictionaries(
+            st.text(min_size=1),
+            st.floats(min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False),
+            max_size=4,
+        ),
+        mtime=st.one_of(
+            st.none(),
+            st.floats(min_value=0.0, max_value=4e9, allow_nan=False, allow_infinity=False),
+        ),
+        size=st.one_of(st.none(), st.integers(min_value=0, max_value=2**40)),
+    )
+    @settings(
+        max_examples=25,
+        deadline=None,
+        # tmp_path/monkeypatch are function-scoped on purpose: every example
+        # overwrites the SAME meta file, so reuse across examples is safe.
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_meta_roundtrip_property(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exit_codes: dict[str, int | None],
+        durations: dict[str, float],
+        mtime: float | None,
+        size: int | None,
+    ) -> None:
+        # CLAUDE.md serialisation invariant (hypothesis): save→load is the
+        # identity for every well-formed meta payload. Setup is inline and
+        # idempotent — hypothesis reuses the function-scoped tmp_path for
+        # every example (the suppressed health check above).
+        monkeypatch.chdir(tmp_path)
+        original = SourceFileMutationData(path="src/mod.py")
+        original.exit_code_by_key = exit_codes
+        original.durations_by_key = durations
+        original.source_mtime = mtime
+        original.source_size = size
+        original.meta_path.parent.mkdir(parents=True, exist_ok=True)
+
+        original.save()
+        loaded = SourceFileMutationData(path="src/mod.py")
+        loaded.load()
+
+        assert loaded.exit_code_by_key == exit_codes
+        assert loaded.durations_by_key == durations
+        assert loaded.source_mtime == mtime
+        assert loaded.source_size == size
 
     def test_save_is_atomic_via_tmp_and_replace(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -266,6 +409,210 @@ class TestMetaRobustness:
         assert json.loads(sfd.meta_path.read_text(encoding="utf-8"))["exit_code_by_key"]
         leftovers = list(sfd.meta_path.parent.glob("*.tmp"))
         assert leftovers == []  # no temp residue
+
+
+class TestWave3StagingHygiene:
+    """Issue #129 / 360°-A8 + B6 + C2 + C4 — fingerprints and mirror truth."""
+
+    def test_engine_version_change_invalidates_config_fingerprint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-A8: upgrading mutmut-win used to leave the old mutant
+        # universe (and its reuse candidates) silently in place — v2.13's
+        # f-string mutants never appeared on unchanged files.
+        _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        assert config_fingerprint_matches(cfg) is False  # first run persists
+        assert config_fingerprint_matches(cfg) is True  # unchanged → fast path
+
+        import mutmut_win
+
+        monkeypatch.setattr(mutmut_win, "__version__", "99.0.0")
+        assert config_fingerprint_matches(cfg) is False  # upgrade invalidates
+
+    def test_backdated_restore_of_unmutated_mirror_is_synced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-B6a: a git-restore with an OLD timestamp escaped the
+        # mtime-'>' comparison — the staging kept serving the stale copy
+        # and the clean run validated against outdated code.
+        project = _project(tmp_path, monkeypatch)
+        helper = project / "src" / "helper.py"
+        helper.write_text("VALUE = 1\n", encoding="utf-8")
+        # A nested package exercises the deletion-sync walk filter with a
+        # non-empty dirs list (mutation hardening for the skip-set arg).
+        (project / "src" / "pkg").mkdir()
+        (project / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "src" / "helper.py"
+        assert staged.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+        helper.write_text("VALUE = 2\n", encoding="utf-8")
+        os.utime(helper, (1_000_000_000, 1_000_000_000))  # restore with OLD mtime
+        copy_src_dir(cfg)
+
+        assert staged.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+    def test_mutated_file_with_meta_keeps_newer_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The '>' path must SURVIVE for mutated files: their staging is the
+        # trampolined output (newer) and the .meta fingerprint is the truth
+        # there — an equality mirror would overwrite the trampoline with
+        # the plain source and break the forced-fail gate.
+        project = _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "src" / "mod.py"
+        staged.write_text("# trampolined output\n", encoding="utf-8")
+        staged.with_name(staged.name + ".meta").write_text("{}", encoding="utf-8")
+
+        copy_src_dir(cfg)  # source unchanged since the first mirror
+
+        assert staged.read_text(encoding="utf-8") == "# trampolined output\n"
+
+    def test_also_copy_tree_syncs_updates_and_deletions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-B6b + C2: copytree re-copied everything every run and never
+        # deleted — removed test files kept RUNNING inside the staging.
+        project = _project(tmp_path, monkeypatch)
+        tests_src = project / "tests"
+        tests_src.mkdir()
+        (tests_src / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        (tests_src / "test_gone.py").write_text("def test_b(): pass\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        copy_also_copy_files(cfg)
+        staged_tests = project / "mutants" / "tests"
+        assert (staged_tests / "test_gone.py").exists()
+
+        (tests_src / "test_gone.py").unlink()
+        (tests_src / "test_keep.py").write_text("def test_a(): assert True\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert not (staged_tests / "test_gone.py").exists()  # deletion synced
+        assert "assert True" in (staged_tests / "test_keep.py").read_text(encoding="utf-8")
+
+    def test_also_copy_skips_unchanged_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # C2: the sync must be mtime-aware — unchanged files are not
+        # re-copied (observable via the copy primitive, since copy2
+        # preserves mtimes and hides the difference).
+        import mutmut_win.file_setup as fs
+
+        project = _project(tmp_path, monkeypatch)
+        tests_src = project / "tests"
+        tests_src.mkdir()
+        (tests_src / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        copy_also_copy_files(cfg)
+
+        calls: list[str] = []
+        real_copy = fs._copy_with_retry
+
+        def spying_copy(src: Path, dst: Path, **kwargs: object) -> None:
+            calls.append(str(src))
+            real_copy(src, dst, **kwargs)
+
+        monkeypatch.setattr(fs, "_copy_with_retry", spying_copy)
+        copy_also_copy_files(cfg)
+
+        assert [c for c in calls if "test_keep" in c] == []  # unchanged → untouched
+
+    def test_also_copy_single_file_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Mutation hardening (#129/C2): the single-file branch shares the
+        # mirror rule — first copy, no re-copy when unchanged, re-copy on
+        # change. (Trees are covered above; this pins the file branch.)
+        import mutmut_win.file_setup as fs
+
+        project = _project(tmp_path, monkeypatch)
+        single = project / "extra.cfg"
+        single.write_text("v1", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["extra.cfg"])
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "extra.cfg"
+        assert staged.read_text(encoding="utf-8") == "v1"  # first copy happened
+
+        calls: list[str] = []
+        real_copy = fs._copy_with_retry
+
+        def spying_copy(src: Path, dst: Path, **kwargs: object) -> None:
+            calls.append(str(src))
+            real_copy(src, dst, **kwargs)
+
+        monkeypatch.setattr(fs, "_copy_with_retry", spying_copy)
+        copy_also_copy_files(cfg)
+        assert [c for c in calls if "extra.cfg" in c] == []  # unchanged → untouched
+
+        single.write_text("v2-changed", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        assert staged.read_text(encoding="utf-8") == "v2-changed"  # change synced
+
+    def test_tooling_dirs_are_not_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 360°-C4: tooling/cache trees have no business in the staging.
+        project = _project(tmp_path, monkeypatch)
+        (project / "node_modules").mkdir()
+        (project / "node_modules" / "big.js").write_text("x", encoding="utf-8")
+        (project / ".claude").mkdir()
+        (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+
+        copy_src_dir(MutmutConfig(paths_to_mutate=["src"]))
+
+        assert not (project / "mutants" / "node_modules").exists()
+        assert not (project / "mutants" / ".claude").exists()
+
+    def test_mirror_unstatable_target_is_stale(self, tmp_path: Path) -> None:
+        # Mutation hardening: a missing/unstatable target must refresh.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        src.write_text("x", encoding="utf-8")
+        assert _mirror_is_stale(src, tmp_path / "missing.py") is True
+
+    def test_mirror_meta_owned_equal_mtime_is_not_stale(self, tmp_path: Path) -> None:
+        # Boundary pin: with a .meta sibling the rule is STRICTLY newer —
+        # an equal mtime (copy + immediate generation) must not refresh.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("x", encoding="utf-8")
+        tgt.write_text("trampolined", encoding="utf-8")
+        tgt.with_name(tgt.name + ".meta").write_text("{}", encoding="utf-8")
+        os.utime(src, (1_000, 1_000))
+        os.utime(tgt, (1_000, 1_000))
+        assert _mirror_is_stale(src, tgt) is False
+
+    def test_mirror_meta_owned_newer_source_is_stale(self, tmp_path: Path) -> None:
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("x", encoding="utf-8")
+        tgt.write_text("trampolined", encoding="utf-8")
+        tgt.with_name(tgt.name + ".meta").write_text("{}", encoding="utf-8")
+        os.utime(tgt, (1_000, 1_000))
+        os.utime(src, (2_000, 2_000))
+        assert _mirror_is_stale(src, tgt) is True
+
+    def test_mirror_plain_size_change_with_equal_mtime_is_stale(self, tmp_path: Path) -> None:
+        # The size term is load-bearing: equal mtimes with different sizes
+        # (content swap + timestamp restore) must refresh a plain mirror.
+        from mutmut_win.file_setup import _mirror_is_stale
+
+        src = tmp_path / "a.py"
+        tgt = tmp_path / "staged.py"
+        src.write_text("xx", encoding="utf-8")
+        tgt.write_text("x", encoding="utf-8")
+        os.utime(src, (1_000, 1_000))
+        os.utime(tgt, (1_000, 1_000))
+        assert _mirror_is_stale(src, tgt) is True
 
 
 class TestForceHonesty:

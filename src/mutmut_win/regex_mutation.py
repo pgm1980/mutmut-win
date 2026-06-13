@@ -64,11 +64,15 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
     mutations.extend(_mutate_char_classes(pattern))
     mutations.extend(_mutate_anchors(pattern))
 
-    # Validate all mutations and filter invalid ones.
+    # Validate, dedupe (issue #132 / 360°-C5: two generators can emit the
+    # same candidate — duplicates would create same-named mutants) and
+    # filter invalid ones.
     valid: list[str] = []
+    seen: set[str] = set()
     for m in mutations:
-        if m == pattern:
-            continue  # skip no-ops
+        if m == pattern or m in seen:
+            continue  # skip no-ops and duplicates
+        seen.add(m)
         if _is_valid_regex(m):
             valid.append(m)
         if len(valid) >= MAX_MUTATIONS_PER_PATTERN:

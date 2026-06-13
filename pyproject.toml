@@ -30,7 +30,11 @@ dependencies = [
     "libcst>=1.8.5",
     "psutil>=5.9",
     "pydantic>=2.0.0",
-    "pytest>=6.2.5",
+    # >=8.2: the worker passes per-mutant tests via pytest's @argfile syntax
+    # ("Added in version 8.2"); with older pytest every covered mutant became
+    # "suspicious" (issue #125 / 360 analysis A2). Pinned against
+    # constants.MINIMUM_PYTEST_VERSION by a test.
+    "pytest>=8.2",
     "setproctitle>=1.1.0",
     "textual>=1.0.0",
 ]
@@ -64,6 +68,10 @@ line-length = 100
 exclude = [
     # Reference fixture projects copied from mutmut 3.5.0 — not subject to our lint rules.
     "tests/e2e_projects",
+    # Tooling sandbox (hook scripts etc.) — not project code; without this
+    # exclude a bare `ruff check .` reported findings the gates never saw
+    # (issue #132 / 360°-B13).
+    ".claude",
 ]
 
 [tool.ruff.lint]

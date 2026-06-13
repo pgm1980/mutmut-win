@@ -88,6 +88,12 @@ class OuterFunctionProvider(cst.BatchableMetadataProvider):
             elif isinstance(child, cst.ClassDef) and isinstance(child.body, cst.IndentedBlock):
                 for method in child.body.body:
                     # mark all nodes inside the class method to belong to this method
+                    # NOTE (issue #132 / 360°-B11): only TOP-LEVEL classes are
+                    # walked — methods of a class nested inside another class
+                    # get no metadata, so their mutations are dropped in
+                    # group_by_top_level_node (same for funcs-in-funcs, which
+                    # the trampoline covers via their containing function).
+                    # Documented in README "Mutation-surface limits".
                     method.visit(OuterFunctionVisitor(self, method))
 
         # no need to recurse, we already visited all function and class method children

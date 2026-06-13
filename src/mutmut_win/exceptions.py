@@ -40,6 +40,19 @@ class ForcedFailError(OrchestratorError):
     """The forced-fail validation test failed."""
 
 
+class UnsupportedPytestVersionError(OrchestratorError):
+    """The pytest in the target venv is too old for the ``@argfile`` hand-off.
+
+    Producer: the orchestrator's run-start guard (issue #125 / 360°-A2).
+    Workers pass per-mutant tests via pytest's ``@argfile`` syntax, which
+    exists since pytest 8.2 — under an older pytest every covered mutant
+    floods into ``suspicious`` (usage error) despite a green clean run.
+    The ``pytest>=8.2`` dependency floor is the primary defence; this
+    guard catches bypassed resolvers (``pip --no-deps``, hand-patched
+    environments) BEFORE any staging or test execution.
+    """
+
+
 class MutationError(MutmutWinError):
     """Error during mutation generation or mutant handling."""
 

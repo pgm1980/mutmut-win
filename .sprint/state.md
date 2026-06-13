@@ -1,58 +1,100 @@
 ---
-current_sprint: "35"
-sprint_goal: "v2.13.0 Maintenance 3: External QA — alle 15 Findings des externen 360°-QA-Reports (6 Medium, 9 Low; #118–#123) inkl. Result-Reuse-Feature (RUN-001) und skipped-Producer (SCO-002); danach zurück in die Entwicklungspause. Messziele: 15/15 geschlossen, Pilot >= 80 %, Reuse-Demo (Lauf B dispatcht 0)."
-branch: "feature/v2.13.0-maintenance-3"
+current_sprint: "36"
+sprint_goal: "v2.14.0 Maintenance 4: Fable-5 360° — alle 28 Findings der 360°-Analyse (9 Bugs A1–A9, 13 Anomalien B1–B13, 6 Optimierungen C1–C6; Issues #124–#132). Messziele: 28/28 geschlossen, Semgrep-Pro-Gate (>=1200 Regeln, 0 Findings), Mutation >=80% je geändertem Modul, Dogfooding-Vollpilot."
+branch: "feature/v2.14.0-maintenance-4"
 started_at: "2026-06-12"
-housekeeping_done: true
+housekeeping_done: false
 memory_updated: true
-github_issues_closed: true
+github_issues_closed: false
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Sprint 35 opened 2026-06-12)
+# Sprint State (Sprint 36 opened 2026-06-12)
 
 ## Current Focus
-Sprint 35 — **v2.13.0 Maintenance 3: External QA** —
-**GESCHLOSSEN, v2.13.0 RELEASED 2026-06-12** (User-„Release"; Merge
-`0c5a8bf`, Bump `81d79f9` inkl. Versionspins, annotated Tag v2.13.0,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.13.0),
-#118–#123 via Merge auto-geschlossen — 0 offene Issues). Gates vor dem
-Merge frisch verifiziert: 1016 passed / 5 skipped, ruff/format 0,
-mypy 14 = Baseline. 15/15 externe QA-Findings geschlossen; Result-
-Reuse live (Lauf C: 256 reused, 0 dispatcht).
+Sprint 36 — **v2.14.0 Maintenance 4: Fable-5 360°** — beendet die
+Entwicklungspause. Grundlage: Fable-5 360°-Code-Analyse vom 2026-06-12
+(`_docs/audit/fable5_360_analysis_v2.13.0.md`, Zeilanker `main @ 2e481fd`;
+Serena-Memory `fable5_360_findings`). 9 Issues #124–#132 im Milestone
+„v2.14.0 - Maintenance 4: Fable-5 360" (#6), ~47 SP (Must ≈ 36, Should ≈ 11).
+Backlog: `_docs/sprint backlogs/sprint_36_backlog.md`.
 
-**PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE (User-Entscheidung):**
-0 offene Issues · 0 Backlog-Einträge · 0 offene Entscheidungen ·
-0 offene Milestones. Wiederaufnahme-Startpunkte: Sprint-34-Pausen-
-Baseline (Vollvermessung 7800 Mutanten / 68,3 %) und das externe
-QA-Archiv (`_docs/audit/external_qa_report_v2.12.0.md`). Kein neuer
-Sprint geplant — nächster Sprint-State entsteht erst bei
-Wiederaufnahme.
+## Planungsentscheidungen (User, 2026-06-12)
+- Ein Sprint für alle 28 Findings (Must/Should-Split statt Wellen-Sprints).
+- A2: pytest-Floor >= 8.2 + Laufzeit-Guard (keine Dual-Codepfade).
+- Semgrep-Gate ab jetzt Pro-basiert mit Engine-Nachweis: „Rules run" >= ~1200,
+  kein „semgrep login"-Hinweis. Host-CLI 1.166.0 eingeloggt (User-Env-Var;
+  Sessions erben erst nach Desktop-Neustart — Workaround: winreg-Bridge,
+  siehe Memory `semgrep-ce-vs-pro-infrastruktur`).
 
-## Sprint 35 Backlog (29 SP — Must 24, Should 5)
-1. **#118 (Must, 1 SP):** Intake + DOC-001 — User-Hotfix committen,
-   .gitignore, Report-Archiv.
-2. **#120 (Must, 5 SP):** RUN-002 (Pfad-Subset-Purge!), CLI-002
-   (Pfad-Existenz → exit 2), CLI-001 (min-score-Range), CFG-001
-   (Config-Fehler → exit 2 kompakt).
-3. **#119 (Must, 8 SP):** RUN-001 — Result-Reuse: Fast-Path +
-   Config-Fingerprint + tests_fingerprint (neue DB-Spalte, #100-
-   Migration) + wiederverwendbares Verdict; --rerun-all; laute Summary.
-   Design-CoT ≥ 8.
-4. **#122 (Must, 5 SP):** SCO-002-Producer (skipped für gefilterte
-   Staging-Mutanten ohne DB-Row), SCO-001 (Export-Nenner-Zeile),
-   SCO-003 (results rendert Type-check separat).
-5. **#121 (Must, 5 SP):** MUT-001 (FormattedString raus aus
-   Return-Skip; Literal-Part-Mutation per Design-Entscheid), MUT-002
-   (Funktions-Granularität + ehrliche Warnung).
-6. **#123 (Should, 5 SP):** CLI-003 (StaleStagingError), CFG-002
-   (no-match-Warnung), DOC-002 (Staging-Doku), WIN-001
-   (WER-Unterdrückung, win32, Unit-Pin).
+## Reihenfolge-Empfehlung (Report §8, Wellen)
+1. #124 (A1) + #125 (A2) — Kernversprechen
+2. #127 (A6/A7/A9) — CI-Vertrauen
+3. #126 (A3) + #129 (A8) + #128 (A4) — Korrektheitsschulden
+4. #131 (A5/B4) + #130 (B1–B3) — Doku/Gates + Stats-Subsystem
+5. #132 — Härtung/Performance gebündelt (Should)
 
-## Out of scope (bewusst, dokumentiert)
-do_not_copy-Feature (DOC-002 bleibt Doku-Fix — Won't-Do im Issue);
-WIN-001-Live-Crash-Verifikation (Reporter-Begründung übernommen);
-die 2337-Survivor-Pausen-Baseline aus Sprint 34 (kein Report-Finding).
+## Gates (DoD-Kurzform)
+pytest grün · ruff 0 · mypy <= 14 Baseline · import-linter · Semgrep Pro
+(>=1200 Regeln, 0 Findings) · pip-audit · Mutation >= 80 % je geändertem
+Modul · Regressionstest je A-Befund · Dogfooding-Vollpilot (Referenz:
+Sprint-34-Baseline 7800 Mutanten / 68,3 %).
+
+## Out of scope
+SCA (`semgrep ci`), Docker-MCP-Infrastruktur (Mount/webapi-Token),
+CLAUDE.md-Blueprint-Härtung (projektübergreifend), C3 optional in #132.
+
+## Sprint Context (auto-saved before compaction at 2026-06-12T23:21:52Z)
+
+### Current Branch
+feature/v2.14.0-maintenance-4
+
+### Last 10 Commits
+```
+c9e33e8 fix(stats,runner,orchestrator): mapping invalidation, collection parity, honest budgets, type-check baseline (closes #130, closes #131)
+e9dcb10 test(wave-3): kill wave-3-line mutation survivors (refs #126, #129)
+2432bf2 fix(staging,cli): source/-layout naming, engine-version fingerprint, mirror truth, since-commit (closes #126, closes #128, closes #129)
+52c5884 test(wave-2): kill wave-2-line mutation survivors (refs #127)
+26ade60 fix(cli,executor): json purity, pool-collapse abort state, show-glob forensics (closes #127)
+a8fdd85 test(wave-1): kill mutation survivors - gate 90.9% on changed code (refs #124, #125)
+6302b46 fix(orchestrator,models): meta truth via exact ownership; pytest>=8.2 floor + run-start guard (closes #124, closes #125)
+c9f526e chore(format): apply ruff format to benchmarks (pre-existing drift)
+423166b docs(sprint-36): open sprint - Maintenance 4: Fable-5 360 analysis (issues #124-#132)
+2e481fd docs(sprint-35): close sprint - v2.13.0 released, back in the development pause
+```
+
+### Recently Changed Files
+```
+README.md
+src/mutmut_win/cli.py
+src/mutmut_win/config.py
+src/mutmut_win/constants.py
+src/mutmut_win/file_setup.py
+src/mutmut_win/models.py
+src/mutmut_win/orchestrator.py
+src/mutmut_win/process/executor.py
+src/mutmut_win/process/worker.py
+src/mutmut_win/runner.py
+src/mutmut_win/stats.py
+tests/e2e_projects/source_layout/pyproject.toml
+tests/e2e_projects/source_layout/source/pkglib/__init__.py
+tests/e2e_projects/source_layout/source/pkglib/calc.py
+tests/e2e_projects/source_layout/tests/test_calc.py
+tests/integration/test_source_layout_e2e.py
+tests/unit/test_cli.py
+tests/unit/test_config_cli_truth.py
+tests/unit/test_exception_hygiene_114.py
+tests/unit/test_file_setup.py
+```
+
+### Uncommitted Changes
+```
+ D hooks.md
+ D seqthinking.md
+ M tests/integration/test_source_layout_e2e.py
+?? .serena/memories/sprint_36_progress.md
+?? .sprint/.fs-mcp-versions/state.md.v1.854b6b52ed554bd28dab9241c93b9680
+```

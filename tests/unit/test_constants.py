@@ -29,8 +29,11 @@ class TestStatusByExitCode:
         assert status_by_exit_code[37] == "caught by type check"
 
     def test_unknown_exit_code_is_suspicious(self) -> None:
-        assert status_by_exit_code[999] == "suspicious"
-        assert status_by_exit_code[-999] == "suspicious"
+        # Plain dict since #132/C6 — the unknown→suspicious contract lives
+        # in the readers' .get() default.
+        assert status_by_exit_code.get(999, "suspicious") == "suspicious"
+        assert status_by_exit_code.get(-999, "suspicious") == "suspicious"
+        assert 999 not in status_by_exit_code
 
     def test_none_is_not_checked(self) -> None:
         assert status_by_exit_code[None] == "not checked"

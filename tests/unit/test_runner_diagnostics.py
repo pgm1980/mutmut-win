@@ -17,6 +17,7 @@ import pytest
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.runner import PytestRunner, decode_pytest_exit
+from tests.unit.phase_mock_util import phase_popen
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,13 +60,17 @@ class TestPhaseOutputCapture:
     def _fail_with_output(self, runner_call: Any, text: bytes) -> tuple[int, str | None]:
         runner = PytestRunner(MutmutConfig())
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             os.write(kwargs["stdout"], text)
-            completed = MagicMock()
-            completed.returncode = 2
-            return completed
+            proc = MagicMock()
+            proc.pid = 99999
+            proc.wait.return_value = 2
+            return proc
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        ):
             exit_code = runner_call(runner)
         return exit_code, runner.last_diagnostic_output
 
@@ -87,13 +92,7 @@ class TestPhaseOutputCapture:
 
     def test_successful_run_leaves_no_diagnostic(self) -> None:
         runner = PytestRunner(MutmutConfig())
-
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
-            completed = MagicMock()
-            completed.returncode = 0
-            return completed
-
-        with patch("subprocess.run", side_effect=fake_run):
+        with phase_popen(0):
             assert runner.run_clean_test() == 0
         assert runner.last_diagnostic_output is None
 

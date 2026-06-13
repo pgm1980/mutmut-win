@@ -46,9 +46,7 @@ _BENCH_FIXTURES = [
 
 
 @pytest.mark.parametrize("source_path", _BENCH_FIXTURES)
-def test_mutate_file_contents_throughput(
-    benchmark: BenchmarkFixture, source_path: Path
-) -> None:
+def test_mutate_file_contents_throughput(benchmark: BenchmarkFixture, source_path: Path) -> None:
     """Measure ``mutate_file_contents`` throughput on the reference fixtures.
 
     Captures the wall-clock cost of full CST parse + mutation generation +

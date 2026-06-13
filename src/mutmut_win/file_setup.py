@@ -24,12 +24,41 @@ from typing import IO, TYPE_CHECKING
 
 import libcst as cst
 
+from mutmut_win.constants import SOURCE_ROOT_NAMES
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from mutmut_win.config import MutmutConfig
+
+#: Directory names excluded from every staging walk (mirror AND also_copy).
+#: One list for both passes (issue #129 / 360°-C4): the two sites used to
+#: carry diverging literals, and tooling trees (node_modules, .claude, …)
+#: were mirrored into mutants/ on every first run.
+_STAGING_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".git",
+        ".hypothesis",
+        "mutants",
+        ".mutmut-cache",
+        # Tooling/cache trees that have no business inside the staging
+        # (issue #129 / 360°-C4).
+        "node_modules",
+        ".import_linter_cache",
+        ".benchmarks",
+        ".serena",
+        ".claude",
+        ".idea",
+        ".vscode",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,38 +147,27 @@ def _copy_with_retry(
 def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept for API compatibility; source dirs are auto-detected
     """Copy the ENTIRE source tree to the mutants/ staging directory.
 
-    Copies ALL files from standard source directories (src/, source/, .)
-    — not just the files in ``paths_to_mutate``.  This ensures that
-    non-mutated modules are available for import when pytest runs inside
-    ``mutants/``.  Without this, cross-package imports in conftest.py fail.
+    Copies ALL files from standard source directories (the
+    ``SOURCE_ROOT_NAMES`` roots plus the project root) — not just the files
+    in ``paths_to_mutate``.  This ensures that non-mutated modules are
+    available for import when pytest runs inside ``mutants/``.  Without
+    this, cross-package imports in conftest.py fail.
 
     ``paths_to_mutate`` only controls which files get **mutated**, not
     which files get **copied**.
 
-    Updates files whose source has been modified since the last copy
-    (mtime comparison).  Uses ``shutil.copy2`` to preserve modification
-    times so subsequent runs can detect changes.
+    Updates files whose source has been modified since the last copy —
+    equality fingerprint (mtime AND size) for plain mirror copies, strictly
+    newer for generator-owned files with a ``.meta`` sibling (see
+    :func:`_mirror_is_stale`, issue #129 / 360°-B6a).
 
     Args:
         config: Active ``MutmutConfig`` instance.
     """
-    skip_dirs = {
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".git",
-        ".hypothesis",
-        "mutants",
-        ".mutmut-cache",
-    }
-
     expected_targets: set[Path] = set()
     synced_roots: list[Path] = []
 
-    for source_root_name in ["src", "source", "."]:
+    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
         source_root = Path(source_root_name)
         if not source_root.exists() or not source_root.is_dir():
             continue
@@ -161,8 +179,14 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
             synced_roots.append(source_root)
 
         for root_str, dirs, files in os.walk(source_root):
-            # Skip cache/venv directories
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            # Skip cache/venv/tooling directories (issue #129 / 360°-C4).
+            dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+            if source_root_name == "." and root_str == ".":
+                # The explicit roots above already mirrored src/source —
+                # walking them again from "." doubled the largest trees
+                # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
+                # is not covered by the explicit roots and must stay.
+                dirs[:] = [d for d in dirs if d not in SOURCE_ROOT_NAMES]
 
             for name in files:
                 source_path = Path(root_str) / name
@@ -170,13 +194,7 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                 expected_targets.add(target_path)
 
                 if target_path.exists():
-                    # `>` is deliberate here: after generation the target IS
-                    # the trampolined file (newer and bigger than the source),
-                    # so inequality-based comparison would invalidate every
-                    # run. Restores with OLD timestamps are caught on the
-                    # GENERATION side via the source fingerprint in .meta
-                    # (issue #101 / A3-FD-004).
-                    if source_path.is_file() and _source_is_newer(source_path, target_path):
+                    if source_path.is_file() and _mirror_is_stale(source_path, target_path):
                         _copy_with_retry(source_path, target_path)
                         print(f"     updated: {source_path} (source changed since last run)")
                         # Invalidate cached mutation results for this file.
@@ -188,15 +206,72 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
                 _copy_with_retry(source_path, target_path)
 
-    _sync_deleted_sources(expected_targets, synced_roots, skip_dirs)
+    _sync_deleted_sources(expected_targets, synced_roots, set(_STAGING_SKIP_DIRS))
 
 
-def _source_is_newer(source: Path, target: Path) -> bool:
-    """Return True if *source* was modified more recently than *target*."""
+def _mirror_is_stale(source: Path, target: Path) -> bool:
+    """Return True if the staged mirror *target* must be refreshed.
+
+    Two regimes (issue #129 / 360°-B6a):
+
+    * Files WITH a ``.meta`` sibling are (or were) mutation targets — their
+      staged content is the trampolined GENERATOR output (newer and bigger
+      than the source by construction) and the ``.meta`` source fingerprint
+      is the staleness truth there. The mirror refreshes them only when the
+      source is strictly NEWER (the pre-#129 rule): an equality rule would
+      overwrite the trampoline with the plain source on every run and break
+      the forced-fail gate.
+    * Plain mirror copies (no ``.meta``) were created by ``copy2`` and
+      therefore carry the SOURCE's mtime/size — any inequality means the
+      source changed, including a git restore with an OLDER timestamp,
+      which the previous ``>`` comparison silently served stale.
+    """
     try:
-        return source.stat().st_mtime > target.stat().st_mtime
+        src_stat = source.stat()
+        dst_stat = target.stat()
     except OSError:
         return True
+    if target.with_name(target.name + ".meta").exists():
+        return src_stat.st_mtime > dst_stat.st_mtime
+    return src_stat.st_mtime != dst_stat.st_mtime or src_stat.st_size != dst_stat.st_size
+
+
+def _sync_tree(source_root: Path, destination_root: Path) -> None:
+    """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
+
+    mtime-aware per-file sync replacing the previous ``copytree``:
+
+    * copy a file only when missing or stale (:func:`_mirror_is_stale`
+      equality regime — ``copy2`` preserves mtimes, so any inequality means
+      the source changed, including backdated restores);
+    * DELETE staged files whose source disappeared — under ``copytree`` a
+      removed test file kept RUNNING inside the staging forever;
+    * the deletion pass never leaves *destination_root* (containment of the
+      root itself is guard 4's job in :func:`copy_also_copy_files`).
+    """
+    import contextlib
+
+    for root_str, dirs, files in os.walk(source_root):
+        dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+        rel_root = Path(root_str).relative_to(source_root)
+        for name in files:
+            src_file = Path(root_str) / name
+            dst_file = destination_root / rel_root / name
+            if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
+                continue
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            _copy_with_retry(src_file, dst_file)
+
+    if not destination_root.is_dir():
+        return
+    for root_str, dirs, files in os.walk(destination_root):
+        dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+        rel_root = Path(root_str).relative_to(destination_root)
+        for name in files:
+            if (source_root / rel_root / name).exists():
+                continue
+            with contextlib.suppress(OSError):
+                (Path(root_str) / name).unlink()
 
 
 def _sync_deleted_sources(
@@ -243,23 +318,17 @@ def _sync_deleted_sources(
 
 
 def copy_also_copy_files(config: MutmutConfig) -> None:
-    """Copy config.also_copy files/directories into the mutants/ directory.
+    """Sync config.also_copy files/directories into the mutants/ directory.
 
-    Skips ``.venv``, ``__pycache__``, and other cache directories to avoid
-    copying virtual environments (which contain symlinks that fail on Windows).
+    Trees are mirrored mtime-aware INCLUDING deletions via
+    :func:`_sync_tree` (issue #129 / 360°-B6b+C2: ``copytree`` re-copied
+    everything on every run and never deleted — removed test files kept
+    running inside the staging forever). Cache/venv/tooling directories are
+    skipped via the shared ``_STAGING_SKIP_DIRS`` walk filter.
 
     Args:
         config: Active ``MutmutConfig`` instance.
     """
-    skip_dirs = {".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-
-    # shutil.copytree ignore callback signature requires (directory, files)
-    def _ignore_venvs(
-        _directory: str,
-        files: list[str],
-    ) -> list[str]:
-        return [f for f in files if f in skip_dirs]
-
     # extra_paths (Bug #69) are handled by the same copy mechanism as also_copy.
     # Their distinguishing trait — being added to the worker's PYTHONPATH — is
     # implemented in process/worker.py rather than here.
@@ -270,11 +339,11 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         path = Path(path_str)
         # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
         # be mirrored into mutants/ even when the user lists them explicitly.
-        # The ``_ignore_venvs`` callback below only filters *children* during
-        # copytree, so a top-level entry like ``also_copy = [".venv"]`` would
-        # otherwise reach copy_with_retry() and mirror the whole virtualenv —
-        # slow at best, broken on Windows because of symlinked Scripts/python.exe.
-        if path.name in skip_dirs:
+        # The walk filter inside _sync_tree only skips *children*, so a
+        # top-level entry like ``also_copy = [".venv"]`` would otherwise be
+        # mirrored wholesale — slow at best, broken on Windows because of
+        # symlinked Scripts/python.exe.
+        if path.name in _STAGING_SKIP_DIRS:
             print("     skipping", path_str, "(matches venv/cache skip list)")
             continue
         # Guard 2 (issue #101 / A3-FD-005): "." and mutants/ itself defeat the
@@ -308,11 +377,11 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
             continue
         print("     also copying", path_str)
         if path.is_file():
-            _copy_with_retry(path, destination)
+            if not destination.exists() or _mirror_is_stale(path, destination):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                _copy_with_retry(path, destination)
         else:
-            _copy_with_retry(
-                path, destination, is_tree=True, dirs_exist_ok=True, ignore=_ignore_venvs
-            )
+            _sync_tree(path, destination)
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
     # that contain relative paths. These paths are relative to the original
@@ -342,8 +411,15 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
     import hashlib
     import json
 
+    import mutmut_win
+
     payload = json.dumps(
         {
+            # Issue #129 / 360°-A8: an engine upgrade changes the mutant
+            # universe (new/changed operators) — without the version in the
+            # fingerprint the fast path kept the OLD universe and its reuse
+            # candidates alive until an unrelated source edit or --force.
+            "engine_version": mutmut_win.__version__,
             "paths_to_mutate": sorted(config.paths_to_mutate),
             "do_not_mutate": sorted(config.do_not_mutate),
             "mutate_only_covered_lines": config.mutate_only_covered_lines,
@@ -432,7 +508,7 @@ def setup_source_paths() -> None:
     the originals.  The following well-known source roots are considered:
     the current directory, ``src``, and ``source``.
     """
-    source_code_paths = [Path(), Path("src"), Path("source")]
+    source_code_paths = [Path(), *(Path(name) for name in SOURCE_ROOT_NAMES)]
 
     # Add mutated variants to the front of sys.path.
     for path in source_code_paths:
@@ -473,13 +549,25 @@ def strip_prefix(s: str, *, prefix: str) -> str:
 def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
     """Construct the fully qualified mutant name.
 
-    Converts a relative source file path to a dotted module name, strips any
-    leading ``src.`` prefix, and appends the mangled method name.
+    Converts a relative source file path to a dotted module name, strips the
+    leading source-root prefix (``src.`` or ``source.`` — the same roots the
+    staging mirrors and the workers put on PYTHONPATH, issue #126 /
+    360°-A3), and appends the mangled method name. The result MUST equal
+    ``orig.__module__ + '.' + mangled_name``: the trampoline's prefix check
+    and the stats mapping both depend on that identity — a root that is
+    importable but not stripped turns every one of its mutants into
+    ``no tests``.
 
     For example::
 
         get_mutant_name(Path("src/my_lib/utils.py"), "add__mutmut_1")
         # -> "my_lib.utils.add__mutmut_1"
+        get_mutant_name(Path("source/my_lib/utils.py"), "add__mutmut_1")
+        # -> "my_lib.utils.add__mutmut_1"
+
+    Known limitation (documented in the README): a project whose tests
+    import a root PACKAGE literally named ``src``/``source`` (``import
+    src.foo``) is not supported — the layout convention wins.
 
     Args:
         relative_source_path: Path to the source file, relative to the project
@@ -492,7 +580,12 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
     """
     stem = str(relative_source_path)[: -len(relative_source_path.suffix)]
     module_name = stem.replace(os.sep, ".").replace("/", ".")
-    module_name = strip_prefix(module_name, prefix="src.")
+    for root in SOURCE_ROOT_NAMES:
+        stripped = strip_prefix(module_name, prefix=root + ".")
+        if stripped != module_name:
+            # Exactly ONE root strips (src/source/pkg → source.pkg).
+            module_name = stripped
+            break
     mutant_name = f"{module_name}.{mutant_method_name}"
     # Collapse .__init__. to . for package __init__ modules.
     return mutant_name.replace(".__init__.", ".")

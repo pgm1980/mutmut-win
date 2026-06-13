@@ -29,6 +29,7 @@ from mutmut_win.exceptions import ForcedFailError
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.worker import worker_main
 from mutmut_win.runner import FORCED_FAIL_MARKER, PytestRunner
+from tests.unit.phase_mock_util import phase_popen
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -49,16 +50,19 @@ def _make_completed_process(returncode: int = 0) -> MagicMock:
     return proc
 
 
-def _fake_run_writing(text: str, returncode: int) -> Any:
-    """Fake subprocess.run that writes *text* to the phase log fd."""
+def _fake_popen_writing(text: str, returncode: int) -> Any:
+    """Fake subprocess.Popen that writes *text* to the phase log fd."""
 
-    def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+    def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
         fd = kwargs.get("stdout")
         if isinstance(fd, int) and fd != subprocess.DEVNULL:
             os.write(fd, text.encode("utf-8"))
-        return _make_completed_process(returncode)
+        proc = MagicMock()
+        proc.pid = 99999
+        proc.wait.return_value = returncode
+        return proc
 
-    return fake_run
+    return fake_popen
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +74,7 @@ class TestForcedFailCommand:
     def test_stops_at_first_failure(self) -> None:
         """One failure is all the proof there is — no full-suite runtime."""
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", return_value=_make_completed_process(1)) as mock_run:
+        with phase_popen(1) as mock_run:
             runner.run_forced_fail("m1")
         cmd = mock_run.call_args[0][0]
         assert "-x" in cmd
@@ -79,7 +83,7 @@ class TestForcedFailCommand:
         """-rfE + --tb=line put the exception name into the output; the
         one-line traceback is never width-truncated (the -rfE summary is)."""
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", return_value=_make_completed_process(1)) as mock_run:
+        with phase_popen(1) as mock_run:
             runner.run_forced_fail("m1")
         cmd = mock_run.call_args[0][0]
         assert "-rfE" in cmd
@@ -90,15 +94,10 @@ class TestForcedFailCommand:
         """pytest cuts the -rfE summary to terminal width — a long node id
         must not push the marker off the line."""
         runner = PytestRunner(MutmutConfig())
-        captured: dict[str, str] = {}
-
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
-            captured.update(kwargs.get("env") or {})
-            return _make_completed_process(1)
-
-        with patch("subprocess.run", side_effect=fake_run):
+        with phase_popen(1) as mock_run:
             runner.run_forced_fail("m1")
-        assert int(captured.get("COLUMNS", "0")) >= 200
+        env = mock_run.call_args[1]["env"]
+        assert int(env.get("COLUMNS", "0")) >= 200
 
 
 # ---------------------------------------------------------------------------
@@ -111,19 +110,13 @@ class TestForcedFailTimeout:
         """The old code returned 1 ('trampoline works') on timeout — a hung
         suite proves nothing about the trampoline."""
         runner = PytestRunner(MutmutConfig(forced_fail_timeout=1))
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=1),
-        ):
+        with phase_popen(wait_side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=1)):
             rc = runner.run_forced_fail("m1")
         assert rc == 36
 
     def test_timeout_yields_no_attribution_verdict(self) -> None:
         runner = PytestRunner(MutmutConfig(forced_fail_timeout=1))
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=1),
-        ):
+        with phase_popen(wait_side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=1)):
             runner.run_forced_fail("m1")
         assert runner.last_forced_fail_attributed is None
 
@@ -140,7 +133,10 @@ class TestForcedFailAttribution:
             "mutmut_win.exceptions.MutmutProgrammaticFailException: Forced fail\n"
         )
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", side_effect=_fake_run_writing(out, 1)):
+        with (
+            patch("subprocess.Popen", side_effect=_fake_popen_writing(out, 1)),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        ):
             rc = runner.run_forced_fail("m1")
         assert rc == 1
         assert runner.last_forced_fail_attributed is True
@@ -148,14 +144,17 @@ class TestForcedFailAttribution:
     def test_foreign_failure_is_not_attributed(self) -> None:
         out = "FAILED tests/test_a.py::test_x - AssertionError: boom\n"
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", side_effect=_fake_run_writing(out, 1)):
+        with (
+            patch("subprocess.Popen", side_effect=_fake_popen_writing(out, 1)),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        ):
             rc = runner.run_forced_fail("m1")
         assert rc == 1
         assert runner.last_forced_fail_attributed is False
 
     def test_exit_zero_is_never_attributed(self) -> None:
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", return_value=_make_completed_process(0)):
+        with phase_popen(0):
             rc = runner.run_forced_fail("m1")
         assert rc == 0
         assert runner.last_forced_fail_attributed is False
@@ -224,18 +223,11 @@ class TestOrchestratorForcedFailGate:
 
 class TestImportMismatchEnvConsistency:
     def _captured_env(self, invoke: Any) -> dict[str, str]:
-        captured: dict[str, str] = {}
-
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
-            env = kwargs.get("env")
-            if env is not None:
-                captured.update(env)
-            return _make_completed_process(0)
-
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", side_effect=fake_run):
+        with phase_popen(0) as mock_popen:
             invoke(runner)
-        return captured
+        env = mock_popen.call_args[1].get("env")
+        return dict(env) if env is not None else {}
 
     def test_clean_phase_sets_it(self) -> None:
         env = self._captured_env(lambda r: r.run_clean_test())

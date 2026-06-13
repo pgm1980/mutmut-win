@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
+from mutmut_win.constants import SOURCE_ROOT_NAMES
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -127,12 +128,18 @@ class PytestRunner:
         timeout: int | None = None,
         timeout_hint: str = "clean_run_timeout",
     ) -> int:
-        """Run one pytest phase with tail capture (issue #99 / A2-RN-001).
+        """Run one pytest phase with tail capture and full-tree reaping.
 
         Captures stdout+stderr into a temp file (the worker's deadlock-safe
         pattern — PIPE deadlocks on Windows when grandchildren inherit
         handles) and keeps the tail in :attr:`last_diagnostic_output` when
         the phase fails, so gate errors can finally show WHY.
+
+        Issue #132 / 360°-B5: ``subprocess.run(timeout=...)`` killed only
+        the direct child on expiry — pytest's own grandchildren (xdist
+        workers, subprocess-spawning tests) survived and kept the staging
+        locked. The phases now mirror the worker's pattern: a kill-on-close
+        Job Object around the child plus the psutil tree sweep on timeout.
 
         Args:
             phase_name: Human-readable phase name for the timeout warning.
@@ -147,29 +154,44 @@ class PytestRunner:
         import os
         import tempfile
 
-        from mutmut_win.process.worker import _MAX_DIAGNOSTIC_LINES, _read_last_lines
+        from mutmut_win.process.worker import (
+            _MAX_DIAGNOSTIC_LINES,
+            _create_task_job,
+            _kill_proc_tree,
+            _read_last_lines,
+        )
 
         budget = timeout if timeout is not None else self._config.clean_run_timeout
         self._last_diagnostic_output = None
         log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="mutmut_phase_", text=True)
         log_path = Path(log_path_str)
         try:
+            proc = subprocess.Popen(  # noqa: S603  # command is fully controlled — no user input
+                cmd,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
+                cwd="mutants",
+                env=env,
+            )
+            job_handle = _create_task_job(proc.pid)
             try:
-                result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                    cmd,
-                    stdout=log_fd,
-                    stderr=subprocess.STDOUT,
-                    cwd="mutants",
-                    env=env,
-                    timeout=budget,
-                )
-                exit_code = result.returncode
+                exit_code = proc.wait(timeout=budget)
             except subprocess.TimeoutExpired:
                 print(
                     f"Warning: {phase_name} timed out after {budget}s "
                     f"(configure [tool.mutmut].{timeout_hint})"
                 )
+                _kill_proc_tree(proc, job_handle)
+                job_handle = None  # the sweep closed it
                 exit_code = 36  # timeout exit code
+            finally:
+                if job_handle is not None:
+                    # Normal completion: closing the kill-on-close job reaps
+                    # background processes the phase left behind (issue #82).
+                    with contextlib.suppress(Exception):
+                        from mutmut_win.process.job_object import close_job
+
+                        close_job(job_handle)
         finally:
             os.close(log_fd)
         if exit_code != 0:
@@ -181,15 +203,38 @@ class PytestRunner:
     def collect_tests(self) -> list[str]:
         """Collect test node IDs via ``pytest --collect-only``.
 
+        Scope parity with the stats phase (issue #130 / 360°-B2): the
+        collection runs inside ``mutants/`` with the staging env and BOTH
+        cli-arg lists plus ``tests_dir`` — a marker filter visible only to
+        the stats run used to make every collection see "new" tests and
+        re-collect the full stats run forever. Falls back to the project
+        root when no staging exists (ad-hoc callers, unit tests). The pipe
+        decodes utf-8 with replacement: a cp1252 console with non-ASCII
+        test IDs crashed the strict reader.
+
         Returns:
             Sorted list of test node ID strings (e.g. ``tests/unit/test_foo.py::test_bar``).
         """
         cmd = [*self._base_pytest_cmd(), "--collect-only", "-q", "--no-header"]
+        cmd.extend(self._config.pytest_add_cli_args)
         cmd.extend(self._config.pytest_add_cli_args_test_selection)
+        if self._config.tests_dir:
+            cmd.extend(self._config.tests_dir)
+
+        staging_exists = Path("mutants").is_dir()
+        env: dict[str, str] | None = None
+        if staging_exists:
+            env = self._mutants_env()
+            env[MUTANT_ENV_VAR] = ""
+            env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
             cmd,
             capture_output=True,
             encoding="utf-8",
+            errors="replace",
+            cwd="mutants" if staging_exists else None,
+            env=env,
         )
         tests: list[str] = []
         for line in result.stdout.splitlines():
@@ -286,23 +331,35 @@ class PytestRunner:
             cmd.extend(self._config.tests_dir)
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
+        # Issue #132 / 360°-B5: same full-tree reaping as _run_phase — a
+        # plain run(timeout=) left pytest's grandchildren alive on expiry.
+        from mutmut_win.process.worker import _create_task_job, _kill_proc_tree
+
+        proc = subprocess.Popen(  # noqa: S603  # command is fully controlled — no user input
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd="mutants",
+            env=env,
+        )
+        job_handle = _create_task_job(proc.pid)
         try:
-            result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd="mutants",
-                env=env,
-                timeout=self._config.clean_run_timeout,
-            )
+            return proc.wait(timeout=self._config.clean_run_timeout)
         except subprocess.TimeoutExpired:
             print(
                 f"Warning: coverage collection timed out after "
                 f"{self._config.clean_run_timeout}s "
                 "(configure [tool.mutmut].clean_run_timeout)"
             )
+            _kill_proc_tree(proc, job_handle)
+            job_handle = None  # the sweep closed it
             return 36  # timeout exit code
-        return result.returncode
+        finally:
+            if job_handle is not None:
+                with contextlib.suppress(Exception):
+                    from mutmut_win.process.job_object import close_job
+
+                    close_job(job_handle)
 
     def run_forced_fail(
         self,
@@ -409,7 +466,17 @@ class PytestRunner:
         # (issue #99 / A2-RN-002): affected projects failed the clean gate
         # with an ImportError nobody could see.
         extra_paths = []
-        for subdir in ["src", "source", ".", *self._config.extra_paths]:
+        configured = []
+        for entry in self._config.extra_paths:
+            entry_as_path = Path(entry)
+            # Issue #132 / 360°-B7: ".."-siblings are staged under their
+            # basename (file_setup.copy_also_copy_files) — "mutants_abs /
+            # ../x" would resolve to the UNSTAGED original. Same rule as
+            # the worker's PYTHONPATH mapping.
+            if ".." in entry_as_path.parts:
+                entry_as_path = Path(entry_as_path.name)
+            configured.append(entry_as_path)
+        for subdir in [*map(Path, SOURCE_ROOT_NAMES), Path(), *configured]:
             candidate = mutants_abs / subdir
             if candidate.exists():
                 extra_paths.append(str(candidate))
@@ -512,7 +579,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         # Collect real source dirs that should be removed from sys.path,
         # pre-normalized to match the generated code's normalization.
         real_src_dirs: list[str] = []
-        for subdir in ["src", "source"]:
+        for subdir in SOURCE_ROOT_NAMES:
             candidate = Path(subdir).absolute()
             if candidate.exists():
                 real_src_dirs.append(os.path.normcase(os.path.realpath(candidate)))

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT
+from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT, SOURCE_ROOT_NAMES
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
@@ -111,8 +111,11 @@ def worker_main(
             # hang in get_events() waiting for a TaskCompleted that will never
             # arrive. Emit a synthetic completion so progress can be made, and
             # continue the loop.
+            # stderr: workers inherit OS fd 1 — the parent's --output json
+            # redirect can never catch child prints (issue #127 / 360°-A6).
             print(
                 f"WORKER RECOVERY (#12): uncaught {type(exc).__name__} on {fallback_name}: {exc}",
+                file=sys.stderr,
                 flush=True,
             )
             event_queue.put(
@@ -157,6 +160,9 @@ def _process_task(
     # (WinError 206) regardless of how many tests are assigned — no magic
     # thresholds, no dual code paths, predictable behavior at any scale.
     # pytest reads arguments from the file, one per line.
+    # Requires pytest >= 8.2 (issue #125 / 360°-A2): enforced by the
+    # dependency floor AND the orchestrator's run-start guard against
+    # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
     tests_argfile: Path | None = None
     if task.tests:
         fd, argfile_path = tempfile.mkstemp(
@@ -180,7 +186,7 @@ def _process_task(
     # Set PYTHONPATH so subprocess can import from mutants/src etc.
     env = os.environ.copy()
     pythonpath_dirs: list[str] = []
-    for subdir in ["src", "source", "."]:
+    for subdir in [*SOURCE_ROOT_NAMES, "."]:
         candidate = Path("mutants") / subdir
         if candidate.exists():
             pythonpath_dirs.append(str(candidate.absolute()))
@@ -189,7 +195,15 @@ def _process_task(
     raw_extra_paths = config_data.get("extra_paths", [])
     if isinstance(raw_extra_paths, list):
         for extra in raw_extra_paths:
-            extra_path = Path("mutants") / str(extra)
+            extra_as_path = Path(str(extra))
+            # Issue #132 / 360°-B7: sibling entries with ".." are STAGED
+            # under their basename (file_setup.copy_also_copy_files) — but
+            # this mapping used "mutants" / "../x", which points at the
+            # UNSTAGED original outside the staging tree. Keep both rules
+            # in sync or mutants silently import unmutated code.
+            if ".." in extra_as_path.parts:
+                extra_as_path = Path(extra_as_path.name)
+            extra_path = Path("mutants") / extra_as_path
             if extra_path.exists():
                 pythonpath_dirs.append(str(extra_path.absolute()))
     if pythonpath_dirs:
@@ -288,7 +302,7 @@ def _process_task(
             else:
                 exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:
-        print(f"WORKER ERROR for {task.mutant_name}: {exc}", flush=True)
+        print(f"WORKER ERROR for {task.mutant_name}: {exc}", file=sys.stderr, flush=True)
         exit_code = 35  # suspicious
     finally:
         if task_job_handle is not None:
@@ -384,7 +398,7 @@ def _maybe_start_loop_monitor(
         monitor = ProcessMonitor(pid=pid, log_path=log_path, window_seconds=window_seconds)
         monitor.start()
     except Exception as exc:  # graceful degradation: never poison the run
-        print(f"WORKER MONITOR start failed: {exc}", flush=True)
+        print(f"WORKER MONITOR start failed: {exc}", file=sys.stderr, flush=True)
         return None
     return monitor
 

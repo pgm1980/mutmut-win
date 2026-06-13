@@ -1,0 +1,8 @@
+[project]
+name = "source-layout-fixture"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.mutmut]
+paths_to_mutate = ["source/"]
+tests_dir = ["tests/"]

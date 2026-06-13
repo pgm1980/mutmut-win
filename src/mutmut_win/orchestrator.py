@@ -14,12 +14,18 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mutmut_win.constants import EXIT_CODE_TIMEOUT, EXIT_CODE_TYPE_CHECK, status_by_exit_code
+from mutmut_win.constants import (
+    EXIT_CODE_TIMEOUT,
+    EXIT_CODE_TYPE_CHECK,
+    MINIMUM_PYTEST_VERSION,
+    status_by_exit_code,
+)
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
 from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
     MutationResult,
@@ -127,6 +133,10 @@ class MutationOrchestrator:
         if not sys.stdout.line_buffering:
             sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         _ensure_tolerant_stdout()
+
+        # Issue #125 / 360°-A2: fail fast on a pytest that cannot take the
+        # worker's @argfile hand-off — BEFORE any staging work happens.
+        _ensure_supported_pytest()
 
         wall_start = time.monotonic()
 
@@ -425,6 +435,9 @@ class MutationOrchestrator:
         # scored over what it checked) and keeps the sum invariant.
         summary.was_interrupted = interrupted
         summary.unchecked = max(0, total - completed)
+        # Issue #127 / 360°-A7: a collapsed pool must not end like success —
+        # the CLI turns this into exit 1 and skips the score gate.
+        summary.run_aborted = _executor_aborted(executor)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
@@ -711,6 +724,61 @@ def _filter_tasks_by_names(
     return [task for task in tasks if task.mutant_name in matched]
 
 
+def _ensure_supported_pytest() -> None:
+    """Abort before the first mutant when the venv's pytest predates 8.2.
+
+    The worker hands per-mutant tests to pytest via the ``@argfile`` syntax
+    — deliberately the ONLY transfer path (no dual code paths) — and that
+    syntax exists since pytest 8.2. Under an older pytest every covered
+    mutant exits with a usage error and floods ``suspicious`` although the
+    clean run was green (issue #125 / 360°-A2). The in-process version is
+    authoritative: mutmut-win and the workers run the same interpreter
+    (``sys.executable -m pytest``), hence the same pytest installation.
+
+    Unparseable version strings fail OPEN with a warning: the dependency
+    floor (``pytest>=8.2``) is the primary defence, and an exotic dev
+    build must not block a run the resolver already vetted.
+
+    Raises:
+        UnsupportedPytestVersionError: If the detected pytest version is
+            older than :data:`mutmut_win.constants.MINIMUM_PYTEST_VERSION`.
+    """
+    import re
+
+    import pytest
+
+    version = pytest.__version__
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        print(
+            f"Warning: could not parse pytest version {version!r} — proceeding "
+            "(the pytest>=8.2 dependency floor is the primary guard)."
+        )
+        return
+    found = (int(match.group(1)), int(match.group(2)))
+    if found < MINIMUM_PYTEST_VERSION:
+        required = ".".join(str(part) for part in MINIMUM_PYTEST_VERSION)
+        msg = (
+            f"pytest {version} is too old for mutation runs: the worker "
+            f"passes per-mutant tests via pytest's @argfile syntax, which "
+            f"exists since pytest {required}. Upgrade pytest in this "
+            f'project\'s environment (e.g. `uv add "pytest>={required}" --dev` '
+            f"or `pip install -U pytest`) and re-run."
+        )
+        raise UnsupportedPytestVersionError(msg)
+
+
+def _executor_aborted(executor: object) -> bool:
+    """True iff the executor declared a worker-pool collapse (#127 / 360°-A7).
+
+    Identity check on purpose: the DI test doubles (``MagicMock``) answer
+    every attribute access with a truthy mock object — only a literal
+    ``True`` may count as a collapse declaration, or every mocked run would
+    turn ``run_aborted``.
+    """
+    return getattr(executor, "aborted", False) is True
+
+
 def _compute_startup_floor(
     clean_wall_seconds: float,
     duration_by_test: dict[str, float],
@@ -791,9 +859,15 @@ def _apply_timeouts(
         else:
             estimated = 0.0
 
-        if estimated > 0:
+        if task.tests and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
         else:
+            # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
+            # FULL suite (no node-id args) — budget it like one. The old
+            # mean-of-all-durations budget was a guaranteed timeout flood
+            # whenever the mapping was empty (broken hit recording, package
+            # never imported by tests). The mean still feeds the fast-first
+            # sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
 
         updated.append(
@@ -842,6 +916,15 @@ def _filter_with_type_checker(
     contains the error line.  Only that exact mutant is marked — not the
     entire module.
 
+    Baseline subtraction (issue #131 / 360°-B4): a PRE-EXISTING error inside
+    a function body replicates into every mutant copy — without subtraction
+    ALL mutants of that function were falsely "caught". The errors inside
+    the ``__mutmut_orig`` copies are the baseline: a mutant only counts as
+    caught when it carries at least one error that is NOT
+    (function, line-offset, text)-identical to an orig-copy error. A
+    mutation that shifts line counts can dodge the offset match — that
+    residue stays one-sided towards "caught" and is accepted (documented).
+
     Args:
         tasks: All pending mutation tasks.
         source_data_by_file: Updated in-place for caught mutants.
@@ -851,6 +934,7 @@ def _filter_with_type_checker(
         ``(remaining_tasks, caught_mutant_names)``
     """
     import os
+    import sys
 
     import libcst as cst
 
@@ -868,6 +952,10 @@ def _filter_with_type_checker(
     mutants_dir = Path("mutants")
     if not mutants_dir.exists():
         return tasks, caught
+
+    # Issue #131 / 360°-A5: the documented plain command aborts in the JSON
+    # parser — say so with the concrete flag BEFORE the checker runs.
+    _warn_missing_json_flag(type_check_command)
 
     orig_cwd = Path.cwd()
     try:
@@ -898,6 +986,7 @@ def _filter_with_type_checker(
 
     errors_by_path = group_by_path(normalized)
     mutants_to_skip: dict[str, FailedTypeCheckMutant] = {}
+    replicated_skips = 0
 
     for path, errors_of_file in errors_by_path.items():
         try:
@@ -911,6 +1000,27 @@ def _filter_with_type_checker(
         wrapper.visit(visitor)
         mutated_methods = visitor.found_mutants
 
+        # Baseline (issue #131 / 360°-B4): errors inside the orig copies,
+        # keyed by (function base, line offset within the copy, text).
+        orig_ranges = [
+            loc for loc in mutated_methods if loc.function_name.endswith("__mutmut_orig")
+        ]
+        baseline: set[tuple[str, int, str]] = set()
+        for error in errors_of_file:
+            owner = next(
+                (
+                    loc
+                    for loc in orig_ranges
+                    if loc.line_number_start <= error.line_number <= loc.line_number_end
+                ),
+                None,
+            )
+            if owner is not None:
+                base = owner.function_name[: -len("__mutmut_orig")]
+                baseline.add(
+                    (base, error.line_number - owner.line_number_start, error.error_description)
+                )
+
         for error in errors_of_file:
             mutant = next(
                 (
@@ -920,8 +1030,20 @@ def _filter_with_type_checker(
                 ),
                 None,
             )
-            if mutant is None:
-                # Error outside any mutated method — skip (don't crash)
+            if mutant is None or mutant.function_name.endswith("__mutmut_orig"):
+                # Error outside any mutated method, or inside the baseline
+                # copy itself — skip (don't crash, don't catch).
+                continue
+
+            base = mutant.function_name.rpartition("__mutmut_")[0]
+            signature = (
+                base,
+                error.line_number - mutant.line_number_start,
+                error.error_description,
+            )
+            if signature in baseline:
+                # Replicated pre-existing error — NOT a kill (360°-B4).
+                replicated_skips += 1
                 continue
 
             mutant_name = get_mutant_name(path, mutant.function_name)
@@ -930,6 +1052,13 @@ def _filter_with_type_checker(
                 name=mutant_name,
                 error=error,
             )
+
+    if replicated_skips:
+        print(
+            f"Type-check filter: ignored {replicated_skips} pre-existing error(s) "
+            "replicated from the original code — not counted as kills (issue #131).",
+            file=sys.stderr,
+        )
 
     # Only mutants that are part of THIS run count as caught — without the
     # intersection, subset runs (--mutant-names/--since-commit) booked
@@ -946,6 +1075,35 @@ def _filter_with_type_checker(
         )
 
     return remaining, caught
+
+
+def _warn_missing_json_flag(type_check_command: list[str]) -> None:
+    """Warn when a known checker lacks its JSON flag (issue #131 / 360°-A5).
+
+    The report parser hard-requires JSON; the previously documented plain
+    command (``["mypy", "src/"]``) aborted every run with a parser error
+    that never named the missing flag. No auto-append — the configured
+    command stays the user's truth; the parser still aborts loudly.
+    """
+    import sys
+
+    from mutmut_win.type_checking import _detect_checker
+
+    checker = _detect_checker(type_check_command)
+    hint: str | None = None
+    if checker == "mypy" and not any(arg.startswith("--output") for arg in type_check_command):
+        hint = (
+            "--output=json (requires mypy >= 1.11), e.g. "
+            'type_check_command = ["mypy", "--output=json", "src/"]'
+        )
+    elif checker == "pyright" and "--outputjson" not in type_check_command:
+        hint = '--outputjson, e.g. type_check_command = ["pyright", "--outputjson", "."]'
+    if hint:
+        print(
+            f"Warning: type_check_command uses {checker} without its JSON output "
+            f"flag — the report parser will abort. Add {hint}.",
+            file=sys.stderr,
+        )
 
 
 def _ensure_tolerant_stdout() -> None:
@@ -972,8 +1130,16 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
         db_path: Path to the SQLite result cache (must already exist).
         caught_names: Fully qualified names of the caught mutants.
     """
-    for name in sorted(caught_names):
-        save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
+    from mutmut_win.db import save_results
+
+    # One connection for the whole batch (issue #132 / 360°-C1).
+    save_results(
+        db_path,
+        (
+            (name, "caught by type check", EXIT_CODE_TYPE_CHECK, None, None, None, None)
+            for name in sorted(caught_names)
+        ),
+    )
 
 
 #: Verdicts a later run may reuse for an unchanged mutant (issue #119 /
@@ -1142,11 +1308,18 @@ def _persist_skipped_mutants(db_path: Path, names: set[str]) -> None:
     if not names:
         return
     from mutmut_win.constants import EXIT_CODE_SKIPPED
-    from mutmut_win.db import load_results
+    from mutmut_win.db import load_results, save_results
 
     existing = {row.mutant_name for row in load_results(db_path)}
-    for name in sorted(names - existing):
-        save_result(db_path, name, "skipped", EXIT_CODE_SKIPPED, None)
+    # One connection for the whole batch (issue #132 / 360°-C1) — exclusion
+    # filters can skip thousands of mutants at once.
+    save_results(
+        db_path,
+        (
+            (name, "skipped", EXIT_CODE_SKIPPED, None, None, None, None)
+            for name in sorted(names - existing)
+        ),
+    )
 
 
 def _persist_no_test_mutants(
@@ -1166,9 +1339,15 @@ def _persist_no_test_mutants(
         source_data_by_file: Meta-file records, updated with exit code 33.
     """
     from mutmut_win.constants import EXIT_CODE_NO_TESTS
+    from mutmut_win.db import save_results
 
-    for name in sorted(no_test_names):
-        save_result(db_path, name, "no tests", EXIT_CODE_NO_TESTS, None)
+    ordered = sorted(no_test_names)
+    # One connection for the whole batch (issue #132 / 360°-C1).
+    save_results(
+        db_path,
+        ((name, "no tests", EXIT_CODE_NO_TESTS, None, None, None, None) for name in ordered),
+    )
+    for name in ordered:
         _update_source_data(name, EXIT_CODE_NO_TESTS, None, source_data_by_file)
 
 
@@ -1204,7 +1383,9 @@ def _update_summary_and_persist(
         mutant_name = event.mutant_name
         exit_code: int | None = event.exit_code
         duration: float | None = event.duration
-        status = status_by_exit_code[exit_code]
+        # Plain-dict lookup (issue #132 / 360°-C6): unknown codes stay
+        # suspicious without growing the shared table.
+        status = status_by_exit_code.get(exit_code, "suspicious")
         last_output = event.last_output
         forensics = event.forensics
     else:
@@ -1286,20 +1467,24 @@ def _update_source_data(
 ) -> None:
     """Write exit code and duration into the matching ``SourceFileMutationData``.
 
+    Ownership is decided by exact key membership: every ``sfd`` already
+    carries the full set of its qualified mutant names in
+    ``exit_code_by_key`` — initialised by generation, loaded by the fast
+    path, produced by the same ``get_mutant_name`` that named the task.
+    The previous prefix heuristic kept the ``src.`` prefix the real names
+    do not have, so on src-layouts NO result ever reached a meta file
+    (real ``.meta`` stayed all-``None`` while the DB held verdicts), and
+    its unanchored ``startswith`` could attribute results to a sibling
+    module (``pkg.util`` vs ``pkg.utils``) — issue #124 / 360°-A1.
+
     Args:
         mutant_name: Mutant identifier used to locate the owning source file.
         exit_code: Pytest exit code.
         duration: Test run duration in seconds, or ``None``.
         source_data_by_file: Mapping of file path to ``SourceFileMutationData``.
     """
-    # Derive file path from mutant_name: the mutant name format is
-    # "<module>.<mangled_name>__mutmut_<n>" where module comes from the
-    # source file path.  We match by checking which sfd key the mutant
-    # appears to belong to via a prefix comparison.
-    for file_path, sfd in source_data_by_file.items():
-        # Normalise path separator for comparison.
-        norm_path = file_path.replace("\\", "/").replace("/", ".").removesuffix(".py")
-        if mutant_name.startswith(norm_path):
+    for sfd in source_data_by_file.values():
+        if mutant_name in sfd.exit_code_by_key:
             sfd.exit_code_by_key[mutant_name] = exit_code
             if duration is not None:
                 sfd.durations_by_key[mutant_name] = duration
@@ -1341,6 +1526,12 @@ def _print_summary(result: MutationRunResult) -> None:
     if result.was_interrupted:
         checked = result.total_mutants - result.unchecked
         print(f"INTERRUPTED   : checked {checked} of {result.total_mutants} mutants")
+    if result.run_aborted and not result.was_interrupted:
+        checked = result.total_mutants - result.unchecked
+        print(
+            f"ABORTED       : worker pool collapsed — "
+            f"checked {checked} of {result.total_mutants} mutants"
+        )
     print(f"Total mutants : {result.total_mutants}")
     print(f"Killed        : {result.killed}")
     if result.type_check_caught:

@@ -111,9 +111,11 @@ class TestApplyTimeoutsWithFloor:
         )
         assert result.estimated_time == pytest.approx(2.0)
 
-    def test_mean_path_gets_the_floor_too(self) -> None:
-        # tests=[] with nonempty stats estimates via the mean — the process
-        # overhead applies to that run exactly the same.
+    def test_mean_path_budget_is_the_full_suite_fallback(self) -> None:
+        # Issue #130 / 360°-B3: tests=[] with nonempty stats still runs the
+        # FULL suite (no node-id args) — the mean only feeds the fast-first
+        # sort; budgeting it like a single average test was a guaranteed
+        # timeout flood.
         task = _task()
         [result] = _apply_timeouts(
             [task],
@@ -122,7 +124,8 @@ class TestApplyTimeoutsWithFloor:
             startup_floor=10.0,
             clean_wall_seconds=20.0,
         )
-        assert result.timeout_seconds == pytest.approx(10.0 + 3.0 * 2.0)
+        assert result.estimated_time == pytest.approx(3.0)  # mean keeps sorting
+        assert result.timeout_seconds == pytest.approx(60.0)  # max(FALLBACK, 20*2)
 
 
 class TestApplyTimeoutsFallback:

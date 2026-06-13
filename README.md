@@ -11,8 +11,11 @@ Based on [mutmut 3.5.0](https://github.com/boxed/mutmut), rebuilt for
 Windows: upstream mutmut explicitly blocks Windows
 ([mutmut#397](https://github.com/boxed/mutmut/issues/397)).
 
-**Requirements:** Python ≥ 3.12, Windows 10/11 (primary target; the
-POSIX code paths are kept functional for WSL/Linux CI).
+**Requirements:** Python ≥ 3.12, pytest ≥ 8.2 in the target project
+(the worker hands tests to pytest via the `@argfile` syntax, available
+since 8.2 — older versions abort with a clear error before the first
+mutant), Windows 10/11 (primary target; the POSIX code paths are kept
+functional for WSL/Linux CI).
 
 ---
 
@@ -140,7 +143,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | Option | Effect |
 |---|---|
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
-| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) |
+| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
 | `--min-score N` | Exit 1 if the score is below N percent (CI gate) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
@@ -150,9 +153,11 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
 | `--debug` | Full tracebacks on errors |
 
-Exit codes of `run`: `0` success, `1` runtime failure or `--min-score`
-gate failed, `2` invalid configuration or option value, `130` interrupted
-(Ctrl-C — partial results are persisted, the score gate is skipped).
+Exit codes of `run`: `0` success, `1` runtime failure, failed
+`--min-score` gate or aborted run (worker pool collapsed — the unchecked
+remainder is reported and the score gate is skipped), `2` invalid
+configuration or option value, `130` interrupted (Ctrl-C — partial
+results are persisted, the score gate is skipped).
 
 ## Configuration
 
@@ -183,7 +188,11 @@ pytest_add_cli_args_test_selection = []   # extra args for test-selection runs
 
 # Filters
 mutate_only_covered_lines = false     # only mutate lines your tests execute
-type_check_command = ["mypy", "src/"] # mutants the checker rejects count as caught
+type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
+                                      # (mypy >= 1.11; pyright: --outputjson).
+                                      # Checker-rejected mutants count as caught;
+                                      # errors replicated from the original code
+                                      # are subtracted, not counted as kills.
 
 # Advanced
 max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited (0 is rejected)
@@ -207,7 +216,11 @@ Notes:
   `uv.lock`, scratch files) are copied into `mutants/`, and projects
   with large root-level assets pay that copy on the first run
   (unchanged files are skipped afterwards). Keep secrets and bulk data
-  out of the project root or source roots.
+  out of the project root or source roots. The `src.`/`source.` prefix is
+  stripped from mutant names to match the import path — a project whose
+  tests import a root *package* literally named `src`/`source`
+  (`import src.foo`) is therefore not supported; the layout convention
+  wins.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of
@@ -241,6 +254,18 @@ The same formula backs `run --min-score`, `results`, and
 `time-estimates`) exit 0 on an empty database; the CI export
 (`export-cicd-stats`) exits 1 — an empty result set in a gate context
 means the pipeline ran nothing.
+
+Note that the denominator *excludes* `skipped`, `no tests` and
+unchecked mutants: the score measures how well your tests kill the
+mutants they can actually reach. A run with many `no tests` mutants can
+therefore show a high score over a small base — read the bucket counts
+next to it, not the percentage alone.
+
+**Mutation-surface limits:** methods of classes nested inside other
+classes (and functions nested inside functions) are not mutated — the
+trampoline mechanism rewrites top-level functions and top-level-class
+methods only. Such code contributes no mutants rather than appearing
+as `survived`.
 
 ## Typical workflows
 

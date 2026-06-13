@@ -9,8 +9,8 @@ never pass the clean gate, and the error text blamed the tests.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +22,7 @@ from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.exceptions import CleanTestFailedError
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.runner import PytestRunner
+from tests.unit.phase_mock_util import phase_popen
 
 
 @pytest.fixture(autouse=True)
@@ -93,64 +94,57 @@ class TestTimeoutConfigFields:
 
 
 class TestRunnerUsesConfiguredTimeouts:
+    # Since #132/B5 the phases run Popen + wait(timeout=) — the budget is
+    # asserted on the wait call.
     def test_clean_run_uses_configured_timeout(self) -> None:
         runner = PytestRunner(MutmutConfig(clean_run_timeout=900))
-        with patch("subprocess.run", return_value=_completed(0)) as mock_run:
+        with phase_popen(0) as mock_popen:
             runner.run_clean_test()
-        assert mock_run.call_args[1]["timeout"] == 900
+        assert mock_popen.return_value.wait.call_args[1]["timeout"] == 900
 
     def test_clean_run_default_timeout(self) -> None:
         runner = PytestRunner(MutmutConfig())
-        with patch("subprocess.run", return_value=_completed(0)) as mock_run:
+        with phase_popen(0) as mock_popen:
             runner.run_clean_test()
-        assert mock_run.call_args[1]["timeout"] == 300
+        assert mock_popen.return_value.wait.call_args[1]["timeout"] == 300
 
     def test_stats_run_uses_configured_timeout(
         self,
     ) -> None:
         # The module-level _isolated_cwd fixture provides the tmp cwd + mutants/.
         runner = PytestRunner(MutmutConfig(clean_run_timeout=900))
-        with patch("subprocess.run", return_value=_completed(0)) as mock_run:
+        with phase_popen(0) as mock_popen:
             runner.run_stats()
-        assert mock_run.call_args[1]["timeout"] == 900
+        assert mock_popen.return_value.wait.call_args[1]["timeout"] == 900
 
     def test_forced_fail_uses_configured_timeout(self) -> None:
         runner = PytestRunner(MutmutConfig(forced_fail_timeout=200))
-        with patch("subprocess.run", return_value=_completed(1)) as mock_run:
+        with phase_popen(1) as mock_popen:
             runner.run_forced_fail("token")
-        assert mock_run.call_args[1]["timeout"] == 200
+        assert mock_popen.return_value.wait.call_args[1]["timeout"] == 200
 
     def test_coverage_collection_builds_a_coverage_run_command(self, tmp_path: Path) -> None:
         """Issue #95: the coverage bridge runs pytest UNDER `coverage run`
         with an explicit data file inside mutants/ — the parent loads the
         data file afterwards."""
         runner = PytestRunner(MutmutConfig())
-        captured: dict[str, Any] = {}
-
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:
-            captured["cmd"] = cmd
-            captured.update(kwargs)
-            return _completed(0)
-
         data_file = tmp_path / ".coverage.mutmut"
-        with patch("subprocess.run", side_effect=fake_run):
+        with phase_popen(0) as mock_popen:
             exit_code = runner.run_coverage_collection(data_file)
 
         assert exit_code == 0
-        cmd = captured["cmd"]
+        cmd = mock_popen.call_args[0][0]
         assert cmd[1:4] == ["-m", "coverage", "run"]
         assert f"--data-file={data_file}" in cmd
         assert "--source=." in cmd
         assert "pytest" in cmd
-        assert captured["cwd"] == "mutants"
-        assert captured["timeout"] == MutmutConfig().clean_run_timeout
+        assert mock_popen.call_args[1]["cwd"] == "mutants"
+        wait_call = mock_popen.return_value.wait.call_args
+        assert wait_call[1]["timeout"] == MutmutConfig().clean_run_timeout
 
     def test_clean_timeout_warning_names_config_key(self, capsys: pytest.CaptureFixture) -> None:
         runner = PytestRunner(MutmutConfig(clean_run_timeout=7))
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=7),
-        ):
+        with phase_popen(wait_side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=7)):
             rc = runner.run_clean_test()
         assert rc == 36
         out = capsys.readouterr().out

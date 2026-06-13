@@ -230,7 +230,13 @@ class TestShowCommand:
             Path("mutants").mkdir()
             with (
                 patch("mutmut_win.cli.load_config"),
-                patch("mutmut_win.cli.get_diff_for_mutant", return_value=fake_diff),
+                # show resolves the pattern once and renders directly
+                # (issue #127 / 360°-A9) — the seam is resolve+render now.
+                patch(
+                    "mutmut_win.cli.resolve_mutant",
+                    return_value=("src.sample.x_foo__mutmut_1", MagicMock(path="src/sample.py")),
+                ),
+                patch("mutmut_win.cli.render_function_diff", return_value=fake_diff),
             ):
                 result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
 

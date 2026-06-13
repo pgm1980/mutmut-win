@@ -298,7 +298,9 @@ class TestCliCatchNarrowing:
         with (
             patch("mutmut_win.cli.load_config", return_value=MagicMock()),
             patch(
-                "mutmut_win.cli.get_diff_for_mutant",
+                # show resolves the pattern first (issue #127 / 360°-A9) —
+                # the parse error now surfaces from the resolve seam.
+                "mutmut_win.cli.resolve_mutant",
                 side_effect=MutationParseError("cannot parse staged file x.py"),
             ),
         ):

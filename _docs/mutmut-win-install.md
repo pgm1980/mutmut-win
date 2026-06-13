@@ -13,7 +13,7 @@
 - uv als Package Manager
 - pyproject.toml vorhanden
 - Git initialisiert
-- Tests laufen mit pytest und sind grün
+- Tests laufen mit pytest (>= 8.2 — der Worker übergibt Tests per pytest-`@argfile`) und sind grün
 
 ---
 
