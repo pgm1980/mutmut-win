@@ -255,6 +255,18 @@ The same formula backs `run --min-score`, `results`, and
 (`export-cicd-stats`) exits 1 — an empty result set in a gate context
 means the pipeline ran nothing.
 
+Note that the denominator *excludes* `skipped`, `no tests` and
+unchecked mutants: the score measures how well your tests kill the
+mutants they can actually reach. A run with many `no tests` mutants can
+therefore show a high score over a small base — read the bucket counts
+next to it, not the percentage alone.
+
+**Mutation-surface limits:** methods of classes nested inside other
+classes (and functions nested inside functions) are not mutated — the
+trampoline mechanism rewrites top-level functions and top-level-class
+methods only. Such code contributes no mutants rather than appearing
+as `survived`.
+
 ## Typical workflows
 
 **Local, incremental** — check what you just changed:

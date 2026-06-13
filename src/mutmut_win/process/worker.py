@@ -195,7 +195,15 @@ def _process_task(
     raw_extra_paths = config_data.get("extra_paths", [])
     if isinstance(raw_extra_paths, list):
         for extra in raw_extra_paths:
-            extra_path = Path("mutants") / str(extra)
+            extra_as_path = Path(str(extra))
+            # Issue #132 / 360°-B7: sibling entries with ".." are STAGED
+            # under their basename (file_setup.copy_also_copy_files) — but
+            # this mapping used "mutants" / "../x", which points at the
+            # UNSTAGED original outside the staging tree. Keep both rules
+            # in sync or mutants silently import unmutated code.
+            if ".." in extra_as_path.parts:
+                extra_as_path = Path(extra_as_path.name)
+            extra_path = Path("mutants") / extra_as_path
             if extra_path.exists():
                 pythonpath_dirs.append(str(extra_path.absolute()))
     if pythonpath_dirs:

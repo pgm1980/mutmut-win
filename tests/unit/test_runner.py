@@ -16,6 +16,7 @@ from mutmut_win.runner import (
     MUTANT_FAIL_SENTINEL,
     PytestRunner,
 )
+from tests.unit.phase_mock_util import phase_popen as _phase_popen
 
 
 @pytest.fixture(autouse=True)
@@ -71,20 +72,20 @@ class TestPytestRunnerInit:
 class TestRunCleanTest:
     def test_returns_zero_on_success(self) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+        with _phase_popen(0) as mock_run:
             rc = runner.run_clean_test()
         assert rc == 0
         mock_run.assert_called_once()
 
     def test_returns_nonzero_on_failure(self) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(1)):
+        with _phase_popen(1):
             rc = runner.run_clean_test()
         assert rc == 1
 
     def test_uses_sys_executable(self) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+        with _phase_popen(0) as mock_run:
             runner.run_clean_test()
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == sys.executable
@@ -93,7 +94,7 @@ class TestRunCleanTest:
 
     def test_extra_args_forwarded(self) -> None:
         runner = PytestRunner(_config(pytest_add_cli_args=["--timeout=10", "-x"]))
-        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+        with _phase_popen(0) as mock_run:
             runner.run_clean_test()
         cmd = mock_run.call_args[0][0]
         assert "--timeout=10" in cmd
@@ -106,7 +107,7 @@ class TestRunCleanTest:
         import subprocess as _subprocess
 
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+        with _phase_popen(0) as mock_run:
             runner.run_clean_test()
         kwargs = mock_run.call_args[1]
         assert isinstance(kwargs.get("stdout"), int)  # a real file descriptor
@@ -262,7 +263,11 @@ class TestCollectTests:
         # Only '='-summaries and UPPERCASE pytest WARNINGs are filtered; a
         # lowercase 'warning:'-style node id must survive untouched.
         stdout = (
-            "tests/a.py::t1\n= 1 test collected =\nWARNING: noise::ignored\nwarning: keep::this\n"
+            "tests/a.py::t1\n"
+            "= 1 test collected =\n"
+            "= slowest::durations =\n"  # '='-summary WITH '::' — prefix rule must drop it
+            "WARNING: noise::ignored\n"
+            "warning: keep::this\n"
         )
         runner = PytestRunner(_config())
         with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
@@ -282,24 +287,21 @@ class TestRunStats:
         """Issue #99 / A2-RN-003: callers must be able to detect a failed
         collection — run_stats returns the subprocess exit code now."""
         runner = PytestRunner(_config())
-        run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", return_value=run_result):
+        with _phase_popen(0):
             result = runner.run_stats()
         assert result == 0
 
     def test_calls_subprocess_once(self) -> None:
         """run_stats calls subprocess.run once with the stats plugin."""
         runner = PytestRunner(_config())
-        run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", return_value=run_result) as mock_sub:
+        with _phase_popen(0) as mock_sub:
             runner.run_stats()
         assert mock_sub.call_count == 1
 
     def test_stats_plugin_flag_in_command(self) -> None:
         """The -p _mutmut_stats_plugin flag must be in the pytest command."""
         runner = PytestRunner(_config())
-        run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", return_value=run_result) as mock_sub:
+        with _phase_popen(0) as mock_sub:
             runner.run_stats()
         cmd = mock_sub.call_args[0][0]
         assert "-p" in cmd
@@ -328,16 +330,14 @@ class TestRunStats:
 
         before = os.environ.get(MUTANT_ENV_VAR)
         runner = PytestRunner(_config())
-        run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", return_value=run_result):
+        with _phase_popen(0):
             runner.run_stats()
         assert os.environ.get(MUTANT_ENV_VAR) == before
 
     def test_tests_dir_forwarded(self) -> None:
         """tests_dir config should be included in the pytest command."""
         runner = PytestRunner(_config(tests_dir=["tests/unit/"]))
-        run_result = MagicMock(stdout="", returncode=0)
-        with patch("subprocess.run", return_value=run_result) as mock_sub:
+        with _phase_popen(0) as mock_sub:
             runner.run_stats()
         cmd = mock_sub.call_args[0][0]
         assert "tests/unit/" in cmd
@@ -351,7 +351,7 @@ class TestRunStats:
 class TestRunForcedFail:
     def test_returns_nonzero_when_tests_fail(self) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(1)):
+        with _phase_popen(1):
             rc = runner.run_forced_fail("some_mutant")
         assert rc != 0
 
@@ -359,13 +359,19 @@ class TestRunForcedFail:
         runner = PytestRunner(_config())
         captured_envs: list[dict[str, str]] = []
 
-        def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             env = kwargs.get("env")
             if env is not None:
                 captured_envs.append(dict(env))
-            return _make_completed_process(1)
+            proc = MagicMock()
+            proc.pid = 99999
+            proc.wait.return_value = 1
+            return proc
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        ):
             runner.run_forced_fail("mutant_x")
 
         assert len(captured_envs) == 1
@@ -376,7 +382,7 @@ class TestRunForcedFail:
         import subprocess as _subprocess
 
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(1)) as mock_run:
+        with _phase_popen(1) as mock_run:
             runner.run_forced_fail("m1")
         kwargs = mock_run.call_args[1]
         assert isinstance(kwargs.get("stdout"), int)
@@ -385,14 +391,14 @@ class TestRunForcedFail:
     def test_returns_zero_when_all_tests_pass(self) -> None:
         """Edge case: if forced-fail somehow returns 0, runner faithfully reports it."""
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0)):
+        with _phase_popen(0):
             rc = runner.run_forced_fail("m1")
         assert rc == 0
 
     def test_mutant_name_parameter_accepted(self) -> None:
         """run_forced_fail must accept arbitrary mutant_name without error."""
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(1)):
+        with _phase_popen(1):
             rc = runner.run_forced_fail("src/foo.py::bar__mutmut_1")
         assert isinstance(rc, int)
 
@@ -406,7 +412,7 @@ class TestRunForcedFail:
 def test_extra_args_always_appended_to_command(extra_args: list[str]) -> None:
     """pytest_add_cli_args must always appear in the subprocess command."""
     runner = PytestRunner(_config(pytest_add_cli_args=extra_args))
-    with patch("subprocess.run", return_value=_make_completed_process(0)) as mock_run:
+    with _phase_popen(0) as mock_run:
         runner.run_clean_test()
     cmd: list[str] = mock_run.call_args[0][0]
     for arg in extra_args:
@@ -421,19 +427,24 @@ def test_extra_args_always_appended_to_command(extra_args: list[str]) -> None:
 
 
 class TestRunCoverageCollection:
-    def test_timeout_returns_36(self, tmp_path: Path) -> None:
+    def test_timeout_returns_36_and_reaps_the_tree(self, tmp_path: Path) -> None:
         import subprocess
 
         runner = PytestRunner(_config(clean_run_timeout=7))
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="coverage", timeout=7),
+        proc = MagicMock()
+        proc.pid = 99999
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="coverage", timeout=7)
+        with (
+            patch("subprocess.Popen", return_value=proc),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
         ):
             rc = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
         assert rc == 36
+        kill_tree.assert_called_once_with(proc, None)
 
     def test_returns_subprocess_exit_code(self, tmp_path: Path) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(1)):
+        with _phase_popen(1):
             rc = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
         assert rc == 1

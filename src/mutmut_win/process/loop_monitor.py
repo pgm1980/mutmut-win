@@ -51,6 +51,17 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Single-sourced from constants (issue #132 / 360°-B8) — these used to be
+# duplicate literals here that could drift apart from the orchestrator's
+# mapping. Re-exported (PEP 484 ``as`` idiom) because the worker and tests
+# address them via this module.
+from mutmut_win.constants import (
+    EXIT_CODE_INFINITE_LOOP as EXIT_CODE_INFINITE_LOOP,
+)
+from mutmut_win.constants import (
+    STATUS_KILLED_BY_INFINITE_LOOP as STATUS_KILLED_BY_INFINITE_LOOP,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -500,15 +511,3 @@ class ProcessMonitor(threading.Thread):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             self._proc_cache.pop(pid, None)
             return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Exit-code mapping for the worker
-# ---------------------------------------------------------------------------
-
-
-#: Exit code emitted when the classifier verdict is "killed_by_infinite_loop".
-EXIT_CODE_INFINITE_LOOP: int = 38
-
-#: Status string the orchestrator stores on the mutant row.
-STATUS_KILLED_BY_INFINITE_LOOP: str = "killed_by_infinite_loop"

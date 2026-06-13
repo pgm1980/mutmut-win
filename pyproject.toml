@@ -68,6 +68,10 @@ line-length = 100
 exclude = [
     # Reference fixture projects copied from mutmut 3.5.0 — not subject to our lint rules.
     "tests/e2e_projects",
+    # Tooling sandbox (hook scripts etc.) — not project code; without this
+    # exclude a bare `ruff check .` reported findings the gates never saw
+    # (issue #132 / 360°-B13).
+    ".claude",
 ]
 
 [tool.ruff.lint]

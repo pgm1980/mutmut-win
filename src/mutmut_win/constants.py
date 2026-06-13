@@ -1,7 +1,5 @@
 """Constants for mutmut-win: exit code mappings and status definitions."""
 
-from collections import defaultdict
-
 #: Environment variable read by the trampoline to select the mutant under
 #: test. Single source of truth (issue #110 / A4-QX-019) — runner.py and
 #: process/worker.py re-export it; the literal inside the trampoline
@@ -47,32 +45,38 @@ SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
 # Negative codes (-24, -11, -9) are POSIX signal semantics — unreachable on
 # Windows, kept for WSL/Linux CI. Windows crashes surface as the unsigned
 # DWORD form of NTSTATUS codes instead.
-status_by_exit_code: defaultdict[int | None, str] = defaultdict(
-    lambda: "suspicious",
-    {
-        0: "survived",
-        1: "killed",
-        2: "killed",  # pytest "Interrupted" — collection error under a mutant
-        3: "killed",  # internal error in pytest means a kill
-        5: "no tests",
-        33: "no tests",
-        34: "skipped",
-        35: "suspicious",
-        36: "timeout",
-        37: "caught by type check",
-        38: "killed_by_infinite_loop",  # Issue #71 — triple-check IL classifier
-        -24: "timeout",  # SIGXCPU (POSIX only)
-        24: "timeout",  # SIGXCPU
-        152: "timeout",  # SIGXCPU
-        255: "timeout",
-        -11: "segfault",  # SIGSEGV (POSIX only)
-        -9: "segfault",  # SIGKILL, e.g. the OOM killer (POSIX only)
-        0xC0000005: "segfault",  # Windows STATUS_ACCESS_VIOLATION
-        0xC00000FD: "segfault",  # Windows STATUS_STACK_OVERFLOW (recursion mutants)
-        0xC0000409: "segfault",  # Windows STATUS_STACK_BUFFER_OVERRUN
-        None: "not checked",
-    },
-)
+
+#: Status string for IL-classified kills — single source for the literal
+#: that used to be duplicated in ``loop_monitor`` (issue #132 / 360°-B8).
+STATUS_KILLED_BY_INFINITE_LOOP: str = "killed_by_infinite_loop"
+
+# Plain dict (issue #132 / 360°-C6): the defaultdict factory inserted a key
+# on EVERY unknown lookup — a stray read could grow the table. Readers use
+# ``.get(code, "suspicious")``; the unknown→suspicious contract is pinned
+# by tests.
+status_by_exit_code: dict[int | None, str] = {
+    0: "survived",
+    1: "killed",
+    2: "killed",  # pytest "Interrupted" — collection error under a mutant
+    3: "killed",  # internal error in pytest means a kill
+    5: "no tests",
+    33: "no tests",
+    34: "skipped",
+    35: "suspicious",
+    36: "timeout",
+    37: "caught by type check",
+    38: STATUS_KILLED_BY_INFINITE_LOOP,  # Issue #71 — triple-check IL classifier
+    -24: "timeout",  # SIGXCPU (POSIX only)
+    24: "timeout",  # SIGXCPU
+    152: "timeout",  # SIGXCPU
+    255: "timeout",
+    -11: "segfault",  # SIGSEGV (POSIX only)
+    -9: "segfault",  # SIGKILL, e.g. the OOM killer (POSIX only)
+    0xC0000005: "segfault",  # Windows STATUS_ACCESS_VIOLATION
+    0xC00000FD: "segfault",  # Windows STATUS_STACK_OVERFLOW (recursion mutants)
+    0xC0000409: "segfault",  # Windows STATUS_STACK_BUFFER_OVERRUN
+    None: "not checked",
+}
 
 emoji_by_status: dict[str, str] = {
     "survived": "\U0001f641",
@@ -88,10 +92,11 @@ emoji_by_status: dict[str, str] = {
     "segfault": "\U0001f4a5",
 }
 
-exit_code_to_emoji: defaultdict[int | None, str] = defaultdict(
-    lambda: emoji_by_status["suspicious"],
-    {code: emoji_by_status.get(status, "") for code, status in status_by_exit_code.items()},
-)
+# Plain dict (issue #132 / 360°-C6) — readers fall back to the suspicious
+# emoji via ``.get(code, emoji_by_status["suspicious"])``.
+exit_code_to_emoji: dict[int | None, str] = {
+    code: emoji_by_status.get(status, "") for code, status in status_by_exit_code.items()
+}
 
 # Internal exit codes used by mutmut-win for non-pytest results.
 EXIT_CODE_TIMEOUT: int = 36

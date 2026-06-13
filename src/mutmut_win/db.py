@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from mutmut_win.models import MutationResult
 
 #: Default path to the SQLite database file.
@@ -110,6 +112,9 @@ def save_result(
     """Persist a single mutation result (upsert semantics).
 
     Creates the database schema automatically if it does not yet exist.
+    Thin wrapper over :func:`save_results` — the streaming event loop writes
+    one verdict at a time; mass paths pass their whole batch instead
+    (issue #132 / 360°-C1).
 
     Args:
         path: Filesystem path to the SQLite database file.
@@ -123,27 +128,74 @@ def save_result(
         tests_fingerprint: Fingerprint of the test basis behind this verdict
             (issue #119 result reuse); ``None`` for never-reused verdicts.
     """
-    create_db(path)
-    forensics_json = json.dumps(forensics) if forensics is not None else None
-    if last_output is not None:
-        # Issue #100 / A3-FD-011: a lone surrogate (undecodable bytes that
-        # slipped through as \udcXX/\udXXX) raised UnicodeEncodeError inside
-        # the driver and LOST the upsert. Diagnostics may be lossy, results
-        # may not.
-        last_output = last_output.encode("utf-8", errors="replace").decode("utf-8")
-    with contextlib.closing(sqlite3.connect(path)) as conn:
-        conn.execute(
-            _UPSERT_SQL,
+    save_results(
+        path,
+        [
             (
                 mutant_name,
                 status,
                 exit_code,
                 duration,
                 last_output,
-                forensics_json,
+                forensics,
                 tests_fingerprint,
-            ),
+            )
+        ],
+    )
+
+
+def save_results(
+    path: Path,
+    rows: Iterable[
+        tuple[
+            str,
+            str,
+            int | None,
+            float | None,
+            str | None,
+            dict[str, object] | None,
+            str | None,
+        ]
+    ],
+) -> None:
+    """Persist many mutation results over ONE connection (issue #132 / C1).
+
+    The mass paths (skipped exclusions, no-test verdicts, type-check kills)
+    used to open connect+create+commit per mutant — thousands of redundant
+    file operations per run. Row layout matches :func:`save_result`'s
+    parameters: ``(mutant_name, status, exit_code, duration, last_output,
+    forensics, tests_fingerprint)``.
+
+    Args:
+        path: Filesystem path to the SQLite database file.
+        rows: Result tuples; ``forensics`` is serialised to JSON here.
+    """
+    prepared: list[
+        tuple[str, str, int | None, float | None, str | None, str | None, str | None]
+    ] = []
+    for mutant_name, status, exit_code, duration, last_output, forensics, fingerprint in rows:
+        if last_output is not None:
+            # Issue #100 / A3-FD-011: a lone surrogate (undecodable bytes that
+            # slipped through as \udcXX/\udXXX) raised UnicodeEncodeError inside
+            # the driver and LOST the upsert. Diagnostics may be lossy, results
+            # may not.
+            last_output = last_output.encode("utf-8", errors="replace").decode("utf-8")
+        prepared.append(
+            (
+                mutant_name,
+                status,
+                exit_code,
+                duration,
+                last_output,
+                json.dumps(forensics) if forensics is not None else None,
+                fingerprint,
+            )
         )
+    if not prepared:
+        return
+    create_db(path)
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.executemany(_UPSERT_SQL, prepared)
         conn.commit()
 
 

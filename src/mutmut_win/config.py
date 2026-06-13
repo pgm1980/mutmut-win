@@ -398,6 +398,18 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     if not parser.has_section("mutmut"):
         return None
 
+    # Issue #132 / 360°-B9: a typo like 'infinite_loop_windw' used to be
+    # silently ignored — the run proceeded with defaults and the user
+    # believed the option was active. The known set is the model itself,
+    # so new fields can never drift out of this check.
+    unknown = sorted(set(parser.options("mutmut")) - set(MutmutConfig.model_fields))
+    if unknown:
+        print(
+            f"Warning: setup.cfg [mutmut] contains unknown option(s): "
+            f"{', '.join(unknown)} — ignored.",
+            file=sys.stderr,
+        )
+
     normalized: dict[str, object] = {
         "paths_to_mutate": _get("paths_to_mutate", []),
         "tests_dir": _get("tests_dir", ["tests/"]),
@@ -413,7 +425,21 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "pytest_add_cli_args": _get("pytest_add_cli_args", []),
         "pytest_add_cli_args_test_selection": _get("pytest_add_cli_args_test_selection", []),
         "type_check_command": _get("type_check_command", []),
+        "extra_paths": _get("extra_paths", []),
     }
+    # Issue #132 / 360°-B9: setup.cfg parity for the IL options. A missing
+    # key stays absent so the MODEL default applies — no duplicated
+    # defaults that could drift.
+    for il_key in (
+        "infinite_loop_detection",
+        "infinite_loop_cpu_threshold",
+        "infinite_loop_output_threshold",
+        "infinite_loop_running_ratio",
+        "infinite_loop_window_seconds",
+    ):
+        value = _get(il_key, None)
+        if value is not None:
+            normalized[il_key] = value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
     return MutmutConfig.model_validate(normalized)

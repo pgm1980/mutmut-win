@@ -1130,8 +1130,16 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
         db_path: Path to the SQLite result cache (must already exist).
         caught_names: Fully qualified names of the caught mutants.
     """
-    for name in sorted(caught_names):
-        save_result(db_path, name, "caught by type check", EXIT_CODE_TYPE_CHECK, None)
+    from mutmut_win.db import save_results
+
+    # One connection for the whole batch (issue #132 / 360°-C1).
+    save_results(
+        db_path,
+        (
+            (name, "caught by type check", EXIT_CODE_TYPE_CHECK, None, None, None, None)
+            for name in sorted(caught_names)
+        ),
+    )
 
 
 #: Verdicts a later run may reuse for an unchanged mutant (issue #119 /
@@ -1300,11 +1308,18 @@ def _persist_skipped_mutants(db_path: Path, names: set[str]) -> None:
     if not names:
         return
     from mutmut_win.constants import EXIT_CODE_SKIPPED
-    from mutmut_win.db import load_results
+    from mutmut_win.db import load_results, save_results
 
     existing = {row.mutant_name for row in load_results(db_path)}
-    for name in sorted(names - existing):
-        save_result(db_path, name, "skipped", EXIT_CODE_SKIPPED, None)
+    # One connection for the whole batch (issue #132 / 360°-C1) — exclusion
+    # filters can skip thousands of mutants at once.
+    save_results(
+        db_path,
+        (
+            (name, "skipped", EXIT_CODE_SKIPPED, None, None, None, None)
+            for name in sorted(names - existing)
+        ),
+    )
 
 
 def _persist_no_test_mutants(
@@ -1324,9 +1339,15 @@ def _persist_no_test_mutants(
         source_data_by_file: Meta-file records, updated with exit code 33.
     """
     from mutmut_win.constants import EXIT_CODE_NO_TESTS
+    from mutmut_win.db import save_results
 
-    for name in sorted(no_test_names):
-        save_result(db_path, name, "no tests", EXIT_CODE_NO_TESTS, None)
+    ordered = sorted(no_test_names)
+    # One connection for the whole batch (issue #132 / 360°-C1).
+    save_results(
+        db_path,
+        ((name, "no tests", EXIT_CODE_NO_TESTS, None, None, None, None) for name in ordered),
+    )
+    for name in ordered:
         _update_source_data(name, EXIT_CODE_NO_TESTS, None, source_data_by_file)
 
 
@@ -1362,7 +1383,9 @@ def _update_summary_and_persist(
         mutant_name = event.mutant_name
         exit_code: int | None = event.exit_code
         duration: float | None = event.duration
-        status = status_by_exit_code[exit_code]
+        # Plain-dict lookup (issue #132 / 360°-C6): unknown codes stay
+        # suspicious without growing the shared table.
+        status = status_by_exit_code.get(exit_code, "suspicious")
         last_output = event.last_output
         forensics = event.forensics
     else:
