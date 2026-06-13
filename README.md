@@ -261,11 +261,14 @@ mutants they can actually reach. A run with many `no tests` mutants can
 therefore show a high score over a small base — read the bucket counts
 next to it, not the percentage alone.
 
-**Mutation-surface limits:** methods of classes nested inside other
-classes (and functions nested inside functions) are not mutated — the
-trampoline mechanism rewrites top-level functions and top-level-class
-methods only. Such code contributes no mutants rather than appearing
-as `survived`.
+**Mutation-surface limits:** the trampoline mechanism rewrites top-level
+functions and top-level-class methods. The two kinds of nesting differ:
+
+- A **function nested inside a function** (a closure) gets no trampoline
+  of its own, but its body *is* mutated — folded into the enclosing
+  top-level function's mutant set, so closure logic is covered.
+- A **method of a class nested inside another class** is genuinely not
+  mutated and contributes no mutants rather than appearing as `survived`.
 
 ## Typical workflows
 
@@ -357,14 +360,18 @@ timeouts, job-object process management and infinite-loop detection
 releases covering score integrity, pipeline hygiene and runtime
 truthfulness (v2.6–v2.10), and closed the audit's maintenance pool
 completely in two demand-driven maintenance releases (v2.11–v2.12).
-Details: the
+Two further maintenance releases followed: v2.13.0 added cross-run
+result reuse — verdicts of unchanged mutants are reused instead of
+re-run — alongside an external-QA hardening pass, and v2.14.0 closed
+all 28 findings of a full 360° code analysis (9 bugs, 13 anomalies,
+6 optimizations). Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.12.0 is the current release. Active development is in a
+**Status:** v2.14.0 is the current release. Active development is in a
 documented pause with a clean slate — zero open issues, zero known
 backlog entries. The issue tracker stays open; the resumption baseline
-(a full self-run over the tool's own codebase) is recorded in the
-repository docs.
+(a full self-run over the tool's own codebase — 7231 mutants,
+69.2 % killed) is recorded in the repository docs.
 
 ## License
 
