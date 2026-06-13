@@ -1,16 +1,19 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-06-12. Source of truth for sprint state is `.sprint/state.md`;
+> Last refresh: 2026-06-13. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 
-> **STATUS: DEVELOPMENT PAUSED** (user decision; re-entered 2026-06-12
-> after the v2.13.0 "External QA" release — the pause was interrupted
-> once for Sprint 35, which closed all 15 findings of an external QA
-> report): 0 open issues, 0 backlog entries, 0 open decisions, 0 open
-> milestones. Resumption starting points: the Sprint-34 pause baseline
-> (full self-run, 7800 mutants, 68.3% gross — 2337 survivors + 45
-> timeouts) and the external QA archive under `_docs/audit/`.
+> **STATUS: Sprint 37 in progress** — *v2.15.0 Maintenance 5: External 360°
+> QA of v2.14.0*. Current release: **v2.14.0** (Sprint 36, 2026-06-13). The
+> documented development pause (re-entered after v2.14.0) was interrupted
+> again on user decision: a second external test-management project ran a
+> 360° audit against the RELEASED v2.14.0 and produced 6 findings (1 Medium,
+> 5 Low). All 6 fixed on `feature/v2.15.0-maintenance-5` — **not yet merged,
+> not yet released** (merge + release stay a user decision). Baseline /
+> resumption anchors: dogfooding pause baseline (7231 mutants, 69.2% gross),
+> the Fable-5 360° report (`_docs/audit/`) and the external QA inventory
+> (serena memory `external_360_test_v2140_findings`).
 
 ## What it is
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
@@ -29,6 +32,55 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   `mutmut-win`.
 
 ## Where we are
+- **Sprint**: 37 — *v2.15.0 Maintenance 5: External 360° QA of v2.14.0* —
+  implementation complete 2026-06-13 on `feature/v2.15.0-maintenance-5`
+  (light branch, Wellen-Commits, NO GitHub issues — the external report IS
+  the spec). A separate test-management Claude-Code project ran a full
+  black/white-box 360° audit against the RELEASED v2.14.0 (confirming all 28
+  Sprint-36 fixes genuinely landed), then produced 6 new findings. All fixed
+  + committed; **not merged, not released**.
+  - **IL-001** (Medium, `353f1c1`): the infinite-loop window auto-scales per
+    task into `[MIN_SAMPLES*poll, timeout/2]` — the shipped 10s default
+    exceeded fast-suite per-task budgets, so genuine IL mutants were scored
+    `timeout` (out of the score numerator), silently under-counting. Mutation
+    100%.
+  - **conftest-not-fingerprinted** (Low, `b2bc19e`): `copy_src_dir` warns
+    when a changed `conftest.py` can't be fingerprinted for verdict reuse
+    (silent stale-reuse without `--force`). Mutation 100%.
+  - **WRK-001** (Low, `ac6a52b`): startup watchdog in `executor.get_events` —
+    a worker crashing during interpreter startup (before the mp bootstrap)
+    used to hang the run ≥50s; now aborts (`run_aborted`/exit 1) after a 60s
+    no-task grace. Mutation 91.3%.
+  - **MUT-003** (Low, `865140f`): `dry_run` warns on non-UTF-8 source like a
+    full run already does (was a silent under-count of the preview).
+  - **DOC-003 + DOC-004** (Low, `5f2ba06`): README closure-mutation claim
+    corrected + status/version refresh to v2.14.0.
+  - Findings inventory in serena memory `external_360_test_v2140_findings`
+    (`2341631`); the load-flaky busy-loop IL integration test hardened
+    (`e7628ff`: core-pin + warm-up + relaxed confidence band, 5/5 under a
+    6-process CPU stressor). Repro projects rescued to
+    `_bug_reports/repro_projects/`, the nextgen-operator roadmap acceptance
+    harness to `_docs/nextgen_roadmap/acceptance_harness/`.
+  Gates: **1140 passed / 5 skipped**, ruff 0, ruff format clean, mypy 14 =
+  baseline, import-linter KEPT, mutation ≥80% on every changed function
+  (verbatim diagnostic pins kill string mutants).
+- **Sprint**: 36 — *v2.14.0 Maintenance 4: Fable-5 360°* — released
+  2026-06-13 (9 issues #124–#132, branch `feature/v2.14.0-maintenance-4`,
+  merge `5ef27c1`, bump `43a7762`, annotated tag `v2.14.0`). Closed all **28
+  findings** of an internal Fable-5 360° code analysis of v2.13.0 (9 bugs
+  A1–A9 incl. 3 High, 13 anomalies B1–B13, 6 optimizations C1–C6); report
+  `_docs/audit/fable5_360_analysis_v2.13.0.md`, inventory in serena memory
+  `fable5_360_findings`. Highlights: A1 result-persistence name→file lookup,
+  A2 `pytest>=8.2` floor (`@argfile`), A3 `source/`-layout naming, A6 JSON
+  purity, A7 pool-collapse `run_aborted`, A8 engine-version fingerprint,
+  B1–B4 stats/mapping/timeout/type-check baseline, B5 phase reaping, C1 DB
+  batching. C3 documented Won't-Do; B11/B12 documented limitations. Gates:
+  1118 passed / 5 skipped, ruff 0, mypy 14, import-linter KEPT, **Semgrep Pro
+  1228 rules / 0 findings** (registry token bridge), pip-audit clean
+  (urllib3/idna/pip/pytest lifted past advisories). **Dogfooding full pilot
+  69.2%** (3084 killed / 1334 survived / 40 timeout / 2773 no-tests; 7231
+  mutants; ~1.7h) — above the S34 reference 68.3%. Runtime floor since:
+  `pytest>=8.2`.
 - **Sprint**: 35 — *v2.13.0 Maintenance 3: External QA* — implementation
   complete 2026-06-12 (6 issues #118–#123, 29/29 SP, commits
   a504b3c..ba7e28c on `feature/v2.13.0-maintenance-3`): the development
@@ -59,8 +111,9 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   DOCUMENTED DEVELOPMENT PAUSE.**
 - **Version**: **v2.12.0** released 2026-06-12
   ([release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.12.0),
-  bump 932f90e) — Maintenance 2: Final Sweep, THE LAST RELEASE before
-  the development pause. Pool 13 → 0, decision register 4 → 0, mypy
+  bump 932f90e) — Maintenance 2: Final Sweep (framed at the time as the last
+  release before the pause; the pause has since been interrupted by
+  Sprints 35–37 / v2.13.0–v2.15.0). Pool 13 → 0, decision register 4 → 0, mypy
   baseline 20 → 14, --treat-timeout-as-kill deprecated (removal in a
   future major), release policy documented. Pilot held at 85.1% gross;
   first full self-measurement (12 modules, 7800 mutants) at 68.3%
@@ -335,8 +388,10 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - Mutation testing: `uv run mutmut-win run --paths-to-mutate <dir>`.
 - Security: Semgrep before every sprint close, pip-audit on dependency
   changes.
-- Filesystem ops: FS MCP server and Serena are **NOT available** for this
-  project (FS MCP allowed-roots point elsewhere; Serena has no mutmut-win
-  project registered — its memories belong to nextgen-cot-mcp-server).
-  Use built-in tools (Read/Write/Edit/Glob/Grep); Bash file commands remain
-  blocked by `.claude/settings.json`.
+- Filesystem ops: **FS MCP server and Serena ARE available** and are the
+  required tools (CLAUDE.md). Activate Serena by project NAME `mutmut-win`
+  (activating by Windows path fails); its memories live in `.serena/memories/`.
+  Use FS MCP `execute_workflow` for filesystem ops (allowed-roots cover the
+  project tree, not user-profile paths). Built-in Read/Write/Edit/Glob/Grep are
+  the Tier-3 fallback for single-file work; Bash file commands (cat/cp/rm/find/
+  grep/…) and `pwsh` are hard-blocked by `.claude/settings.json`.
