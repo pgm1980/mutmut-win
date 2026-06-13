@@ -363,20 +363,26 @@ class MutationOrchestrator:
         # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
         tasks_with_timeouts.sort(key=lambda t: t.estimated_time)
 
-        # Issue #110 / DOG-002: the window-vs-timeout hint (A2-JT-018) is
-        # emitted here, ONCE per run — the previous per-worker guard meant
-        # N-fold spam on N worker processes. Compared against the SMALLEST
-        # budget: the most at-risk task — if the window doesn't cover half
-        # of that one, it covers half of none.
+        # IL-001: the sampling window now auto-scales per task into its valid
+        # band (process.loop_monitor.effective_window_seconds), so the old
+        # "use a smaller window" hint is obsolete — and its advice was
+        # backwards (too small starves the classifier below MIN_SAMPLES).
+        # Emit a neutral notice ONCE per run (per-worker was N-fold spam,
+        # issue #110), and only when the smallest-budget task actually
+        # triggers down-scaling, so the configured value differing from the
+        # persisted forensics window is not mistaken for a bug.
         if self._config.infinite_loop_detection and tasks_with_timeouts:
+            from mutmut_win.process.loop_monitor import effective_window_seconds
+
             window = self._config.infinite_loop_window_seconds
             smallest_budget = min(t.timeout_seconds for t in tasks_with_timeouts)
-            if window >= smallest_budget / 2:
+            effective = effective_window_seconds(window, smallest_budget)
+            if effective < window:
                 print(
-                    f"IL-MONITOR HINT: IL window covers >=50% of the smallest task "
-                    f"timeout ({window:.0f}s window vs {smallest_budget:.0f}s timeout). "
-                    f"First-sample CPU priming may dilute the mean; consider a smaller "
-                    f"infinite_loop_window_seconds."
+                    f"IL-MONITOR: auto-scaled the infinite-loop window from "
+                    f"{window:.0f}s to {effective:.1f}s for the smallest task "
+                    f"budget ({smallest_budget:.0f}s) — set "
+                    f"infinite_loop_window_seconds to override."
                 )
 
         # ------------------------------------------------------------------
@@ -478,7 +484,11 @@ class MutationOrchestrator:
                 code = src_file.read_text(encoding="utf-8")
                 _mutated_code, mutant_names = mutate_file_contents(rel_path, code)
                 total += len(mutant_names)
-            except Exception:  # noqa: S112 — dry-run must not crash on unparseable files
+            except Exception as exc:  # count-only preview, logged just below
+                # MUT-003: the full run warns about files it cannot mutate
+                # (encoding errors, unparseable syntax); the dry-run preview
+                # must do the same so its count is not a silent under-count.
+                print(f"Warning: could not mutate {rel_path}: {exc}")
                 continue
 
         self._warn_unmatched_exclusions(walked)

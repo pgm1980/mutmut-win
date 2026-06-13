@@ -85,6 +85,88 @@ class TestExecutorPoolCollapse:
         assert executor.abort_reason is None
 
 
+class TestStartupWatchdog:
+    """WRK-001: a worker that dies DURING interpreter startup (before the mp
+    bootstrap) never pulls a task, and the liveness sweep cannot resolve it to
+    a clean ``not any(is_alive())`` abort — the run hung >=50s. A time-based
+    watchdog aborts when no task is ever pulled within the startup grace."""
+
+    def test_watchdog_aborts_when_no_task_is_ever_pulled(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import mutmut_win.process.executor as executor_module
+
+        # Race simulation: the worker reports alive forever (the unresolved
+        # bootstrap state) and never emits a single event.
+        monkeypatch.setattr(executor_module, "_STARTUP_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(executor_module, "_EVENT_POLL_SECONDS", 0.01)
+
+        executor = SpawnPoolExecutor(max_workers=1, config=_config())
+        alive_silent = MagicMock()
+        alive_silent.is_alive.return_value = True
+        alive_silent.pid = 202
+        executor._workers = [alive_silent]
+        executor._num_tasks = 3
+
+        events = list(executor.get_events())
+        executor.shutdown()
+
+        assert events == []
+        assert executor.aborted is True
+        # Verbatim pins (mutation hardening): abort_reason + stderr are contract.
+        assert executor.abort_reason == (
+            "no worker pulled a task within 0s; 3 task(s) were never started"
+        )
+        expected_err = (
+            "Error: no worker pulled a task within 0s; 3 task(s) were never "
+            "started — workers are failing during interpreter startup "
+            "(a crashing sitecustomize/.pth/site-packages wedges every spawn). "
+            "Aborting the run; their mutants remain unchecked."
+        )
+        assert expected_err in capsys.readouterr().err.splitlines()
+
+    def test_watchdog_silent_once_a_task_was_pulled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import mutmut_win.process.executor as executor_module
+        from mutmut_win.models import TaskStarted
+
+        # Grace 0 would fire instantly IF the watchdog ignored progress.
+        monkeypatch.setattr(executor_module, "_STARTUP_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(executor_module, "_EVENT_POLL_SECONDS", 0.01)
+
+        executor = SpawnPoolExecutor(max_workers=1, config=_config())
+        # Worker pulled a task (TaskStarted) then died mid-task: the normal
+        # sweep synthesizes a 'suspicious' completion. The watchdog must stay
+        # silent because a task WAS pulled — otherwise grace 0 would abort.
+        dead_after_pull = MagicMock()
+        dead_after_pull.is_alive.return_value = False
+        dead_after_pull.pid = 303
+        dead_after_pull.exitcode = 1
+        executor._workers = [dead_after_pull]
+        executor._num_tasks = 1
+        executor._event_queue.put(
+            TaskStarted(mutant_name="m.x_f__mutmut_1", worker_pid=303).model_dump()
+        )
+
+        events = list(executor.get_events())
+        executor.shutdown()
+
+        assert any(getattr(e, "exit_code", None) == 35 for e in events)
+        assert executor.aborted is False
+
+
+def test_startup_grace_expired_predicate() -> None:
+    """The watchdog predicate: no pull + past grace → expired; a pull disarms it."""
+    from mutmut_win.process.executor import _STARTUP_GRACE_SECONDS, _startup_grace_expired
+
+    grace = _STARTUP_GRACE_SECONDS
+    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace + 1.0) is True
+    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace - 1.0) is False
+    # boundary: strictly greater, not >=
+    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace) is False
+    # a task was pulled → never expires, even long past the grace
+    assert _startup_grace_expired(any_task_pulled=True, elapsed=grace + 100.0) is False
+
+
 # ---------------------------------------------------------------------------
 # A7 — orchestrator seam (the MagicMock-truthiness hardening)
 # ---------------------------------------------------------------------------

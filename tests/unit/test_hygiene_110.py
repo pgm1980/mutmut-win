@@ -153,18 +153,21 @@ class TestWindowHintOncePerRun:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        # Mocked stats leave every task unassigned — since #130/B3 their
-        # budget is the full-suite fallback (60s). A 40s window covers
-        # >= 50% of that smallest budget -> hint, exactly once
-        # (multiple mutants, max_children=4 — per-worker would print 4x).
+        # Mocked stats leave every task unassigned — since #130/B3 their budget
+        # is the full-suite fallback (60s). IL-001: a 40s window down-scales to
+        # 60/2 = 30s, and the notice fires exactly once (multiple mutants,
+        # max_children=4 — per-worker would print 4x).
         self._run(tmp_path, window_seconds=40.0)
         out = capsys.readouterr().out
-        assert out.count("IL window covers") == 1
+        assert out.count("auto-scaled the infinite-loop window") == 1
+        assert "to 30.0s" in out
 
-    def test_no_hint_for_a_small_window(
+    def test_no_hint_when_window_fits_the_budget(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        self._run(tmp_path, window_seconds=0.5)
+        # A 20s window already fits within 60/2 = 30s, so there is no
+        # down-scaling and no notice (IL-001).
+        self._run(tmp_path, window_seconds=20.0)
         out = capsys.readouterr().out
-        assert "IL window covers" not in out
+        assert "auto-scaled the infinite-loop window" not in out

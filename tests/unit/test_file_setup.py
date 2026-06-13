@@ -166,6 +166,61 @@ class TestCopySrcDir:
         finally:
             os.chdir(original_cwd)
 
+    def test_changed_conftest_warns_about_stale_verdict_reuse(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # conftest.py changes alter fixture-driven test behaviour without
+        # changing any node ID, so the test-file fingerprints that gate verdict
+        # reuse cannot see them (stats.py). The mirror copy DOES detect the
+        # change, so it must warn rather than let a stale verdict be reused
+        # silently (external QA: conftest-not-fingerprinted).
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        conftest = tests_dir / "conftest.py"
+        conftest.write_text(
+            "import pytest\n\n\n@pytest.fixture\ndef cases():\n    return [3]\n",
+            encoding="utf-8",
+        )
+
+        original_cwd = Path.cwd()
+        os.chdir(tmp_path)
+        try:
+            cfg = _config(paths_to_mutate=["src_pkg"])
+            copy_src_dir(cfg)  # initial mirror
+            capsys.readouterr()  # discard the first-copy output
+
+            # Widen the fixture (changes size → stale mirror) and re-sync.
+            conftest.write_text(
+                "import pytest\n\n\n@pytest.fixture\ndef cases():\n    return [3, 0]\n",
+                encoding="utf-8",
+            )
+            copy_src_dir(cfg)
+            out = capsys.readouterr().out
+        finally:
+            os.chdir(original_cwd)
+
+        assert "conftest.py" in out
+        assert "stale" in out.lower()
+        assert "--force" in out
+
+
+def test_conftest_staleness_warning_only_for_conftest() -> None:
+    """_conftest_staleness_warning returns the verbatim warning for conftest.py
+    and is silent otherwise (verbatim pin: the message is user-facing contract)."""
+    from mutmut_win.file_setup import _conftest_staleness_warning
+
+    src = Path("tests/conftest.py")
+    expected = (
+        f"     WARNING: {src} changed but is not fingerprinted for "
+        f"verdict reuse — cached results depending on its fixtures may be "
+        f"stale; re-run with --force for an authoritative score."
+    )
+    assert _conftest_staleness_warning(src) == expected
+
+    # Any other file — including a confusingly named one — stays silent.
+    assert _conftest_staleness_warning(Path("tests/test_foo.py")) is None
+    assert _conftest_staleness_warning(Path("src/conftest_helper.py")) is None
+
 
 # ---------------------------------------------------------------------------
 # copy_also_copy_files

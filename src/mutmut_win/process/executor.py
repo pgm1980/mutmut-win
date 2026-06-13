@@ -37,6 +37,16 @@ _EVENT_POLL_SECONDS: float = 1.0
 #: Exit code for synthesized completions of tasks whose worker died hard.
 _EXIT_CODE_SUSPICIOUS: int = 35
 
+#: Wall-clock grace (seconds) for the FIRST task to be pulled by any worker.
+#: WRK-001: a worker crashing during interpreter startup (before the mp
+#: bootstrap — e.g. a crashing sitecustomize/.pth/site-packages) never pulls a
+#: task and cannot be resolved to a clean ``not any(is_alive())`` abort, so the
+#: run hung (>=50s of fruitless respawns). If no worker pulls a task within this
+#: window the pool is declared collapsed. Generous on purpose (Defender can
+#: stretch a cold first spawn-import to 10-20s) — it only turns an unbounded
+#: hang into a bounded, diagnosed abort. Not a user knob (test-monkeypatchable).
+_STARTUP_GRACE_SECONDS: float = 60.0
+
 
 def _sweep_stale_artifacts(mutants_dir: Path) -> None:
     """Delete leftover worker artifacts from aborted runs (issue #82 / A2-EW-007).
@@ -51,6 +61,17 @@ def _sweep_stale_artifacts(mutants_dir: Path) -> None:
         for stale in mutants_dir.glob(pattern):
             with contextlib.suppress(OSError):
                 stale.unlink()
+
+
+def _startup_grace_expired(any_task_pulled: bool, elapsed: float) -> bool:
+    """True when no worker pulled a task within the startup grace (WRK-001).
+
+    Once any task is pulled the watchdog is disarmed forever, so a slow but
+    healthy first task is protected — only a total startup failure (every spawn
+    crashing before the mp bootstrap) keeps *any_task_pulled* False past the
+    grace and trips this backstop.
+    """
+    return not any_task_pulled and elapsed > _STARTUP_GRACE_SECONDS
 
 
 class SpawnPoolExecutor:
@@ -175,6 +196,11 @@ class SpawnPoolExecutor:
         in_flight: dict[str, int] = {}  # mutant_name -> worker pid
         synthesized: set[str] = set()
         handled_dead_pids: set[int] = set()
+        # WRK-001 startup watchdog: did ANY worker ever pull a task (a
+        # TaskStarted/TaskCompleted arrived)? A startup-time crash never does,
+        # and the liveness sweep below cannot resolve it — see the backstop.
+        start_monotonic = time.monotonic()
+        any_task_pulled = False
 
         while finished < self._num_tasks:
             try:
@@ -203,11 +229,19 @@ class SpawnPoolExecutor:
                             file=sys.stderr,
                         )
                         break
+                # WRK-001 backstop: if no worker has pulled a single task
+                # within the startup grace, the pool is collapsing at
+                # interpreter startup and the is_alive() sweep above cannot
+                # resolve it (the worker never reaches a clean dead state).
+                if _startup_grace_expired(any_task_pulled, time.monotonic() - start_monotonic):
+                    self._declare_startup_collapse()
+                    break
                 continue
 
             # Discriminate on the keys present in the dict.
             if "exit_code" in raw:
                 event: TaskEvent = TaskCompleted.model_validate(raw)
+                any_task_pulled = True
                 if event.mutant_name in synthesized:
                     # Late flush from a worker we already declared dead —
                     # drop it to keep the finished-accounting single-counted.
@@ -218,6 +252,7 @@ class SpawnPoolExecutor:
                 finished += 1
             elif "timestamp" in raw:
                 event = TaskStarted.model_validate(raw)
+                any_task_pulled = True
                 in_flight[event.mutant_name] = event.worker_pid
             else:
                 # Fail fast on unknown shapes instead of misparsing them
@@ -264,6 +299,21 @@ class SpawnPoolExecutor:
                     )
                 )
         return synthetic
+
+    def _declare_startup_collapse(self) -> None:
+        """Mark the pool collapsed at worker startup and report it (WRK-001)."""
+        self.aborted = True
+        self.abort_reason = (
+            f"no worker pulled a task within {_STARTUP_GRACE_SECONDS:.0f}s; "
+            f"{self._num_tasks} task(s) were never started"
+        )
+        print(
+            f"Error: {self.abort_reason} — workers are failing during "
+            "interpreter startup (a crashing sitecustomize/.pth/"
+            "site-packages wedges every spawn). Aborting the run; "
+            "their mutants remain unchecked.",
+            file=sys.stderr,
+        )
 
     def shutdown(self, timeout: float = 10.0) -> None:
         """Terminate all worker processes and release resources.

@@ -89,6 +89,13 @@ Confidence = Literal["high", "medium", "low"]
 #: classifier, not a tuning knob.
 MIN_SAMPLES_FOR_VERDICT: int = 5
 
+#: Default sampling cadence of :class:`ProcessMonitor` (seconds between polls).
+#: Single-sourced here so the classifier's lower window bound
+#: (``MIN_SAMPLES_FOR_VERDICT * DEFAULT_POLL_INTERVAL``) and the sampler stay in
+#: lockstep — the IL-001 window auto-scaling (:func:`effective_window_seconds`)
+#: relies on both agreeing.
+DEFAULT_POLL_INTERVAL: float = 0.5
+
 #: io_counters delta above which the process tree is demonstrably making
 #: syscalls — vetoing an IL verdict (spike #89). A pure spin measures EXACTLY
 #: 0 ops over a 5 s window while real I/O work measures thousands (14k for a
@@ -157,6 +164,50 @@ class LoopClassification(BaseModel):
 # ---------------------------------------------------------------------------
 # Pure classifier — testable without psutil / threads
 # ---------------------------------------------------------------------------
+
+
+def effective_window_seconds(
+    configured: float,
+    timeout: float,
+    *,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+    min_samples: int = MIN_SAMPLES_FOR_VERDICT,
+) -> float:
+    """Auto-scale the IL sampling window into the band where a verdict is possible.
+
+    A verdict is only reachable when the window fits ``[min_samples *
+    poll_interval, timeout / 2]`` (IL-001):
+
+    - **Upper bound ``timeout / 2``** — :meth:`ProcessMonitor.take_samples_snapshot`
+      returns the *last* ``window`` seconds of samples. A window at or above the
+      task's wall-clock ``timeout`` keeps the CPU-priming samples (every freshly
+      observed process reports ``0.0`` on its first ``cpu_percent`` call) inside
+      the snapshot, diluting ``cpu_pct_mean`` below ``cpu_threshold`` so a genuine
+      infinite loop is scored ``timeout`` instead of ``killed_by_infinite_loop``.
+      Half the budget covers the settled second half of the run and drops the
+      priming head.
+    - **Lower bound ``min_samples * poll_interval``** — below it the snapshot holds
+      fewer than ``min_samples`` observations and :func:`classify_samples` returns
+      ``timeout`` for lack of data.
+
+    The shipped 10 s default is left untouched on slow suites (large ``timeout``)
+    and only scaled down on fast suites whose per-task budget is small — exactly
+    where the window/timeout mismatch silently degraded IL kills to ``timeout``.
+
+    Args:
+        configured: The user's ``infinite_loop_window_seconds`` (or its default).
+        timeout: Per-task wall-clock budget (``MutationTask.timeout_seconds``).
+        poll_interval: Sampler cadence; with *min_samples* it sets the floor.
+        min_samples: Classifier sample floor (:data:`MIN_SAMPLES_FOR_VERDICT`).
+
+    Returns:
+        The effective window (seconds), clamped into the valid band. When the band
+        collapses (``timeout / 2 < floor`` — only for sub-5 s timeouts, below the
+        orchestrator's ``_MIN_TIMEOUT``) the floor wins: *some* chance of enough
+        samples beats a guaranteed data deficit.
+    """
+    floor = min_samples * poll_interval
+    return max(min(configured, timeout / 2.0), floor)
 
 
 def classify_samples(
@@ -319,7 +370,7 @@ class ProcessMonitor(threading.Thread):
         pid: int,
         log_path: Path,
         *,
-        poll_interval: float = 0.5,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
         window_seconds: float = 10.0,
     ) -> None:
         # daemon=True belongs here, not as a class attribute shadowing the

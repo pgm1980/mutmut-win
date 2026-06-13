@@ -1,0 +1,23 @@
+[project]
+name = "roadmap-specs"
+version = "0.1.0"
+description = "Executable acceptance spec for mutmut-win's planned operators (roadmap)"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.mutmut]
+paths_to_mutate = ["src/"]
+tests_dir = ["tests/"]
+
+[tool.uv.sources]
+mutmut-win = { git = "https://github.com/pgm1980/mutmut-win.git", rev = "v2.14.0" }
+
+[dependency-groups]
+dev = [
+    "mutmut-win",
+    "pytest>=9.0.3",
+]
