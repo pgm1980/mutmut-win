@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from collections import Counter
 from io import StringIO
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from hypothesis import given
@@ -26,9 +28,17 @@ from pydantic import ValidationError
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import Profile
-from mutmut_win.file_setup import write_all_mutants_to_file
+from mutmut_win.file_setup import (
+    config_fingerprint_matches,
+    create_mutants_for_file,
+    write_all_mutants_to_file,
+)
 from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.node_mutation import mutation_operators, operators_for_profile
+from mutmut_win.orchestrator import MutationOrchestrator
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # The nine mutmut-win extras — everything beyond mutmut's 15-operator base —
 # verified against the origin comments in node_mutation.py ("unique to
@@ -202,3 +212,67 @@ class TestMutationProfileConfig:
         original = MutmutConfig(mutation_profile=profile)
         restored = MutmutConfig(**original.model_dump())
         assert restored.mutation_profile is profile
+
+
+class TestProfileWiredThroughGeneration:
+    """C4: the configured profile reaches both generation paths — the real run
+    (create_mutants_for_file, via the multiprocessing pool) and the dry-run
+    preview (mutate_file_contents). ``a or b`` is mutated only by the advanced
+    operator_or_default, so basic yields strictly fewer mutants.
+    """
+
+    _OR_SNIPPET = "def pick(a, b):\n    return a or b\n"
+
+    def test_create_mutants_for_file_threads_the_profile(self, tmp_path: Path) -> None:
+        src = tmp_path / "m.py"
+        src.write_text(self._OR_SNIPPET, encoding="utf-8")
+        # Distinct output paths so the unchanged-staging fast path never fires.
+        basic, _w1, _f1 = create_mutants_for_file(
+            src, tmp_path / "basic.py", active_profile=Profile.BASIC
+        )
+        advanced, _w2, _f2 = create_mutants_for_file(
+            src, tmp_path / "advanced.py", active_profile=Profile.ADVANCED
+        )
+        assert len(basic) < len(advanced)
+
+    def _dry_run_count(self, profile: Profile) -> int:
+        cfg = MutmutConfig(paths_to_mutate=["src"], mutation_profile=profile)
+        orch = MutationOrchestrator(cfg, runner=MagicMock(), executor=MagicMock())
+        return orch.dry_run().total_mutants
+
+    def test_dry_run_respects_the_config_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "m.py").write_text(self._OR_SNIPPET, encoding="utf-8")
+        assert self._dry_run_count(Profile.BASIC) < self._dry_run_count(Profile.ADVANCED)
+
+    def test_profile_change_invalidates_the_generation_fingerprint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A profile switch changes the mutant universe, so on unchanged source
+        # it must regenerate (fast path disabled) rather than reuse stale
+        # mutants — i.e. it must change the config fingerprint.
+        monkeypatch.chdir(tmp_path)
+        advanced = MutmutConfig(paths_to_mutate=["src"], mutation_profile=Profile.ADVANCED)
+        assert config_fingerprint_matches(advanced) is False  # first run persists it
+        assert config_fingerprint_matches(advanced) is True  # unchanged → fast path
+        basic = MutmutConfig(paths_to_mutate=["src"], mutation_profile=Profile.BASIC)
+        assert config_fingerprint_matches(basic) is False  # profile change → regenerate
+
+    def test_pool_worker_threads_the_profile(self, tmp_path: Path) -> None:
+        # The picklable pool worker carries the profile in its args tuple and
+        # passes it on to create_mutants_for_file.
+        from mutmut_win.orchestrator import _create_mutants_worker
+
+        src = tmp_path / "m.py"
+        src.write_text(self._OR_SNIPPET, encoding="utf-8")
+
+        def _count(profile: Profile, out_name: str) -> int:
+            args = (str(src), src, tmp_path / out_name, None, False, profile)
+            _rel, names, err, _warns, _fast = _create_mutants_worker(args)
+            assert err is None
+            return len(names)
+
+        assert _count(Profile.BASIC, "b.py") < _count(Profile.ADVANCED, "a.py")

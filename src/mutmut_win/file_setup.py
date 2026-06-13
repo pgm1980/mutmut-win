@@ -419,10 +419,10 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
     The generation fast path reuses ``.meta`` mutant names when the source
     is unchanged — but the UNIVERSE also depends on configuration:
     ``paths_to_mutate``, ``do_not_mutate``, ``mutate_only_covered_lines``,
-    ``also_copy``/``extra_paths``. Editing any of these used to leave a
-    stale mutant universe in place without warning (issue #101 /
-    A3-OS-008). The orchestrator calls this once per run and disables the
-    fast path when the fingerprint changed.
+    ``also_copy``/``extra_paths``, and the operator ``mutation_profile``.
+    Editing any of these used to leave a stale mutant universe in place
+    without warning (issue #101 / A3-OS-008). The orchestrator calls this
+    once per run and disables the fast path when the fingerprint changed.
 
     Args:
         config: Active ``MutmutConfig``.
@@ -449,6 +449,10 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
             "mutate_only_covered_lines": config.mutate_only_covered_lines,
             "also_copy": sorted(config.also_copy),
             "extra_paths": sorted(config.extra_paths),
+            # The profile selects the operator set, so a profile switch on
+            # unchanged source changes the mutant universe exactly like an
+            # engine upgrade — it must regenerate, not reuse stale mutants.
+            "mutation_profile": config.mutation_profile.to_name(),
         },
         sort_keys=True,
     )
@@ -661,6 +665,7 @@ def create_mutants_for_file(
     covered_lines: set[int] | None = None,
     *,
     allow_fast_path: bool = True,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> tuple[list[str], list[warnings.WarningMessage], bool]:
     """Generate mutants for a single source file and write to *output_path*.
 
@@ -758,6 +763,7 @@ def create_mutants_for_file(
                 source=source,
                 filename=filename,
                 covered_lines=covered_lines,
+                active_profile=active_profile,
             )
         collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()
