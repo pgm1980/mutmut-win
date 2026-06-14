@@ -69,6 +69,8 @@ _PHASE2_ADVANCED_OPERATORS = {
 _PHASE4_ALL_OPERATORS = {
     "operator_aod",  # W1 #2 arithmetic operand deletion
     "operator_exception_swap",  # W1 #44 exception swap
+    "operator_statement_removal",  # W2 #27 general statement removal
+    "operator_member_assignment_removal",  # W2 #29 member/attr-assignment removal
 }
 
 

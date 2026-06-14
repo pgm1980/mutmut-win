@@ -185,7 +185,7 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     source_file = project_dir / "src" / "my_lib" / "__init__.py"
 
     _assert_profile_layered(
-        [source_file], EXPECTED_MY_LIB, expected_advanced_count=129, expected_all_count=147
+        [source_file], EXPECTED_MY_LIB, expected_advanced_count=129, expected_all_count=153
     )
 
 
@@ -243,7 +243,7 @@ def test_type_checking_mutation_generation(tmp_path: Path) -> None:
     source_file = project_dir / "src" / "type_checking" / "__init__.py"
 
     _assert_profile_layered(
-        [source_file], EXPECTED_TYPE_CHECKING, expected_advanced_count=17, expected_all_count=19
+        [source_file], EXPECTED_TYPE_CHECKING, expected_advanced_count=17, expected_all_count=20
     )
 
 

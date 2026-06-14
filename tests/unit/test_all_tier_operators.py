@@ -73,3 +73,94 @@ class TestExceptionSwap:
         # exc.func is itself a Call (no `.value`) -> the Name guard must
         # short-circuit before `.func.value`, leaving the raise untouched (no crash)
         assert _exc_swap('raise make_error()("boom")\n') == []
+
+
+def _stmt_removal(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_statement_removal
+
+    line = cst.parse_module(src).body[0]
+    assert isinstance(line, cst.SimpleStatementLine)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m).strip() for m in operator_statement_removal(line)]
+
+
+class TestStatementRemoval:
+    """#27: drop an effectful expression statement -> pass. Only Await / Yield /
+    Subscript / walrus are removed; Calls (advanced owns them), docstrings,
+    ``...`` stubs and pure-value statements are deliberately left alone.
+    """
+
+    def test_await_removed(self) -> None:
+        assert _stmt_removal("await coro()\n") == ["pass"]
+
+    def test_yield_removed(self) -> None:
+        assert _stmt_removal("yield value\n") == ["pass"]
+
+    def test_subscript_removed(self) -> None:
+        assert _stmt_removal("buffer[0]\n") == ["pass"]
+
+    def test_walrus_removed(self) -> None:
+        assert _stmt_removal("(total := compute())\n") == ["pass"]
+
+    def test_plain_call_skipped(self) -> None:
+        # bare Call statements belong to operator_void_call_removal (advanced)
+        assert _stmt_removal("do_work()\n") == []
+
+    def test_docstring_skipped(self) -> None:
+        # a string-literal statement is a docstring -> removal is always equivalent
+        assert _stmt_removal('"""module docstring"""\n') == []
+
+    def test_ellipsis_stub_skipped(self) -> None:
+        # `...` stub body -> removal is always equivalent
+        assert _stmt_removal("...\n") == []
+
+    def test_pure_value_skipped(self) -> None:
+        # a side-effect-free comparison statement -> removal is always equivalent
+        assert _stmt_removal("a == b\n") == []
+
+    def test_multi_statement_line_skipped(self) -> None:
+        assert _stmt_removal("await a(); await b()\n") == []
+
+    def test_non_expr_statement_with_allowlisted_value_skipped(self) -> None:
+        # `x = data[0]` is an Assign (value=Subscript), NOT an Expr statement;
+        # the cst.Expr guard must exclude it even though Subscript is allow-listed
+        assert _stmt_removal("x = data[0]\n") == []
+
+
+def _member_assign_removal(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_member_assignment_removal
+
+    line = cst.parse_module(src).body[0]
+    assert isinstance(line, cst.SimpleStatementLine)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m).strip() for m in operator_member_assignment_removal(line)]
+
+
+class TestMemberAssignRemoval:
+    """#29: drop a single-target attribute assignment -> pass. Plain-name,
+    tuple-target, chained and annotated assignments are left to other operators.
+    """
+
+    def test_self_attribute_removed(self) -> None:
+        assert _member_assign_removal("self.x = 1\n") == ["pass"]
+
+    def test_nested_attribute_removed(self) -> None:
+        assert _member_assign_removal("obj.a.b = value\n") == ["pass"]
+
+    def test_plain_name_skipped(self) -> None:
+        # a bare-name assignment is the base operator_assignment's domain
+        assert _member_assign_removal("x = 1\n") == []
+
+    def test_tuple_target_skipped(self) -> None:
+        assert _member_assign_removal("self.x, self.y = pair\n") == []
+
+    def test_chained_target_skipped(self) -> None:
+        assert _member_assign_removal("self.x = self.y = value\n") == []
+
+    def test_annotated_assignment_skipped(self) -> None:
+        # `self.x: int = 1` is a cst.AnnAssign, not a cst.Assign
+        assert _member_assign_removal("self.x: int = 1\n") == []
+
+    def test_multi_statement_line_skipped(self) -> None:
+        # two attribute assignments on one line -> the len(body) != 1 guard skips it
+        assert _member_assign_removal("self.x = 1; self.y = 2\n") == []

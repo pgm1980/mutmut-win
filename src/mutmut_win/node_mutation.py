@@ -865,13 +865,58 @@ def operator_exception_swap(node: cst.Raise) -> Iterable[cst.Raise]:
     yield node.with_changes(exc=node.exc.with_changes(func=cst.Name(swapped)))
 
 
+def operator_statement_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """General statement removal (#27, all): drop an effectful expression
+    statement by replacing it with ``pass``.
+
+    Generalises ``operator_void_call_removal`` (which owns bare ``Call``
+    statements at the advanced profile) to the other expression statements
+    whose evaluation plausibly has an observable side effect: ``await`` of a
+    coroutine, a generator ``yield``, a subscript (``__getitem__``) and a walrus
+    binding. Pure-value statements (bare names, attributes, arithmetic,
+    comparisons), docstrings (string literals) and ``...`` stub bodies are left
+    alone on purpose — removing them is a guaranteed-equivalent, unkillable
+    mutant, so they are excluded by the positive allow-list below.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Expr):
+        return
+    expr = node.body[0]
+    if not isinstance(expr.value, (cst.Await, cst.Yield, cst.Subscript, cst.NamedExpr)):
+        return
+    yield node.with_changes(body=[cst.Pass()])
+
+
+def operator_member_assignment_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """Member/attribute-assignment removal (#29, all): drop an attribute
+    assignment by replacing it with ``pass``.
+
+    Targets ``self.x = v`` / ``obj.attr = v`` — a single ``Assign`` with exactly
+    one target whose target is an ``Attribute``. Tests whether persisting that
+    object state actually matters. Distinct from (and complementary to) the base
+    ``operator_assignment``, which mutates the *value* to ``None``; this removes
+    the whole statement. Plain-name (``x = v``), tuple-target, chained and
+    annotated assignments are left to other operators.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Assign):
+        return
+    assign = node.body[0]
+    if len(assign.targets) != 1 or not isinstance(assign.targets[0].target, cst.Attribute):
+        return
+    yield node.with_changes(body=[cst.Pass()])
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
-# The first 15 entries are mutmut's base operators at profile BASIC; the last 9
-# are mutmut-win's extras at profile ADVANCED, marked by the origin comments
+# The first 15 entries are mutmut's base operators at profile BASIC; the middle
+# block is mutmut-win's extras at profile ADVANCED, marked by the origin comments
 # higher up in this file. operator_assignment is registered twice, for Assign
-# and AnnAssign, so the 15 base entries span 14 distinct functions. Aggressive
-# ALL-tier operators arrive in a later phase of the operator roadmap.
+# and AnnAssign, so the 15 base entries span 14 distinct functions. The final
+# block is the aggressive ALL-tier operators (operator roadmap §4), which only
+# fire under the `all` profile and so never disturb the advanced surface.
 mutation_operators: TAGGED_OPERATORS_TYPE = [
     # --- mutmut base operators (profile: basic) ---
     (cst.BaseNumber, operator_number, Profile.BASIC),
@@ -915,6 +960,8 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     # --- Phase 4 all-tier aggressive operators (operator roadmap §4) ---
     (cst.BinaryOperation, operator_aod, Profile.ALL),
     (cst.Raise, operator_exception_swap, Profile.ALL),
+    (cst.SimpleStatementLine, operator_statement_removal, Profile.ALL),
+    (cst.SimpleStatementLine, operator_member_assignment_removal, Profile.ALL),
 ]
 
 
