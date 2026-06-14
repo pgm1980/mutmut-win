@@ -143,6 +143,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | Option | Effect |
 |---|---|
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
+| `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
 | `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
 | `--min-score N` | Exit 1 if the score is below N percent (CI gate) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
@@ -186,6 +187,11 @@ forced_fail_timeout = 120             # budget (s) for the forced-fail verificat
 pytest_add_cli_args = []                  # extra pytest args for every run
 pytest_add_cli_args_test_selection = []   # extra args for test-selection runs
 
+# Operator profile (which operators run)
+mutation_profile = "advanced"         # advanced (default) = mutmut base + extras;
+                                      # basic = strict mutmut parity (15 base ops);
+                                      # all = + aggressive operators
+
 # Filters
 mutate_only_covered_lines = false     # only mutate lines your tests execute
 type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
@@ -228,6 +234,13 @@ Notes:
 - On Windows the process-status signal does not exist (psutil reports
   almost everything as "running"), so infinite-loop verdicts rest on CPU
   plus progress evidence and are capped at `medium` confidence.
+- **Operator profiles** select how aggressively mutmut-win mutates. The
+  default `advanced` is mutmut-win's historical set (mutmut's 15 base
+  operators plus 9 extras), so it is behaviour-neutral for existing users;
+  `basic` drops to strict mutmut parity (the 15 base operators only), and
+  `all` adds the aggressive operators (rolled out across later releases).
+  Each run prints the active profile and its operator count, e.g.
+  `profile=advanced — 24 operators active`.
 
 ## Result statuses and the score
 
