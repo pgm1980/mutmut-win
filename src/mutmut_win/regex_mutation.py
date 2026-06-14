@@ -3,13 +3,22 @@
 Mutates regex patterns found in ``re.*()`` calls. This is a unique feature
 — no other Python mutation testing tool supports regex mutations.
 
-Supports three categories of mutations:
-1. **Quantifier mutations:** ``+`` → remove, ``*`` → ``+``, ``?`` → remove, ``{n}`` → ``{n±1}``
-2. **Character-class mutations:** ``\\d`` ↔ ``\\D``, ``\\w`` ↔ ``\\W``, ``\\s`` ↔ ``\\S``
-3. **Anchor mutations:** ``^`` → remove, ``$`` → remove
+The full 14-sub-mutator suite (v2.18.0), all string-based on a lightweight
+class-span tokenizer (``_class_spans`` / ``_in_class``):
+1. **Anchors (#1):** remove ``^ $ \\A \\Z \\b \\B``.
+2. **Quantifiers (#2-#6):** removal; ``+``<->``*`` swap; short->range
+   (``?``->``{1}``, ``+``->``{2,}``); reluctant greedy->lazy (``a+``->``a+?``);
+   brace ``{n,m}`` quantity ±1.
+3. **Shorthands (#11-#13):** negation (``\\d``<->``\\D``), nullification
+   (``\\d``->``d``), to-any (``\\d``->``[\\d\\D]``).
+4. **Character classes (#7-#10):** negation toggle (``[abc]``<->``[^abc]``),
+   child-removal, range ±1 (``[a-z]``->``[b-z]``/``[a-y]``), to-any.
+5. **Groups / look-around (#14, +15):** flip ``(?=)``<->``(?!)`` and
+   ``(?<=)``<->``(?<!)``; capturing ``(abc)``->non-capturing ``(?:abc)``.
 
-All generated mutations are validated via ``re.compile()`` — invalid regex
-patterns are silently filtered out.
+Every candidate is validated via ``re.compile()`` and de-duplicated — invalid
+or repeated patterns are silently dropped; at most ``MAX_MUTATIONS_PER_PATTERN``
+survive per pattern.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ MAX_MUTATIONS_PER_PATTERN: int = 12
 #: so ``a+?`` is captured as one unit instead of ``+`` and ``?`` separately.
 _QUANTIFIER_RE = re.compile(
     r"""
-    (?<!\\)            # not preceded by a backslash (avoid matching \+ etc.)
+    (?<![\\(])         # not after a backslash (\+) or '(' (the ? in (?=...) etc.)
     (                  # group 1: the base quantifier
         [+*?]          # simple quantifiers
       | \{\d+\}        # {n}

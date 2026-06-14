@@ -45,6 +45,22 @@ operators overlap on a construct and there is no visitor-level dedup:
 Acceptance is **Score 100 %** (every mutant killed), not the isolated counts.
 #42 (regex full 14-sub-mutator suite) stays Phase 3.
 
+**Phase 3 verification (v2.18.0 — the full regex suite #42):** the 14 sub-mutators
+ship string-based on the class-span tokenizer (`_class_spans`/`_in_class`), NOT the
+roadmap's re._parser route (`re` has no `unparse`, so a round-trip emitter would be
+the killer risk). The harness's regex targets were moved INTO their functions — a
+module-level `_X = re.compile(...)` is never mutated (mutmut-win mutates function
+bodies), so before this the regex operator never fired on them. With the patterns
+inline, harness `--profile advanced` = **184 / 188 / 97.9 %** (152 in v2.17.0; the
++36 are the regex-pattern mutants). The 4 survivors are genuine equivalents,
+documented: `\d+?` / `[a-c]+?` / `(ab)+?` (a lazy `+?` is identical to greedy `+`
+under `fullmatch`) and `(ab)*` (returns the same `None` as `(ab)+` for `repeat_ab`).
+Per-operator regex mutation is 96-99 % with documented `<` vs `!=` boundary
+equivalents (`i+1` is never `> n`). `MAX_MUTATIONS_PER_PATTERN` was raised 5 -> 12 so
+the suite can surface on one construct. The `all`-tier aggressive operators (#2 AOD,
+#12 UOI, #27/#29 removal, #44 exception-swap) and the 3.6.0 surface backports remain
+for a later phase.
+
 ## Acceptance table — `advanced` profile
 
 | # | Operator | Target (`src/roadmap/`) | Current | Expected (Δ) | Killed by |

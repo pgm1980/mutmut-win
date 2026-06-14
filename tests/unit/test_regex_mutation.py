@@ -131,6 +131,12 @@ class TestMutateQuantifiers:
         # group(1) is the base even for lazy input: \d+? still swaps + -> *
         assert r"\d*" in _mutate_quantifiers(r"\d+?")
 
+    def test_group_extension_question_not_a_quantifier(self) -> None:
+        # the ? in (?=...), (?:...), (?<=...) is group syntax, not a quantifier
+        assert _mutate_quantifiers(r"(?=bar)") == []
+        assert _mutate_quantifiers(r"(?:ab)") == []
+        assert _mutate_quantifiers(r"(?<=x)y") == []
+
 
 class TestMutateCharClasses:
     def test_digit_to_non_digit(self) -> None:
@@ -277,7 +283,6 @@ class TestMutateClasses:
         assert r"[^b-z]" in results
         assert r"[b-z]" not in results
 
-
     def test_literal_bracket_skips_member_mutations(self) -> None:
         # []a] : body starts with a literal ] -> only #7 toggle and #10 to-any,
         # no member-based #8/#9 (pins the body.startswith("]") guard exactly)
@@ -287,7 +292,6 @@ class TestMutateClasses:
         # break vs continue: a literal-] class must not stop a later class
         results = _mut_classes(r"[]a][bc]")
         assert any("[^bc]" in r for r in results)
-
 
 
 class TestClassMembers:
@@ -328,7 +332,6 @@ class TestClassMembers:
     def test_empty(self) -> None:
         assert _class_members("") == []
 
-
     def test_lone_backslash_is_one_member(self) -> None:
         # a trailing/lone backslash has no next char -> a 1-char member
         # (kills the i+1 boundary mutants that would over-consume)
@@ -341,7 +344,6 @@ class TestClassMembers:
     def test_range_with_trailing_backslash_end(self) -> None:
         # a-\ : the range upper end is a lone backslash (1 char, no pair)
         assert _class_members("a-\\") == [(0, 3)]
-
 
 
 def _mut_groups(src: str) -> list[str]:
@@ -388,7 +390,6 @@ class TestMutateGroups:
 
     def test_no_group(self) -> None:
         assert _mut_groups(r"abc") == []
-
 
     def test_trailing_backslash_no_crash(self) -> None:
         # trailing backslash: no group, no IndexError (kills `while i != n`)

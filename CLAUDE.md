@@ -422,7 +422,7 @@ mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität de
 
 **Installation** (PyPI-Publishing ist nicht Teil der Release-Sequenz — Installation erfolgt über die Git-URL; führendes Dokument: `_config\mutmut-win-install.md`):
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.18.0" --dev
 ```
 
 **Wann mutmut-win verwenden (PFLICHT):**
