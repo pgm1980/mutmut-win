@@ -58,6 +58,7 @@ _ADVANCED_EXTRA_NAMES = {
 # Phase 2 advanced operators (operator roadmap §3), grown wave by wave.
 _PHASE2_ADVANCED_OPERATORS = {
     "operator_relational_matrix",  # W1 #3 ROR matrix
+    "operator_number_crcr",  # W2 #15 number CRCR
 }
 
 

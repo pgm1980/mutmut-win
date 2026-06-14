@@ -53,6 +53,58 @@ def operator_number(
         print("Unexpected number type", node)
 
 
+# ---------------------------------------------------------------------------
+# Number-literal CRCR (#15, advanced) — inspired by Stryker.NET-X / PIT
+# ---------------------------------------------------------------------------
+
+
+def _crcr_literal(value: int | float) -> cst.BaseExpression:
+    """Render a CRCR replacement value as a libcst literal.
+
+    A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
+    has no negative-literal node.
+    """
+    magnitude = abs(value)
+    literal: cst.BaseExpression = (
+        cst.Integer(str(magnitude)) if isinstance(value, int) else cst.Float(repr(magnitude))
+    )
+    if value < 0:
+        return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
+    return literal
+
+
+def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
+    """CRCR (#15, advanced): replace a numeric literal with 0, 1, -1 and its
+    negation — the classic constant-replacement set that catches the zero/sign
+    boundaries the base ``operator_number`` (+1) misses.
+
+    Integers map to ``{0, 1, -1, -orig}``, floats to ``{0.0, 1.0, -orig}`` (a
+    float ``-1.0`` would be a ``UnaryOperation``, never a literal). The literal's
+    own value is skipped, and ``seen`` folds duplicates — e.g. ``1``'s ``-1`` and
+    ``-orig`` collapse to a single ``-1`` — which matters because there is no
+    visitor-level dedup. Non-finite floats are left alone; ``Imaginary`` literals
+    stay with ``operator_number``.
+    """
+    orig: int | float
+    candidates: tuple[int | float, ...]
+    if isinstance(node, cst.Integer):
+        orig = node.evaluated_value
+        candidates = (0, 1, -1, -orig)
+    elif isinstance(node, cst.Float):
+        orig = node.evaluated_value
+        if not math.isfinite(orig):
+            return
+        candidates = (0.0, 1.0, -orig)
+    else:
+        return
+    seen: set[int | float] = set()
+    for value in candidates:
+        if value == orig or value in seen:
+            continue
+        seen.add(value)
+        yield _crcr_literal(value)
+
+
 def operator_string(
     node: cst.BaseString,
 ) -> Iterable[cst.BaseString]:
@@ -719,6 +771,10 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.BooleanOperation, operator_or_default, Profile.ADVANCED),
     # --- Phase 2 advanced operators (operator roadmap §3) ---
     (cst.ComparisonTarget, operator_relational_matrix, Profile.ADVANCED),
+    # CRCR registers on the concrete Integer/Float (not abstract BaseNumber) so
+    # mypy stays clean; the operator branches on the node type internally.
+    (cst.Integer, operator_number_crcr, Profile.ADVANCED),
+    (cst.Float, operator_number_crcr, Profile.ADVANCED),
 ]
 
 

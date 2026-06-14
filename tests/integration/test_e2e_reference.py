@@ -1,13 +1,25 @@
-"""Reference E2E tests verifying mutmut-win generates the same mutants as mutmut 3.5.0.
+"""Reference E2E tests pinning mutmut-win's mutation generation on 5 real projects.
 
-For each of the 5 reference projects from the mutmut test suite, we copy the
-project to a temporary directory, invoke mutmut-win's mutation generation on
-the source files, and compare the generated mutant names against the expected
-snapshot keys from mutmut's own E2E tests.
+For each reference project from the mutmut test suite we copy it to a temp
+directory and run mutmut-win's generation under both profiles, then assert
+*layered profile invariants* against the checked-in snapshot (the historical,
+externally-validated v2.14 generation):
 
-Only mutation *generation* is tested here — not execution or exit codes.
-The full pipeline (run + kill verification) requires pytest to be installed
-in the project's environment and is covered by test_e2e.py.
+  1. advanced ⊇ snapshot  — no-regression floor: advanced never drops a
+     validated mutant.
+  2. basic ⊆ snapshot      — basic-parity purity: the base profile (the mutmut
+     3.5.0 port) emits only validated mutants. Skipped where the snapshot was
+     coverage-filtered (there basic legitimately exceeds the filtered subset).
+  3. basic ⊆ advanced      — profile monotonicity.
+  4. len(advanced) == N    — an exact per-project advanced count: the
+     interaction-drift brake (one number per wave) that the per-operator
+     acceptance tests in test_advanced_operators.py cannot see.
+
+This keeps the suite stable across advanced-operator waves (each wave shifts
+``advanced`` by design) while still anchoring on the validated snapshot.
+advanced *exactness* lives per-operator in test_advanced_operators.py plus the
+counts in invariant (4). Only mutation *generation* is tested here — execution
+and exit codes are covered by test_e2e.py.
 """
 
 from __future__ import annotations
@@ -18,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from mutmut_win.constants import Profile
 from mutmut_win.mutation import mutate_file_contents
 from tests.e2e_projects.expected_results import (
     EXPECTED_CONFIG,
@@ -52,18 +65,21 @@ def _copy_project(name: str, tmp_path: Path) -> Path:
     return dst
 
 
-def _collect_mutant_names(source_file: Path) -> set[str]:
-    """Run mutation generation on *source_file* and return the set of mutant names.
+def _collect_mutant_names(source_file: Path, profile: Profile) -> set[str]:
+    """Run mutation generation on *source_file* under *profile* and return the names.
 
     Args:
         source_file: Path to a Python source file to mutate.
+        profile: The mutation profile to generate under (BASIC or ADVANCED).
 
     Returns:
         Set of mutant function names (without module prefix), e.g.
         ``{"x_hello__mutmut_1", "x_hello__mutmut_2"}``.
     """
     code = source_file.read_text(encoding="utf-8")
-    _mutated_code, mutant_names = mutate_file_contents(str(source_file), code)
+    _mutated_code, mutant_names = mutate_file_contents(
+        str(source_file), code, active_profile=profile
+    )
     return set(mutant_names)
 
 
@@ -90,6 +106,56 @@ def _expected_local_names(expected: dict[str, dict[str, int]]) -> set[str]:
     return names
 
 
+def _assert_profile_layered(
+    source_files: list[Path],
+    snapshot: dict[str, dict[str, int]],
+    expected_advanced_count: int,
+    *,
+    basic_within_snapshot: bool = True,
+) -> None:
+    """Assert the four layered profile invariants for one reference project.
+
+    Args:
+        source_files: Source files of the project to mutate (one or more).
+        snapshot: The checked-in expected-results dict for the project.
+        expected_advanced_count: Exact number of advanced mutants on this
+            project — the interaction-drift brake. Bump it by one line per
+            advanced-operator wave that genuinely changes generation.
+        basic_within_snapshot: Whether ``basic ⊆ snapshot`` must hold. False for
+            coverage-filtered snapshots, where the snapshot is a subset of a
+            full generation and basic legitimately exceeds it.
+    """
+    basic = set().union(*(_collect_mutant_names(f, Profile.BASIC) for f in source_files))
+    advanced = set().union(*(_collect_mutant_names(f, Profile.ADVANCED) for f in source_files))
+    snap = _expected_local_names(snapshot)
+
+    # (1) no-regression floor: advanced keeps every validated snapshot mutant.
+    floor_missing = snap - advanced
+    assert not floor_missing, (
+        f"advanced dropped {len(floor_missing)} validated snapshot mutant(s):\n"
+        + "\n".join(f"  {n}" for n in sorted(floor_missing))
+    )
+    # (2) basic-parity purity: basic emits only validated mutants.
+    if basic_within_snapshot:
+        basic_phantom = basic - snap
+        assert not basic_phantom, (
+            f"basic emitted {len(basic_phantom)} mutant(s) absent from the validated snapshot:\n"
+            + "\n".join(f"  {n}" for n in sorted(basic_phantom))
+        )
+    # (3) profile monotonicity: advanced is a superset of basic.
+    mono_missing = basic - advanced
+    assert not mono_missing, (
+        f"advanced is missing {len(mono_missing)} basic mutant(s) (profile non-monotonic):\n"
+        + "\n".join(f"  {n}" for n in sorted(mono_missing))
+    )
+    # (4) advanced exact count — interaction-drift brake (one number per wave).
+    assert len(advanced) == expected_advanced_count, (
+        f"advanced mutant count drifted: expected {expected_advanced_count}, "
+        f"got {len(advanced)}. If this is an intended advanced-operator change, "
+        "update the expected count."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -98,7 +164,7 @@ def _expected_local_names(expected: dict[str, dict[str, int]]) -> set[str]:
 @pytest.mark.integration
 @pytest.mark.slow
 def test_my_lib_mutation_generation(tmp_path: Path) -> None:
-    """Verify mutmut-win generates the same mutants as mutmut for my_lib.
+    """Pin layered profile invariants for my_lib.
 
     The my_lib project has a single source file with functions, a class, async
     generators, segfault-triggering code, and various edge-case patterns.
@@ -106,26 +172,13 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("my_lib", tmp_path)
     source_file = project_dir / "src" / "my_lib" / "__init__.py"
 
-    generated = _collect_mutant_names(source_file)
-    expected = _expected_local_names(EXPECTED_MY_LIB)
-
-    missing = expected - generated
-    extra = generated - expected
-
-    assert not missing, (
-        f"mutmut-win failed to generate {len(missing)} expected mutant(s):\n"
-        + "\n".join(f"  {n}" for n in sorted(missing))
-    )
-    assert not extra, (
-        f"mutmut-win generated {len(extra)} unexpected mutant(s) not in the reference snapshot:\n"
-        + "\n".join(f"  {n}" for n in sorted(extra))
-    )
+    _assert_profile_layered([source_file], EXPECTED_MY_LIB, expected_advanced_count=119)
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_config_mutation_generation(tmp_path: Path) -> None:
-    """Verify mutmut-win generates the same mutants as mutmut for the config project.
+    """Pin layered profile invariants for the config project.
 
     The config project has two source files (``__init__.py`` and ``math.py``)
     and exercises mutmut configuration options (paths_to_mutate, do_not_mutate,
@@ -136,55 +189,34 @@ def test_config_mutation_generation(tmp_path: Path) -> None:
     init_file = project_dir / "config_pkg" / "__init__.py"
     math_file = project_dir / "config_pkg" / "math.py"
 
-    generated = _collect_mutant_names(init_file) | _collect_mutant_names(math_file)
-    expected = _expected_local_names(EXPECTED_CONFIG)
-
-    missing = expected - generated
-    extra = generated - expected
-
-    assert not missing, (
-        f"mutmut-win failed to generate {len(missing)} expected mutant(s):\n"
-        + "\n".join(f"  {n}" for n in sorted(missing))
-    )
-    assert not extra, (
-        f"mutmut-win generated {len(extra)} unexpected mutant(s) not in the reference snapshot:\n"
-        + "\n".join(f"  {n}" for n in sorted(extra))
-    )
+    _assert_profile_layered([init_file, math_file], EXPECTED_CONFIG, expected_advanced_count=30)
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
-    """Verify mutmut-win generates a superset of the mutmut reference mutants.
+    """Pin layered profile invariants for mutate_only_covered_lines.
 
-    The mutate_only_covered_lines project tests that mutmut only mutates lines
-    covered by the test suite.  The reference snapshot was generated WITH
-    coverage filtering, so it contains fewer mutants than a full generation.
-    We test *generation* here WITHOUT coverage filtering, so we expect all
-    reference mutants to be present (subset check) — plus additional ones
-    from uncovered lines.
+    The reference snapshot was generated WITH coverage filtering, so it is a
+    *subset* of a full generation. We generate WITHOUT coverage filtering here,
+    so ``basic ⊆ snapshot`` does not hold (basic exceeds the filtered subset) —
+    only the no-regression floor, monotonicity, and the advanced count apply.
     """
     project_dir = _copy_project("mutate_only_covered_lines", tmp_path)
     source_file = project_dir / "src" / "mutate_only_covered_lines" / "__init__.py"
 
-    generated = _collect_mutant_names(source_file)
-    expected = _expected_local_names(EXPECTED_COVERAGE)
-
-    missing = expected - generated
-
-    assert not missing, (
-        f"mutmut-win failed to generate {len(missing)} expected mutant(s):\n"
-        + "\n".join(f"  {n}" for n in sorted(missing))
+    _assert_profile_layered(
+        [source_file],
+        EXPECTED_COVERAGE,
+        expected_advanced_count=106,
+        basic_within_snapshot=False,
     )
-    # NOTE: extra mutants are expected here because we generate without
-    # coverage filtering while the reference snapshot was generated with it.
-    assert generated >= expected, "Generated mutants must be a superset of expected."
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_type_checking_mutation_generation(tmp_path: Path) -> None:
-    """Verify mutmut-win generates the same mutants as mutmut for the type_checking project.
+    """Pin layered profile invariants for the type_checking project.
 
     The type_checking project uses pyrefly/pyright to catch mutants via static
     type checking.  We only test that the mutants are *generated* correctly;
@@ -193,20 +225,7 @@ def test_type_checking_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("type_checking", tmp_path)
     source_file = project_dir / "src" / "type_checking" / "__init__.py"
 
-    generated = _collect_mutant_names(source_file)
-    expected = _expected_local_names(EXPECTED_TYPE_CHECKING)
-
-    missing = expected - generated
-    extra = generated - expected
-
-    assert not missing, (
-        f"mutmut-win failed to generate {len(missing)} expected mutant(s):\n"
-        + "\n".join(f"  {n}" for n in sorted(missing))
-    )
-    assert not extra, (
-        f"mutmut-win generated {len(extra)} unexpected mutant(s) not in the reference snapshot:\n"
-        + "\n".join(f"  {n}" for n in sorted(extra))
-    )
+    _assert_profile_layered([source_file], EXPECTED_TYPE_CHECKING, expected_advanced_count=17)
 
 
 @pytest.mark.integration
@@ -216,7 +235,7 @@ def test_type_checking_mutation_generation(tmp_path: Path) -> None:
     reason="py3_14_features project requires Python >= 3.14",
 )
 def test_py3_14_features_mutation_generation(tmp_path: Path) -> None:
-    """Verify mutmut-win generates the same mutants as mutmut for the py3_14_features project.
+    """Pin layered profile invariants for the py3_14_features project.
 
     The py3_14_features project exercises Python 3.14-specific syntax and
     lazy annotation evaluation.  This test is skipped on Python < 3.14.
@@ -224,17 +243,4 @@ def test_py3_14_features_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("py3_14_features", tmp_path)
     source_file = project_dir / "src" / "py3_14_features" / "__init__.py"
 
-    generated = _collect_mutant_names(source_file)
-    expected = _expected_local_names(EXPECTED_PY3_14)
-
-    missing = expected - generated
-    extra = generated - expected
-
-    assert not missing, (
-        f"mutmut-win failed to generate {len(missing)} expected mutant(s):\n"
-        + "\n".join(f"  {n}" for n in sorted(missing))
-    )
-    assert not extra, (
-        f"mutmut-win generated {len(extra)} unexpected mutant(s) not in the reference snapshot:\n"
-        + "\n".join(f"  {n}" for n in sorted(extra))
-    )
+    _assert_profile_layered([source_file], EXPECTED_PY3_14, expected_advanced_count=10)
