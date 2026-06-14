@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import re
 
-#: Maximum mutations per single regex pattern (prevents explosion).
-MAX_MUTATIONS_PER_PATTERN: int = 5
+#: Maximum mutations per single regex pattern (prevents combinatorial explosion
+#: on pathological patterns). Raised in Phase 3 (v2.18.0) from 5 so the full
+#: 14-sub-mutator suite can surface on a single construct.
+MAX_MUTATIONS_PER_PATTERN: int = 12
 
 # ---------------------------------------------------------------------------
 # Quantifier patterns (applied to the raw regex string)
@@ -55,6 +57,7 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
     mutations.extend(_mutate_char_classes(pattern))
     mutations.extend(_mutate_anchors(pattern))
     mutations.extend(_mutate_classes(pattern))
+    mutations.extend(_mutate_groups(pattern))
 
     # Validate, dedupe (issue #132 / 360°-C5: two generators can emit the
     # same candidate — duplicates would create same-named mutants) and
@@ -252,6 +255,38 @@ def _mutate_classes(pattern: str) -> list[str]:
             for lo2, hi2 in ((lo + 1, hi), (lo, hi - 1)):
                 new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
                 results.append(f"{before}[{mark}{new_body}]{after}")
+    return results
+
+
+def _mutate_groups(pattern: str) -> list[str]:
+    """Mutate groups and look-arounds (#14 + #15).
+
+    #14 look-around flip: ``(?=)`` <-> ``(?!)`` and ``(?<=)`` <-> ``(?<!)``.
+    #15 group->non-capturing: a plain capturing ``(`` becomes ``(?:``. Both are
+    class-aware (a ``(`` inside ``[...]`` is a literal) and escape-aware (``\\(``
+    is a literal paren). A non-capturing ``(?:`` and named/other ``(?...)`` groups
+    are left alone by #15.
+    """
+    results: list[str] = []
+    spans = _class_spans(pattern)
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern[i] == "\\":
+            i += 2
+            continue
+        if pattern[i] == "(" and not _in_class(i, spans):
+            if pattern[i : i + 3] == "(?=":
+                results.append(f"{pattern[:i]}(?!{pattern[i + 3 :]}")
+            elif pattern[i : i + 3] == "(?!":
+                results.append(f"{pattern[:i]}(?={pattern[i + 3 :]}")
+            elif pattern[i : i + 4] == "(?<=":
+                results.append(f"{pattern[:i]}(?<!{pattern[i + 4 :]}")
+            elif pattern[i : i + 4] == "(?<!":
+                results.append(f"{pattern[:i]}(?<={pattern[i + 4 :]}")
+            elif i + 1 < n and pattern[i + 1] != "?":
+                # plain capturing group -> non-capturing
+                results.append(f"{pattern[: i + 1]}?:{pattern[i + 1 :]}")
+        i += 1
     return results
 
 

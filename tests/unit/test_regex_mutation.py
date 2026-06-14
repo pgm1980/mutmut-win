@@ -343,6 +343,67 @@ class TestClassMembers:
         assert _class_members("a-\\") == [(0, 3)]
 
 
+
+def _mut_groups(src: str) -> list[str]:
+    from mutmut_win.regex_mutation import _mutate_groups
+
+    return _mutate_groups(src)
+
+
+class TestMutateGroups:
+    """#14 look-around flip and +15 group->non-capturing. Class-aware (a ``(``
+    inside ``[...]`` is a literal) and escape-aware (``\\(`` is a literal paren).
+    """
+
+    def test_lookahead_positive_to_negative(self) -> None:
+        assert r"foo(?!bar)" in _mut_groups(r"foo(?=bar)")
+
+    def test_lookahead_negative_to_positive(self) -> None:
+        assert r"foo(?=bar)" in _mut_groups(r"foo(?!bar)")
+
+    def test_lookbehind_positive_to_negative(self) -> None:
+        assert r"(?<!a)b" in _mut_groups(r"(?<=a)b")
+
+    def test_lookbehind_negative_to_positive(self) -> None:
+        assert r"(?<=a)b" in _mut_groups(r"(?<!a)b")
+
+    def test_capturing_to_non_capturing(self) -> None:
+        # +15: (abc) -> (?:abc)
+        assert r"(?:abc)" in _mut_groups(r"(abc)")
+
+    def test_non_capturing_not_touched(self) -> None:
+        # (?:...) is already non-capturing and not a look-around
+        assert _mut_groups(r"(?:abc)") == []
+
+    def test_lookaround_not_made_non_capturing(self) -> None:
+        # (?=...) only flips; it never gets ?: inserted
+        assert all("(?:" not in r for r in _mut_groups(r"(?=a)"))
+
+    def test_paren_in_class_is_literal(self) -> None:
+        # [(] is a literal ( inside a class, not a group opener
+        assert _mut_groups(r"[(]abc") == []
+
+    def test_escaped_paren_not_a_group(self) -> None:
+        assert _mut_groups(r"\(abc\)") == []
+
+    def test_no_group(self) -> None:
+        assert _mut_groups(r"abc") == []
+
+
+    def test_trailing_backslash_no_crash(self) -> None:
+        # trailing backslash: no group, no IndexError (kills `while i != n`)
+        assert _mut_groups("a\\") == []
+
+    def test_escaped_paren_then_real_group(self) -> None:
+        # \( is escaped; the real (a) after it must still get #15
+        # (kills the escaped-skip i+=2 arithmetic and continue->break)
+        assert r"\((?:a)" in _mut_groups(r"\((a)")
+
+    def test_capturing_near_end(self) -> None:
+        # a(b : the ( opens a group even when its content is the last char
+        assert r"a(?:b" in _mut_groups(r"a(b")
+
+
 class TestMutateAnchors:
     def test_caret_removed(self) -> None:
         results = _mutate_anchors(r"^test")
