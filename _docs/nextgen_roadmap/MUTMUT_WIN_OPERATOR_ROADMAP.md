@@ -61,11 +61,11 @@ mutation_operators: list[tuple[type[cst.CSTNode], Operator, Profile]] = [
 | **force conditional True/False** | 23 | **advanced** | ✅ v2.17.0 |
 | **collection-literal emptying** | 38 | **advanced** | ✅ v2.17.0 |
 | **match-guard True/False** | 41 | **advanced** | ✅ v2.17.0 |
-| **UOI (unary operator insertion)** | 12 | **all** | NEW |
-| **AOD (arith operand deletion)** | 2 | **all** | NEW |
-| **general statement removal** | 27 | **all** | NEW |
-| **member/attr assignment removal** | 29 | **all** | NEW |
-| **exception swap** | 44 | **all** | NEW |
+| **UOI (unary operator insertion)** | 12 | **all** | ✅ v2.19.0 (while/arith-minus/boolean-operand; comparison operands excluded) |
+| **AOD (arith operand deletion)** | 2 | **all** | ✅ v2.19.0 |
+| **general statement removal** | 27 | **all** | ✅ v2.19.0 |
+| **member/attr assignment removal** | 29 | **all** | ✅ v2.19.0 |
+| **exception swap** | 44 | **all** | ✅ v2.19.0 |
 | ~~constructor→None / naked-receiver / arg-propagation~~ | 53,32,33 | — | **EXCLUDED** (owner decision: too dynamic-typing-hard, high equivalent-mutant rate) |
 
 *match-arm-delete is `operator_match`, already present.
@@ -195,8 +195,8 @@ These three are **independent of the profile system** (they govern *what* is mut
 1. ✅ **Profile scaffold first** (the `Profile` tag + visitor filter + CLI/config). Everything else hangs off it; ship `advanced` as the selected default. **(shipped v2.16.0)**
 2. ✅ **Cheap, high-yield `advanced` operators**: ROR-matrix, number CRCR, negate-condition, force-conditional, collection-literal-empty, match-guard. (~each is a <30-line operator + one registry line.) **(shipped v2.17.0 — acceptance harness 152/152/100 %)**
 3. ✅ **Regex suite** (the big one): the 14 applicable sub-mutators, **string-based on a class-span tokenizer** (NOT `re._parser` — `re` has no `unparse`, so a round-trip emitter would be the killer risk; decision confirmed in P3). **(shipped v2.18.0 — acceptance harness 184/188, +36 regex-pattern mutants; 4 documented `fullmatch` equivalents)**
-4. **3.6.0 surface backports** (pragma block, do_not_mutate regex, static/classmethod) — orthogonal, can land in parallel.
-5. **`all`-tier aggressive operators** last: UOI, AOD, general-statement-removal, member-assign-removal, exception-swap (+ optional constructor/await).
+4. ✅ **3.6.0 surface backports** (pragma block/start-end, do_not_mutate regex, `@staticmethod`) **(shipped v2.19.0; `@classmethod` deferred — class-bound `__name__` is read-only for the trampoline lookup)**
+5. ✅ **`all`-tier aggressive operators**: UOI, AOD, general-statement-removal, member-assign-removal, exception-swap. **(shipped v2.19.0 — acceptance harness 204/200/98 %, 4 documented regex equivalents; comparison-operand UOI excluded by ToT)**
 
 Each new operator should get an `opmatrix`-style probe (target fn + strong kill-test asserting the exact mutant) so the kill-matrix stays at 100% and equivalent mutants are flagged early — exactly the harness already built in `testing/opmatrix`.
 

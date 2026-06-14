@@ -29,7 +29,7 @@
 | # | Mutation class | mutmut-win | mutmut 3.6 | Stryker.NET | Stryker.NET-X | cargo-mutants | PIT |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | 1 | Arithmetic operator replacement (`+`↔`-`, `*`↔`/`…) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 2 | **Arithmetic operand deletion (AOD)** `a+b`→`a`/`b` | — | — | — | ✅ | — | — |
+| 2 | **Arithmetic operand deletion (AOD)** `a+b`→`a`/`b` | ✅ | — | — | ✅ | — | — |
 | 3 | **Relational full matrix (ROR)** `<`→`<=,>,>=,==,!=` | ✅ | ◐ | ◐ | ✅ | ◐ | ◐ |
 | 4 | Conditional boundary `<`↔`<=`, `>`↔`>=` | ✅ | ✅ | ◐ | ✅ | ✅ | ✅ |
 | 5 | Equality negate `==`↔`!=` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -44,7 +44,7 @@
 | # | Mutation class | mutmut-win | mutmut 3.6 | Stryker.NET | Stryker.NET-X | cargo-mutants | PIT |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | 11 | Unary operator deletion (remove `not`/`~`/unary `-`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 12 | **Unary operator insertion (UOI)** `x`→`not x`/`-x` | — | — | — | ✅ | — | — |
+| 12 | **Unary operator insertion (UOI)** `x`→`not x`/`-x` | ✅ | — | — | ✅ | — | — |
 | 13 | Increment/decrement `++`/`--` | 🚫 | 🚫 | ✅ | ✅ | 🚫 | ✅ |
 | 14 | Number-literal mutation `5`→`6` | ◐ (+1 only) | ◐ (+1 only) | — | ✅ (0/1/-1/±1) | — | ✅ |
 | 15 | **Number-literal CRCR** `5`→`0,1,-1,-5` | ✅ | — | — | ✅ | — | ◐ |
@@ -74,9 +74,9 @@
 | # | Mutation class | mutmut-win | mutmut 3.6 | Stryker.NET | Stryker.NET-X | cargo-mutants | PIT |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | 26 | Void-call removal (`f();`→`pass`) | ✅ | — | ✅ | ✅ | ◐ | ✅ |
-| 27 | **General statement / block removal** | ◐ (void+raise) | — | ✅ | ✅ | — | ◐ |
+| 27 | **General statement / block removal** | ✅ | — | ✅ | ✅ | — | ◐ |
 | 28 | Assignment value → None (`a=b`→`a=None`) | ✅ | ✅ | — | — | — | — |
-| 29 | **Member/field assignment removal** (`self.x=v`→drop) | — | — | — | ✅ | — | ✅ |
+| 29 | **Member/field assignment removal** (`self.x=v`→drop) | ✅ | — | — | ✅ | — | ✅ |
 | 30 | Call argument removal / →None | ✅ | ✅ | — | — | — | — |
 | 31 | dict keyword corruption (`dict(a=)`→`dict(aXX=)`) | ✅ | ✅ | — | — | — | — |
 | 32 | **Naked receiver** `a.f(x)`→`a` | — | — | ◐ | ✅ | — | ✅ |
@@ -96,7 +96,7 @@
 | 41 | **Match guard** `case x if c`→`if True`/`if False` | ✅ | — | — | ✅ | ✅ | — |
 | 42 | Regex pattern mutation | ✅ (14 sub) | — | ✅ (15 sub) | ✅ (16 sub) | — | — |
 | 43 | `raise`/throw removal | ✅ | — | ✅ | ✅ | ◐ | — |
-| 44 | **Exception swap** (`raise ValueError`→`raise TypeError`) | — | — | — | ✅ | — | — |
+| 44 | **Exception swap** (`raise ValueError`→`raise TypeError`) | ✅ | — | — | ✅ | — | — |
 
 ### Language-foreign for Python (🚫 — listed for completeness, NOT gaps)
 

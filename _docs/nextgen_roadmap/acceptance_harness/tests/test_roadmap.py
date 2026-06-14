@@ -67,8 +67,10 @@ def test_guard_raise():
 
 
 def test_calc_static_class():
-    # @staticmethod/@classmethod: 0 mutants today (skipped); after backport the
-    # mutants (x*2 -> x/2, 2 -> 3, return None, …) must be killed here.
+    # W5 backport: @staticmethod is mutated (Calc.double: x*2 -> x/2, 2 -> 3,
+    # return None, …) and killed here. @classmethod is DEFERRED, so Calc.triple
+    # stays at 0 mutants (the assertion only guards its correctness). @property
+    # stays skipped.
     assert t.Calc.double(4) == 8
     assert t.Calc.triple(4) == 12
 

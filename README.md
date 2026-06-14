@@ -82,13 +82,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.18.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.18.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.0" --dev
 ```
 
 ## Quick start
@@ -387,14 +387,19 @@ default), v2.17.0 landed the first six advanced Phase-2 operators
 match-guard — acceptance harness 152/152, 100 %), and v2.18.0 completed
 the regex operator with the full 14-sub-mutator suite (anchors,
 quantifiers, shorthands, character classes, groups/look-around — harness
-184/188). Details: the
+184/188). v2.19.0 added the aggressive `all`-tier operators (arithmetic
+operand deletion, exception swap, general-statement and member-assignment
+removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
+(pragma `block`/`start`-`end`, regex `do_not_mutate_patterns`, and
+`@staticmethod` mutation — harness 204/200, the 4 survivors are documented
+regex `fullmatch` equivalents). Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.18.0 is the current release. Active development is in a
-documented pause with a clean slate — zero open issues, zero known
-backlog entries. The issue tracker stays open; the resumption baseline
-(a full self-run over the tool's own codebase — 7231 mutants,
-69.2 % killed) is recorded in the repository docs.
+**Status:** v2.19.0 is the current release — the `all` profile now strictly
+exceeds `advanced`. Active development is in a documented pause with a clean
+slate — zero open issues, zero known backlog entries. The issue tracker stays
+open; the resumption baseline (a full self-run over the tool's own codebase —
+7231 mutants, 69.2 % killed) is recorded in the repository docs.
 
 ## License
 

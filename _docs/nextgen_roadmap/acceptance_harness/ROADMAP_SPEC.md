@@ -61,6 +61,22 @@ the suite can surface on one construct. The `all`-tier aggressive operators (#2 
 #12 UOI, #27/#29 removal, #44 exception-swap) and the 3.6.0 surface backports remain
 for a later phase.
 
+**Phase 4 verification (v2.19.0 — the `all`-tier operators + 3.6.0 backports):** the
+aggressive `all`-tier operators land — #2 AOD, #44 exception-swap, #27 general-statement
+removal (effectful Expr statements: `await`/`yield`/subscript/walrus), #29 member-
+assignment removal, #12 UOI (while-negate, arithmetic unary-minus on `Name` operands,
+boolean-operand negation; comparison operands EXCLUDED for precedence/equivalent-rate
+reasons) — plus the mutmut-3.6.0 surface backports: pragma `block`/`start`-`end`, regex
+`do_not_mutate_patterns`, and `@staticmethod` mutation. At `--profile all` the harness
+runs **204 / 200 / 98.0 %** (188 in v2.18.0; the +16 are the all-tier + `@staticmethod`
+mutants). The 4 survivors are the SAME documented regex `fullmatch` equivalents as
+Phase 3 (`\d+?`/`[a-c]+?`/`(ab)+?` lazy ≡ greedy, `(ab)*` ≡ `(ab)+`) — there are NO new
+Phase-4 survivors. `@classmethod` is DEFERRED (the class-bound original's `__name__` is
+read-only, which the trampoline-lookup codegen cannot set), so `Calc.triple` stays at
+0 mutants; `Calc.double` (`@staticmethod`) mutates and is killed by
+`test_calc_static_class`. `all` now strictly exceeds `advanced` (basic 15 / advanced 34
+/ all 41 operators).
+
 ## Acceptance table — `advanced` profile
 
 | # | Operator | Target (`src/roadmap/`) | Current | Expected (Δ) | Killed by |
@@ -89,7 +105,7 @@ for a later phase.
 
 | Backport | Target | Current | Expected | Killed by |
 |---|---|--:|--:|---|
-| `@staticmethod` / `@classmethod` mutation | `targets.Calc` | **0** (decorated → skipped) | **≈6** (double+triple mutated; `@property` stays 0) | `test_calc_static_class` |
+| `@staticmethod` mutation (`@classmethod` deferred) | `targets.Calc` | **0** (decorated → skipped) | `Calc.double` (`@staticmethod`) mutates; `Calc.triple` (`@classmethod`) stays **0** (deferred); `@property` stays 0 | `test_calc_static_class` |
 
 The other two surface backports are skip-behaviors best tested with dedicated
 constructs (ready to add, not wired live to keep this baseline clean):

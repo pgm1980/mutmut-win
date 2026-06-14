@@ -3,22 +3,25 @@ current_sprint: "Phase 4"
 sprint_goal: "Phase 4: die aggressiven all-tier-Operatoren (#2 AOD, #12 UOI, #27/#29 removal, #44 exception-swap) + mutmut-3.6.0-Backports (@static/classmethod, pragma-block, do_not_mutate_patterns). Akzeptanz: per-operator Mutation ≥80%, all⊋advanced, e2e wellen-stabil, acceptance_harness all-Tabelle grün."
 branch: "feature/v2.19.0-all-tier"
 started_at: "2026-06-14"
-housekeeping_done: false
-memory_updated: false
-github_issues_closed: false
+housekeeping_done: true
+memory_updated: true
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
-documentation_updated: false
+documentation_updated: true
 ---
 
 # Sprint State (Phase 4 — all-tier aggressive Operatoren + 3.6.0-Backports)
 
 ## Current Focus
-Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports**.
-Macht `all` ⊋ advanced ZUM ERSTEN MAL. Branch `feature/v2.19.0-all-tier`,
-Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADMAP.md`
-§4 (Operatoren) / §5 (Backports) + acceptance_harness `all`-Tabelle.
+Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports** —
+**ABGESCHLOSSEN (W1–W6), v2.19.0**. `all` ⊋ advanced (basic 15 / advanced 34 /
+all 41). acceptance_harness `--profile all`: **204 / 200 / 98%** (4 dokumentierte
+Regex-`fullmatch`-Äquivalente, KEINE neuen Phase-4-Survivors). Volle Suite 1397
+passed / 5 skipped. **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** (0 Issues / Backlog).
+W6: Doku (Roadmap §1/§6, Matrix mutmut-win-Spalte, ROADMAP_SPEC Phase-4-Verifikation,
+README/install/CLAUDE.md @v2.19.0), Version-Bump 2.19.0, Harness re-pinnt @v2.19.0.
 
 ## Wellen-Plan (6)
 1. **W1 AOD (#2) + exception-swap (#44)** — ✅ **ABGESCHLOSSEN**. Profile.ALL,
