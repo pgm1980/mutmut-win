@@ -208,7 +208,7 @@ def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
     _assert_profile_layered(
         [source_file],
         EXPECTED_COVERAGE,
-        expected_advanced_count=112,
+        expected_advanced_count=113,
         basic_within_snapshot=False,
     )
 

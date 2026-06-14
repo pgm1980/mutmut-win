@@ -198,3 +198,49 @@ class TestForceCondition:
 
     def test_skips_self_when_already_false(self) -> None:
         assert _force_tests("if False:\n    return 1\n") == {"True"}
+
+
+
+def _collection_empty(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_collection_empty
+
+    expr = cst.parse_expression(src)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m) for m in operator_collection_empty(expr)]
+
+
+class TestCollectionEmpty:
+    """#38: empty a collection literal — ``[1,2,3]``->``[]``, ``{..}``->``{}``,
+    ``{1,2}``->``set()`` (a bare ``{}`` is a dict, so an empty set must render as
+    the ``set()`` call), ``(1,2,3)``->``()``. Already-empty literals are skipped.
+    The inner element mutants (number/string) are orthogonal and unaffected.
+    """
+
+    def test_list(self) -> None:
+        assert _collection_empty("[1, 2, 3]") == ["[]"]
+
+    def test_dict(self) -> None:
+        assert _collection_empty("{'a': 1, 'b': 2}") == ["{}"]
+
+    def test_set_empties_to_set_call(self) -> None:
+        # {} would be a dict, so an empty set must render as set()
+        assert _collection_empty("{1, 2, 3}") == ["set()"]
+
+    def test_tuple(self) -> None:
+        assert _collection_empty("(1, 2, 3)") == ["()"]
+
+    def test_bare_tuple_gets_parens(self) -> None:
+        # an empty tuple is only valid parenthesised
+        assert _collection_empty("1, 2, 3") == ["()"]
+
+    def test_single_element_list(self) -> None:
+        assert _collection_empty("[1]") == ["[]"]
+
+    def test_skips_empty_list(self) -> None:
+        assert _collection_empty("[]") == []
+
+    def test_skips_empty_dict(self) -> None:
+        assert _collection_empty("{}") == []
+
+    def test_skips_empty_tuple(self) -> None:
+        assert _collection_empty("()") == []

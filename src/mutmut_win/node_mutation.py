@@ -777,6 +777,29 @@ def operator_force_condition(node: cst.If) -> Iterable[cst.If]:
         yield node.with_changes(test=cst.Name(literal))
 
 
+# ---------------------------------------------------------------------------
+# Collection-literal emptying (#38, advanced) — Stryker EmptyReturn family
+# ---------------------------------------------------------------------------
+
+
+def operator_collection_empty(node: cst.BaseExpression) -> Iterable[cst.BaseExpression]:
+    """Empty a non-empty collection literal (#38): ``[1, 2, 3]`` -> ``[]``,
+    ``{"a": 1}`` -> ``{}``, ``{1, 2}`` -> ``set()`` (a bare ``{}`` is a dict, so an
+    empty set must be the ``set()`` call), ``(1, 2, 3)`` -> ``()``.
+
+    Tests whether the collection's contents matter at all. Already-empty
+    literals are skipped (self-mutation). The inner element mutants
+    (number/string) are produced separately and stay untouched. libcst renders
+    an empty ``Tuple`` parenthesised on its own, so no explicit parens are set.
+    """
+    if isinstance(node, cst.Set) and node.elements:
+        yield cst.Call(func=cst.Name("set"))
+    elif isinstance(node, cst.Tuple) and node.elements:
+        yield cst.Tuple(elements=[])
+    elif isinstance(node, (cst.List, cst.Dict)) and node.elements:
+        yield node.with_changes(elements=[])
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the last 9
@@ -819,6 +842,10 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Float, operator_number_crcr, Profile.ADVANCED),
     (cst.If, operator_negate_condition, Profile.ADVANCED),
     (cst.If, operator_force_condition, Profile.ADVANCED),
+    (cst.List, operator_collection_empty, Profile.ADVANCED),
+    (cst.Tuple, operator_collection_empty, Profile.ADVANCED),
+    (cst.Set, operator_collection_empty, Profile.ADVANCED),
+    (cst.Dict, operator_collection_empty, Profile.ADVANCED),
 ]
 
 

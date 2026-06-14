@@ -61,6 +61,7 @@ _PHASE2_ADVANCED_OPERATORS = {
     "operator_number_crcr",  # W2 #15 number CRCR
     "operator_negate_condition",  # W3 #22 negate condition
     "operator_force_condition",  # W3 #23 force condition
+    "operator_collection_empty",  # W4 #38 collection emptying
 }
 
 
