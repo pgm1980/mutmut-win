@@ -800,6 +800,28 @@ def operator_collection_empty(node: cst.BaseExpression) -> Iterable[cst.BaseExpr
         yield node.with_changes(elements=[])
 
 
+# ---------------------------------------------------------------------------
+# Match-guard force (#41, advanced) — force_condition for a match guard
+# ---------------------------------------------------------------------------
+
+
+def operator_match_guard(node: cst.MatchCase) -> Iterable[cst.MatchCase]:
+    """Force a match-case guard to a constant (#41): ``case p if g:`` ->
+    ``case p if True:`` and ``case p if False:`` — the force_condition idea
+    applied to a ``match`` guard.
+
+    A guardless case (``case _:``) is skipped, as is the value the guard
+    already is (a bare ``True``/``False``).
+    """
+    guard = node.guard
+    if guard is None:
+        return
+    for literal in ("True", "False"):
+        if isinstance(guard, cst.Name) and guard.value == literal:
+            continue
+        yield node.with_changes(guard=cst.Name(literal))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the last 9
@@ -846,6 +868,7 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Tuple, operator_collection_empty, Profile.ADVANCED),
     (cst.Set, operator_collection_empty, Profile.ADVANCED),
     (cst.Dict, operator_collection_empty, Profile.ADVANCED),
+    (cst.MatchCase, operator_match_guard, Profile.ADVANCED),
 ]
 
 

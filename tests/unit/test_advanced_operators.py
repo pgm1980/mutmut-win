@@ -200,7 +200,6 @@ class TestForceCondition:
         assert _force_tests("if False:\n    return 1\n") == {"True"}
 
 
-
 def _collection_empty(src: str) -> list[str]:
     from mutmut_win.node_mutation import operator_collection_empty
 
@@ -244,3 +243,42 @@ class TestCollectionEmpty:
 
     def test_skips_empty_tuple(self) -> None:
         assert _collection_empty("()") == []
+
+
+def _match_guards(src: str) -> set[str]:
+    from mutmut_win.node_mutation import operator_match_guard
+
+    match = cst.parse_module(src).body[0]
+    assert isinstance(match, cst.Match)
+    module = cst.Module(body=[])
+    rendered: set[str] = set()
+    for case in match.cases:
+        for mutated in operator_match_guard(case):
+            assert mutated.guard is not None
+            rendered.add(module.code_for_node(mutated.guard))
+    return rendered
+
+
+_MATCH_TWO_CASES = (
+    "match n:\n    case x if x > 0:\n        return 1\n    case _:\n        return 2\n"
+)
+
+
+class TestMatchGuard:
+    """#41: force a match-case guard to a constant — ``case p if g:`` ->
+    ``case p if True:`` / ``case p if False:`` (force_condition for the guard).
+    A guardless case is skipped, as is the value the guard already is.
+    """
+
+    def test_forces_guard_true_and_false(self) -> None:
+        assert _match_guards(_MATCH_TWO_CASES) == {"True", "False"}
+
+    def test_skips_guardless_case(self) -> None:
+        # `case _:` has no guard, so the wildcard case yields nothing
+        assert _match_guards("match n:\n    case _:\n        return 2\n") == set()
+
+    def test_skips_self_when_guard_already_true(self) -> None:
+        assert _match_guards("match n:\n    case x if True:\n        return 1\n") == {"False"}
+
+    def test_skips_self_when_guard_already_false(self) -> None:
+        assert _match_guards("match n:\n    case x if False:\n        return 1\n") == {"True"}
