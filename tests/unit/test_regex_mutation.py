@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 
 from mutmut_win.regex_mutation import (
     MAX_MUTATIONS_PER_PATTERN,
+    _class_members,
     _class_spans,
     _in_class,
     _is_valid_regex,
@@ -194,6 +195,152 @@ class TestMutateCharClasses:
         # a trailing backslash has no next char -> no shorthand, no IndexError
         # (kills `while i != n` and the i+1 boundary arithmetic)
         assert _mutate_char_classes("a\\") == []
+
+
+def _mut_classes(src: str) -> list[str]:
+    from mutmut_win.regex_mutation import _mutate_classes
+
+    return _mutate_classes(src)
+
+
+class TestMutateClasses:
+    """#7-#10: character-CLASS mutations (negation toggle, child removal, range
+    ±1, to-any). Span-based via _class_spans; #8/#9 parse the class body.
+    """
+
+    def test_negate_add(self) -> None:
+        # #7: [abc] -> [^abc]
+        assert r"[^abc]" in _mut_classes(r"[abc]")
+
+    def test_negate_remove(self) -> None:
+        # #7: [^abc] -> [abc]
+        assert r"[abc]" in _mut_classes(r"[^abc]")
+
+    def test_to_any(self) -> None:
+        # #10: [abc] -> [\w\W]
+        assert r"[\w\W]" in _mut_classes(r"[abc]")
+
+    def test_child_removal(self) -> None:
+        # #8: each member dropped in turn
+        results = _mut_classes(r"[abc]")
+        assert r"[bc]" in results
+        assert r"[ac]" in results
+        assert r"[ab]" in results
+
+    def test_child_removal_keeps_negation(self) -> None:
+        assert r"[^bc]" in _mut_classes(r"[^abc]")
+
+    def test_child_removal_skipped_for_single_member(self) -> None:
+        # [a] -> [] would be invalid; no child-removal mutant
+        assert r"[]" not in _mut_classes(r"[a]")
+
+    def test_child_removal_member_units(self) -> None:
+        # \d is one member, a is another
+        results = _mut_classes(r"[\da]")
+        assert r"[a]" in results  # dropped \d
+        assert r"[\d]" in results  # dropped a
+
+    def test_range_lo_plus(self) -> None:
+        # #9: [a-z] -> [b-z]
+        assert r"[b-z]" in _mut_classes(r"[a-z]")
+
+    def test_range_hi_minus(self) -> None:
+        # #9: [a-z] -> [a-y]
+        assert r"[a-y]" in _mut_classes(r"[a-z]")
+
+    def test_range_keeps_negation(self) -> None:
+        assert r"[^b-z]" in _mut_classes(r"[^a-z]")
+
+    def test_literal_close_bracket_first_negation_still_works(self) -> None:
+        # []a] : #7 still toggles ^; member-based #8/#9 are skipped (no crash)
+        assert r"[^]a]" in _mut_classes(r"[]a]")
+
+    def test_no_class(self) -> None:
+        assert _mut_classes(r"abc") == []
+
+    def test_negate_toggle_is_exact_first_result(self) -> None:
+        # the #7 toggle is the first result; pin it exactly so the negation
+        # detection (inner.startswith("^")) cannot be silently broken
+        assert _mut_classes(r"[ab]")[0] == r"[^ab]"
+        assert _mut_classes(r"[^ab]")[0] == r"[ab]"
+
+    def test_child_removal_keeps_negation_marker(self) -> None:
+        # #8 in a negated class keeps the ^ mark; dropping it would emit [bc],
+        # which is never a legit result here -> pins the mark
+        results = _mut_classes(r"[^abc]")
+        assert r"[^bc]" in results
+        assert r"[bc]" not in results
+
+    def test_range_keeps_negation_marker(self) -> None:
+        # #9 in a negated class keeps the ^ mark
+        results = _mut_classes(r"[^a-z]")
+        assert r"[^b-z]" in results
+        assert r"[b-z]" not in results
+
+
+    def test_literal_bracket_skips_member_mutations(self) -> None:
+        # []a] : body starts with a literal ] -> only #7 toggle and #10 to-any,
+        # no member-based #8/#9 (pins the body.startswith("]") guard exactly)
+        assert _mut_classes(r"[]a]") == [r"[^]a]", r"[\w\W]"]
+
+    def test_literal_bracket_does_not_stop_later_class(self) -> None:
+        # break vs continue: a literal-] class must not stop a later class
+        results = _mut_classes(r"[]a][bc]")
+        assert any("[^bc]" in r for r in results)
+
+
+
+class TestClassMembers:
+    """Class-body member parser feeding #8 child-removal. Exact (start, end)
+    units so any index arithmetic error in the scan is caught.
+    """
+
+    def test_literals(self) -> None:
+        assert _class_members("abc") == [(0, 1), (1, 2), (2, 3)]
+
+    def test_single_range(self) -> None:
+        assert _class_members("a-z") == [(0, 3)]
+
+    def test_range_then_literal(self) -> None:
+        assert _class_members("a-z0") == [(0, 3), (3, 4)]
+
+    def test_literal_then_range(self) -> None:
+        assert _class_members("0a-z") == [(0, 1), (1, 4)]
+
+    def test_two_ranges(self) -> None:
+        assert _class_members("a-z0-9") == [(0, 3), (3, 6)]
+
+    def test_escaped_unit(self) -> None:
+        # \d is one 2-char member, a is another
+        assert _class_members(r"\da") == [(0, 2), (2, 3)]
+
+    def test_escaped_range_end(self) -> None:
+        # a-\d is a single range whose upper end is the escaped \d
+        assert _class_members(r"a-\d") == [(0, 4)]
+
+    def test_dash_at_end_is_literal(self) -> None:
+        # a trailing '-' has no range partner -> two literals
+        assert _class_members("a-") == [(0, 1), (1, 2)]
+
+    def test_dash_at_start_is_literal(self) -> None:
+        assert _class_members("-a") == [(0, 1), (1, 2)]
+
+    def test_empty(self) -> None:
+        assert _class_members("") == []
+
+
+    def test_lone_backslash_is_one_member(self) -> None:
+        # a trailing/lone backslash has no next char -> a 1-char member
+        # (kills the i+1 boundary mutants that would over-consume)
+        assert _class_members("\\") == [(0, 1)]
+
+    def test_escaped_unit_at_end(self) -> None:
+        # \d at the very end is still one 2-char member (i+1 == n boundary)
+        assert _class_members("\\d") == [(0, 2)]
+
+    def test_range_with_trailing_backslash_end(self) -> None:
+        # a-\ : the range upper end is a lone backslash (1 char, no pair)
+        assert _class_members("a-\\") == [(0, 3)]
 
 
 class TestMutateAnchors:

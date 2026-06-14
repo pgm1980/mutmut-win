@@ -54,6 +54,7 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
     mutations.extend(_mutate_quantifiers(pattern))
     mutations.extend(_mutate_char_classes(pattern))
     mutations.extend(_mutate_anchors(pattern))
+    mutations.extend(_mutate_classes(pattern))
 
     # Validate, dedupe (issue #132 / 360°-C5: two generators can emit the
     # same candidate — duplicates would create same-named mutants) and
@@ -181,6 +182,76 @@ def _mutate_char_classes(pattern: str) -> list[str]:
         # #13 to-any: \d -> [\d\D] (outside a class only)
         if not _in_class(idx, spans):
             results.append(f"{pattern[:idx]}[\\{letter}\\{negated}]{rest}")
+    return results
+
+
+#: A single-char range ``X-Y`` inside a class body (both ends unescaped).
+_RANGE_RE = re.compile(r"(?<!\\)([^\\])-([^\\])")
+
+
+def _class_members(content: str) -> list[tuple[int, int]]:
+    """Split a character-class body into member units as ``(start, end)`` indices.
+
+    A member is a single literal, an escaped pair (``\\d``, ``\\]``, ``\\\\``), or
+    a range ``X-Y``. Used by #8 child-removal. The caller skips bodies that start
+    with a literal ``]``, so the first char here is never the class terminator.
+    """
+    members: list[tuple[int, int]] = []
+    i, n = 0, len(content)
+    while i < n:
+        start = i
+        i += 2 if content[i] == "\\" and i + 1 < n else 1
+        if i < n - 1 and content[i] == "-":  # a '-' with a char after it -> range
+            i += 1  # consume '-'
+            i += 2 if content[i] == "\\" and i + 1 < n else 1
+        members.append((start, i))
+    return members
+
+
+def _mutate_classes(pattern: str) -> list[str]:
+    """Mutate character classes (sub-mutators #7-#10).
+
+    Per ``[...]`` span: #7 negation toggle (``[abc]`` <-> ``[^abc]``); #10 to-any
+    (``[...]`` -> ``[\\w\\W]``); #8 child-removal (drop one member, needs >= 2 so
+    the class stays non-empty); #9 range ±1 (``[a-z]`` -> ``[b-z]`` / ``[a-y]``).
+    #8/#9 are skipped for a body starting with a literal ``]`` (member parsing is
+    unreliable there). Empty classes and invalid ranges (``b-a``) are dropped by
+    the ``re.compile`` gate in :func:`mutate_regex_pattern`.
+
+    ``body`` (the class minus a leading ``^``) and ``mark`` (the ``^`` or ``""``)
+    are derived independently from ``negated`` so the two cannot compensate for a
+    mutation in one another.
+    """
+    results: list[str] = []
+    for start, end in _class_spans(pattern):
+        inner = pattern[start + 1 : end - 1]  # everything between [ and ]
+        negated = inner.startswith("^")
+        body = inner[1:] if negated else inner
+        mark = "^" if negated else ""
+        before, after = pattern[:start], pattern[end:]
+
+        # #7 negation toggle
+        if negated:
+            results.append(f"{before}[{body}]{after}")
+        else:
+            results.append(f"{before}[^{body}]{after}")
+        # #10 to-any
+        results.append(f"{before}[\\w\\W]{after}")
+
+        if body.startswith("]"):
+            continue  # literal-] first member: skip the parsing-based #8/#9
+
+        # #8 child-removal (>= 2 members keeps the class non-empty)
+        members = _class_members(body)
+        if len(members) >= 2:
+            for ms, me in members:
+                results.append(f"{before}[{mark}{body[:ms] + body[me:]}]{after}")
+        # #9 range ±1
+        for m in _RANGE_RE.finditer(body):
+            lo, hi = ord(m.group(1)), ord(m.group(2))
+            for lo2, hi2 in ((lo + 1, hi), (lo, hi - 1)):
+                new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
+                results.append(f"{before}[{mark}{new_body}]{after}")
     return results
 
 
