@@ -53,6 +53,58 @@ def operator_number(
         print("Unexpected number type", node)
 
 
+# ---------------------------------------------------------------------------
+# Number-literal CRCR (#15, advanced) — inspired by Stryker.NET-X / PIT
+# ---------------------------------------------------------------------------
+
+
+def _crcr_literal(value: int | float) -> cst.BaseExpression:
+    """Render a CRCR replacement value as a libcst literal.
+
+    A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
+    has no negative-literal node.
+    """
+    magnitude = abs(value)
+    literal: cst.BaseExpression = (
+        cst.Integer(str(magnitude)) if isinstance(value, int) else cst.Float(repr(magnitude))
+    )
+    if value < 0:
+        return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
+    return literal
+
+
+def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
+    """CRCR (#15, advanced): replace a numeric literal with 0, 1, -1 and its
+    negation — the classic constant-replacement set that catches the zero/sign
+    boundaries the base ``operator_number`` (+1) misses.
+
+    Integers map to ``{0, 1, -1, -orig}``, floats to ``{0.0, 1.0, -orig}`` (a
+    float ``-1.0`` would be a ``UnaryOperation``, never a literal). The literal's
+    own value is skipped, and ``seen`` folds duplicates — e.g. ``1``'s ``-1`` and
+    ``-orig`` collapse to a single ``-1`` — which matters because there is no
+    visitor-level dedup. Non-finite floats are left alone; ``Imaginary`` literals
+    stay with ``operator_number``.
+    """
+    orig: int | float
+    candidates: tuple[int | float, ...]
+    if isinstance(node, cst.Integer):
+        orig = node.evaluated_value
+        candidates = (0, 1, -1, -orig)
+    elif isinstance(node, cst.Float):
+        orig = node.evaluated_value
+        if not math.isfinite(orig):
+            return
+        candidates = (0.0, 1.0, -orig)
+    else:
+        return
+    seen: set[int | float] = set()
+    for value in candidates:
+        if value == orig or value in seen:
+            continue
+        seen.add(value)
+        yield _crcr_literal(value)
+
+
 def operator_string(
     node: cst.BaseString,
 ) -> Iterable[cst.BaseString]:
@@ -349,6 +401,39 @@ def operator_swap_op(
         operator = typed_node.operator
         for new_operator in _simple_mutation_mapping(operator, _operator_mapping):
             yield node.with_changes(operator=new_operator)
+
+
+# ---------------------------------------------------------------------------
+# ROR full matrix (#3, advanced) — inspired by PIT / Stryker.NET-X
+# ---------------------------------------------------------------------------
+
+#: Each ordering comparison maps to the four relations base ``operator_swap_op``
+#: does NOT produce (swap_op yields the one boundary partner from
+#: ``_operator_mapping``). swap_op + this operator together span all five
+#: alternatives with NO duplicate — there is no visitor-level dedup, so the
+#: base target is excluded here on purpose. ``==``/``!=`` stay with swap_op.
+_ror_matrix: dict[type[cst.CSTNode], tuple[type[cst.CSTNode], ...]] = {
+    cst.LessThan: (cst.GreaterThan, cst.GreaterThanEqual, cst.Equal, cst.NotEqual),
+    cst.LessThanEqual: (cst.GreaterThan, cst.GreaterThanEqual, cst.Equal, cst.NotEqual),
+    cst.GreaterThan: (cst.LessThan, cst.LessThanEqual, cst.Equal, cst.NotEqual),
+    cst.GreaterThanEqual: (cst.LessThan, cst.LessThanEqual, cst.Equal, cst.NotEqual),
+}
+
+
+def operator_relational_matrix(
+    node: cst.ComparisonTarget,
+) -> Iterable[cst.ComparisonTarget]:
+    """ROR full matrix (#3): replace an ordering comparison with each relation
+    that base ``operator_swap_op`` does not yield.
+
+    ``a < b`` already mutates to ``a <= b`` via swap_op (the boundary swap), so
+    this yields the remaining four (``>``, ``>=``, ``==``, ``!=``). Together
+    they cover all five alternatives with no duplicate, since nothing dedups
+    identical mutants downstream. ``==``/``!=`` are covered by swap_op
+    (``==`` <-> ``!=``) and are intentionally absent from ``_ror_matrix``.
+    """
+    for new_operator in _ror_matrix.get(type(node.operator), ()):
+        yield node.with_changes(operator=new_operator())
 
 
 def operator_augmented_assignment(
@@ -650,6 +735,93 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     yield _safe_unwrap(node.right)  # always use fallback
 
 
+# ---------------------------------------------------------------------------
+# Condition negate / force (#22, #23, advanced) — PIT NEGATE/REMOVE_CONDITIONALS
+# ---------------------------------------------------------------------------
+
+
+def operator_negate_condition(node: cst.If) -> Iterable[cst.If]:
+    """Negate a whole ``if`` condition: ``if x:`` -> ``if not x:`` (#22).
+
+    Fills the truthy-non-comparison gap that operator-local mutation cannot
+    reach. A ``Comparison`` is left to ``operator_swap_op`` /
+    ``operator_relational_matrix`` and an existing ``not`` to
+    ``operator_remove_unary_ops`` — negating those here would only duplicate
+    their mutants (there is no visitor-level dedup). ``not`` binds weakly, so
+    ``_safe_unwrap`` parenthesises a boolean operand
+    (``if a or b:`` -> ``if not (a or b):``).
+    """
+    test = node.test
+    if isinstance(test, cst.Comparison):
+        return
+    if isinstance(test, cst.UnaryOperation) and isinstance(test.operator, cst.Not):
+        return
+    negated = cst.UnaryOperation(
+        operator=cst.Not(whitespace_after=cst.SimpleWhitespace(" ")),
+        expression=_safe_unwrap(test),
+    )
+    yield node.with_changes(test=negated)
+
+
+def operator_force_condition(node: cst.If) -> Iterable[cst.If]:
+    """Force an ``if`` condition to a constant: ``if c:`` -> ``if True:`` and
+    ``if False:`` (#23, PIT REMOVE_CONDITIONALS).
+
+    Proves both branches are actually exercised. The value the test already is
+    (a bare ``True``/``False`` literal) is skipped as a no-op.
+    """
+    test = node.test
+    for literal in ("True", "False"):
+        if isinstance(test, cst.Name) and test.value == literal:
+            continue
+        yield node.with_changes(test=cst.Name(literal))
+
+
+# ---------------------------------------------------------------------------
+# Collection-literal emptying (#38, advanced) — Stryker EmptyReturn family
+# ---------------------------------------------------------------------------
+
+
+def operator_collection_empty(node: cst.BaseExpression) -> Iterable[cst.BaseExpression]:
+    """Empty a non-empty collection literal (#38): ``[1, 2, 3]`` -> ``[]``,
+    ``{"a": 1}`` -> ``{}``, ``{1, 2}`` -> ``set()`` (a bare ``{}`` is a dict, so an
+    empty set must be the ``set()`` call), ``(1, 2, 3)`` -> ``()``.
+
+    Tests whether the collection's contents matter at all. Already-empty
+    literals are skipped (self-mutation). The inner element mutants
+    (number/string) are produced separately and stay untouched. libcst renders
+    an empty ``Tuple`` parenthesised on its own, so no explicit parens are set.
+    """
+    if isinstance(node, cst.Set) and node.elements:
+        yield cst.Call(func=cst.Name("set"))
+    elif isinstance(node, cst.Tuple) and node.elements:
+        yield cst.Tuple(elements=[])
+    elif isinstance(node, (cst.List, cst.Dict)) and node.elements:
+        yield node.with_changes(elements=[])
+
+
+# ---------------------------------------------------------------------------
+# Match-guard force (#41, advanced) — force_condition for a match guard
+# ---------------------------------------------------------------------------
+
+
+def operator_match_guard(node: cst.MatchCase) -> Iterable[cst.MatchCase]:
+    """Force a match-case guard to a constant (#41): ``case p if g:`` ->
+    ``case p if True:`` and ``case p if False:`` — the force_condition idea
+    applied to a ``match`` guard.
+
+    A guardless case (``case _:``) is skipped, as is the value the guard
+    already is (a bare ``True``/``False``).
+    """
+    guard = node.guard
+    if guard is None:
+        return
+    for literal in ("True", "False"):
+        if isinstance(guard, cst.Name) and guard.value == literal:
+            continue
+        yield node.with_changes(guard=cst.Name(literal))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the last 9
@@ -684,6 +856,19 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Call, operator_collection_neutralize, Profile.ADVANCED),
     (cst.ListComp, operator_comprehension_filter_removal, Profile.ADVANCED),
     (cst.BooleanOperation, operator_or_default, Profile.ADVANCED),
+    # --- Phase 2 advanced operators (operator roadmap §3) ---
+    (cst.ComparisonTarget, operator_relational_matrix, Profile.ADVANCED),
+    # CRCR registers on the concrete Integer/Float (not abstract BaseNumber) so
+    # mypy stays clean; the operator branches on the node type internally.
+    (cst.Integer, operator_number_crcr, Profile.ADVANCED),
+    (cst.Float, operator_number_crcr, Profile.ADVANCED),
+    (cst.If, operator_negate_condition, Profile.ADVANCED),
+    (cst.If, operator_force_condition, Profile.ADVANCED),
+    (cst.List, operator_collection_empty, Profile.ADVANCED),
+    (cst.Tuple, operator_collection_empty, Profile.ADVANCED),
+    (cst.Set, operator_collection_empty, Profile.ADVANCED),
+    (cst.Dict, operator_collection_empty, Profile.ADVANCED),
+    (cst.MatchCase, operator_match_guard, Profile.ADVANCED),
 ]
 
 

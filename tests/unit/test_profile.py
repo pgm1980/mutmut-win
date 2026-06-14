@@ -55,6 +55,16 @@ _ADVANCED_EXTRA_NAMES = {
     "operator_or_default",
 }
 
+# Phase 2 advanced operators (operator roadmap §3), grown wave by wave.
+_PHASE2_ADVANCED_OPERATORS = {
+    "operator_relational_matrix",  # W1 #3 ROR matrix
+    "operator_number_crcr",  # W2 #15 number CRCR
+    "operator_negate_condition",  # W3 #22 negate condition
+    "operator_force_condition",  # W3 #23 force condition
+    "operator_collection_empty",  # W4 #38 collection emptying
+    "operator_match_guard",  # W5 #41 match-guard force
+}
+
 
 class TestProfileEnum:
     def test_ordered_by_inclusiveness(self) -> None:
@@ -92,17 +102,24 @@ class TestRegistryTagging:
             assert len(entry) == 3
             assert isinstance(entry[2], Profile)
 
-    def test_exactly_fifteen_base_nine_advanced_zero_all(self) -> None:
+    def test_base_fifteen_advanced_grows_all_zero(self) -> None:
         counts = Counter(prof for (_t, _op, prof) in mutation_operators)
-        assert counts[Profile.BASIC] == 15
-        assert counts[Profile.ADVANCED] == 9
+        assert counts[Profile.BASIC] == 15  # mutmut parity — invariant across phases
         assert counts[Profile.ALL] == 0  # aggressive operators arrive in a later phase
+        # advanced = the 9 Phase-1 extras + the Phase-2 operators, by NAME (the
+        # entry count runs higher once an operator registers on several node
+        # types, e.g. negate/force on both If and While).
+        advanced_names = {
+            op.__name__ for (_t, op, prof) in mutation_operators if prof is Profile.ADVANCED
+        }
+        assert advanced_names == _ADVANCED_EXTRA_NAMES | _PHASE2_ADVANCED_OPERATORS
 
-    def test_advanced_extras_are_exactly_the_nine(self) -> None:
+    def test_phase1_extras_and_phase2_operators_are_all_advanced(self) -> None:
         advanced = {
             op.__name__ for (_t, op, prof) in mutation_operators if prof is Profile.ADVANCED
         }
-        assert advanced == _ADVANCED_EXTRA_NAMES
+        assert _ADVANCED_EXTRA_NAMES.issubset(advanced)  # the 9 Phase-1 extras stay advanced
+        assert _PHASE2_ADVANCED_OPERATORS.issubset(advanced)  # each Phase-2 op is advanced
 
     def test_base_entries_are_disjoint_from_the_extras(self) -> None:
         base_names = {op.__name__ for (_t, op, prof) in mutation_operators if prof is Profile.BASIC}
@@ -119,8 +136,13 @@ class TestOperatorsForProfile:
         names = {op.__name__ for (_t, op) in pairs}
         assert names.isdisjoint(_ADVANCED_EXTRA_NAMES)
 
-    def test_advanced_yields_base_plus_extras(self) -> None:
-        assert len(operators_for_profile(Profile.ADVANCED)) == 24  # 15 + 9
+    def test_advanced_includes_every_advanced_entry(self) -> None:
+        # Filter invariant (grows per phase without edits): advanced keeps every
+        # entry tagged <= ADVANCED; basic keeps only the base entries.
+        advanced_pairs = {(t, op) for (t, op, p) in mutation_operators if p <= Profile.ADVANCED}
+        assert set(operators_for_profile(Profile.ADVANCED)) == advanced_pairs
+        basic_pairs = {(t, op) for (t, op, p) in mutation_operators if p <= Profile.BASIC}
+        assert set(operators_for_profile(Profile.BASIC)) == basic_pairs
 
     def test_all_equals_advanced_in_phase_one(self) -> None:
         # No ALL-tagged operators exist yet, so `all` == `advanced` until the
@@ -292,9 +314,11 @@ class TestProfileStartupHint:
 
     def test_advanced_hint_is_a_single_exact_line(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Exact match pins the whole line so any string/void-call mutation of the
-        # hint is killed; advanced = 24 operators (15 base + 9 extras), no note.
+        # hint is killed; the count is the live advanced operator count (grows
+        # per phase), so the assertion needs no per-wave edit.
+        n = len(operators_for_profile(Profile.ADVANCED))
         self._orch(Profile.ADVANCED)._print_profile_hint()
-        assert capsys.readouterr().out == "profile=advanced — 24 operators active\n"
+        assert capsys.readouterr().out == f"profile=advanced — {n} operators active\n"
 
     def test_basic_hint_is_exact_and_adds_the_parity_note(
         self, capsys: pytest.CaptureFixture[str]

@@ -55,12 +55,12 @@ mutation_operators: list[tuple[type[cst.CSTNode], Operator, Profile]] = [
 |---|---|---|---|
 | number (+1), string, name, assignment, aug-assign→plain, swap_op (arith/rel-boundary/eq/logic/bitwise/shift), keywords (is/in/break/continue), unary-removal, dict-args, arg-removal, string-method swaps, lambda, match-arm-delete | 1,4,5,6,7,8,9,10,11,16,17,24*,25,28,30,31,34,40 | **basic** | exists (mutmut base) |
 | regex (lean→**full 15-suite**), return_value (→None), conditional-expr neutralize, void-call removal, raise removal, collection-neutralize, comprehension-filter, math-methods, or-default | 19,24,26,35,36,37,39,42,43,18 | **advanced** | 7 exist; regex to be expanded |
-| **ROR full matrix** | 3 | **advanced** | NEW |
-| **number-literal CRCR (0/1/-1/-n)** | 15 | **advanced** | NEW |
-| **negate whole condition** | 22 | **advanced** | NEW |
-| **force conditional True/False** | 23 | **advanced** | NEW |
-| **collection-literal emptying** | 38 | **advanced** | NEW |
-| **match-guard True/False** | 41 | **advanced** | NEW |
+| **ROR full matrix** | 3 | **advanced** | ✅ v2.17.0 |
+| **number-literal CRCR (0/1/-1/-n)** | 15 | **advanced** | ✅ v2.17.0 |
+| **negate whole condition** | 22 | **advanced** | ✅ v2.17.0 |
+| **force conditional True/False** | 23 | **advanced** | ✅ v2.17.0 |
+| **collection-literal emptying** | 38 | **advanced** | ✅ v2.17.0 |
+| **match-guard True/False** | 41 | **advanced** | ✅ v2.17.0 |
 | **UOI (unary operator insertion)** | 12 | **all** | NEW |
 | **AOD (arith operand deletion)** | 2 | **all** | NEW |
 | **general statement removal** | 27 | **all** | NEW |
@@ -192,8 +192,8 @@ These three are **independent of the profile system** (they govern *what* is mut
 
 ## 6. Suggested implementation phasing
 
-1. **Profile scaffold first** (the `Profile` tag + visitor filter + CLI/config). Everything else hangs off it; ship `advanced` as the selected default.
-2. **Cheap, high-yield `advanced` operators**: ROR-matrix, number CRCR, negate-condition, force-conditional, collection-literal-empty, match-guard. (~each is a <30-line operator + one registry line.)
+1. ✅ **Profile scaffold first** (the `Profile` tag + visitor filter + CLI/config). Everything else hangs off it; ship `advanced` as the selected default. **(shipped v2.16.0)**
+2. ✅ **Cheap, high-yield `advanced` operators**: ROR-matrix, number CRCR, negate-condition, force-conditional, collection-literal-empty, match-guard. (~each is a <30-line operator + one registry line.) **(shipped v2.17.0 — acceptance harness 152/152/100 %)**
 3. **Regex suite** (the big one): port the 14 applicable sub-mutators via `re._parser`, behind a thorough test set (`opmatrix`-style kill matrix per sub-mutator).
 4. **3.6.0 surface backports** (pragma block, do_not_mutate regex, static/classmethod) — orthogonal, can land in parallel.
 5. **`all`-tier aggressive operators** last: UOI, AOD, general-statement-removal, member-assign-removal, exception-swap (+ optional constructor/await).

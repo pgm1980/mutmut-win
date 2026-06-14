@@ -21,12 +21,14 @@ functional for WSL/Linux CI).
 
 ## What it does
 
-- **Mutates your code with 22 operators** — the full mutmut 3.5.0 set
-  (arithmetic/comparison/boolean operators, strings, numbers,
-  assignments, keywords, lambdas, argument removal, match/case, …) plus
-  7 additional operators (regex patterns, math method swaps, return-value
-  replacement, conditional expressions, statement removal, collection
-  methods, or-defaults).
+- **Mutates your code across three operator profiles** — `basic` is the
+  full mutmut 3.5.0 set (arithmetic/comparison/boolean operators, strings,
+  numbers, assignments, keywords, lambdas, argument removal, match/case, …);
+  the default `advanced` adds mutmut-win's extras (regex patterns, math
+  method swaps, return-value replacement, conditional expressions, statement
+  removal, collection methods, or-defaults) plus six Phase-2 operators —
+  ROR full matrix, number-literal CRCR, condition negate/force,
+  collection-literal emptying and match-guard.
 - **Runs only the tests that matter per mutant.** A stats run records
   which tests execute which function; each mutant then runs exactly its
   covering tests instead of the whole suite. Mutants no test covers are
@@ -68,7 +70,7 @@ functional for WSL/Linux CI).
 | Type-checker filter | — | `type_check_command` kills mutants without running tests |
 | CI output | text | `--output json` (clean stdout), `--min-score`, CI stats export |
 | Config | `[tool.mutmut]` | same section, compatible — migration is trivial |
-| Mutation engine | libcst | identical engine, ported from 3.5.0, +7 operators |
+| Mutation engine | libcst | identical engine, ported from 3.5.0, + advanced & Phase-2 operators |
 
 The mutation engine, configuration format, and workflow stay
 mutmut-compatible: if you know mutmut, you know mutmut-win.
@@ -80,13 +82,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.14.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.14.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0" --dev
 ```
 
 ## Quick start
@@ -235,12 +237,13 @@ Notes:
   almost everything as "running"), so infinite-loop verdicts rest on CPU
   plus progress evidence and are capped at `medium` confidence.
 - **Operator profiles** select how aggressively mutmut-win mutates. The
-  default `advanced` is mutmut-win's historical set (mutmut's 15 base
-  operators plus 9 extras), so it is behaviour-neutral for existing users;
+  default `advanced` is mutmut-win's historical extras set, extended since
+  v2.17.0 with six high-yield operators (ROR full matrix, number-literal
+  CRCR, condition negate/force, collection-literal emptying, match-guard);
   `basic` drops to strict mutmut parity (the 15 base operators only), and
   `all` adds the aggressive operators (rolled out across later releases).
   Each run prints the active profile and its operator count, e.g.
-  `profile=advanced — 24 operators active`.
+  `profile=advanced — 34 operators active`.
 
 ## Result statuses and the score
 
@@ -377,10 +380,14 @@ Two further maintenance releases followed: v2.13.0 added cross-run
 result reuse — verdicts of unchanged mutants are reused instead of
 re-run — alongside an external-QA hardening pass, and v2.14.0 closed
 all 28 findings of a full 360° code analysis (9 bugs, 13 anomalies,
-6 optimizations). Details: the
+6 optimizations). v2.16.0 then introduced the three-operator-profile
+model (`basic`/`advanced`/`all`, advanced as the behaviour-neutral
+default), and v2.17.0 landed the first six advanced Phase-2 operators
+(ROR matrix, number CRCR, condition negate/force, collection-emptying,
+match-guard — acceptance harness 152/152, 100 %). Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.14.0 is the current release. Active development is in a
+**Status:** v2.17.0 is the current release. Active development is in a
 documented pause with a clean slate — zero open issues, zero known
 backlog entries. The issue tracker stays open; the resumption baseline
 (a full self-run over the tool's own codebase — 7231 mutants,
