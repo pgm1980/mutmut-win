@@ -33,8 +33,15 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
    Pure-Value per ToT-Entscheidung ausgeschlossen). Per-Operator-Mutation
    46/50 = 92% (4 dokumentierte Scaffold-Äquivalente: 2× `[0]≡[-1]` bei len==1,
    2× `body=[]` rendert via libcst zu `pass`). all-Counts: my_lib 153, type_checking 20.
-3. **W3 UOI (#12) — HIGH RISK [ToT]** — unary insertion (`not`/`-`); eigene
-   ToT für die Scope-Strategie (Explosion erwartet).
+3. **W3 UOI (#12) — HIGH RISK [ToT]** — ✅ **ABGESCHLOSSEN**. ToT-Scope (Option B,
+   0.89): drei Profile.ALL-Operatoren — operator_uoi_negate_while (While.test `not`,
+   Gap zu negate_condition), operator_uoi_minus_operand (`(-name)` auf arithm.
+   Name-Operanden, Literale=CRCR), operator_uoi_negate_boolean_operand (`not` auf
+   and/or-Operanden). **T4 (comparison-Operanden) ausgeschlossen** (präzedenz-fragil,
+   niedrigstes Signal, Explosion). Ausschlüsse: If.test=negate_condition,
+   Literal-`-`=CRCR. Präzedenz: inserted unary in Operand-Position bekommt explizite
+   Parens (`(-x) ** y`); `not`>and/or → kein outer-paren, nur _safe_unwrap.
+   Per-Operator-Mutation 42/42 = 100%.
 4. **W4 Backports do_not_mutate_patterns + pragma-block** — config-Regex +
    `_skip_node_and_children`; pragma-block extend `pragma_no_mutate_lines()`.
 5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — Trampoline,
@@ -48,13 +55,12 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
   <unit-test> --profile all --force "*operator_X*"` (fnmatch-Glob via
   match_mutant_names). Neu geschriebene Funktionen zählen voll (Gate-Methodik #6).
 
-## W1/W2 Ergebnis (Gates)
-W2: 1342 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
-KEPT, Semgrep 0 (node_mutation.py, Pro-Rules). Per-Operator-Mutation 46/50 = 92%
-(4 inhärente Scaffold-Äquivalente, killbare stmt_5/member_6 via Tests gekillt).
-e2e: advanced-Counts UNVERÄNDERT (129/30/17/10/113 = Regressionsbeweis); all wuchs
-nur bei my_lib (147→153, async await/yield) und type_checking (19→20).
-W1: 18/18 = 100% (`raise <Call>(...)` Robustheits-Test).
+## W1/W2/W3 Ergebnis (Gates)
+W3: 1356 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
+KEPT, Semgrep 0 (Pro-Rules). Per-Operator-Mutation 42/42 = 100%. e2e: advanced-Counts
+UNVERÄNDERT (129/30/17/10/113 = Regressionsbeweis); all = basic15/adv34/all41,
+all-Counts my_lib 163, config 40, type_checking 20, py3_14 14, covered 127.
+W2: 46/50 = 92% (4 inhärente Scaffold-Äquivalente). W1: 18/18 = 100%.
 
 ## Out of scope (Phase 5+)
 Weitere Surface-Backports jenseits §5; PyPI-Publishing.

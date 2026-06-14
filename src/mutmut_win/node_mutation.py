@@ -909,6 +909,97 @@ def operator_member_assignment_removal(
     yield node.with_changes(body=[cst.Pass()])
 
 
+#: Arithmetic binary operators where inserting a unary minus on a Name operand
+#: is meaningful (bitwise/shift operators are excluded — `-x` there is odd).
+_ARITHMETIC_BINOPS: tuple[type[cst.BaseBinaryOp], ...] = (
+    cst.Add,
+    cst.Subtract,
+    cst.Multiply,
+    cst.Divide,
+    cst.Modulo,
+    cst.FloorDivide,
+    cst.Power,
+)
+
+
+def _is_not_unary(expr: cst.BaseExpression) -> bool:
+    """True if ``expr`` is already a ``not`` unary operation."""
+    return isinstance(expr, cst.UnaryOperation) and isinstance(expr.operator, cst.Not)
+
+
+def _negate(expr: cst.BaseExpression) -> cst.UnaryOperation:
+    """``not <expr>`` with _safe_unwrap parenthesising a low-precedence operand.
+
+    No outer parentheses are needed: ``not`` binds tighter than ``and``/``or``
+    and a test position has no outer operator, so ``not (a or b)`` and
+    ``(not a) and b`` are already correct without wrapping the result.
+    """
+    return cst.UnaryOperation(
+        operator=cst.Not(whitespace_after=cst.SimpleWhitespace(" ")),
+        expression=_safe_unwrap(expr),
+    )
+
+
+def _parenthesized_minus(name: cst.Name) -> cst.UnaryOperation:
+    """``(-name)`` — explicit parens keep the minus on the operand even under
+    ``**`` (libcst renders verbatim, so a bare ``-x ** y`` would re-parse as
+    ``-(x ** y)``)."""
+    return cst.UnaryOperation(
+        operator=cst.Minus(),
+        expression=name,
+        lpar=[cst.LeftParen()],
+        rpar=[cst.RightParen()],
+    )
+
+
+def operator_uoi_negate_while(node: cst.While) -> Iterable[cst.While]:
+    """UOI (#12, all): negate a ``while`` test — ``while x:`` -> ``while not x:``.
+
+    The while-loop analogue of operator_negate_condition (which only covers
+    ``if``). Mirrors its skips: a ``Comparison`` test is left to swap_op /
+    relational_matrix and an existing ``not`` to operator_remove_unary_ops —
+    negating those here would only duplicate their mutants (no visitor dedup).
+    """
+    test = node.test
+    if isinstance(test, cst.Comparison) or _is_not_unary(test):
+        return
+    yield node.with_changes(test=_negate(test))
+
+
+def operator_uoi_minus_operand(
+    node: cst.BinaryOperation,
+) -> Iterable[cst.BinaryOperation]:
+    """UOI (#12, all): insert a unary minus on a bare ``Name`` operand of an
+    arithmetic binary op — ``x + y`` -> ``(-x) + y`` and ``x + (-y)``.
+
+    Only arithmetic operators, only plain ``Name`` operands: numeric literals
+    are owned by operator_number_crcr (it already emits ``-orig``), and the
+    Name restriction bounds the explosion.
+    """
+    if not isinstance(node.operator, _ARITHMETIC_BINOPS):
+        return
+    if isinstance(node.left, cst.Name):
+        yield node.with_changes(left=_parenthesized_minus(node.left))
+    if isinstance(node.right, cst.Name):
+        yield node.with_changes(right=_parenthesized_minus(node.right))
+
+
+def operator_uoi_negate_boolean_operand(
+    node: cst.BooleanOperation,
+) -> Iterable[cst.BooleanOperation]:
+    """UOI (#12, all): insert ``not`` on an operand of an ``and``/``or`` —
+    ``a and b`` -> ``not a and b`` and ``a and not b``.
+
+    Tests whether each operand's polarity matters in the boolean chain. An
+    operand that is already a ``not`` is skipped (``not not a`` ~ ``bool(a)`` is
+    an equivalent).
+    """
+    if not _is_not_unary(node.left):
+        yield node.with_changes(left=_negate(node.left))
+    if not _is_not_unary(node.right):
+        yield node.with_changes(right=_negate(node.right))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the middle
@@ -962,6 +1053,9 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Raise, operator_exception_swap, Profile.ALL),
     (cst.SimpleStatementLine, operator_statement_removal, Profile.ALL),
     (cst.SimpleStatementLine, operator_member_assignment_removal, Profile.ALL),
+    (cst.While, operator_uoi_negate_while, Profile.ALL),
+    (cst.BinaryOperation, operator_uoi_minus_operand, Profile.ALL),
+    (cst.BooleanOperation, operator_uoi_negate_boolean_operand, Profile.ALL),
 ]
 
 

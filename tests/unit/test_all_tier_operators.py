@@ -164,3 +164,93 @@ class TestMemberAssignRemoval:
     def test_multi_statement_line_skipped(self) -> None:
         # two attribute assignments on one line -> the len(body) != 1 guard skips it
         assert _member_assign_removal("self.x = 1; self.y = 2\n") == []
+
+
+def _uoi_while(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_uoi_negate_while
+
+    node = cst.parse_module(src).body[0]
+    assert isinstance(node, cst.While)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m.test).strip() for m in operator_uoi_negate_while(node)]
+
+
+class TestUoiNegateWhile:
+    """#12: negate a while test (the while-analogue of operator_negate_condition)."""
+
+    def test_simple(self) -> None:
+        assert _uoi_while("while x:\n    pass\n") == ["not x"]
+
+    def test_boolean_test_parenthesized(self) -> None:
+        # `not` binds weakly -> _safe_unwrap parenthesises the boolean operand
+        assert _uoi_while("while a or b:\n    pass\n") == ["not (a or b)"]
+
+    def test_comparison_test_skipped(self) -> None:
+        # a Comparison test is left to swap_op / relational_matrix
+        assert _uoi_while("while a < b:\n    pass\n") == []
+
+    def test_existing_not_skipped(self) -> None:
+        # an existing `not` is left to operator_remove_unary_ops
+        assert _uoi_while("while not x:\n    pass\n") == []
+
+
+def _uoi_minus(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_uoi_minus_operand
+
+    node = cst.parse_expression(src)
+    assert isinstance(node, cst.BinaryOperation)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m) for m in operator_uoi_minus_operand(node)]
+
+
+class TestUoiMinusOperand:
+    """#12: insert a parenthesised unary minus on a Name operand of an arithmetic op."""
+
+    def test_both_names(self) -> None:
+        assert _uoi_minus("x + y") == ["(-x) + y", "x + (-y)"]
+
+    def test_literal_operand_skipped(self) -> None:
+        # the literal 5 is owned by operator_number_crcr (-orig); only x is touched
+        assert _uoi_minus("x + 5") == ["(-x) + 5"]
+
+    def test_power_precedence_safe(self) -> None:
+        # the explicit parens keep the minus on the operand under ** (not -(x**y))
+        assert _uoi_minus("x ** y") == ["(-x) ** y", "x ** (-y)"]
+
+    def test_non_arithmetic_skipped(self) -> None:
+        # `&` is BitAnd, not an arithmetic operator
+        assert _uoi_minus("x & y") == []
+
+    def test_both_literals_skipped(self) -> None:
+        assert _uoi_minus("3 * 4") == []
+
+
+def _uoi_bool(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_uoi_negate_boolean_operand
+
+    node = cst.parse_expression(src)
+    assert isinstance(node, cst.BooleanOperation)
+    module = cst.Module(body=[])
+    return [module.code_for_node(m) for m in operator_uoi_negate_boolean_operand(node)]
+
+
+class TestUoiNegateBooleanOperand:
+    """#12: insert `not` on each operand of an and/or chain."""
+
+    def test_and(self) -> None:
+        assert _uoi_bool("a and b") == ["not a and b", "a and not b"]
+
+    def test_or(self) -> None:
+        assert _uoi_bool("a or b") == ["not a or b", "a or not b"]
+
+    def test_nested_operand_parenthesized(self) -> None:
+        # the left operand `a and b` is itself lower-precedence -> _safe_unwrap parens it
+        assert _uoi_bool("a and b and c") == ["not (a and b) and c", "a and b and not c"]
+
+    def test_existing_not_left_operand_skipped(self) -> None:
+        # the already-negated left operand is skipped (not not a ~ bool(a))
+        assert _uoi_bool("not a and b") == ["not a and not b"]
+
+    def test_existing_not_right_operand_skipped(self) -> None:
+        # symmetric: the already-negated RIGHT operand is skipped too
+        assert _uoi_bool("a and not b") == ["not a and not b"]

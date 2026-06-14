@@ -71,6 +71,9 @@ _PHASE4_ALL_OPERATORS = {
     "operator_exception_swap",  # W1 #44 exception swap
     "operator_statement_removal",  # W2 #27 general statement removal
     "operator_member_assignment_removal",  # W2 #29 member/attr-assignment removal
+    "operator_uoi_negate_while",  # W3 #12 UOI: negate while test
+    "operator_uoi_minus_operand",  # W3 #12 UOI: unary minus on arithmetic Name operand
+    "operator_uoi_negate_boolean_operand",  # W3 #12 UOI: not on and/or operand
 }
 
 
