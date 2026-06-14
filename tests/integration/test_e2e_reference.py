@@ -113,6 +113,7 @@ def _assert_profile_layered(
     expected_all_count: int,
     *,
     basic_within_snapshot: bool = True,
+    w5_static_prefixes: tuple[str, ...] = (),
 ) -> None:
     """Assert the layered profile invariants for one reference project.
 
@@ -126,6 +127,10 @@ def _assert_profile_layered(
         basic_within_snapshot: Whether ``basic ⊆ snapshot`` must hold. False for
             coverage-filtered snapshots, where the snapshot is a subset of a
             full generation and basic legitimately exceeds it.
+        w5_static_prefixes: Mangled-name prefixes of @staticmethod methods that
+            the W5 backport mutates but the mutmut-3.5.0 snapshot (which skipped
+            decorated methods) does not list — allowed beyond the snapshot in the
+            basic-purity check.
     """
     basic = set().union(*(_collect_mutant_names(f, Profile.BASIC) for f in source_files))
     advanced = set().union(*(_collect_mutant_names(f, Profile.ADVANCED) for f in source_files))
@@ -138,9 +143,15 @@ def _assert_profile_layered(
         f"advanced dropped {len(floor_missing)} validated snapshot mutant(s):\n"
         + "\n".join(f"  {n}" for n in sorted(floor_missing))
     )
-    # (2) basic-parity purity: basic emits only validated mutants.
+    # (2) basic-parity purity: basic emits only validated mutants — except the
+    # W5 @staticmethod-backport mutants, which mutmut-win generates by design but
+    # the mutmut-3.5.0 snapshot (decorated methods skipped upstream) does not list.
     if basic_within_snapshot:
-        basic_phantom = basic - snap
+        basic_phantom = {
+            n
+            for n in basic - snap
+            if not any(n.startswith(prefix) for prefix in w5_static_prefixes)
+        }
         assert not basic_phantom, (
             f"basic emitted {len(basic_phantom)} mutant(s) absent from the validated snapshot:\n"
             + "\n".join(f"  {n}" for n in sorted(basic_phantom))
@@ -185,7 +196,13 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     source_file = project_dir / "src" / "my_lib" / "__init__.py"
 
     _assert_profile_layered(
-        [source_file], EXPECTED_MY_LIB, expected_advanced_count=129, expected_all_count=163
+        [source_file],
+        EXPECTED_MY_LIB,
+        expected_advanced_count=140,
+        expected_all_count=174,
+        # W5 backport: Point.from_coords (@staticmethod) now mutates (+11) — the
+        # mutmut-3.5.0 snapshot skipped it, so allow its mutants in basic-purity.
+        w5_static_prefixes=("xǁPointǁfrom_coords__mutmut_",),
     )
 
 

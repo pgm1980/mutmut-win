@@ -52,8 +52,17 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
    unabhängig (kein e2e-Count-Effekt). Mutation: Pragma-Scanner 193/197 = 98%
    (4 dok. Äquivalente: `<`/`!=`-Boundary, redundanter Check, rpartition-Doppelmarker);
    neue Skip-Zeilen 100% gekillt (Validator decorator-geskippt, via Tests abgedeckt).
-5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — Trampoline,
-   decorator-skip relaxen; eigene ToT.
+5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — ✅ **ABGESCHLOSSEN**.
+   Empirische Probe widerlegte die Roadmap ("name-dispatched → sollte gehen"): BEIDE
+   Formen waren kaputt (static droppt erstes Arg + AttributeError; class doppeltes cls
+   + bound-`__name__` read-only). ToT-Scope (Option B, 0.84): **@staticmethod-only**,
+   @classmethod dokumentiert deferred (Blast-Radius: nur create_trampoline_wrapper).
+   `_is_static_only` (solely-@staticmethod) relaxt den decorator-skip; Wrapper dispatcht
+   static wie free function (forward-all, self_arg=None, orig via `{Class}.{mangled}_orig`).
+   Exec-verifiziert (orig + Mutant-Dispatch). `_is_static_only` 100%. e2e my_lib +11
+   (Point.from_coords, intendierte Flächen-Expansion vs 3.5.0-Snapshot → w5_static_prefixes-
+   Allowance + Pins 140/174). Wrapper-Self-Gate undercreditet (Engine-Self-Mutation
+   Coverage-Lücke; _19/_23 manuell als killbar bewiesen, _4 echtes Äquivalent).
 6. **W6 Harness-all-Akzeptanz + Doku + Release v2.19.0**.
 
 ## Architektur-Leitplanken
@@ -63,12 +72,14 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
   <unit-test> --profile all --force "*operator_X*"` (fnmatch-Glob via
   match_mutant_names). Neu geschriebene Funktionen zählen voll (Gate-Methodik #6).
 
-## W1–W4 Ergebnis (Gates)
-W4: 1385 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
-KEPT, Semgrep 0 (Pro-Rules, 4 Dateien). Pragma-Scanner-Mutation 193/197 = 98%; neue
-Skip-Zeilen 100% gekillt. e2e advanced+all-Pins UNVERÄNDERT (Backports profil-unabhängig).
-W3: 42/42 = 100%, all = basic15/adv34/all41, all-Counts my_lib 163/config 40/
-type_checking 20/py3_14 14/covered 127. W2: 46/50 = 92%. W1: 18/18 = 100%.
+## W1–W5 Ergebnis (Gates)
+W5: 1397 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
+KEPT, Semgrep 0. _is_static_only 100%; static-Dispatch exec-verifiziert. e2e my_lib-Pins
+auf 140/174 angehoben (W5 @staticmethod-Flächen-Expansion, +11 Point.from_coords),
+übrige 4 Projekte unverändert (kein @staticmethod). advanced ist ab W5 NICHT mehr
+eingefroren (Surface-Backport, nicht profil-getaggt).
+W4: 1385 passed, Pragma-Mutation 193/197 = 98%, neue Skip-Zeilen 100%. W3: 42/42 = 100%,
+all = basic15/adv34/all41. W2: 46/50 = 92%. W1: 18/18 = 100%.
 
 ## Out of scope (Phase 5+)
 Weitere Surface-Backports jenseits §5; PyPI-Publishing.

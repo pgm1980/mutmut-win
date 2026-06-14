@@ -28,6 +28,24 @@ NEVER_MUTATE_FUNCTION_NAMES = {
 NEVER_MUTATE_FUNCTION_CALLS = {"len", "isinstance"}
 
 
+def _is_static_only(function: cst.FunctionDef) -> bool:
+    """True if ``function`` is decorated SOLELY with ``@staticmethod``.
+
+    Such a method has no instance/class parameter, so the trampoline can
+    dispatch it like a free function (mutmut-3.6.0 backport, W5). A method that
+    also wears any other decorator (``@classmethod``, ``@property``,
+    ``@app.route`` …) stays skipped — those execute at definition time or break
+    the trampoline's self-dispatch. ``@classmethod`` is deliberately NOT included
+    here: the class-bound original's ``__name__`` is read-only, which the
+    trampoline-lookup codegen cannot set, so classmethods remain unmutated.
+    """
+    decorators = function.decorators
+    return bool(decorators) and all(
+        isinstance(d.decorator, cst.Name) and d.decorator.value == "staticmethod"
+        for d in decorators
+    )
+
+
 @dataclass
 class Mutation:
     original_node: cst.CSTNode
@@ -276,6 +294,11 @@ class MutationVisitor(cst.CSTVisitor):
         #    to mutate their arguments and cause exceptions
         # 3) @property decorators break the trampoline signature assignment
         #    (which expects it to be a function)
+        # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
+        # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
+        # a free function (no instance/class arg). Other decorators stay skipped.
+        if isinstance(node, cst.FunctionDef) and _is_static_only(node):
+            return False
         return bool(isinstance(node, (cst.FunctionDef, cst.ClassDef)) and len(node.decorators))
 
 
@@ -488,9 +511,13 @@ def create_trampoline_wrapper(
     parameter (others are left unmutated).
     """
     named_params = [*function.params.posonly_params, *function.params.params]
-    self_name = named_params[0].name.value if class_name is not None else None
+    # A @staticmethod has no instance/class parameter, so it is dispatched like a
+    # free function: every parameter is forwarded and no self_arg is passed (W5).
+    is_static = class_name is not None and _is_static_only(function)
+    instance_bound = class_name is not None and not is_static
+    self_name = named_params[0].name.value if instance_bound else None
 
-    forwarded_params = named_params[1:] if class_name is not None else named_params
+    forwarded_params = named_params[1:] if instance_bound else named_params
     args: list[cst.Element | cst.StarredElement] = [cst.Element(p.name) for p in forwarded_params]
     if isinstance(function.params.star_arg, cst.Param):
         args.append(cst.StarredElement(function.params.star_arg.name))
@@ -512,6 +539,10 @@ def create_trampoline_wrapper(
         # for top level, simply return the name
         if class_name is None:
             return cst.Name(func_name)
+        # a @staticmethod has no instance to dispatch through — resolve the
+        # original via the class object (a module global at call time).
+        if is_static:
+            return cst.Attribute(cst.Name(class_name), cst.Name(func_name))
         # for class methods, use object.__getattribute__(<first param>, name)
         return cst.Call(
             func=cst.Attribute(cst.Name("object"), cst.Name("__getattribute__")),
