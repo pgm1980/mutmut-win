@@ -14,7 +14,13 @@ Distribution: install from a pinned git tag only
 PyPI publishing is deliberately NOT part of the release sequence.
 Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
 
-## Status (as of 2026-06-13, v2.14.0 RELEASED — back in the development pause)
+## Status — see memory `current_state` for the LIVE state (v2.17.0, 2026-06-14)
+
+> Current release is **v2.17.0**: Phase 1 (v2.16.0) added the basic/advanced/all
+> operator-profile system, Phase 2 (v2.17.0) the six advanced operators. The v2.14.0
+> baseline + Sprint-36 detail below is kept for history.
+
+## Status (v2.14.0 baseline, 2026-06-13)
 - Current release: **v2.14.0** (released 2026-06-13). Sprint 36 "Maintenance 4:
   Fable-5 360°" closed — all 28 findings of the 360° analysis (9 bugs A1–A9,
   13 anomalies B1–B13, 6 optimizations C1–C6; issues #124–#132). Merge `5ef27c1`,
@@ -44,9 +50,11 @@ Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
   (A2, @argfile).
 
 ## Key capabilities (vs upstream mutmut)
-- 22 mutmut-3.5.0 operators **+ 7 additional** (regex patterns, math method swaps,
-  return-value replacement, conditional expressions, statement removal, collection
-  methods, or-defaults).
+- Operator profiles (v2.16.0+): `basic` = mutmut 3.5.0's 15 base operators; `advanced`
+  (default, 34 registry entries / 29 unique funcs) adds the extras (regex, math method
+  swaps, return-value replacement, conditional expressions, statement removal, collection
+  methods, or-defaults) + the six v2.17.0 Phase-2 operators (ROR matrix, number CRCR,
+  condition negate/force, collection-empty, match-guard); `all` reserved. See `current_state`.
 - Per-mutant test selection: a stats run records the test↔function mapping; each mutant
   runs only its covering tests. Mutants with zero covering tests → `no tests`, no runtime.
 - Self-calibrating wall-clock timeouts: measured per-process startup floor + scaled

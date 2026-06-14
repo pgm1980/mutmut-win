@@ -1,4 +1,7 @@
-# Codebase Structure & Layer Architecture (as of v2.13.0, 2026-06-12)
+# Codebase Structure & Layer Architecture (layout baseline v2.13.0; operators to v2.17.0)
+
+> Operator/profile state is current to v2.17.0 — see memory `current_state`. The 5-band
+> architecture and module map below remain accurate (v2.13.0 baseline).
 
 ~9.7k LOC across 29 modules in `src/mutmut_win/` (one subpackage: `process/`).
 
@@ -25,7 +28,10 @@ Bands (high → low; `:` = intentionally collaborating siblings):
   tests_for_mutant_cmd, time_estimates_cmd, export_cicd_stats_cmd.
 - **file_setup.py** (~700) — mutants/ staging (mirrors whole project root minus skip
   list), fingerprinting, writing mutated files, sys.path handling.
-- **node_mutation.py** (~680) — the mutation operators (22 upstream + 7 own).
+- **node_mutation.py** (~870) — the mutation operators, profile-tagged
+  `(node_type, operator, Profile)` 3-tuples (`operators_for_profile`); basic 15 /
+  advanced 34 entries incl. the six v2.17.0 Phase-2 operators (ROR, CRCR, negate,
+  force, collection-empty, match-guard).
 - **mutation.py** (~615) — libcst MutationVisitor, combines operators, generates
   trampolines per function, merges mutants into one staged file.
 - **runner.py** (~540) — pytest subprocess wrapper: clean run, stats run, forced-fail,

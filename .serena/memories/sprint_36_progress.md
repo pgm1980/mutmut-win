@@ -1,4 +1,7 @@
-# Sprint 36 Progress (live tracking)
+# Sprint 36 Progress (ARCHIVED — closed, v2.14.0 shipped 2026-06-13)
+
+> ARCHIVED history. Live state is in memory `current_state` (now v2.17.0). Sprint 36
+> closed all 28 Fable-5 360° findings and v2.14.0 was released.
 
 Sprint 36 "v2.14.0 Maintenance 4: Fable-5 360°" — opened 2026-06-12, branch
 `feature/v2.14.0-maintenance-4`, issues #124–#132, backlog
