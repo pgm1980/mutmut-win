@@ -1,52 +1,52 @@
 ---
-current_sprint: "Phase 3"
-sprint_goal: "Phase 3 (Aufgabe 2): die volle 14-Sub-Mutator-Regex-Suite (#42), string-basiert auf einem class-span-Tokenizer. Akzeptanz: acceptance_harness 184/188, per-operator Mutation 96-99%, e2e wellen-stabil."
-branch: "main"
+current_sprint: "Phase 4"
+sprint_goal: "Phase 4: die aggressiven all-tier-Operatoren (#2 AOD, #12 UOI, #27/#29 removal, #44 exception-swap) + mutmut-3.6.0-Backports (@static/classmethod, pragma-block, do_not_mutate_patterns). Akzeptanz: per-operator Mutation ≥80%, all⊋advanced, e2e wellen-stabil, acceptance_harness all-Tabelle grün."
+branch: "feature/v2.19.0-all-tier"
 started_at: "2026-06-14"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
-documentation_updated: true
+documentation_updated: false
 ---
 
-# Sprint State (Phase 3 — Aufgabe 2, regex suite)
+# Sprint State (Phase 4 — all-tier aggressive Operatoren + 3.6.0-Backports)
 
 ## Current Focus
-Phase 3 — **die volle 14-Sub-Mutator-Regex-Suite (#42)** —
-**ABGESCHLOSSEN, v2.18.0 RELEASED** (Merge `aa3bf75`, Tag v2.18.0,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.18.0)).
-Gates: 1313 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, Semgrep
-clean. acceptance_harness 184/188 (4 dokumentierte fullmatch-Äquivalente).
+Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports**.
+Macht `all` ⊋ advanced ZUM ERSTEN MAL. Branch `feature/v2.19.0-all-tier`,
+Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADMAP.md`
+§4 (Operatoren) / §5 (Backports) + acceptance_harness `all`-Tabelle.
 
-**PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE:**
-0 offene Issues · 0 Backlog. Wiederaufnahme: `all`-tier aggressive Operatoren
-(#2 AOD, #12 UOI, #27/#29 removal, #44 exception-swap) + mutmut-3.6.0-Backports
-(@staticmethod/@classmethod, pragma-block, do_not_mutate_patterns). Siehe
-`_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADMAP.md` §4/§5/§6 +
-acceptance_harness `all`-Tabelle. Serena-Memory `current_state` = Live-Stand.
+## Wellen-Plan (6)
+1. **W1 AOD (#2) + exception-swap (#44)** — ✅ **ABGESCHLOSSEN**. Profile.ALL,
+   `all` ⊋ advanced. Per-Operator-Mutation 18/18 = 100%, e2e all-Layer-Invarianten
+   (advanced⊆all + exakte all-Counts: my_lib 147, config 38, type_checking 19,
+   py3_14 14, covered 123).
+2. **W2 member-assign (#29) + statement-removal (#27)** — Assign mit Attribute-Target
+   (`self.x = v` → drop) + void_call_removal generalisieren auf Single-Expr
+   SimpleStatementLine → `pass`.
+3. **W3 UOI (#12) — HIGH RISK [ToT]** — unary insertion (`not`/`-`); eigene
+   ToT für die Scope-Strategie (Explosion erwartet).
+4. **W4 Backports do_not_mutate_patterns + pragma-block** — config-Regex +
+   `_skip_node_and_children`; pragma-block extend `pragma_no_mutate_lines()`.
+5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — Trampoline,
+   decorator-skip relaxen; eigene ToT.
+6. **W6 Harness-all-Akzeptanz + Doku + Release v2.19.0**.
 
-## Phase 3 Ergebnis (Wellen)
-1. **W1 Tokenizer + Anker (#1)** — _class_spans/_in_class-Fundament + Anker
-   ^ $ \A \Z \b \B removal. Commit `6806434`. Mutation 95.6%.
-2. **W2 Quantoren (#2-6)** — removal/swap/short→range/reluctant/brace±1; lazy-marker
-   in _QUANTIFIER_RE. Commit `5e3f098`. Mutation 98.8%.
-3. **W3 Shorthand (#11-13)** — negation(swapcase)/nullify/to-any; _shorthand_positions
-   escape-bewusst. Commit `367c90d`. Mutation 98.8%.
-4. **W4 Char-Klassen (#7-10)** — negation/child-removal/range±1/to-any; _class_members
-   + _RANGE_RE; inner/body/mark entkoppelt. Commit `bbfabc2`. Mutation 98.5%.
-5. **W5 Gruppen/Look-around (#14,+15) + Cap** — flip/non-capturing; MAX 5→12.
-   Commit `aaf4b13`. Mutation 99.3%.
-6. **W6 Harness/Doku/Release** — regex-Targets inline gefixt (module-level wurde nie
-   mutiert), _QUANTIFIER_RE (?=-Fix (foo(=bar)), Doku (Matrix/Roadmap/README/Spec),
-   Release v2.18.0. Commit `85be62d`, Merge `aa3bf75`.
+## Architektur-Leitplanken
+- all-tier-Operatoren sind `Profile.ALL`-getaggt → advanced-Counts bleiben
+  UNVERÄNDERT (Schicht-Invariante basic⊆snap⊆adv⊆all + Per-Projekt-Count-Pins).
+- Per-Operator-Gate: `mutmut-win run --paths-to-mutate <file> --tests-dir
+  <unit-test> --profile all --force "*operator_X*"` (fnmatch-Glob via
+  match_mutant_names). Neu geschriebene Funktionen zählen voll (Gate-Methodik #6).
 
-## Architektur-Entscheidung (User-bestätigt)
-String-basiert, NICHT re._parser — `re` hat keine `unparse`, ein Emitter-Round-trip
-wäre das Hauptrisiko (ein Bug verfälscht alle Mutanten). Der Tokenizer löst die
-Kontext-Sensitivität (^ in [^..], \d in [\d], ( in [(]).
+## W1 Ergebnis (Gates)
+1325 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
+KEPT, Semgrep 0 (node_mutation.py). Per-Operator-Mutation 18/18 = 100% (1
+Robustheits-Test ergänzt: `raise <Call>(...)` darf den Name-Guard nicht crashen).
 
-## Out of scope (Phase 4+)
-`all`-tier aggressive Operatoren, mutmut-3.6.0-Surface-Backports.
+## Out of scope (Phase 5+)
+Weitere Surface-Backports jenseits §5; PyPI-Publishing.

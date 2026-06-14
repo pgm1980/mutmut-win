@@ -65,6 +65,12 @@ _PHASE2_ADVANCED_OPERATORS = {
     "operator_match_guard",  # W5 #41 match-guard force
 }
 
+# Phase 4 all-tier aggressive operators (operator roadmap §4), grown wave by wave.
+_PHASE4_ALL_OPERATORS = {
+    "operator_aod",  # W1 #2 arithmetic operand deletion
+    "operator_exception_swap",  # W1 #44 exception swap
+}
+
 
 class TestProfileEnum:
     def test_ordered_by_inclusiveness(self) -> None:
@@ -102,17 +108,17 @@ class TestRegistryTagging:
             assert len(entry) == 3
             assert isinstance(entry[2], Profile)
 
-    def test_base_fifteen_advanced_grows_all_zero(self) -> None:
+    def test_base_fifteen_advanced_and_all_grow(self) -> None:
         counts = Counter(prof for (_t, _op, prof) in mutation_operators)
         assert counts[Profile.BASIC] == 15  # mutmut parity — invariant across phases
-        assert counts[Profile.ALL] == 0  # aggressive operators arrive in a later phase
-        # advanced = the 9 Phase-1 extras + the Phase-2 operators, by NAME (the
-        # entry count runs higher once an operator registers on several node
-        # types, e.g. negate/force on both If and While).
+        # advanced/all are pinned by NAME (the entry count runs higher once an
+        # operator registers on several node types, e.g. negate/force on If).
         advanced_names = {
             op.__name__ for (_t, op, prof) in mutation_operators if prof is Profile.ADVANCED
         }
         assert advanced_names == _ADVANCED_EXTRA_NAMES | _PHASE2_ADVANCED_OPERATORS
+        all_names = {op.__name__ for (_t, op, prof) in mutation_operators if prof is Profile.ALL}
+        assert all_names == _PHASE4_ALL_OPERATORS
 
     def test_phase1_extras_and_phase2_operators_are_all_advanced(self) -> None:
         advanced = {
@@ -144,12 +150,17 @@ class TestOperatorsForProfile:
         basic_pairs = {(t, op) for (t, op, p) in mutation_operators if p <= Profile.BASIC}
         assert set(operators_for_profile(Profile.BASIC)) == basic_pairs
 
-    def test_all_equals_advanced_in_phase_one(self) -> None:
-        # No ALL-tagged operators exist yet, so `all` == `advanced` until the
-        # aggressive operators land in a later phase.
-        assert len(operators_for_profile(Profile.ALL)) == len(
-            operators_for_profile(Profile.ADVANCED)
-        )
+    def test_advanced_is_a_strict_subset_of_all(self) -> None:
+        # Phase 4 added ALL-tagged operators, so `all` now strictly includes
+        # everything `advanced` has plus the aggressive operators.
+        advanced = set(operators_for_profile(Profile.ADVANCED))
+        all_ops = set(operators_for_profile(Profile.ALL))
+        assert advanced < all_ops
+
+    def test_all_includes_every_entry(self) -> None:
+        # Filter invariant for ALL (grows per wave without test edits).
+        all_pairs = {(t, op) for (t, op, p) in mutation_operators if p <= Profile.ALL}
+        assert set(operators_for_profile(Profile.ALL)) == all_pairs
 
     def test_returns_two_tuples_without_the_profile_tag(self) -> None:
         for pair in operators_for_profile(Profile.ADVANCED):

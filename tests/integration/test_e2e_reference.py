@@ -110,23 +110,26 @@ def _assert_profile_layered(
     source_files: list[Path],
     snapshot: dict[str, dict[str, int]],
     expected_advanced_count: int,
+    expected_all_count: int,
     *,
     basic_within_snapshot: bool = True,
 ) -> None:
-    """Assert the four layered profile invariants for one reference project.
+    """Assert the layered profile invariants for one reference project.
 
     Args:
         source_files: Source files of the project to mutate (one or more).
         snapshot: The checked-in expected-results dict for the project.
-        expected_advanced_count: Exact number of advanced mutants on this
-            project — the interaction-drift brake. Bump it by one line per
-            advanced-operator wave that genuinely changes generation.
+        expected_advanced_count: Exact number of advanced mutants — the
+            interaction-drift brake. Bump it per advanced-operator wave.
+        expected_all_count: Exact number of all-profile mutants — the same brake
+            for the aggressive all-tier operators. Bump it per all-tier wave.
         basic_within_snapshot: Whether ``basic ⊆ snapshot`` must hold. False for
             coverage-filtered snapshots, where the snapshot is a subset of a
             full generation and basic legitimately exceeds it.
     """
     basic = set().union(*(_collect_mutant_names(f, Profile.BASIC) for f in source_files))
     advanced = set().union(*(_collect_mutant_names(f, Profile.ADVANCED) for f in source_files))
+    all_mutants = set().union(*(_collect_mutant_names(f, Profile.ALL) for f in source_files))
     snap = _expected_local_names(snapshot)
 
     # (1) no-regression floor: advanced keeps every validated snapshot mutant.
@@ -142,17 +145,26 @@ def _assert_profile_layered(
             f"basic emitted {len(basic_phantom)} mutant(s) absent from the validated snapshot:\n"
             + "\n".join(f"  {n}" for n in sorted(basic_phantom))
         )
-    # (3) profile monotonicity: advanced is a superset of basic.
+    # (3) profile monotonicity: basic ⊆ advanced ⊆ all.
     mono_missing = basic - advanced
     assert not mono_missing, (
         f"advanced is missing {len(mono_missing)} basic mutant(s) (profile non-monotonic):\n"
         + "\n".join(f"  {n}" for n in sorted(mono_missing))
     )
-    # (4) advanced exact count — interaction-drift brake (one number per wave).
+    all_mono_missing = advanced - all_mutants
+    assert not all_mono_missing, (
+        f"all is missing {len(all_mono_missing)} advanced mutant(s) (profile non-monotonic):\n"
+        + "\n".join(f"  {n}" for n in sorted(all_mono_missing))
+    )
+    # (4) advanced + all exact counts — interaction-drift brakes (one number per wave).
     assert len(advanced) == expected_advanced_count, (
         f"advanced mutant count drifted: expected {expected_advanced_count}, "
         f"got {len(advanced)}. If this is an intended advanced-operator change, "
         "update the expected count."
+    )
+    assert len(all_mutants) == expected_all_count, (
+        f"all mutant count drifted: expected {expected_all_count}, got {len(all_mutants)}. "
+        "If this is an intended all-tier change, update the expected count."
     )
 
 
@@ -172,7 +184,9 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("my_lib", tmp_path)
     source_file = project_dir / "src" / "my_lib" / "__init__.py"
 
-    _assert_profile_layered([source_file], EXPECTED_MY_LIB, expected_advanced_count=129)
+    _assert_profile_layered(
+        [source_file], EXPECTED_MY_LIB, expected_advanced_count=129, expected_all_count=147
+    )
 
 
 @pytest.mark.integration
@@ -189,7 +203,9 @@ def test_config_mutation_generation(tmp_path: Path) -> None:
     init_file = project_dir / "config_pkg" / "__init__.py"
     math_file = project_dir / "config_pkg" / "math.py"
 
-    _assert_profile_layered([init_file, math_file], EXPECTED_CONFIG, expected_advanced_count=30)
+    _assert_profile_layered(
+        [init_file, math_file], EXPECTED_CONFIG, expected_advanced_count=30, expected_all_count=38
+    )
 
 
 @pytest.mark.integration
@@ -209,6 +225,7 @@ def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
         [source_file],
         EXPECTED_COVERAGE,
         expected_advanced_count=113,
+        expected_all_count=123,
         basic_within_snapshot=False,
     )
 
@@ -225,7 +242,9 @@ def test_type_checking_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("type_checking", tmp_path)
     source_file = project_dir / "src" / "type_checking" / "__init__.py"
 
-    _assert_profile_layered([source_file], EXPECTED_TYPE_CHECKING, expected_advanced_count=17)
+    _assert_profile_layered(
+        [source_file], EXPECTED_TYPE_CHECKING, expected_advanced_count=17, expected_all_count=19
+    )
 
 
 @pytest.mark.integration
@@ -243,4 +262,6 @@ def test_py3_14_features_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("py3_14_features", tmp_path)
     source_file = project_dir / "src" / "py3_14_features" / "__init__.py"
 
-    _assert_profile_layered([source_file], EXPECTED_PY3_14, expected_advanced_count=10)
+    _assert_profile_layered(
+        [source_file], EXPECTED_PY3_14, expected_advanced_count=10, expected_all_count=14
+    )

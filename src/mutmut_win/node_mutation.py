@@ -822,6 +822,49 @@ def operator_match_guard(node: cst.MatchCase) -> Iterable[cst.MatchCase]:
         yield node.with_changes(guard=cst.Name(literal))
 
 
+# ---------------------------------------------------------------------------
+# all-tier aggressive operators (operator roadmap §4)
+# ---------------------------------------------------------------------------
+
+
+def operator_aod(node: cst.BinaryOperation) -> Iterable[cst.BaseExpression]:
+    """AOD (#2, all): delete one operand of a binary operation — ``a + b`` ->
+    ``a`` and ``b``. Tests whether both operands actually matter. Noisy, hence
+    all-tier. A lower-precedence operand is parenthesised by ``_safe_unwrap``.
+    """
+    yield _safe_unwrap(node.left)
+    yield _safe_unwrap(node.right)
+
+
+#: Symmetric exception-swap pairs for #44. The swap is applied only to a
+#: ``raise <Name>(...)`` whose name is a key here.
+_EXCEPTION_SWAPS: dict[str, str] = {
+    "ValueError": "TypeError",
+    "TypeError": "ValueError",
+    "KeyError": "IndexError",
+    "IndexError": "KeyError",
+    "OSError": "RuntimeError",
+    "RuntimeError": "OSError",
+    "AttributeError": "NameError",
+    "NameError": "AttributeError",
+}
+
+
+def operator_exception_swap(node: cst.Raise) -> Iterable[cst.Raise]:
+    """Exception swap (#44, all): ``raise ValueError(...)`` -> ``raise
+    TypeError(...)`` via a fixed pair table. Tests whether the suite asserts the
+    EXACT exception type, not just that something is raised. Only fires on a
+    ``raise <known Name>(...)`` call; a bare ``raise`` or ``raise <expr>`` is
+    left alone.
+    """
+    if not isinstance(node.exc, cst.Call) or not isinstance(node.exc.func, cst.Name):
+        return
+    swapped = _EXCEPTION_SWAPS.get(node.exc.func.value)
+    if swapped is None:
+        return
+    yield node.with_changes(exc=node.exc.with_changes(func=cst.Name(swapped)))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the last 9
@@ -869,6 +912,9 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Set, operator_collection_empty, Profile.ADVANCED),
     (cst.Dict, operator_collection_empty, Profile.ADVANCED),
     (cst.MatchCase, operator_match_guard, Profile.ADVANCED),
+    # --- Phase 4 all-tier aggressive operators (operator roadmap §4) ---
+    (cst.BinaryOperation, operator_aod, Profile.ALL),
+    (cst.Raise, operator_exception_swap, Profile.ALL),
 ]
 
 
