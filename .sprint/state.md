@@ -1,8 +1,8 @@
 ---
-current_sprint: "36"
-sprint_goal: "v2.14.0 Maintenance 4: Fable-5 360° — alle 28 Findings der 360°-Analyse (9 Bugs A1–A9, 13 Anomalien B1–B13, 6 Optimierungen C1–C6; Issues #124–#132). Messziele: 28/28 geschlossen, Semgrep-Pro-Gate (>=1200 Regeln, 0 Findings), Mutation >=80% je geändertem Modul, Dogfooding-Vollpilot."
-branch: "feature/v2.14.0-maintenance-4"
-started_at: "2026-06-12"
+current_sprint: "Phase 2"
+sprint_goal: "Phase 2 (Aufgabe 2): die sechs cheap-high-yield advanced-Operatoren (#3 ROR-Matrix, #15 Number-CRCR, #22 negate, #23 force, #38 collection-empty, #41 match-guard) auf dem advanced-Default. Akzeptanz: acceptance_harness 152/152/100%, per-operator Mutation 100%, e2e wellen-stabil."
+branch: "main"
+started_at: "2026-06-13"
 housekeeping_done: true
 memory_updated: true
 github_issues_closed: true
@@ -12,52 +12,44 @@ tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Sprint 36 opened 2026-06-12)
+# Sprint State (Phase 2 — Aufgabe 2, opened 2026-06-13)
 
 ## Current Focus
-Sprint 36 — **v2.14.0 Maintenance 4: Fable-5 360°** —
-**GESCHLOSSEN, v2.14.0 RELEASED 2026-06-13** (User-„Release"; Merge
-`5ef27c1`, Bump `43a7762` inkl. Versionspins, annotated Tag v2.14.0 auf
-dem Bump-Commit,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.14.0),
-#124–#132 via Merge auto-geschlossen). Gates vor dem Merge frisch
-verifiziert: 1118 passed / 5 skipped, ruff 0 (bare `.`), ruff format
-clean, mypy 14 = Baseline, import-linter KEPT, Semgrep Pro 1228 Regeln /
-0 Findings, pip-audit clean. Dogfooding-Vollpilot 69,2 % (über S34-
-Referenz 68,3 %). 28/28 Findings der Fable-5-360°-Analyse geschlossen
-(C3 dokumentiertes Won't-Do; B11/B12 dokumentierte Limitationen).
+Phase 2 — **die sechs advanced Phase-2-Operatoren** —
+**ABGESCHLOSSEN, v2.17.0 RELEASED 2026-06-14** (Merge `ef89333`, Doku/Bump
+`beabc32`, annotated Tag v2.17.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.17.0)).
+Gates vor dem Merge frisch verifiziert: 1217 passed / 5 skipped, ruff 0
+(bare `.`), ruff format clean, mypy 14 = Baseline, Semgrep clean.
+acceptance_harness 152/152/100% (alle sechs Operatoren), per-operator
+Mutation 100%.
 
-**PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE (User-Entscheidung):**
-0 offene Issues · 0 Backlog-Einträge · 0 offene Entscheidungen ·
-0 offene Milestones. Wiederaufnahme-Startpunkte: Dogfooding-Pausen-
-Baseline (7231 Mutanten / 69,2 %), der 360°-Report
-(`_docs/audit/fable5_360_analysis_v2.13.0.md`, Serena-Memory
-`fable5_360_findings`) und der dokumentierte Legacy-Tech-Debt-Befund
-im Sprint-36-Backlog (funktionsweite Alt-Survivor-Quoten für einen
-künftigen Tech-Debt-Sprint). Kein neuer Sprint geplant — nächster
-Sprint-State entsteht erst bei Wiederaufnahme.
+**PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE:**
+0 offene Issues · 0 Backlog-Einträge. Wiederaufnahme-Startpunkte: Phase 3
+(#42 volle Regex-Sub-Mutator-Suite) und die `all`-tier aggressive Operatoren
+(#2 AOD, #12 UOI, #27/#29 statement/member-removal, #44 exception-swap) —
+siehe `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADMAP.md` §3.7/§4 +
+`acceptance_harness`. e2e-Test-Strategie für künftige Operatoren: Memory
+`phase2-operator-e2e-profilschichtung`.
 
-## Sprint 36 Ergebnis (Wellen)
-1. **#124 (A1) + #125 (A2):** Result-Persistenz exakter Name→Datei-
-   Lookup; pytest-Floor >= 8.2 + Run-Start-Guard. Commits `6302b46`,
-   `a8fdd85`. Mutation-Zeilen-Gate 90,9 %.
-2. **#127 (A6/A7/A9):** JSON-Reinheit, Pool-Kollaps-Abbruchzustand,
-   show-Glob-Forensik. Commits `26ade60`, `52c5884`. Gate 88,1 %.
-3. **#126/#128/#129 (A3/A4/A8/B6/C2/C4):** source/-Layout-Naming,
-   Engine-Version-Fingerprint, Mirror-Truth, since-commit. Commit
-   `2432bf2` + Härtung `e9dcb10`. Gate 91,4 %.
-4. **#130/#131 (B1–B3/A5/B4):** Stats-Mapping-Invalidierung, collect-
-   Scope-Parität, Timeout-Fallback, Type-Check-Baseline. Commit
-   `c9e33e8` + Härtung `232b2eb`. Gate 87,0 %.
-5. **#132 (B5/B7–B9/B11–B13/C1/C5/C6):** Phasen-Reaping, PYTHONPATH-
-   Parität, IL-Konstanten-SSOT, setup.cfg-Parität, DB-Batching,
-   Regex-Dedupe, plain-dict-Status. Commit `67b66d8` + Härtung
-   `f50d2d4`. Gate 98,6 % Wave-Zeilen.
-6. **Gates/Release:** Dependency-Advisories `9f73eee`; Doku
-   `aeeb7c8`/`cc7f357`; Cleanup `244f602`; Merge `5ef27c1`; Bump
-   `43a7762`.
+## Phase 2 Ergebnis (Wellen)
+1. **W1 #3 ROR full matrix** — decoupled von swap_op (die 4 Nicht-swap-
+   Alternativen, kein Visitor-Dedup). Commit `3016eac`. Mutation 6/6.
+2. **W2 #15 Number-CRCR** — unified int/float candidate-loop mit seen-dedup;
+   sequence-Tests killen die Dedup-Logik. Commit `9a699ed`. Mutation 57/57.
+   e2e_reference auf Schicht-Invarianten umgestellt.
+3. **W3 #22 negate + #23 force** — auf cst.If (deckt elif); negate skippt
+   Comparison/Not. Commit `e9598fb`. Mutation 33/33. Pipeline-Snapshot-Test
+   auf `--profile basic` gepinnt (advanced renummeriert __mutmut_N).
+4. **W4 #38 collection-empty** — List/Dict/Set(→`set()`)/Tuple(→`()`),
+   skip-empty. Commit `9b7113b`. Mutation 18/18.
+5. **W5 #41 match-guard** — cst.MatchCase guard True/False. Commit `c19fde2`.
+   Mutation 19/19.
+6. **W6 Doku/Harness/Release** — ROADMAP_SPEC Phase-2-Sektion, Roadmap §2/§6,
+   Matrix, README, Install-Docs; harness 152/152; Release v2.17.0. Doku
+   `beabc32`, Merge `ef89333`.
 
-## Out of scope (bewusst, dokumentiert)
-SCA (`semgrep ci --supply-chain`), Docker-MCP-Infrastruktur
-(Mount/webapi-Token), CLAUDE.md-Blueprint-Härtung (projektübergreifend),
-C3 (gezielte inkrementelle Stats-Re-Runs — Won't-Do in #132).
+## Out of scope (bewusst, Phase 3+)
+#42 volle Regex-Suite (14 Sub-Mutatoren), `all`-tier aggressive Operatoren,
+mutmut-3.6.0-Surface-Backports (@staticmethod/@classmethod-Mutation,
+Pragma-block, do_not_mutate_patterns).
