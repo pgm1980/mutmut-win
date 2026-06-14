@@ -1,7 +1,7 @@
 ---
 current_sprint: "Phase 4"
 sprint_goal: "Phase 4: die aggressiven all-tier-Operatoren (#2 AOD, #12 UOI, #27/#29 removal, #44 exception-swap) + mutmut-3.6.0-Backports (@static/classmethod, pragma-block, do_not_mutate_patterns). Akzeptanz: per-operator Mutation ≥80%, all⊋advanced, e2e wellen-stabil, acceptance_harness all-Tabelle grün."
-branch: "feature/v2.19.0-all-tier"
+branch: "main"
 started_at: "2026-06-14"
 housekeeping_done: true
 memory_updated: true
@@ -16,7 +16,9 @@ documentation_updated: true
 
 ## Current Focus
 Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports** —
-**ABGESCHLOSSEN (W1–W6), v2.19.0**. `all` ⊋ advanced (basic 15 / advanced 34 /
+**ABGESCHLOSSEN (W1–W6), v2.19.0 RELEASED** (Merge `027cb41`, Tag v2.19.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.19.0)).
+`all` ⊋ advanced (basic 15 / advanced 34 /
 all 41). acceptance_harness `--profile all`: **204 / 200 / 98%** (4 dokumentierte
 Regex-`fullmatch`-Äquivalente, KEINE neuen Phase-4-Survivors). Volle Suite 1397
 passed / 5 skipped. **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** (0 Issues / Backlog).
