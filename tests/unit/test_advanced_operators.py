@@ -128,3 +128,73 @@ class TestNumberCrcr:
         # (0.0, 1.0, -1.0): 1.0 is the literal's own value -> skipped. Pins the
         # self-skip and loop control flow on the float path.
         assert _crcr_sequence("1.0") == ["0.0", "-1.0"]
+
+
+def _if_node(src: str) -> cst.If:
+    node = cst.parse_module(src).body[0]
+    assert isinstance(node, cst.If)
+    return node
+
+
+def _negate_tests(src: str) -> list[str]:
+    from mutmut_win.node_mutation import operator_negate_condition
+
+    module = cst.Module(body=[])
+    return [module.code_for_node(m.test) for m in operator_negate_condition(_if_node(src))]
+
+
+def _force_tests(src: str) -> set[str]:
+    from mutmut_win.node_mutation import operator_force_condition
+
+    module = cst.Module(body=[])
+    return {module.code_for_node(m.test) for m in operator_force_condition(_if_node(src))}
+
+
+class TestNegateCondition:
+    """#22: negate the WHOLE condition (`if x` -> `if not x`), filling the
+    truthy-non-comparison gap that swap_op/ROR (comparisons) and
+    operator_remove_unary_ops (existing nots) cannot reach. There is no visitor
+    dedup, so those node types are deliberately skipped to avoid redundant
+    mutants — the same decoupling as the ROR matrix (#3).
+    """
+
+    def test_negates_truthy_name(self) -> None:
+        assert _negate_tests("if flag:\n    return 1\n") == ["not flag"]
+
+    def test_negates_call(self) -> None:
+        # Call is atomic -> no parens needed
+        assert _negate_tests("if check():\n    return 1\n") == ["not check()"]
+
+    def test_parenthesizes_boolean_or(self) -> None:
+        # `not a or b` != `not (a or b)`: the paren is mandatory for correctness
+        assert _negate_tests("if a or b:\n    return 1\n") == ["not (a or b)"]
+
+    def test_parenthesizes_boolean_and(self) -> None:
+        assert _negate_tests("if a and b:\n    return 1\n") == ["not (a and b)"]
+
+    def test_skips_comparison(self) -> None:
+        # swap_op / ROR already cover comparison negation
+        assert _negate_tests("if x > 0:\n    return 1\n") == []
+
+    def test_skips_existing_not(self) -> None:
+        # operator_remove_unary_ops already covers `if not x` -> `if x`
+        assert _negate_tests("if not flag:\n    return 1\n") == []
+
+
+class TestForceCondition:
+    """#23: force the condition to a constant (`if c` -> `if True` / `if False`,
+    PIT REMOVE_CONDITIONALS), proving both branches are exercised. The value the
+    test already is (literal True/False) is skipped as a no-op.
+    """
+
+    def test_yields_true_and_false(self) -> None:
+        assert _force_tests("if x > 0:\n    return 1\n") == {"True", "False"}
+
+    def test_fires_on_truthy_name(self) -> None:
+        assert _force_tests("if flag:\n    return 1\n") == {"True", "False"}
+
+    def test_skips_self_when_already_true(self) -> None:
+        assert _force_tests("if True:\n    return 1\n") == {"False"}
+
+    def test_skips_self_when_already_false(self) -> None:
+        assert _force_tests("if False:\n    return 1\n") == {"True"}

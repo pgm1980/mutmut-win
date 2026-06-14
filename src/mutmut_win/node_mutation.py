@@ -735,6 +735,48 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     yield _safe_unwrap(node.right)  # always use fallback
 
 
+# ---------------------------------------------------------------------------
+# Condition negate / force (#22, #23, advanced) — PIT NEGATE/REMOVE_CONDITIONALS
+# ---------------------------------------------------------------------------
+
+
+def operator_negate_condition(node: cst.If) -> Iterable[cst.If]:
+    """Negate a whole ``if`` condition: ``if x:`` -> ``if not x:`` (#22).
+
+    Fills the truthy-non-comparison gap that operator-local mutation cannot
+    reach. A ``Comparison`` is left to ``operator_swap_op`` /
+    ``operator_relational_matrix`` and an existing ``not`` to
+    ``operator_remove_unary_ops`` — negating those here would only duplicate
+    their mutants (there is no visitor-level dedup). ``not`` binds weakly, so
+    ``_safe_unwrap`` parenthesises a boolean operand
+    (``if a or b:`` -> ``if not (a or b):``).
+    """
+    test = node.test
+    if isinstance(test, cst.Comparison):
+        return
+    if isinstance(test, cst.UnaryOperation) and isinstance(test.operator, cst.Not):
+        return
+    negated = cst.UnaryOperation(
+        operator=cst.Not(whitespace_after=cst.SimpleWhitespace(" ")),
+        expression=_safe_unwrap(test),
+    )
+    yield node.with_changes(test=negated)
+
+
+def operator_force_condition(node: cst.If) -> Iterable[cst.If]:
+    """Force an ``if`` condition to a constant: ``if c:`` -> ``if True:`` and
+    ``if False:`` (#23, PIT REMOVE_CONDITIONALS).
+
+    Proves both branches are actually exercised. The value the test already is
+    (a bare ``True``/``False`` literal) is skipped as a no-op.
+    """
+    test = node.test
+    for literal in ("True", "False"):
+        if isinstance(test, cst.Name) and test.value == literal:
+            continue
+        yield node.with_changes(test=cst.Name(literal))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
 # The first 15 entries are mutmut's base operators at profile BASIC; the last 9
@@ -775,6 +817,8 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     # mypy stays clean; the operator branches on the node type internally.
     (cst.Integer, operator_number_crcr, Profile.ADVANCED),
     (cst.Float, operator_number_crcr, Profile.ADVANCED),
+    (cst.If, operator_negate_condition, Profile.ADVANCED),
+    (cst.If, operator_force_condition, Profile.ADVANCED),
 ]
 
 

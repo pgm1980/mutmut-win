@@ -162,6 +162,14 @@ def test_my_lib_pipeline_matches_expected_snapshot(tmp_path: Path) -> None:
         project_dir,
         "run",
         "--no-progress",
+        # The snapshot encodes mutmut 3.5.0's mutants, so pin the run to the
+        # basic profile (mutmut's 15 base operators). advanced operators
+        # (Phase 2+) insert mutants *inside* functions and renumber the rest —
+        # wave-by-wave __mutmut_N drift that has nothing to do with pipeline
+        # correctness. advanced generation is pinned by test_e2e_reference.py's
+        # layered invariants instead.
+        "--profile",
+        "basic",
         "--paths-to-mutate",
         "src/my_lib/",
         "--tests-dir",

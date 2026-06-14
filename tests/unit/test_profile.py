@@ -59,6 +59,8 @@ _ADVANCED_EXTRA_NAMES = {
 _PHASE2_ADVANCED_OPERATORS = {
     "operator_relational_matrix",  # W1 #3 ROR matrix
     "operator_number_crcr",  # W2 #15 number CRCR
+    "operator_negate_condition",  # W3 #22 negate condition
+    "operator_force_condition",  # W3 #23 force condition
 }
 
 

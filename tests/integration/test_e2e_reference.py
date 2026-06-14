@@ -172,7 +172,7 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     project_dir = _copy_project("my_lib", tmp_path)
     source_file = project_dir / "src" / "my_lib" / "__init__.py"
 
-    _assert_profile_layered([source_file], EXPECTED_MY_LIB, expected_advanced_count=119)
+    _assert_profile_layered([source_file], EXPECTED_MY_LIB, expected_advanced_count=129)
 
 
 @pytest.mark.integration
@@ -208,7 +208,7 @@ def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
     _assert_profile_layered(
         [source_file],
         EXPECTED_COVERAGE,
-        expected_advanced_count=106,
+        expected_advanced_count=112,
         basic_within_snapshot=False,
     )
 
