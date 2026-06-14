@@ -61,6 +61,75 @@ class TestMutateQuantifiers:
         # \+ is an escaped literal plus — should NOT be mutated
         assert results == []
 
+    def test_star_removed(self) -> None:
+        # #2 removal now applies to * too (in addition to the *->+ swap)
+        assert r"\d" in _mutate_quantifiers(r"\d*")
+
+    def test_brace_removed(self) -> None:
+        # #2 removal applies to {n,m} as well
+        assert r"\d" in _mutate_quantifiers(r"\d{2,4}")
+
+    def test_plus_to_star_swap(self) -> None:
+        # require-at-least-one -> require-zero-or-more
+        assert r"\d*" in _mutate_quantifiers(r"\d+")
+
+    def test_reluctant_plus(self) -> None:
+        # #6 greedy -> lazy
+        assert r"\d+?" in _mutate_quantifiers(r"\d+")
+
+    def test_reluctant_star_question_range(self) -> None:
+        assert r"\d*?" in _mutate_quantifiers(r"\d*")
+        assert r"\d??" in _mutate_quantifiers(r"\d?")
+        assert r"\d{2,4}?" in _mutate_quantifiers(r"\d{2,4}")
+
+    def test_reluctant_skips_exact_count(self) -> None:
+        # {n}? is legal but semantically identical -> not generated
+        assert r"\d{3}?" not in _mutate_quantifiers(r"\d{3}")
+
+    def test_reluctant_skips_already_lazy(self) -> None:
+        # \d+? must not become \d+?? (invalid)
+        assert r"\d+??" not in _mutate_quantifiers(r"\d+?")
+
+    def test_lazy_quantifier_removed_as_unit(self) -> None:
+        # the whole lazy quantifier is removed together
+        assert r"\d" in _mutate_quantifiers(r"\d+?")
+
+    def test_short_to_range_question(self) -> None:
+        # #5 ? ({0,1}) -> {1} (exactly one, a real tightening)
+        assert r"\d{1}" in _mutate_quantifiers(r"\d?")
+
+    def test_short_to_range_plus(self) -> None:
+        # #5 + ({1,}) -> {2,} (at least two)
+        assert r"\d{2,}" in _mutate_quantifiers(r"\d+")
+
+    def test_range_lo_minus(self) -> None:
+        # #3 lo-1
+        assert r"\d{1,5}" in _mutate_quantifiers(r"\d{2,5}")
+
+    def test_range_hi_plus(self) -> None:
+        # #3 hi+1
+        assert r"\d{2,6}" in _mutate_quantifiers(r"\d{2,5}")
+
+    def test_open_range_lo_minus(self) -> None:
+        # #4 {n,} lo-1
+        assert r"\d{1,}" in _mutate_quantifiers(r"\d{2,}")
+
+    def test_brace_lo_minus_guarded_against_negative(self) -> None:
+        # {0,5}: lo-1 would be {-1,5} — the lo>0 guard must suppress it
+        assert r"\d{-1,5}" not in _mutate_quantifiers(r"\d{0,5}")
+        # {1,5}: lo-1 = {0,5} IS generated
+        assert r"\d{0,5}" in _mutate_quantifiers(r"\d{1,5}")
+
+    def test_exact_count_minus_guarded_against_zero(self) -> None:
+        # {1}: n-1 would be {0} — the n>1 guard must suppress it
+        assert r"\d{0}" not in _mutate_quantifiers(r"\d{1}")
+        # {2}: n-1 = {1} IS generated
+        assert r"\d{1}" in _mutate_quantifiers(r"\d{2}")
+
+    def test_lazy_input_base_swap(self) -> None:
+        # group(1) is the base even for lazy input: \d+? still swaps + -> *
+        assert r"\d*" in _mutate_quantifiers(r"\d+?")
+
 
 class TestMutateCharClasses:
     def test_digit_to_non_digit(self) -> None:

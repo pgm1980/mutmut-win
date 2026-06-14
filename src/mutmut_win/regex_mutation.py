@@ -34,15 +34,18 @@ _CHAR_CLASS_SWAPS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Quantifier patterns (applied to the raw regex string)
 # ---------------------------------------------------------------------------
-#: Matches quantifiers: +, *, ?, {n}, {n,}, {n,m}
+#: Matches a quantifier and its optional lazy marker. Group 1 is the base
+#: quantifier (+, *, ?, {n}, {n,}, {n,m}); group 2 is "" (greedy) or "?" (lazy),
+#: so ``a+?`` is captured as one unit instead of ``+`` and ``?`` separately.
 _QUANTIFIER_RE = re.compile(
     r"""
-    (?<!\\)        # not preceded by a backslash (avoid matching \+ etc.)
-    (
-        [+*?]      # simple quantifiers
-      | \{\d+\}    # {n}
-      | \{\d+,\d*\}  # {n,m} or {n,}
+    (?<!\\)            # not preceded by a backslash (avoid matching \+ etc.)
+    (                  # group 1: the base quantifier
+        [+*?]          # simple quantifiers
+      | \{\d+\}        # {n}
+      | \{\d+,\d*\}    # {n,m} or {n,}
     )
+    (\??)             # group 2: optional lazy marker
     """,
     re.VERBOSE,
 )
@@ -81,48 +84,63 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
     return valid
 
 
-def _mutate_quantifiers(pattern: str) -> list[str]:
-    """Mutate quantifiers in the pattern.
+def _brace_variants(brace: str) -> list[str]:
+    """Quantity ±1 for a ``{n}`` / ``{n,m}`` / ``{n,}`` quantifier (#3/#4).
 
-    - ``+`` → removed (require exactly the preceding element)
-    - ``*`` → ``+`` (require at least one)
-    - ``?`` → removed (require exactly one)
-    - ``{n}`` → ``{n-1}`` and ``{n+1}``
-    - ``{n,m}`` → ``{n+1,m}`` and ``{n,m-1}``
+    Guards against negative counts and ``{0}``; the few remaining invalid
+    candidates (e.g. ``{2,1}`` from ``{2,2}``) are dropped by the ``re.compile``
+    gate in :func:`mutate_regex_pattern`.
+    """
+    inner = brace[1:-1]
+    out: list[str] = []
+    if "," in inner:
+        lo_str, hi_str = inner.split(",")
+        lo = int(lo_str)
+        out.append(f"{{{lo + 1},{hi_str}}}")  # lo+1
+        if lo > 0:
+            out.append(f"{{{lo - 1},{hi_str}}}")  # lo-1
+        if hi_str:  # bounded {n,m}
+            hi = int(hi_str)
+            out.append(f"{{{lo},{hi + 1}}}")  # hi+1
+            out.append(f"{{{lo},{hi - 1}}}")  # hi-1 (may be invalid -> filtered)
+    else:  # exact {n}
+        n = int(inner)
+        out.append(f"{{{n + 1}}}")
+        if n > 1:
+            out.append(f"{{{n - 1}}}")
+    return out
+
+
+def _mutate_quantifiers(pattern: str) -> list[str]:
+    """Mutate quantifiers (sub-mutators #2-#6).
+
+    Per quantifier: removal (#2); reluctant greedy->lazy (#6, skipping the exact
+    ``{n}`` and an already-lazy quantifier); the require-count swaps (``+``<->``*``)
+    and short->range tightenings (#5: ``?``->``{1}``, ``+``->``{2,}``); and brace
+    ``{...}`` quantity ±1 (#3/#4). Invalid or duplicate candidates are dropped
+    downstream by ``re.compile`` and the ``seen`` set in
+    :func:`mutate_regex_pattern`.
     """
     results: list[str] = []
 
     for match in _QUANTIFIER_RE.finditer(pattern):
-        q = match.group(0)
+        base, lazy = match.group(1), match.group(2)
         start, end = match.start(), match.end()
+        is_exact = base.startswith("{") and "," not in base
 
-        replacements: list[str] = []
-        if q == "+":
-            replacements.append("")  # remove +
-        elif q == "*":
-            replacements.append("+")  # * → +
-        elif q == "?":
-            replacements.append("")  # remove ?
-        elif q.startswith("{") and q.endswith("}"):
-            inner = q[1:-1]
-            if "," in inner:
-                parts = inner.split(",")
-                lo = int(parts[0])
-                hi_str = parts[1]
-                if hi_str:
-                    hi = int(hi_str)
-                    if lo + 1 <= hi:
-                        replacements.append(f"{{{lo + 1},{hi}}}")
-                    if hi - 1 >= lo:
-                        replacements.append(f"{{{lo},{hi - 1}}}")
-                else:
-                    # {n,} → {n+1,}
-                    replacements.append(f"{{{lo + 1},}}")
-            else:
-                n = int(inner)
-                if n > 1:
-                    replacements.append(f"{{{n - 1}}}")
-                replacements.append(f"{{{n + 1}}}")
+        replacements: list[str] = [""]  # #2 removal of the whole quantifier
+        if not lazy and not is_exact:
+            replacements.append(base + "?")  # #6 reluctant: greedy -> lazy
+
+        if base == "+":
+            replacements.append("*")  # require-at-least-one -> require-zero-or-more
+            replacements.append("{2,}")  # #5 short->range: at least two
+        elif base == "*":
+            replacements.append("+")  # require-zero-or-more -> require-at-least-one
+        elif base == "?":
+            replacements.append("{1}")  # #5 short->range: exactly one
+        else:  # brace {n} / {n,m} / {n,} — the only remaining quantifier kind
+            replacements.extend(_brace_variants(base))  # #3/#4 quantity ±1
 
         for repl in replacements:
             mutated = pattern[:start] + repl + pattern[end:]
