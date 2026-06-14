@@ -351,6 +351,39 @@ def operator_swap_op(
             yield node.with_changes(operator=new_operator)
 
 
+# ---------------------------------------------------------------------------
+# ROR full matrix (#3, advanced) — inspired by PIT / Stryker.NET-X
+# ---------------------------------------------------------------------------
+
+#: Each ordering comparison maps to the four relations base ``operator_swap_op``
+#: does NOT produce (swap_op yields the one boundary partner from
+#: ``_operator_mapping``). swap_op + this operator together span all five
+#: alternatives with NO duplicate — there is no visitor-level dedup, so the
+#: base target is excluded here on purpose. ``==``/``!=`` stay with swap_op.
+_ror_matrix: dict[type[cst.CSTNode], tuple[type[cst.CSTNode], ...]] = {
+    cst.LessThan: (cst.GreaterThan, cst.GreaterThanEqual, cst.Equal, cst.NotEqual),
+    cst.LessThanEqual: (cst.GreaterThan, cst.GreaterThanEqual, cst.Equal, cst.NotEqual),
+    cst.GreaterThan: (cst.LessThan, cst.LessThanEqual, cst.Equal, cst.NotEqual),
+    cst.GreaterThanEqual: (cst.LessThan, cst.LessThanEqual, cst.Equal, cst.NotEqual),
+}
+
+
+def operator_relational_matrix(
+    node: cst.ComparisonTarget,
+) -> Iterable[cst.ComparisonTarget]:
+    """ROR full matrix (#3): replace an ordering comparison with each relation
+    that base ``operator_swap_op`` does not yield.
+
+    ``a < b`` already mutates to ``a <= b`` via swap_op (the boundary swap), so
+    this yields the remaining four (``>``, ``>=``, ``==``, ``!=``). Together
+    they cover all five alternatives with no duplicate, since nothing dedups
+    identical mutants downstream. ``==``/``!=`` are covered by swap_op
+    (``==`` <-> ``!=``) and are intentionally absent from ``_ror_matrix``.
+    """
+    for new_operator in _ror_matrix.get(type(node.operator), ()):
+        yield node.with_changes(operator=new_operator())
+
+
 def operator_augmented_assignment(
     node: cst.AugAssign,
 ) -> Iterable[cst.Assign]:
@@ -684,6 +717,8 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Call, operator_collection_neutralize, Profile.ADVANCED),
     (cst.ListComp, operator_comprehension_filter_removal, Profile.ADVANCED),
     (cst.BooleanOperation, operator_or_default, Profile.ADVANCED),
+    # --- Phase 2 advanced operators (operator roadmap §3) ---
+    (cst.ComparisonTarget, operator_relational_matrix, Profile.ADVANCED),
 ]
 
 

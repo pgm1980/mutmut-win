@@ -45,6 +45,15 @@ EXPECTED_MY_LIB: dict[str, dict[str, int]] = {
         "my_lib.x_fibonacci__mutmut_9": 0,
         "my_lib.x_fibonacci__mutmut_10": 0,
         "my_lib.x_fibonacci__mutmut_11": 0,
+        # Phase 2 ROR matrix (#3) on `if n <= 1` — mutmut-win-specific operators
+        # absent from the mutmut 3.5.0 reference. Marked survived (0) so the
+        # one-directional kill-consistency check (test_e2e_pipeline_validation)
+        # treats them as non-upstream-kills; mutmut-win may legitimately kill
+        # some locally (the accepted "stricter than upstream" direction).
+        "my_lib.x_fibonacci__mutmut_12": 0,
+        "my_lib.x_fibonacci__mutmut_13": 0,
+        "my_lib.x_fibonacci__mutmut_14": 0,
+        "my_lib.x_fibonacci__mutmut_15": 0,
         "my_lib.x_async_consumer__mutmut_1": 1,
         "my_lib.x_async_consumer__mutmut_2": 1,
         "my_lib.x_async_consumer__mutmut_3": 0,
