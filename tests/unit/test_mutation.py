@@ -6,6 +6,7 @@ from mutmut_win.mutation import (
     ChildReplacementTransformer,
     Mutation,
     _is_generator,
+    _pragma_no_mutate_suffix,
     create_mutations,
     deep_replace,
     get_statements_until_func_or_class,
@@ -40,6 +41,115 @@ class TestPragmaNoMutateLines:
         assert 1 in result
         assert 3 in result
         assert 2 not in result
+
+    def test_start_end_range_inclusive(self) -> None:
+        source = "a = 1\n# pragma: no mutate start\nb = 2\nc = 3\n# pragma: no mutate end\nd = 4\n"
+        result = pragma_no_mutate_lines(source)
+        assert result == {2, 3, 4, 5}  # the two markers and everything between
+        assert 1 not in result
+        assert 6 not in result
+
+    def test_dangling_start_skips_to_end_of_file(self) -> None:
+        source = "a = 1\n# pragma: no mutate start\nb = 2\nc = 3\n"
+        result = pragma_no_mutate_lines(source)
+        assert 1 not in result
+        assert {2, 3, 4}.issubset(result)  # from the start marker to EOF
+
+    def test_block_covers_indented_suite(self) -> None:
+        source = "def f():  # pragma: no mutate block\n    a = 1\n    b = 2\nc = 3\n"
+        result = pragma_no_mutate_lines(source)
+        assert result == {1, 2, 3}  # header + the two body lines, not the dedent
+        assert 4 not in result
+
+    def test_block_includes_interior_blank_lines(self) -> None:
+        source = "def f():  # pragma: no mutate block\n    a = 1\n\n    b = 2\nc = 3\n"
+        result = pragma_no_mutate_lines(source)
+        assert result == {1, 2, 3, 4}  # blank line between body lines stays inside
+        assert 5 not in result
+
+    def test_plain_pragma_excludes_only_its_line(self) -> None:
+        # exact-set pin (kills superset / off-by-one mutants on the plain branch)
+        assert pragma_no_mutate_lines("a = 1\nb = 2  # pragma: no mutate\nc = 3\n") == {2}
+
+    def test_pragma_without_no_mutate_marker_ignored(self) -> None:
+        # `# pragma:` present but NOT the `no mutate` marker -> nothing excluded
+        assert pragma_no_mutate_lines("x = 1  # pragma: allowlist\n") == set()
+
+    def test_unknown_suffix_word_degrades_to_plain(self) -> None:
+        # an unrecognised word after `no mutate` falls back to the single line
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate later\n") == {1}
+
+    def test_suffix_word_is_case_insensitive(self) -> None:
+        src = "# pragma: no mutate START\nx = 1\n# pragma: no mutate END\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_block_suffix_uses_only_the_first_word(self) -> None:
+        # trailing words after `block` are ignored; block extent still applies
+        src = "def f():  # pragma: no mutate block now\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_block_on_simple_statement_is_just_its_line(self) -> None:
+        # no indented suite below -> block degenerates to the single line
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate block\ny = 2\n") == {1}
+
+    def test_deeper_indent_block_extent(self) -> None:
+        src = "    if x:  # pragma: no mutate block\n        a = 1\n    b = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_two_independent_start_end_ranges(self) -> None:
+        src = (
+            "# pragma: no mutate start\na = 1\n# pragma: no mutate end\n"
+            "b = 2\n"
+            "# pragma: no mutate start\nc = 3\n# pragma: no mutate end\n"
+        )
+        # open_start must reset after the first `end`, so the two ranges are distinct
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 5, 6, 7}
+
+    def test_duplicate_start_keeps_the_first(self) -> None:
+        src = (
+            "# pragma: no mutate start\na = 1\n"
+            "# pragma: no mutate start\nb = 2\n# pragma: no mutate end\n"
+        )
+        # the first open start wins (the second is ignored until the end)
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4, 5}
+
+    def test_block_pragma_below_first_line(self) -> None:
+        # block not on line 1 -> the scan must start at pragma_index + 1
+        src = "x = 1\ndef f():  # pragma: no mutate block\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {2, 3}
+
+    def test_block_extending_to_end_of_file(self) -> None:
+        # the suite runs to EOF -> the `cursor < len(lines)` bound must not overrun
+        src = "def f():  # pragma: no mutate block\n    a = 1\n    b = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_lone_end_marker_is_just_its_line(self) -> None:
+        # an `end` with no open `start` falls back to its own line
+        assert pragma_no_mutate_lines("x = 1\n# pragma: no mutate end\ny = 2\n") == {2}
+
+    def test_plain_pragma_on_block_header_skips_only_header(self) -> None:
+        # plain (not block) on a def header -> only the header line, body still mutable
+        assert pragma_no_mutate_lines("def f():  # pragma: no mutate\n    a = 1\nb = 2\n") == {1}
+
+    def test_dangling_start_without_trailing_newline(self) -> None:
+        # exact set, no trailing newline -> pins the to-EOF range bound
+        assert pragma_no_mutate_lines("a = 1\n# pragma: no mutate start\nb = 2\nc = 3") == {2, 3, 4}
+
+    def test_block_breaks_on_lesser_indent(self) -> None:
+        # a line dedented BELOW the header indent ends the block (<= base, not == base)
+        src = "    if x:  # pragma: no mutate block\n        a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_suffix_helper_return_values(self) -> None:
+        # direct probe of the classifier: pins the exact return value so the
+        # caller-equivalent mutants (unknown / empty -> a non-"" sentinel) die
+        assert _pragma_no_mutate_suffix("x = 1") is None
+        assert _pragma_no_mutate_suffix("x  # pragma: lint") is None
+        assert _pragma_no_mutate_suffix("x  # pragma: no mutate") == ""
+        assert _pragma_no_mutate_suffix("x  # pragma: no mutate start") == "start"
+        assert _pragma_no_mutate_suffix("x  # pragma: no mutate end") == "end"
+        assert _pragma_no_mutate_suffix("x  # pragma: no mutate block") == "block"
+        assert _pragma_no_mutate_suffix("x  # pragma: no mutate other") == ""
 
 
 # --- deep_replace -------------------------------------------------------------

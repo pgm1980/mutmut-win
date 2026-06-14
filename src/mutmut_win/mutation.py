@@ -1,5 +1,6 @@
 """This module contains code for managing mutant creation for whole files."""
 
+import re
 import warnings
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -39,14 +40,18 @@ def mutate_file_contents(
     code: str,
     covered_lines: set[int] | None = None,
     active_profile: Profile = Profile.ADVANCED,
+    do_not_mutate_patterns: Sequence[str] = (),
 ) -> tuple[str, Sequence[str]]:
     """Create mutations for `code` and merge them to a single mutated file with trampolines.
 
     ``active_profile`` selects the operator set (default ``advanced`` = the
     historical behaviour); it is threaded straight through to create_mutations.
+    ``do_not_mutate_patterns`` are regexes that exclude a function/class by name.
 
     :return: A tuple of (mutated code, list of mutant function names)"""
-    module, mutations = create_mutations(code, covered_lines, active_profile)
+    module, mutations = create_mutations(
+        code, covered_lines, active_profile, do_not_mutate_patterns
+    )
 
     return combine_mutations_to_source(module, mutations)
 
@@ -55,6 +60,7 @@ def create_mutations(
     code: str,
     covered_lines: set[int] | None = None,
     active_profile: Profile = Profile.ADVANCED,
+    do_not_mutate_patterns: Sequence[str] = (),
 ) -> tuple[cst.Module, list[Mutation]]:
     """Parse the code and create mutations.
 
@@ -68,7 +74,12 @@ def create_mutations(
     module = cst.parse_module(code)
 
     metadata_wrapper = MetadataWrapper(module)
-    visitor = MutationVisitor(operators_for_profile(active_profile), ignored_lines, covered_lines)
+    visitor = MutationVisitor(
+        operators_for_profile(active_profile),
+        ignored_lines,
+        covered_lines,
+        do_not_mutate_patterns,
+    )
     module = metadata_wrapper.visit(visitor)
 
     return module, visitor.mutations
@@ -140,11 +151,15 @@ class MutationVisitor(cst.CSTVisitor):
         operators: OPERATORS_TYPE,
         ignore_lines: set[int],
         covered_lines: set[int] | None = None,
+        do_not_mutate_patterns: Sequence[str] = (),
     ) -> None:
         self.mutations: list[Mutation] = []
         self._operators = operators
         self._ignored_lines = ignore_lines
         self._covered_lines = covered_lines
+        # Compiled name-skip regexes (mutmut-3.6.0 do_not_mutate_patterns backport):
+        # a FunctionDef/ClassDef whose name matches any of these is skipped wholesale.
+        self._name_skip_patterns = [re.compile(p) for p in do_not_mutate_patterns]
         # ids() of CST nodes whose entire subtree must NOT be mutated.
         # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
         # whose first argument is a pure type annotation (see Bug #4).
@@ -227,6 +242,13 @@ class MutationVisitor(cst.CSTVisitor):
         )
         if is_never_mutate_call or is_never_mutate_func:
             return True
+
+        # do_not_mutate_patterns (mutmut-3.6.0 backport): skip a function/class
+        # whose name matches any configured regex, pruning its whole subtree.
+        if self._name_skip_patterns and isinstance(node, (cst.FunctionDef, cst.ClassDef)):
+            name = node.name.value
+            if any(pattern.search(name) for pattern in self._name_skip_patterns):
+                return True
 
         # ignore everything inside of type annotations
         if isinstance(node, cst.Annotation):
@@ -569,13 +591,86 @@ def group_by_top_level_node(
     return grouped
 
 
+def _indent_width(line: str) -> int:
+    """Leading-whitespace width of a line (tabs count as one char)."""
+    return len(line) - len(line.lstrip())
+
+
+def _pragma_no_mutate_suffix(line: str) -> str | None:
+    """Directive word after a ``# pragma: no mutate`` marker on ``line``.
+
+    ``None`` if the line carries no such marker; otherwise ``""`` (plain),
+    ``"start"``, ``"end"`` or ``"block"`` — the first word after ``no mutate``
+    (an unknown word degrades to ``""`` / plain, preserving the original
+    single-line behaviour).
+    """
+    if "# pragma:" not in line:
+        return None
+    after_pragma = line.partition("# pragma:")[-1]
+    if "no mutate" not in after_pragma:
+        return None
+    tail = after_pragma.partition("no mutate")[-1].split()
+    if not tail:
+        return ""
+    word = tail[0].lower()
+    return word if word in {"start", "end", "block"} else ""
+
+
+def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
+    """1-based line range covered by a ``block`` pragma at ``lines[pragma_index]``.
+
+    The pragma line plus the suite below it: every following line indented
+    deeper than the pragma line, through the last such non-blank line. A
+    dedented continuation line of a multi-line string would end the block
+    early, but triple-quoted strings are never mutated anyway (documented
+    limitation of the text-based scan).
+    """
+    base = _indent_width(lines[pragma_index])
+    last_body = pragma_index
+    cursor = pragma_index + 1
+    while cursor < len(lines):
+        if lines[cursor].strip() == "":
+            cursor += 1
+            continue
+        if _indent_width(lines[cursor]) <= base:
+            break
+        last_body = cursor
+        cursor += 1
+    return range(pragma_index + 1, last_body + 2)
+
+
 def pragma_no_mutate_lines(source: str) -> set[int]:
-    """Return line numbers that have a `# pragma: no mutate` comment."""
-    return {
-        i + 1
-        for i, line in enumerate(source.split("\n"))
-        if "# pragma:" in line and "no mutate" in line.partition("# pragma:")[-1]
-    }
+    """Return line numbers (1-based) excluded by ``# pragma: no mutate`` comments.
+
+    Recognises four forms (mutmut-3.6.0 surface backport):
+
+    - ``# pragma: no mutate`` — the comment's own line (the original behaviour).
+    - ``# pragma: no mutate block`` — that line plus the indented suite below it.
+    - ``# pragma: no mutate start`` … ``# pragma: no mutate end`` — the inclusive
+      range between the two markers; a dangling ``start`` skips to end-of-file.
+    """
+    lines = source.split("\n")
+    ignored: set[int] = set()
+    open_start: int | None = None
+    for index, line in enumerate(lines):
+        suffix = _pragma_no_mutate_suffix(line)
+        if suffix is None:
+            continue
+        lineno = index + 1
+        if suffix == "start":
+            if open_start is None:
+                open_start = lineno
+        elif suffix == "end":
+            start = open_start if open_start is not None else lineno
+            ignored.update(range(start, lineno + 1))
+            open_start = None
+        elif suffix == "block":
+            ignored.update(_pragma_block_range(lines, index))
+        else:
+            ignored.add(lineno)
+    if open_start is not None:
+        ignored.update(range(open_start, len(lines) + 1))
+    return ignored
 
 
 def deep_replace(tree: cst.CSTNode, old_node: cst.CSTNode, new_node: cst.CSTNode) -> cst.CSTNode:

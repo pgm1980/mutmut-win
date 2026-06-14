@@ -308,12 +308,27 @@ class TestProfileWiredThroughGeneration:
         src.write_text(self._OR_SNIPPET, encoding="utf-8")
 
         def _count(profile: Profile, out_name: str) -> int:
-            args = (str(src), src, tmp_path / out_name, None, False, profile)
+            args = (str(src), src, tmp_path / out_name, None, False, profile, ())
             _rel, names, err, _warns, _fast = _create_mutants_worker(args)
             assert err is None
             return len(names)
 
         assert _count(Profile.BASIC, "b.py") < _count(Profile.ADVANCED, "a.py")
+
+    def test_pool_worker_threads_do_not_mutate_patterns(self, tmp_path: Path) -> None:
+        # The do_not_mutate name-patterns also ride the worker's args tuple (7th slot).
+        from mutmut_win.orchestrator import _create_mutants_worker
+
+        src = tmp_path / "m.py"
+        src.write_text(
+            "def keep_me():\n    return 1 + 2\n\n\ndef drop_me():\n    return 3 + 4\n",
+            encoding="utf-8",
+        )
+        args = (str(src), src, tmp_path / "out.py", None, False, Profile.ADVANCED, ("drop_me",))
+        _rel, names, err, _warns, _fast = _create_mutants_worker(args)
+        assert err is None
+        assert any("keep_me" in n for n in names)  # unmatched sibling still mutates
+        assert not any("drop_me" in n for n in names)  # matched function excluded
 
 
 class TestProfileStartupHint:

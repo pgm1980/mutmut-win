@@ -490,7 +490,10 @@ class MutationOrchestrator:
             try:
                 code = src_file.read_text(encoding="utf-8")
                 _mutated_code, mutant_names = mutate_file_contents(
-                    rel_path, code, active_profile=self._config.mutation_profile
+                    rel_path,
+                    code,
+                    active_profile=self._config.mutation_profile,
+                    do_not_mutate_patterns=self._config.do_not_mutate_patterns,
                 )
                 total += len(mutant_names)
             except Exception as exc:  # count-only preview, logged just below
@@ -601,11 +604,15 @@ class MutationOrchestrator:
         if not allow_fast_path:
             print("Configuration changed — regenerating all mutants.")
 
-        # Build per-file args for the pool worker. The active profile is the
-        # same for every file but travels in the tuple so the picklable,
-        # config-less pool worker (_create_mutants_worker) receives it.
+        # Build per-file args for the pool worker. The active profile and the
+        # do_not_mutate name-patterns are the same for every file but travel in
+        # the tuple so the picklable, config-less pool worker
+        # (_create_mutants_worker) receives them.
         active_profile = self._config.mutation_profile
-        file_args: list[tuple[str, Path, Path, set[int] | None, bool, Profile]] = []
+        skip_patterns = tuple(self._config.do_not_mutate_patterns)
+        file_args: list[
+            tuple[str, Path, Path, set[int] | None, bool, Profile, tuple[str, ...]]
+        ] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
             file_covered: set[int] | None = None
@@ -614,7 +621,15 @@ class MutationOrchestrator:
 
                 file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
             file_args.append(
-                (rel_path, src_file, output_path, file_covered, allow_fast_path, active_profile)
+                (
+                    rel_path,
+                    src_file,
+                    output_path,
+                    file_covered,
+                    allow_fast_path,
+                    active_profile,
+                    skip_patterns,
+                )
             )
 
         # Step 5: Generate per-file mutants.
@@ -715,7 +730,7 @@ class MutationOrchestrator:
 
 
 def _create_mutants_worker(
-    args: tuple[str, Path, Path, set[int] | None, bool, Profile],
+    args: tuple[str, Path, Path, set[int] | None, bool, Profile, tuple[str, ...]],
 ) -> tuple[str, list[str], Exception | None, list[str], bool]:
     """Top-level picklable worker for parallel mutant generation.
 
@@ -725,9 +740,10 @@ def _create_mutants_worker(
 
     Args:
         args: A tuple of ``(rel_path, filename, output_path, covered_lines,
-              allow_fast_path, active_profile)`` where ``rel_path`` is the
-              string path relative to the project root and ``active_profile``
-              selects the operator set.
+              allow_fast_path, active_profile, do_not_mutate_patterns)`` where
+              ``rel_path`` is the string path relative to the project root,
+              ``active_profile`` selects the operator set and
+              ``do_not_mutate_patterns`` are name-exclusion regexes.
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages,
@@ -737,7 +753,15 @@ def _create_mutants_worker(
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
-    rel_path, filename, output_path, covered_lines, allow_fast_path, active_profile = args
+    (
+        rel_path,
+        filename,
+        output_path,
+        covered_lines,
+        allow_fast_path,
+        active_profile,
+        skip_patterns,
+    ) = args
     try:
         mutant_names, warns, took_fast_path = create_mutants_for_file(
             filename,
@@ -745,6 +769,7 @@ def _create_mutants_worker(
             covered_lines,
             allow_fast_path=allow_fast_path,
             active_profile=active_profile,
+            do_not_mutate_patterns=skip_patterns,
         )
         warn_msgs = [str(w.message) for w in warns]
         return rel_path, mutant_names, None, warn_msgs, took_fast_path

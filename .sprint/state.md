@@ -42,8 +42,16 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
    Literal-`-`=CRCR. Präzedenz: inserted unary in Operand-Position bekommt explizite
    Parens (`(-x) ** y`); `not`>and/or → kein outer-paren, nur _safe_unwrap.
    Per-Operator-Mutation 42/42 = 100%.
-4. **W4 Backports do_not_mutate_patterns + pragma-block** — config-Regex +
-   `_skip_node_and_children`; pragma-block extend `pragma_no_mutate_lines()`.
+4. **W4 Backports do_not_mutate_patterns + pragma-block** — ✅ **ABGESCHLOSSEN**.
+   (A) pragma-block/start-end: `pragma_no_mutate_lines()` erweitert (Text-Indentation
+   per ToT, self-contained) + Helfer _pragma_no_mutate_suffix/_pragma_block_range/
+   _indent_width. (B) do_not_mutate_patterns: config-Feld + fail-loud-Validator +
+   Skip in `_skip_node_and_children` (FunctionDef/ClassDef-Name re.search), gethreadet
+   wie active_profile (create_mutations→mutate_file_contents→write_all_mutants_to_file→
+   create_mutants_for_file→orchestrator Pool-Tupel 7. Element + dry_run). Profil-
+   unabhängig (kein e2e-Count-Effekt). Mutation: Pragma-Scanner 193/197 = 98%
+   (4 dok. Äquivalente: `<`/`!=`-Boundary, redundanter Check, rpartition-Doppelmarker);
+   neue Skip-Zeilen 100% gekillt (Validator decorator-geskippt, via Tests abgedeckt).
 5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — Trampoline,
    decorator-skip relaxen; eigene ToT.
 6. **W6 Harness-all-Akzeptanz + Doku + Release v2.19.0**.
@@ -55,12 +63,12 @@ Ziel-Release v2.19.0. Backlog = `_docs/nextgen_roadmap/MUTMUT_WIN_OPERATOR_ROADM
   <unit-test> --profile all --force "*operator_X*"` (fnmatch-Glob via
   match_mutant_names). Neu geschriebene Funktionen zählen voll (Gate-Methodik #6).
 
-## W1/W2/W3 Ergebnis (Gates)
-W3: 1356 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
-KEPT, Semgrep 0 (Pro-Rules). Per-Operator-Mutation 42/42 = 100%. e2e: advanced-Counts
-UNVERÄNDERT (129/30/17/10/113 = Regressionsbeweis); all = basic15/adv34/all41,
-all-Counts my_lib 163, config 40, type_checking 20, py3_14 14, covered 127.
-W2: 46/50 = 92% (4 inhärente Scaffold-Äquivalente). W1: 18/18 = 100%.
+## W1–W4 Ergebnis (Gates)
+W4: 1385 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
+KEPT, Semgrep 0 (Pro-Rules, 4 Dateien). Pragma-Scanner-Mutation 193/197 = 98%; neue
+Skip-Zeilen 100% gekillt. e2e advanced+all-Pins UNVERÄNDERT (Backports profil-unabhängig).
+W3: 42/42 = 100%, all = basic15/adv34/all41, all-Counts my_lib 163/config 40/
+type_checking 20/py3_14 14/covered 127. W2: 46/50 = 92%. W1: 18/18 = 100%.
 
 ## Out of scope (Phase 5+)
 Weitere Surface-Backports jenseits §5; PyPI-Publishing.
