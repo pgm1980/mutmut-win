@@ -20,18 +20,6 @@ import re
 MAX_MUTATIONS_PER_PATTERN: int = 5
 
 # ---------------------------------------------------------------------------
-# Character-class swap pairs
-# ---------------------------------------------------------------------------
-_CHAR_CLASS_SWAPS: dict[str, str] = {
-    r"\d": r"\D",
-    r"\D": r"\d",
-    r"\w": r"\W",
-    r"\W": r"\w",
-    r"\s": r"\S",
-    r"\S": r"\s",
-}
-
-# ---------------------------------------------------------------------------
 # Quantifier patterns (applied to the raw regex string)
 # ---------------------------------------------------------------------------
 #: Matches a quantifier and its optional lazy marker. Group 1 is the base
@@ -149,17 +137,50 @@ def _mutate_quantifiers(pattern: str) -> list[str]:
     return results
 
 
+#: Shorthand character-class letters (``\d \D \w \W \s \S``).
+_SHORTHAND_LETTERS: frozenset[str] = frozenset("dDwWsS")
+
+
+def _shorthand_positions(pattern: str) -> list[tuple[int, str]]:
+    """Find unescaped shorthand classes (``\\d``, ``\\D``, ``\\w`` …) in *pattern*.
+
+    Returns ``(backslash_index, letter)`` pairs. Escape-aware, so a literal
+    ``\\\\d`` (an escaped backslash followed by ``d``) is NOT reported as a
+    ``\\d`` shorthand.
+    """
+    positions: list[tuple[int, str]] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern[i] == "\\":
+            if i + 1 < n and pattern[i + 1] in _SHORTHAND_LETTERS:
+                positions.append((i, pattern[i + 1]))
+            i += 2  # skip the whole escape pair
+            continue
+        i += 1
+    return positions
+
+
 def _mutate_char_classes(pattern: str) -> list[str]:
-    """Swap shorthand character classes: ``\\d`` ↔ ``\\D``, etc."""
+    """Mutate shorthand character classes (sub-mutators #11-#13).
+
+    Per unescaped shorthand (``\\d`` etc.): #11 negation (``\\d`` <-> ``\\D`` via
+    a case swap), #12 nullification (``\\d`` -> the literal ``d``), and #13
+    to-any (``\\d`` -> ``[\\d\\D]``). #13 fires only OUTSIDE a character class,
+    since ``[\\d]`` -> ``[[\\d\\D]]`` would be a (wrong) nested class. Every
+    occurrence is mutated, not just the first.
+    """
     results: list[str] = []
-
-    for original, swapped in _CHAR_CLASS_SWAPS.items():
-        # Only swap if the original actually appears in the pattern.
-        idx = pattern.find(original)
-        if idx != -1:
-            mutated = pattern[:idx] + swapped + pattern[idx + len(original) :]
-            results.append(mutated)
-
+    spans = _class_spans(pattern)
+    for idx, letter in _shorthand_positions(pattern):
+        negated = letter.swapcase()
+        rest = pattern[idx + 2 :]
+        # #11 negation: \d <-> \D
+        results.append(f"{pattern[:idx]}\\{negated}{rest}")
+        # #12 nullification: \d -> d
+        results.append(f"{pattern[:idx]}{letter}{rest}")
+        # #13 to-any: \d -> [\d\D] (outside a class only)
+        if not _in_class(idx, spans):
+            results.append(f"{pattern[:idx]}[\\{letter}\\{negated}]{rest}")
     return results
 
 

@@ -158,6 +158,43 @@ class TestMutateCharClasses:
         assert any(r"\D" in r for r in results)
         assert any(r"\W" in r for r in results)
 
+    def test_nullify_digit(self) -> None:
+        # #12 \d -> d (drop the backslash -> a literal 'd')
+        assert r"d" in _mutate_char_classes(r"\d")
+
+    def test_nullify_in_pattern(self) -> None:
+        assert r"ad+" in _mutate_char_classes(r"a\d+")
+
+    def test_to_any_digit(self) -> None:
+        # #13 \d -> [\d\D] (matches any character)
+        assert r"[\d\D]" in _mutate_char_classes(r"\d")
+
+    def test_to_any_skipped_inside_class(self) -> None:
+        # \d inside [...] must NOT become a nested class [[\d\D]]
+        results = _mutate_char_classes(r"[\d]")
+        assert not any("[[" in r for r in results)
+
+    def test_in_class_negation_and_nullify_still_apply(self) -> None:
+        # inside a class #11 (\D) and #12 (d) still apply; only #13 is skipped
+        results = _mutate_char_classes(r"[\d]")
+        assert r"[\D]" in results
+        assert r"[d]" in results
+
+    def test_negation_all_occurrences(self) -> None:
+        # every \d gets its own negation mutant, not just the first
+        results = _mutate_char_classes(r"\d-\d")
+        assert r"\D-\d" in results
+        assert r"\d-\D" in results
+
+    def test_escaped_backslash_not_shorthand(self) -> None:
+        # \\d is a literal backslash + d, not a \d shorthand
+        assert _mutate_char_classes(r"\\d") == []
+
+    def test_trailing_backslash_no_shorthand(self) -> None:
+        # a trailing backslash has no next char -> no shorthand, no IndexError
+        # (kills `while i != n` and the i+1 boundary arithmetic)
+        assert _mutate_char_classes("a\\") == []
+
 
 class TestMutateAnchors:
     def test_caret_removed(self) -> None:
