@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import sys
 import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
@@ -120,6 +121,14 @@ class MutmutConfig(BaseModel):
     do_not_mutate: list[str] = Field(
         default_factory=list,
         description="Glob patterns for files to exclude from mutation",
+    )
+    do_not_mutate_patterns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Regex patterns (mutmut-3.6.0 backport): a function or class whose "
+            "name matches any pattern (re.search) is excluded from mutation "
+            "together with its whole body."
+        ),
     )
     also_copy: list[str] = Field(
         default_factory=list,
@@ -239,12 +248,24 @@ class MutmutConfig(BaseModel):
         description="Rolling sample window (seconds) used by the classifier.",
     )
 
-    @field_validator("paths_to_mutate", "tests_dir", mode="before")
+    @field_validator("paths_to_mutate", "tests_dir", "do_not_mutate_patterns", mode="before")
     @classmethod
     def _coerce_string_to_list(cls, v: object) -> object:
         """Accept a single string and wrap it into a list."""
         if isinstance(v, str):
             return [v]
+        return v
+
+    @field_validator("do_not_mutate_patterns", mode="after")
+    @classmethod
+    def _validate_regex_patterns(cls, v: list[str]) -> list[str]:
+        """Reject an un-compilable regex at config-load (issue: fail loud, not mid-run)."""
+        for pattern in v:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                msg = f"do_not_mutate_patterns entry {pattern!r} is not a valid regex: {exc}"
+                raise ValueError(msg) from exc
         return v
 
     @field_validator("mutation_profile", mode="before")

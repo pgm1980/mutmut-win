@@ -28,7 +28,7 @@ from mutmut_win.constants import SOURCE_ROOT_NAMES, Profile
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from mutmut_win.config import MutmutConfig
 
@@ -631,6 +631,7 @@ def write_all_mutants_to_file(
     filename: Path | str,
     covered_lines: set[int] | None = None,
     active_profile: Profile = Profile.ADVANCED,
+    do_not_mutate_patterns: Sequence[str] = (),
 ) -> list[str]:
     """Generate mutated code and write it to *out*.
 
@@ -649,7 +650,7 @@ def write_all_mutants_to_file(
     from mutmut_win.mutation import mutate_file_contents
 
     result, mutant_names = mutate_file_contents(
-        str(filename), source, covered_lines, active_profile
+        str(filename), source, covered_lines, active_profile, do_not_mutate_patterns
     )
     out.write(result)
     return list(mutant_names)
@@ -666,6 +667,7 @@ def create_mutants_for_file(
     *,
     allow_fast_path: bool = True,
     active_profile: Profile = Profile.ADVANCED,
+    do_not_mutate_patterns: Sequence[str] = (),
 ) -> tuple[list[str], list[warnings.WarningMessage], bool]:
     """Generate mutants for a single source file and write to *output_path*.
 
@@ -764,6 +766,7 @@ def create_mutants_for_file(
                 filename=filename,
                 covered_lines=covered_lines,
                 active_profile=active_profile,
+                do_not_mutate_patterns=do_not_mutate_patterns,
             )
         collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()

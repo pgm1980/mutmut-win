@@ -822,13 +822,192 @@ def operator_match_guard(node: cst.MatchCase) -> Iterable[cst.MatchCase]:
         yield node.with_changes(guard=cst.Name(literal))
 
 
+# ---------------------------------------------------------------------------
+# all-tier aggressive operators (operator roadmap §4)
+# ---------------------------------------------------------------------------
+
+
+def operator_aod(node: cst.BinaryOperation) -> Iterable[cst.BaseExpression]:
+    """AOD (#2, all): delete one operand of a binary operation — ``a + b`` ->
+    ``a`` and ``b``. Tests whether both operands actually matter. Noisy, hence
+    all-tier. A lower-precedence operand is parenthesised by ``_safe_unwrap``.
+    """
+    yield _safe_unwrap(node.left)
+    yield _safe_unwrap(node.right)
+
+
+#: Symmetric exception-swap pairs for #44. The swap is applied only to a
+#: ``raise <Name>(...)`` whose name is a key here.
+_EXCEPTION_SWAPS: dict[str, str] = {
+    "ValueError": "TypeError",
+    "TypeError": "ValueError",
+    "KeyError": "IndexError",
+    "IndexError": "KeyError",
+    "OSError": "RuntimeError",
+    "RuntimeError": "OSError",
+    "AttributeError": "NameError",
+    "NameError": "AttributeError",
+}
+
+
+def operator_exception_swap(node: cst.Raise) -> Iterable[cst.Raise]:
+    """Exception swap (#44, all): ``raise ValueError(...)`` -> ``raise
+    TypeError(...)`` via a fixed pair table. Tests whether the suite asserts the
+    EXACT exception type, not just that something is raised. Only fires on a
+    ``raise <known Name>(...)`` call; a bare ``raise`` or ``raise <expr>`` is
+    left alone.
+    """
+    if not isinstance(node.exc, cst.Call) or not isinstance(node.exc.func, cst.Name):
+        return
+    swapped = _EXCEPTION_SWAPS.get(node.exc.func.value)
+    if swapped is None:
+        return
+    yield node.with_changes(exc=node.exc.with_changes(func=cst.Name(swapped)))
+
+
+def operator_statement_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """General statement removal (#27, all): drop an effectful expression
+    statement by replacing it with ``pass``.
+
+    Generalises ``operator_void_call_removal`` (which owns bare ``Call``
+    statements at the advanced profile) to the other expression statements
+    whose evaluation plausibly has an observable side effect: ``await`` of a
+    coroutine, a generator ``yield``, a subscript (``__getitem__``) and a walrus
+    binding. Pure-value statements (bare names, attributes, arithmetic,
+    comparisons), docstrings (string literals) and ``...`` stub bodies are left
+    alone on purpose — removing them is a guaranteed-equivalent, unkillable
+    mutant, so they are excluded by the positive allow-list below.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Expr):
+        return
+    expr = node.body[0]
+    if not isinstance(expr.value, (cst.Await, cst.Yield, cst.Subscript, cst.NamedExpr)):
+        return
+    yield node.with_changes(body=[cst.Pass()])
+
+
+def operator_member_assignment_removal(
+    node: cst.SimpleStatementLine,
+) -> Iterable[cst.SimpleStatementLine]:
+    """Member/attribute-assignment removal (#29, all): drop an attribute
+    assignment by replacing it with ``pass``.
+
+    Targets ``self.x = v`` / ``obj.attr = v`` — a single ``Assign`` with exactly
+    one target whose target is an ``Attribute``. Tests whether persisting that
+    object state actually matters. Distinct from (and complementary to) the base
+    ``operator_assignment``, which mutates the *value* to ``None``; this removes
+    the whole statement. Plain-name (``x = v``), tuple-target, chained and
+    annotated assignments are left to other operators.
+    """
+    if len(node.body) != 1 or not isinstance(node.body[0], cst.Assign):
+        return
+    assign = node.body[0]
+    if len(assign.targets) != 1 or not isinstance(assign.targets[0].target, cst.Attribute):
+        return
+    yield node.with_changes(body=[cst.Pass()])
+
+
+#: Arithmetic binary operators where inserting a unary minus on a Name operand
+#: is meaningful (bitwise/shift operators are excluded — `-x` there is odd).
+_ARITHMETIC_BINOPS: tuple[type[cst.BaseBinaryOp], ...] = (
+    cst.Add,
+    cst.Subtract,
+    cst.Multiply,
+    cst.Divide,
+    cst.Modulo,
+    cst.FloorDivide,
+    cst.Power,
+)
+
+
+def _is_not_unary(expr: cst.BaseExpression) -> bool:
+    """True if ``expr`` is already a ``not`` unary operation."""
+    return isinstance(expr, cst.UnaryOperation) and isinstance(expr.operator, cst.Not)
+
+
+def _negate(expr: cst.BaseExpression) -> cst.UnaryOperation:
+    """``not <expr>`` with _safe_unwrap parenthesising a low-precedence operand.
+
+    No outer parentheses are needed: ``not`` binds tighter than ``and``/``or``
+    and a test position has no outer operator, so ``not (a or b)`` and
+    ``(not a) and b`` are already correct without wrapping the result.
+    """
+    return cst.UnaryOperation(
+        operator=cst.Not(whitespace_after=cst.SimpleWhitespace(" ")),
+        expression=_safe_unwrap(expr),
+    )
+
+
+def _parenthesized_minus(name: cst.Name) -> cst.UnaryOperation:
+    """``(-name)`` — explicit parens keep the minus on the operand even under
+    ``**`` (libcst renders verbatim, so a bare ``-x ** y`` would re-parse as
+    ``-(x ** y)``)."""
+    return cst.UnaryOperation(
+        operator=cst.Minus(),
+        expression=name,
+        lpar=[cst.LeftParen()],
+        rpar=[cst.RightParen()],
+    )
+
+
+def operator_uoi_negate_while(node: cst.While) -> Iterable[cst.While]:
+    """UOI (#12, all): negate a ``while`` test — ``while x:`` -> ``while not x:``.
+
+    The while-loop analogue of operator_negate_condition (which only covers
+    ``if``). Mirrors its skips: a ``Comparison`` test is left to swap_op /
+    relational_matrix and an existing ``not`` to operator_remove_unary_ops —
+    negating those here would only duplicate their mutants (no visitor dedup).
+    """
+    test = node.test
+    if isinstance(test, cst.Comparison) or _is_not_unary(test):
+        return
+    yield node.with_changes(test=_negate(test))
+
+
+def operator_uoi_minus_operand(
+    node: cst.BinaryOperation,
+) -> Iterable[cst.BinaryOperation]:
+    """UOI (#12, all): insert a unary minus on a bare ``Name`` operand of an
+    arithmetic binary op — ``x + y`` -> ``(-x) + y`` and ``x + (-y)``.
+
+    Only arithmetic operators, only plain ``Name`` operands: numeric literals
+    are owned by operator_number_crcr (it already emits ``-orig``), and the
+    Name restriction bounds the explosion.
+    """
+    if not isinstance(node.operator, _ARITHMETIC_BINOPS):
+        return
+    if isinstance(node.left, cst.Name):
+        yield node.with_changes(left=_parenthesized_minus(node.left))
+    if isinstance(node.right, cst.Name):
+        yield node.with_changes(right=_parenthesized_minus(node.right))
+
+
+def operator_uoi_negate_boolean_operand(
+    node: cst.BooleanOperation,
+) -> Iterable[cst.BooleanOperation]:
+    """UOI (#12, all): insert ``not`` on an operand of an ``and``/``or`` —
+    ``a and b`` -> ``not a and b`` and ``a and not b``.
+
+    Tests whether each operand's polarity matters in the boolean chain. An
+    operand that is already a ``not`` is skipped (``not not a`` ~ ``bool(a)`` is
+    an equivalent).
+    """
+    if not _is_not_unary(node.left):
+        yield node.with_changes(left=_negate(node.left))
+    if not _is_not_unary(node.right):
+        yield node.with_changes(right=_negate(node.right))
+
+
 # Operators that should be called on specific node types, each tagged with the
 # LOWEST profile that includes it; operators_for_profile filters on this tag.
-# The first 15 entries are mutmut's base operators at profile BASIC; the last 9
-# are mutmut-win's extras at profile ADVANCED, marked by the origin comments
+# The first 15 entries are mutmut's base operators at profile BASIC; the middle
+# block is mutmut-win's extras at profile ADVANCED, marked by the origin comments
 # higher up in this file. operator_assignment is registered twice, for Assign
-# and AnnAssign, so the 15 base entries span 14 distinct functions. Aggressive
-# ALL-tier operators arrive in a later phase of the operator roadmap.
+# and AnnAssign, so the 15 base entries span 14 distinct functions. The final
+# block is the aggressive ALL-tier operators (operator roadmap §4), which only
+# fire under the `all` profile and so never disturb the advanced surface.
 mutation_operators: TAGGED_OPERATORS_TYPE = [
     # --- mutmut base operators (profile: basic) ---
     (cst.BaseNumber, operator_number, Profile.BASIC),
@@ -869,6 +1048,14 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Set, operator_collection_empty, Profile.ADVANCED),
     (cst.Dict, operator_collection_empty, Profile.ADVANCED),
     (cst.MatchCase, operator_match_guard, Profile.ADVANCED),
+    # --- Phase 4 all-tier aggressive operators (operator roadmap §4) ---
+    (cst.BinaryOperation, operator_aod, Profile.ALL),
+    (cst.Raise, operator_exception_swap, Profile.ALL),
+    (cst.SimpleStatementLine, operator_statement_removal, Profile.ALL),
+    (cst.SimpleStatementLine, operator_member_assignment_removal, Profile.ALL),
+    (cst.While, operator_uoi_negate_while, Profile.ALL),
+    (cst.BinaryOperation, operator_uoi_minus_operand, Profile.ALL),
+    (cst.BooleanOperation, operator_uoi_negate_boolean_operand, Profile.ALL),
 ]
 
 

@@ -1,63 +1,61 @@
-# Current State — v2.18.0 (regex suite shipped)
+# Current State — v2.19.0 (Phase 4 complete: all-tier operators + 3.6.0 backports)
 
-LIVE state memory; `project_overview` / `codebase_structure` carry the deeper
-detail (their headers point here), `sprint_36_progress` is archived history.
+LIVE state memory; project_overview/codebase_structure carry deeper detail,
+sprint_36_progress is archived.
 
 ## Release status
-- **Current release: v2.18.0** (GitHub release live). Project back in the
-  documented development pause (0 open issues / backlog).
-- History since v2.14.0: v2.16.0 (Phase 1: operator-profile system), v2.17.0
-  (Phase 2: six advanced operators), v2.18.0 (Phase 3: full regex suite).
-- Last gates: full suite 1313 passed / 5 skipped, ruff 0 (bare `.`), mypy 14
-  baseline, Semgrep clean.
+- **Current release: v2.19.0** (Phase 4). History: v2.16 (profiles), v2.17
+  (Phase 2: 6 advanced ops), v2.18 (Phase 3: regex suite), v2.19 (Phase 4).
+- Back in the documented development pause after v2.19.0.
+- Last gates: full suite 1397 passed / 5 skipped, ruff 0, mypy 14 baseline,
+  import-linter KEPT, Semgrep 0, acceptance_harness 204/200/98% (4 documented
+  regex equivalents, NO new Phase-4 survivors).
 
-## Operator profiles (since v2.16.0)
-- `Profile(IntEnum)` BASIC=0 / ADVANCED=1 / ALL=2 in constants.py. Registry
-  `node_mutation.mutation_operators` = `(node_type, operator, Profile)` 3-tuples;
-  `operators_for_profile(active)` filters `prof <= active`. **advanced is DEFAULT**
-  (34 entries / 29 unique funcs); basic 15; all == advanced (all-tier not built).
-- advanced is NOT behaviour-neutral vs v2.14 (Phase 2 + Phase 3 added operators).
+## Operator profiles
+- Registry node_mutation.mutation_operators = (node_type, operator, Profile).
+- Counts: **basic 15, advanced 34, all 41**. `all` strictly exceeds `advanced`.
 
-## Phase 2 advanced operators (v2.17.0, node_mutation.py)
-#3 operator_relational_matrix (ComparisonTarget), #15 operator_number_crcr
-(Integer/Float), #22 operator_negate_condition + #23 operator_force_condition
-(If), #38 operator_collection_empty (List/Tuple/Set/Dict), #41 operator_match_guard
-(MatchCase). All decoupled (no visitor dedup).
+## Phase 4 shipped (v2.19.0) — node_mutation.py operators + mutation.py backports
+- AOD (#2 operator_aod), exception-swap (#44 operator_exception_swap).
+- statement-removal (#27 operator_statement_removal, allow-list Await/Yield/
+  Subscript/NamedExpr), member-assignment-removal (#29).
+- UOI (#12): operator_uoi_negate_while / _minus_operand / _negate_boolean_operand
+  (comparison operands EXCLUDED by ToT).
+- Backports: pragma block/start-end (pragma_no_mutate_lines + helpers);
+  do_not_mutate_patterns (config regex -> _skip_node_and_children, threaded via
+  the active_profile pool-tuple chain); @staticmethod mutation (_is_static_only +
+  create_trampoline_wrapper static dispatch). @classmethod DEFERRED (class-bound
+  __name__ read-only).
 
-## Phase 3 regex suite (v2.18.0, regex_mutation.py) — DONE
-String-based on a class-span tokenizer (`_class_spans`/`_in_class`), NOT re._parser
-(no unparse -> emitter round-trip risk). The 14 sub-mutators:
-- #1 anchors (_mutate_anchors): ^ $ \A \Z \b \B removal.
-- #2-6 quantifiers (_mutate_quantifiers + _brace_variants): removal, +<->* swap,
-  short->range (?->{1}, +->{2,}), reluctant greedy->lazy, {n,m} ±1.
-- #11-13 shorthands (_mutate_char_classes + _shorthand_positions): negation
-  (swapcase), nullify (\d->d), to-any (\d->[\d\D], outside classes only).
-- #7-10 char-classes (_mutate_classes + _class_members + _RANGE_RE): negation
-  toggle, child-removal, range ±1, to-any.
-- #14/+15 groups (_mutate_groups): look-around flip, capturing->non-capturing.
-mutate_regex_pattern orchestrates; re.compile + seen-set gate; MAX_MUTATIONS=12.
-operator_regex (node_mutation, ADVANCED) calls it on cst.Call re.* patterns.
-Harness 184/188 (4 documented fullmatch equivalents). Commits: 6806434, 5e3f098,
-367c90d, bbfabc2, aaf4b13, 85be62d; merge aa3bf75.
+## Phases 1-3 (recap)
+v2.16 profile system; v2.17 #3 ROR / #15 CRCR / #22 negate / #23 force / #38
+collection-empty / #41 match-guard; v2.18 14-sub-mutator regex suite
+(regex_mutation.py, string-based class-span tokenizer).
 
-## Open (later phases)
-`all`-tier aggressive operators (#2 AOD, #12 UOI, #27/#29 removal, #44 exception
-swap) + mutmut-3.6.0 surface backports (@staticmethod/@classmethod, pragma block,
-do_not_mutate_patterns). Roadmap §4/§5/§6, ROADMAP_SPEC `all`-profile table.
+## Reusable lessons (verified across Phase 4)
+- Per-operator gate: mutmut-win run --paths-to-mutate <file> --tests-dir <unit>
+  --profile all --force "*operator_X*" (fnmatch via match_mutant_names).
+- @staticmethod mutation is a SURFACE change (not profile-tagged) -> expands
+  basic/advanced/all alike; advanced e2e pins NOT frozen from v2.19 on. my_lib
+  Point.from_coords gives advanced 129->140 / all 163->174; the 3.5.0 snapshot
+  skipped it -> _assert_profile_layered has a w5_static_prefixes allowance.
+- e2e advanced/all pins: my_lib 140/174, config 30/40, type_checking 17/20,
+  py3_14 10/14, covered 113/127.
+- libcst renders verbatim -> inserted unary in operand position needs explicit
+  parens; opmatrix tests assert the EXACT rendered string.
+- SimpleStatementLine-removal scaffold: 2 inherent equivalents/op.
+- Engine-self-mutation coverage gap: mutation-testing create_trampoline_wrapper
+  via mutate_file_contents under-credits kills -> verify wrapper changes by EXEC.
+- Decorator-skipped methods (@field_validator/@classmethod/@property) produce 0
+  mutants -> cover by direct tests.
+- mypy 14 baseline. Commit -m: NO backticks (shell command-substitution).
+- acceptance_harness local run: pin [tool.uv.sources] mutmut-win = { path =
+  "../../.." , editable = true }, then `uv sync --directory <h> --native-tls`
+  (Corporate TLS) + `uv run --directory <h> mutmut-win run --profile all --force
+  --no-progress`; re-pin to git rev v2.19.0, revert <h>/uv.lock. `uv sync` on the
+  MAIN repo drops dev extras -> always `uv sync --all-extras --all-groups`.
 
-## Recurring lessons
-- Regex/tokenizer survivor pattern: scan-start/boundary index mutants are
-  documented equivalents (`<` vs `!=` where i+1 is never > n); trailing-backslash
-  tests kill the IndexError variants; test index-heavy helpers DIRECTLY (exact
-  units), not only via the public function.
-- Harness gotcha: a target's regex pattern must live INSIDE its function — a
-  module-level `_X = re.compile(...)` is never mutated (function-body mutation only).
-- e2e test strategy for new operators: auto-memory `phase2-operator-e2e-profilschichtung`
-  (layered invariants + --profile basic for the pipeline snapshot). Count pins
-  unchanged through Phase 3 (no fixture uses regex on mutated lines): my_lib 129,
-  config 30, type_checking 17, py3_14 10, covered 113.
-- Host: `uv run --frozen` + `UV_SYSTEM_CERTS=1`; Semgrep host CLI; targeted gate
-  via fully-qualified names from `.mutmut-cache/mutmut-cache.db`. acceptance_harness
-  local run: pin `[tool.uv.sources] mutmut-win = { path = "../../.." }`, `uv sync
-  --directory ...`, `mutmut-win run --profile advanced --force`; re-pin to @vX.Y.Z,
-  revert uv.lock afterwards.
+## Open / next
+Development pause (0 issues / backlog). Future: @classmethod mutation (trampoline-
+lookup __func__.__name__), the two unwired backport harness targets (pragma /
+do_not_mutate), wrapper-codegen legacy coverage debt (multi-param self-index).
