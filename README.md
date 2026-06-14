@@ -24,11 +24,11 @@ functional for WSL/Linux CI).
 - **Mutates your code across three operator profiles** — `basic` is the
   full mutmut 3.5.0 set (arithmetic/comparison/boolean operators, strings,
   numbers, assignments, keywords, lambdas, argument removal, match/case, …);
-  the default `advanced` adds mutmut-win's extras (regex patterns, math
-  method swaps, return-value replacement, conditional expressions, statement
-  removal, collection methods, or-defaults) plus six Phase-2 operators —
-  ROR full matrix, number-literal CRCR, condition negate/force,
-  collection-literal emptying and match-guard.
+  the default `advanced` adds mutmut-win's extras (a full 14-sub-mutator
+  regex-pattern suite, math method swaps, return-value replacement,
+  conditional expressions, statement removal, collection methods, or-defaults)
+  plus six Phase-2 operators — ROR full matrix, number-literal CRCR, condition
+  negate/force, collection-literal emptying and match-guard.
 - **Runs only the tests that matter per mutant.** A stats run records
   which tests execute which function; each mutant then runs exactly its
   covering tests instead of the whole suite. Mutants no test covers are
@@ -82,13 +82,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.18.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.18.0" --dev
 ```
 
 ## Quick start
@@ -382,12 +382,15 @@ re-run — alongside an external-QA hardening pass, and v2.14.0 closed
 all 28 findings of a full 360° code analysis (9 bugs, 13 anomalies,
 6 optimizations). v2.16.0 then introduced the three-operator-profile
 model (`basic`/`advanced`/`all`, advanced as the behaviour-neutral
-default), and v2.17.0 landed the first six advanced Phase-2 operators
+default), v2.17.0 landed the first six advanced Phase-2 operators
 (ROR matrix, number CRCR, condition negate/force, collection-emptying,
-match-guard — acceptance harness 152/152, 100 %). Details: the
+match-guard — acceptance harness 152/152, 100 %), and v2.18.0 completed
+the regex operator with the full 14-sub-mutator suite (anchors,
+quantifiers, shorthands, character classes, groups/look-around — harness
+184/188). Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.17.0 is the current release. Active development is in a
+**Status:** v2.18.0 is the current release. Active development is in a
 documented pause with a clean slate — zero open issues, zero known
 backlog entries. The issue tracker stays open; the resumption baseline
 (a full self-run over the tool's own codebase — 7231 mutants,

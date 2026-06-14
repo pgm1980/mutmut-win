@@ -79,12 +79,14 @@ def test_regex_digits():
     assert rt.all_digits("12") is True   # kills \d->\D, \d->literal d
     assert rt.all_digits("1a") is False  # kills \d->[\d\D]
     assert rt.all_digits("") is False    # kills + -> * (quantifier)
+    assert rt.all_digits("1") is True    # kills + -> {2,} (short->range)
 
 
 def test_regex_class():
     assert rt.only_abc("abc") is True    # kills range [a-c]->[a-b]
     assert rt.only_abc("abd") is False   # kills range ->[a-d], negation, to-any
     assert rt.only_abc("") is False
+    assert rt.only_abc("a") is True      # kills + -> {2,} (short->range)
 
 
 def test_regex_prefix():
@@ -95,6 +97,7 @@ def test_regex_prefix():
 def test_regex_repeat():
     assert rt.repeat_ab("abab") == "ab"
     assert rt.repeat_ab("aba") is None         # kills (ab)+ quantifier change
+    assert rt.repeat_ab("ab") == "ab"          # kills (ab)+ -> (ab){2,}
     # group->non-capturing would break .group(1) -> error -> killed
 
 

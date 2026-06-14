@@ -94,7 +94,7 @@
 | 39 | Comprehension filter removal (`[x for x in s if p]`→`…`) | ✅ | — | — | — | — | — |
 | 40 | Match/switch arm deletion | ✅ | ✅ | — | ✅ | ✅ | ✅ |
 | 41 | **Match guard** `case x if c`→`if True`/`if False` | ✅ | — | — | ✅ | ✅ | — |
-| 42 | Regex pattern mutation | ◐ (lean) | — | ✅ (15 sub) | ✅ (16 sub) | — | — |
+| 42 | Regex pattern mutation | ✅ (14 sub) | — | ✅ (15 sub) | ✅ (16 sub) | — | — |
 | 43 | `raise`/throw removal | ✅ | — | ✅ | ✅ | ◐ | — |
 | 44 | **Exception swap** (`raise ValueError`→`raise TypeError`) | — | — | — | ✅ | — | — |
 
