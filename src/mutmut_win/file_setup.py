@@ -24,7 +24,7 @@ from typing import IO, TYPE_CHECKING
 
 import libcst as cst
 
-from mutmut_win.constants import SOURCE_ROOT_NAMES
+from mutmut_win.constants import SOURCE_ROOT_NAMES, Profile
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
@@ -419,10 +419,10 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
     The generation fast path reuses ``.meta`` mutant names when the source
     is unchanged — but the UNIVERSE also depends on configuration:
     ``paths_to_mutate``, ``do_not_mutate``, ``mutate_only_covered_lines``,
-    ``also_copy``/``extra_paths``. Editing any of these used to leave a
-    stale mutant universe in place without warning (issue #101 /
-    A3-OS-008). The orchestrator calls this once per run and disables the
-    fast path when the fingerprint changed.
+    ``also_copy``/``extra_paths``, and the operator ``mutation_profile``.
+    Editing any of these used to leave a stale mutant universe in place
+    without warning (issue #101 / A3-OS-008). The orchestrator calls this
+    once per run and disables the fast path when the fingerprint changed.
 
     Args:
         config: Active ``MutmutConfig``.
@@ -449,6 +449,10 @@ def config_fingerprint_matches(config: MutmutConfig) -> bool:
             "mutate_only_covered_lines": config.mutate_only_covered_lines,
             "also_copy": sorted(config.also_copy),
             "extra_paths": sorted(config.extra_paths),
+            # The profile selects the operator set, so a profile switch on
+            # unchanged source changes the mutant universe exactly like an
+            # engine upgrade — it must regenerate, not reuse stale mutants.
+            "mutation_profile": config.mutation_profile.to_name(),
         },
         sort_keys=True,
     )
@@ -626,6 +630,7 @@ def write_all_mutants_to_file(
     source: str,
     filename: Path | str,
     covered_lines: set[int] | None = None,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> list[str]:
     """Generate mutated code and write it to *out*.
 
@@ -635,13 +640,17 @@ def write_all_mutants_to_file(
         filename: Path to the source file (used by the mutation engine for
             context; the file is not re-read).
         covered_lines: Optional set of line numbers to restrict mutations to.
+        active_profile: Operator profile to apply (default ``advanced`` = the
+            historical operator set).
 
     Returns:
         List of mangled mutant method names (e.g. ``["add__mutmut_1", ...]``).
     """
     from mutmut_win.mutation import mutate_file_contents
 
-    result, mutant_names = mutate_file_contents(str(filename), source, covered_lines)
+    result, mutant_names = mutate_file_contents(
+        str(filename), source, covered_lines, active_profile
+    )
     out.write(result)
     return list(mutant_names)
 
@@ -656,6 +665,7 @@ def create_mutants_for_file(
     covered_lines: set[int] | None = None,
     *,
     allow_fast_path: bool = True,
+    active_profile: Profile = Profile.ADVANCED,
 ) -> tuple[list[str], list[warnings.WarningMessage], bool]:
     """Generate mutants for a single source file and write to *output_path*.
 
@@ -753,6 +763,7 @@ def create_mutants_for_file(
                 source=source,
                 filename=filename,
                 covered_lines=covered_lines,
+                active_profile=active_profile,
             )
         collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()

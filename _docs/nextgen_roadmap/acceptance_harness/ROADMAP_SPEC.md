@@ -19,6 +19,12 @@ passes trivially today (v2.14.0), because the mutant is not yet generated.
 
 **Baseline today (v2.14.0, all operators on, no profiles yet): 71 mutants, 71 killed, 100 %, pytest 14 green.** Per-construct current counts are the *Current* column below.
 
+**Phase 1 verification (v2.16.0 — profile scaffold, no new operators yet):**
+`--profile advanced` (the default) reproduces the baseline exactly — **71 / 71 /
+100 %** (behaviour-neutral). `--profile basic` filters down to mutmut's 15 base
+operators — **55 / 55 / 100 %** (16 advanced-only mutants correctly dropped). The
+*Expected* columns below stay untouched until Phase 2 lands the first real operators.
+
 ## Acceptance table — `advanced` profile
 
 | # | Operator | Target (`src/roadmap/`) | Current | Expected (Δ) | Killed by |

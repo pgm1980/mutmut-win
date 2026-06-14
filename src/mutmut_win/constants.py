@@ -1,5 +1,46 @@
 """Constants for mutmut-win: exit code mappings and status definitions."""
 
+from __future__ import annotations
+
+from enum import IntEnum
+
+
+class Profile(IntEnum):
+    """Mutation-operator profile, ordered by inclusiveness.
+
+    Higher profiles are supersets of lower ones: ``advanced`` adds mutmut-win's
+    extra operators on top of mutmut's ``basic`` base set, and ``all`` adds the
+    aggressive operators on top of that. The integer order drives the registry
+    filter — an operator tagged with profile ``P`` is active iff ``P <= active``
+    (see ``node_mutation.operators_for_profile``).
+
+    ``advanced`` is the out-of-box default and equals mutmut-win's historical
+    behaviour; ``basic`` is strict mutmut parity (the 15 base operators only).
+    """
+
+    BASIC = 0
+    ADVANCED = 1
+    ALL = 2
+
+    @classmethod
+    def from_name(cls, name: str) -> Profile:
+        """Parse a case-insensitive profile name such as ``"advanced"``.
+
+        :raises ValueError: if ``name`` is not one of basic/advanced/all.
+        """
+        try:
+            return cls[name.strip().upper()]
+        except KeyError:
+            valid = ", ".join(p.to_name() for p in cls)
+            raise ValueError(
+                f"unknown mutation profile {name!r}; valid profiles: {valid}"
+            ) from None
+
+    def to_name(self) -> str:
+        """Return the lower-case CLI/config name, e.g. ``"advanced"``."""
+        return self.name.lower()
+
+
 #: Environment variable read by the trampoline to select the mutant under
 #: test. Single source of truth (issue #110 / A4-QX-019) — runner.py and
 #: process/worker.py re-export it; the literal inside the trampoline

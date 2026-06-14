@@ -18,6 +18,7 @@ from mutmut_win.constants import (
     EXIT_CODE_TIMEOUT,
     EXIT_CODE_TYPE_CHECK,
     MINIMUM_PYTEST_VERSION,
+    Profile,
     status_by_exit_code,
 )
 from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
@@ -137,6 +138,9 @@ class MutationOrchestrator:
         # Issue #125 / 360°-A2: fail fast on a pytest that cannot take the
         # worker's @argfile hand-off — BEFORE any staging work happens.
         _ensure_supported_pytest()
+
+        # Announce the active operator profile once per run (operator roadmap).
+        self._print_profile_hint()
 
         wall_start = time.monotonic()
 
@@ -467,6 +471,9 @@ class MutationOrchestrator:
         This prevents the "cache poisoning" problem where a dry-run leaves
         behind a ``mutants/`` directory that blocks the next real run.
 
+        The active profile (``self._config.mutation_profile``) is applied so
+        the preview count matches what the real run would generate.
+
         Returns:
             ``MutationRunResult`` with only ``total_mutants`` set.
         """
@@ -482,7 +489,9 @@ class MutationOrchestrator:
                 continue
             try:
                 code = src_file.read_text(encoding="utf-8")
-                _mutated_code, mutant_names = mutate_file_contents(rel_path, code)
+                _mutated_code, mutant_names = mutate_file_contents(
+                    rel_path, code, active_profile=self._config.mutation_profile
+                )
                 total += len(mutant_names)
             except Exception as exc:  # count-only preview, logged just below
                 # MUT-003: the full run warns about files it cannot mutate
@@ -495,6 +504,26 @@ class MutationOrchestrator:
         result = MutationRunResult(total_mutants=total)
         print(f"Dry run: {total} mutants would be generated.")
         return result
+
+    def _print_profile_hint(self) -> None:
+        """Announce the active profile and how many operators it enables.
+
+        Printed once per run by ``run()``. Under ``basic`` a one-line note
+        points users at the richer profiles — informational, not a warning
+        (``advanced`` is the default, so this is never a "you broke something"
+        message). The count is read from the actual filtered operator list so
+        it stays correct as later phases add operators.
+        """
+        from mutmut_win.node_mutation import operators_for_profile
+
+        profile = self._config.mutation_profile
+        count = len(operators_for_profile(profile))
+        print(f"profile={profile.to_name()} — {count} operators active")
+        if profile is Profile.BASIC:
+            print(
+                "  (basic = mutmut parity; '--profile advanced' or '--profile all' "
+                "enables more operators)"
+            )
 
     def _warn_unmatched_exclusions(self, walked_paths: list[str]) -> None:
         """Warn for ``do_not_mutate`` patterns that matched no walked file.
@@ -572,8 +601,11 @@ class MutationOrchestrator:
         if not allow_fast_path:
             print("Configuration changed — regenerating all mutants.")
 
-        # Build per-file args for the pool worker.
-        file_args: list[tuple[str, Path, Path, set[int] | None, bool]] = []
+        # Build per-file args for the pool worker. The active profile is the
+        # same for every file but travels in the tuple so the picklable,
+        # config-less pool worker (_create_mutants_worker) receives it.
+        active_profile = self._config.mutation_profile
+        file_args: list[tuple[str, Path, Path, set[int] | None, bool, Profile]] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
             file_covered: set[int] | None = None
@@ -581,7 +613,9 @@ class MutationOrchestrator:
                 from mutmut_win.code_coverage import get_covered_lines_for_file
 
                 file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
-            file_args.append((rel_path, src_file, output_path, file_covered, allow_fast_path))
+            file_args.append(
+                (rel_path, src_file, output_path, file_covered, allow_fast_path, active_profile)
+            )
 
         # Step 5: Generate per-file mutants.
         # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0)
@@ -681,7 +715,7 @@ class MutationOrchestrator:
 
 
 def _create_mutants_worker(
-    args: tuple[str, Path, Path, set[int] | None, bool],
+    args: tuple[str, Path, Path, set[int] | None, bool, Profile],
 ) -> tuple[str, list[str], Exception | None, list[str], bool]:
     """Top-level picklable worker for parallel mutant generation.
 
@@ -691,8 +725,9 @@ def _create_mutants_worker(
 
     Args:
         args: A tuple of ``(rel_path, filename, output_path, covered_lines,
-              allow_fast_path)`` where ``rel_path`` is the string path
-              relative to the project root.
+              allow_fast_path, active_profile)`` where ``rel_path`` is the
+              string path relative to the project root and ``active_profile``
+              selects the operator set.
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages,
@@ -702,10 +737,14 @@ def _create_mutants_worker(
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
-    rel_path, filename, output_path, covered_lines, allow_fast_path = args
+    rel_path, filename, output_path, covered_lines, allow_fast_path, active_profile = args
     try:
         mutant_names, warns, took_fast_path = create_mutants_for_file(
-            filename, output_path, covered_lines, allow_fast_path=allow_fast_path
+            filename,
+            output_path,
+            covered_lines,
+            allow_fast_path=allow_fast_path,
+            active_profile=active_profile,
         )
         warn_msgs = [str(w.message) for w in warns]
         return rel_path, mutant_names, None, warn_msgs, took_fast_path

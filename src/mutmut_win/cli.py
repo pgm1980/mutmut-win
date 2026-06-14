@@ -80,6 +80,16 @@ def _load_config_or_exit() -> MutmutConfig:
     help="Test directory (overrides pyproject.toml).",
 )
 @click.option(
+    "--profile",
+    type=click.Choice(["basic", "advanced", "all"], case_sensitive=False),
+    default=None,
+    help=(
+        "Operator profile (overrides pyproject.toml): basic = mutmut's 15 base "
+        "operators; advanced = + mutmut-win's extras (default); all = + the "
+        "aggressive operators."
+    ),
+)
+@click.option(
     "--min-score",
     # FloatRange: 150 used to execute the FULL run before the gate
     # trivially failed; -5 made the gate a no-op (issue #120 / CLI-001).
@@ -176,6 +186,7 @@ def run(
     max_children: int | None,
     paths_to_mutate: tuple[str, ...],
     tests_dir: str | None,
+    profile: str | None,
     min_score: float | None,
     output: str,
     since_commit: str | None,
@@ -244,6 +255,8 @@ def run(
             overrides["paths_to_mutate"] = list(paths_to_mutate)
         if tests_dir is not None:
             overrides["tests_dir"] = [tests_dir]
+        if profile is not None:
+            overrides["mutation_profile"] = profile
         if timeout_multiplier is not None:
             overrides["timeout_multiplier"] = timeout_multiplier
         if debug:

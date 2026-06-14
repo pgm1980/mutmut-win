@@ -24,8 +24,8 @@ mutmut-win run --profile all
 | **`advanced`** | `basic` + the 7 current mutmut-win extras + the safe Tier-A additions | the recommended everyday set |
 | **`all`** | `advanced` + the aggressive operators (high mutant volume / higher equivalent-mutant risk) | maximum thoroughness for audits |
 
-> **Default-profile decision (LOCKED 2026-06-13): the out-of-box profile is `basic` (1:1 mutmut).** The 7 current extras + the Tier-A additions move behind `--profile advanced`; audits use `--profile all`.
-> ⚠️ **This is a deliberate behavior change.** Today's mutmut-win always runs base + 7 extras, so after this change existing users must pass `--profile advanced` to keep current behavior. **Required mitigations:** (1) a prominent release note ("BREAKING: default profile is now mutmut-parity `basic`; use `--profile advanced` for the previous operator set"); (2) a one-line startup hint whenever `basic` is active, e.g. `profile=basic (mutmut-parity) — '--profile advanced' enables N more operators`; (3) bump the minor/major version accordingly.
+> **Default-profile decision (REVISED 2026-06-14, supersedes the original 2026-06-13 lock): the out-of-box profile is `advanced`.** That is mutmut-win's historical operator set (mutmut base + the 9 extras), so making it the default is **behaviour-neutral** — existing users see the same mutants as before. `basic` is the opt-in for strict 1:1 mutmut parity (the 15 base operators only); `all` is for audits.
+> ✅ **No breaking change.** Because `advanced` == today's behaviour, no "pass `--profile advanced` to keep current behaviour" migration is needed. The original §1 mitigations (BREAKING note, `basic`-default startup warning, major bump) are therefore void. What ships instead: (1) a normal release note announcing the new `--profile` / `[tool.mutmut].mutation_profile` option; (2) an informational once-per-run line (`profile=<name> — N operators active`; no warning tone); (3) a **minor** version bump (additive feature). Delivered in Phase 1, v2.16.0.
 
 ### Mechanism (small, localized change)
 
@@ -204,7 +204,7 @@ Each new operator should get an `opmatrix`-style probe (target fn + strong kill-
 
 ## 7. Decisions (LOCKED 2026-06-13)
 
-1. **Default-selected profile = `basic`** (1:1 mutmut). Deliberate behavior change — see the ⚠️ box in §1 for the required release-note/startup-hint/version mitigations.
+1. **Default-selected profile = `advanced`** (REVISED 2026-06-14, supersedes the 2026-06-13 `basic` lock). `advanced` == mutmut-win's historical operator set, so the default is **behaviour-neutral — NOT a breaking change**. `basic` is the opt-in mutmut-parity profile; `all` is for audits. See the ✅ box in §1; shipped in v2.16.0 (minor bump).
 2. **`all`-tier scope = UOI + AOD + general-statement-removal + member/attr-assignment-removal + exception-swap.** The dynamic-typing-hard operators (constructor→None, naked-receiver, argument-propagation) and remove-`await` are **excluded**.
 3. **Regex parser = CPython `re._parser`** (compact; add a 3.12→3.14 version smoke-test as a guard against private-API drift).
 

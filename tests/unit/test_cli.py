@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
+from mutmut_win.constants import Profile
 from mutmut_win.models import (
     MutationResult,
     MutationRunResult,
@@ -87,6 +88,66 @@ class TestRunCommand:
 
         assert result.exit_code == 0
         assert captured["max_children"] == 4
+
+    def test_run_profile_option_overrides_config(self) -> None:
+        # C4: --profile basic re-validates the merged config to Profile.BASIC.
+        from mutmut_win.config import MutmutConfig
+
+        runner = CliRunner()
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.run.return_value = MutationRunResult()
+        captured: dict[str, Profile] = {}
+
+        def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
+            captured["profile"] = config.mutation_profile
+            return mock_orchestrator
+
+        with (
+            patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=capture_config),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = runner.invoke(cli, ["run", "--profile", "basic"])
+
+        assert result.exit_code == 0
+        assert captured["profile"] is Profile.BASIC
+
+    def test_run_without_profile_keeps_config_default(self) -> None:
+        from mutmut_win.config import MutmutConfig
+
+        runner = CliRunner()
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.run.return_value = MutationRunResult()
+        captured: dict[str, Profile] = {}
+
+        def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
+            captured["profile"] = config.mutation_profile
+            return mock_orchestrator
+
+        with (
+            patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=capture_config),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = runner.invoke(cli, ["run"])
+
+        assert result.exit_code == 0
+        assert captured["profile"] is Profile.ADVANCED  # config default stands
+
+    def test_run_rejects_invalid_profile(self) -> None:
+        # click.Choice rejects an unknown profile before the command body runs.
+        runner = CliRunner()
+        with (
+            patch("mutmut_win.cli.load_config"),
+            patch("mutmut_win.cli.MutationOrchestrator"),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = runner.invoke(cli, ["run", "--profile", "aggressive"])
+
+        assert result.exit_code == 2
 
     def test_run_exits_nonzero_on_domain_error(self) -> None:
         """Domain errors render as a one-liner; foreign exceptions propagate

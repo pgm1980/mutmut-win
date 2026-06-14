@@ -8,10 +8,23 @@ from typing import Any, cast
 import libcst as cst
 import libcst.matchers as m
 
+from mutmut_win.constants import Profile
+
 OPERATORS_TYPE = Sequence[
     tuple[
         type[cst.CSTNode],
         Callable[[Any], Iterable[cst.CSTNode]],
+    ]
+]
+
+#: The registry row type: a (node_type, operator, profile) triple. The profile
+#: tag is the LOWEST profile that includes the operator; the visitor never sees
+#: it — ``operators_for_profile`` strips it back to ``OPERATORS_TYPE``.
+TAGGED_OPERATORS_TYPE = Sequence[
+    tuple[
+        type[cst.CSTNode],
+        Callable[[Any], Iterable[cst.CSTNode]],
+        Profile,
     ]
 ]
 
@@ -637,33 +650,58 @@ def operator_or_default(node: cst.BooleanOperation) -> Iterable[cst.BaseExpressi
     yield _safe_unwrap(node.right)  # always use fallback
 
 
-# Operators that should be called on specific node types
-mutation_operators: OPERATORS_TYPE = [
-    (cst.BaseNumber, operator_number),
-    (cst.BaseString, operator_string),
-    (cst.Name, operator_name),
-    (cst.Assign, operator_assignment),
-    (cst.AnnAssign, operator_assignment),
-    (cst.AugAssign, operator_augmented_assignment),
-    (cst.UnaryOperation, operator_remove_unary_ops),
-    (cst.Call, operator_dict_arguments),
-    (cst.Call, operator_arg_removal),
-    (cst.Call, operator_symmetric_string_methods_swap),
-    (cst.Call, operator_unsymmetrical_string_methods_swap),
-    (cst.Lambda, operator_lambda),
-    (cst.CSTNode, operator_keywords),
-    (cst.CSTNode, operator_swap_op),
-    (cst.Match, operator_match),
-    (cst.Call, operator_regex),
-    (cst.Call, operator_math_methods),
-    (cst.Return, operator_return_value),
-    (cst.IfExp, operator_conditional_expression),
-    (cst.SimpleStatementLine, operator_void_call_removal),
-    (cst.SimpleStatementLine, operator_raise_removal),
-    (cst.Call, operator_collection_neutralize),
-    (cst.ListComp, operator_comprehension_filter_removal),
-    (cst.BooleanOperation, operator_or_default),
+# Operators that should be called on specific node types, each tagged with the
+# LOWEST profile that includes it; operators_for_profile filters on this tag.
+# The first 15 entries are mutmut's base operators at profile BASIC; the last 9
+# are mutmut-win's extras at profile ADVANCED, marked by the origin comments
+# higher up in this file. operator_assignment is registered twice, for Assign
+# and AnnAssign, so the 15 base entries span 14 distinct functions. Aggressive
+# ALL-tier operators arrive in a later phase of the operator roadmap.
+mutation_operators: TAGGED_OPERATORS_TYPE = [
+    # --- mutmut base operators (profile: basic) ---
+    (cst.BaseNumber, operator_number, Profile.BASIC),
+    (cst.BaseString, operator_string, Profile.BASIC),
+    (cst.Name, operator_name, Profile.BASIC),
+    (cst.Assign, operator_assignment, Profile.BASIC),
+    (cst.AnnAssign, operator_assignment, Profile.BASIC),
+    (cst.AugAssign, operator_augmented_assignment, Profile.BASIC),
+    (cst.UnaryOperation, operator_remove_unary_ops, Profile.BASIC),
+    (cst.Call, operator_dict_arguments, Profile.BASIC),
+    (cst.Call, operator_arg_removal, Profile.BASIC),
+    (cst.Call, operator_symmetric_string_methods_swap, Profile.BASIC),
+    (cst.Call, operator_unsymmetrical_string_methods_swap, Profile.BASIC),
+    (cst.Lambda, operator_lambda, Profile.BASIC),
+    (cst.CSTNode, operator_keywords, Profile.BASIC),
+    (cst.CSTNode, operator_swap_op, Profile.BASIC),
+    (cst.Match, operator_match, Profile.BASIC),
+    # --- mutmut-win extras (profile: advanced) ---
+    (cst.Call, operator_regex, Profile.ADVANCED),
+    (cst.Call, operator_math_methods, Profile.ADVANCED),
+    (cst.Return, operator_return_value, Profile.ADVANCED),
+    (cst.IfExp, operator_conditional_expression, Profile.ADVANCED),
+    (cst.SimpleStatementLine, operator_void_call_removal, Profile.ADVANCED),
+    (cst.SimpleStatementLine, operator_raise_removal, Profile.ADVANCED),
+    (cst.Call, operator_collection_neutralize, Profile.ADVANCED),
+    (cst.ListComp, operator_comprehension_filter_removal, Profile.ADVANCED),
+    (cst.BooleanOperation, operator_or_default, Profile.ADVANCED),
 ]
+
+
+def operators_for_profile(
+    active: Profile,
+) -> list[tuple[type[cst.CSTNode], Callable[[Any], Iterable[cst.CSTNode]]]]:
+    """Return the ``(node_type, operator)`` pairs active under ``active``.
+
+    An operator tagged with profile ``P`` is included iff ``P <= active``, so
+    ``advanced`` includes every ``basic`` operator and ``all`` includes
+    everything. The Profile tag is stripped from the result — callers (the
+    ``MutationVisitor``) consume plain ``(node_type, operator)`` pairs.
+    """
+    return [
+        (node_type, operator)
+        for (node_type, operator, profile) in mutation_operators
+        if profile <= active
+    ]
 
 
 def _simple_mutation_mapping(

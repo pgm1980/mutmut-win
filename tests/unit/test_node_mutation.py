@@ -2,6 +2,7 @@
 
 import libcst as cst
 
+from mutmut_win.constants import Profile
 from mutmut_win.node_mutation import (
     NON_ESCAPE_SEQUENCE,
     _simple_mutation_mapping,
@@ -250,10 +251,13 @@ class TestMutationOperatorsList:
     def test_mutation_operators_is_sequence(self) -> None:
         assert len(mutation_operators) > 0
 
-    def test_all_entries_are_tuples_of_type_and_callable(self) -> None:
-        for node_type, operator in mutation_operators:
+    def test_all_entries_are_tuples_of_type_callable_and_profile(self) -> None:
+        # Each registry row is (node_type, operator_fn, profile) since the
+        # mutation-profile scaffold (operator roadmap, Phase 1).
+        for node_type, operator, profile in mutation_operators:
             assert issubclass(node_type, cst.CSTNode)
             assert callable(operator)
+            assert isinstance(profile, Profile)
 
 
 # --- _simple_mutation_mapping --------------------------------------------------
