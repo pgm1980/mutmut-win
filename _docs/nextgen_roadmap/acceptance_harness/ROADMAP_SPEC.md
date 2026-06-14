@@ -25,6 +25,26 @@ passes trivially today (v2.14.0), because the mutant is not yet generated.
 operators — **55 / 55 / 100 %** (16 advanced-only mutants correctly dropped). The
 *Expected* columns below stay untouched until Phase 2 lands the first real operators.
 
+**Phase 2 verification (v2.17.0 — the first six advanced operators):** `--profile
+advanced` now lands #3 (ROR matrix), #15 (number CRCR), #22 (negate), #23 (force),
+#38 (collection-empty) and #41 (match-guard). The harness runs **152 / 152 / 100 %**
+(pytest 18 green, 0 survivors). The *Expected* column below is a **per-operator**
+estimate; with every operator on, the live count is legitimately higher because
+operators overlap on a construct and there is no visitor-level dedup:
+
+| Target | Expected (isolated) | Live (all operators) | Why higher |
+|---|--:|--:|---|
+| `ror` | 6 | **6** | exact — ROR matrix is decoupled from `swap_op` |
+| `crcr` | 5 | **5** | exact |
+| `negate_cond` | 5 | **7** | + force on the same `if flag` |
+| `force_cond` | 8 | **14** | + ROR/CRCR on `x > 0` and the `0` |
+| `coll_list` / `coll_set` / `coll_tuple` | 5 | **15** | + CRCR on the inner `1, 2, 3` |
+| `coll_dict` | 8 | **14** | + CRCR on the inner values |
+| `match_guard` | 10 | **16** | + ROR/CRCR/force on the `x > 0` guard |
+
+Acceptance is **Score 100 %** (every mutant killed), not the isolated counts.
+#42 (regex full 14-sub-mutator suite) stays Phase 3.
+
 ## Acceptance table — `advanced` profile
 
 | # | Operator | Target (`src/roadmap/`) | Current | Expected (Δ) | Killed by |

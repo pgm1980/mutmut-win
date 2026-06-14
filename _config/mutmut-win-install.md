@@ -1,7 +1,7 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.14.0
+**Version:** v2.17.0
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 ---
@@ -20,14 +20,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.14.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.17.0" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.14.0`
+Erwartete Ausgabe: `mutmut-win, version 2.17.0`
 
 ## Schritt 2: pyproject.toml konfigurieren
 
@@ -166,6 +166,7 @@ Zeilennummern der Originaldatei).
 | `--tests-dir DIR` | Test-Verzeichnis überschreiben |
 | `--no-progress` | Keine Live-Fortschrittszeilen (End-Summary erscheint immer) |
 | `--dry-run` | Mutanten zählen ohne Tests |
+| `--profile {basic,advanced,all}` | Operator-Profil: `advanced` (Default) = mutmut-Basis + mutmut-win-Extras + Phase-2-Operatoren; `basic` = strikte mutmut-Parität (15 Basis-Operatoren); `all` = + aggressive Operatoren |
 | `--max-children N` | Anzahl Worker-Prozesse |
 | `--force` | Staging + Cache löschen und komplett neu starten |
 | `--debug` | Volle Tracebacks bei Fehlern |

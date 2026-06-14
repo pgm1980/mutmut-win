@@ -30,7 +30,7 @@
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | 1 | Arithmetic operator replacement (`+`↔`-`, `*`↔`/`…) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 2 | **Arithmetic operand deletion (AOD)** `a+b`→`a`/`b` | — | — | — | ✅ | — | — |
-| 3 | **Relational full matrix (ROR)** `<`→`<=,>,>=,==,!=` | ◐ | ◐ | ◐ | ✅ | ◐ | ◐ |
+| 3 | **Relational full matrix (ROR)** `<`→`<=,>,>=,==,!=` | ✅ | ◐ | ◐ | ✅ | ◐ | ◐ |
 | 4 | Conditional boundary `<`↔`<=`, `>`↔`>=` | ✅ | ✅ | ◐ | ✅ | ✅ | ✅ |
 | 5 | Equality negate `==`↔`!=` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 6 | Logical connector `and`↔`or` | ✅ | ✅ | ✅ | ✅ | ✅ | ◐ |
@@ -47,7 +47,7 @@
 | 12 | **Unary operator insertion (UOI)** `x`→`not x`/`-x` | — | — | — | ✅ | — | — |
 | 13 | Increment/decrement `++`/`--` | 🚫 | 🚫 | ✅ | ✅ | 🚫 | ✅ |
 | 14 | Number-literal mutation `5`→`6` | ◐ (+1 only) | ◐ (+1 only) | — | ✅ (0/1/-1/±1) | — | ✅ |
-| 15 | **Number-literal CRCR** `5`→`0,1,-1,-5` | — | — | — | ✅ | — | ◐ |
+| 15 | **Number-literal CRCR** `5`→`0,1,-1,-5` | ✅ | — | — | ✅ | — | ◐ |
 | 16 | String-literal mutation (empty/case/wrap) | ✅ | ✅ | ✅ | ✅ | — | — |
 | 17 | Boolean-literal `True`↔`False` | ✅ | ✅ | ✅ | ✅ | ◐ | ✅ |
 | 18 | Null/None-coalescing default (`x or d`→`x`/`d`) | ✅ | — | ✅ (`??`) | ✅ | — | — |
@@ -64,8 +64,8 @@
 
 | # | Mutation class | mutmut-win | mutmut 3.6 | Stryker.NET | Stryker.NET-X | cargo-mutants | PIT |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| 22 | **Negate whole condition** `if x`→`if not x` | — | — | ✅ | ✅ | — | ✅ |
-| 23 | **Force/remove conditional** `if c`→`if True`/`if False` | — | — | ◐ | ◐ | ✅ (guard) | ✅ |
+| 22 | **Negate whole condition** `if x`→`if not x` | ✅ | — | ✅ | ✅ | — | ✅ |
+| 23 | **Force/remove conditional** `if c`→`if True`/`if False` | ✅ | — | ◐ | ◐ | ✅ (guard) | ✅ |
 | 24 | Ternary neutralize `x if c else y`→`x`/`y` | ✅ | — | ✅ | ✅ | — | — |
 | 25 | Control-flow keyword `break`→`return`, `continue`→`break` | ✅ | ✅ | ◐ | ◐ | — | — |
 
@@ -90,10 +90,10 @@
 | # | Mutation class | mutmut-win | mutmut 3.6 | Stryker.NET | Stryker.NET-X | cargo-mutants | PIT |
 |---|---|:--:|:--:|:--:|:--:|:--:|:--:|
 | 37 | Collection *neutralize* (`sorted(x)`→`x`) | ✅ | — | — | — | — | — |
-| 38 | **Collection *literal* emptying** (`[1,2,3]`→`[]`) | — | — | ✅ | ✅ | ◐ | ◐ |
+| 38 | **Collection *literal* emptying** (`[1,2,3]`→`[]`) | ✅ | — | ✅ | ✅ | ◐ | ◐ |
 | 39 | Comprehension filter removal (`[x for x in s if p]`→`…`) | ✅ | — | — | — | — | — |
 | 40 | Match/switch arm deletion | ✅ | ✅ | — | ✅ | ✅ | ✅ |
-| 41 | **Match guard** `case x if c`→`if True`/`if False` | — | — | — | ✅ | ✅ | — |
+| 41 | **Match guard** `case x if c`→`if True`/`if False` | ✅ | — | — | ✅ | ✅ | — |
 | 42 | Regex pattern mutation | ◐ (lean) | — | ✅ (15 sub) | ✅ (16 sub) | — | — |
 | 43 | `raise`/throw removal | ✅ | — | ✅ | ✅ | ◐ | — |
 | 44 | **Exception swap** (`raise ValueError`→`raise TypeError`) | — | — | — | ✅ | — | — |
