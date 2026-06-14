@@ -145,20 +145,75 @@ def _mutate_char_classes(pattern: str) -> list[str]:
     return results
 
 
-def _mutate_anchors(pattern: str) -> list[str]:
-    """Remove anchors ``^`` and ``$``.
+#: Escaped single-letter anchors (``\A \Z \b \B``). A frozenset, so a missing
+#: next char (trailing backslash) is correctly NOT an anchor — the old
+#: ``nxt in "AZbB"`` mis-fired because ``"" in "AZbB"`` is True (empty string is
+#: a substring of every string).
+_ESCAPED_ANCHORS: frozenset[str] = frozenset("AZbB")
 
-    Only removes ``^`` at the start and ``$`` at the end to avoid
-    false positives from ``^`` inside character classes like ``[^a-z]``.
+#: Top-level anchors written as bare metacharacters.
+_TOP_LEVEL_ANCHORS: frozenset[str] = frozenset("^$")
+
+
+def _class_spans(pattern: str) -> list[tuple[int, int]]:
+    """Locate every unescaped ``[...]`` character class in *pattern*.
+
+    Returns ``(start, end)`` index pairs, where ``start`` is the index of the
+    opening ``[`` and ``end`` is the index just past the closing ``]``. Handles
+    escaped brackets (``\\[``, ``\\]``) and a literal ``]`` appearing as the
+    first class member (``[]...]`` / ``[^]...]``). This is the structural
+    foundation that keeps context-sensitive sub-mutators out of classes.
+    """
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "[":
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                # a ] right after [ or [^ is a literal member, not the end
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            end = min(j + 1, n)
+            spans.append((i, end))
+            i = end
+            continue
+        i += 1
+    return spans
+
+
+def _in_class(index: int, spans: list[tuple[int, int]]) -> bool:
+    """``True`` if *index* falls within one of the *spans* (a ``[...]`` class)."""
+    return any(start <= index < end for start, end in spans)
+
+
+def _mutate_anchors(pattern: str) -> list[str]:
+    """Remove anchors (#1): ``^``, ``$``, ``\\A``, ``\\Z``, ``\\b``, ``\\B``.
+
+    Uses the class-span tokenizer so a ``^`` inside ``[^...]`` (a class negation)
+    and a ``\\b`` inside ``[\\b]`` (a backspace literal) are never mistaken for
+    anchors. Each removal is a local string edit, leaving the rest byte-exact. A
+    trailing backslash has no next char and is left alone.
     """
     results: list[str] = []
-
-    if pattern.startswith("^"):
-        results.append(pattern[1:])
-
-    if pattern.endswith("$") and not pattern.endswith("\\$"):
-        results.append(pattern[:-1])
-
+    spans = _class_spans(pattern)
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "\\":
+            if i + 1 < n and pattern[i + 1] in _ESCAPED_ANCHORS and not _in_class(i, spans):
+                results.append(pattern[:i] + pattern[i + 2 :])
+            i += 2
+            continue
+        if char in _TOP_LEVEL_ANCHORS and not _in_class(i, spans):
+            results.append(pattern[:i] + pattern[i + 1 :])
+        i += 1
     return results
 
 

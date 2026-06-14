@@ -10,6 +10,8 @@ from hypothesis import strategies as st
 
 from mutmut_win.regex_mutation import (
     MAX_MUTATIONS_PER_PATTERN,
+    _class_spans,
+    _in_class,
     _is_valid_regex,
     _mutate_anchors,
     _mutate_char_classes,
@@ -115,6 +117,144 @@ class TestMutateAnchors:
         # ^[a-z] — the ^ IS a start anchor here
         results = _mutate_anchors(r"^[a-z]")
         assert "[a-z]" in results
+
+    def test_backslash_a_removed(self) -> None:
+        # \A start-of-string anchor
+        assert r"foo" in _mutate_anchors(r"\Afoo")
+
+    def test_backslash_z_removed(self) -> None:
+        # \Z end-of-string anchor
+        assert r"foo" in _mutate_anchors(r"foo\Z")
+
+    def test_word_boundary_removed(self) -> None:
+        results = _mutate_anchors(r"\bfoo\b")
+        assert r"foo\b" in results  # leading \b removed
+        assert r"\bfoo" in results  # trailing \b removed
+
+    def test_non_word_boundary_removed(self) -> None:
+        assert r"foo" in _mutate_anchors(r"\Bfoo")
+
+    def test_backspace_in_class_not_an_anchor(self) -> None:
+        # [\b] is a backspace literal, not a word boundary — no anchor mutation
+        assert _mutate_anchors(r"[\b]x") == []
+
+    def test_anchor_exact_set(self) -> None:
+        # exact removal set + order kills index arithmetic in the scan
+        assert _mutate_anchors(r"\Afoo\Z") == [r"foo\Z", r"\Afoo"]
+
+    def test_multiple_escaped_anchors_exact(self) -> None:
+        # repeated escape-skip path (kills the i+=2 arithmetic / infinite loop)
+        assert _mutate_anchors(r"\A\Bx") == [r"\Bx", r"\Ax"]
+
+    def test_only_real_escape_anchors_match(self) -> None:
+        # exactly \A \Z \b \B are anchors; \X must not be (pins the "AZbB" set)
+        assert _mutate_anchors(r"\Xq") == []
+
+    def test_plain_letter_is_not_an_anchor(self) -> None:
+        # 'X' is a literal; the "^$" membership must be exact (kills the XX pad)
+        assert _mutate_anchors(r"Xfoo") == []
+
+    def test_caret_mid_pattern_is_scanned(self) -> None:
+        # the fallthrough index must reach a '^' that is not at position 0
+        assert _mutate_anchors(r"ab^c") == ["abc"]
+
+    def test_trailing_backslash_left_alone(self) -> None:
+        # "" is a substring of "AZbB"; the frozenset check must reject the
+        # missing next char so a trailing backslash is not treated as an anchor
+        assert _mutate_anchors("a\\") == []
+
+
+class TestClassSpans:
+    """Structural tokenizer foundation: locate unescaped [...] class spans so
+    context-sensitive sub-mutators (anchors, shorthands) never fire inside a
+    character class. Each span is (start_of_'[', index_past_']').
+    """
+
+    def test_simple_class(self) -> None:
+        assert _class_spans(r"a[bc]d") == [(1, 5)]
+
+    def test_negated_class(self) -> None:
+        assert _class_spans(r"[^a-z]") == [(0, 6)]
+
+    def test_literal_close_bracket_first(self) -> None:
+        # a ] right after [ (or [^) is a literal member, not the class end
+        assert _class_spans(r"[]a]") == [(0, 4)]
+        assert _class_spans(r"[^]a]") == [(0, 5)]
+
+    def test_escaped_bracket_not_class(self) -> None:
+        assert _class_spans(r"\[abc\]") == []
+
+    def test_escaped_close_inside_class(self) -> None:
+        # \] inside a class does not close it
+        assert _class_spans(r"[a\]b]") == [(0, 6)]
+
+    def test_two_classes(self) -> None:
+        assert _class_spans(r"[ab]x[cd]") == [(0, 4), (5, 9)]
+
+    def test_no_class(self) -> None:
+        assert _class_spans(r"\d+foo") == []
+
+    def test_escape_before_class(self) -> None:
+        # the escape-skip index must land exactly on the '['
+        assert _class_spans(r"\.[ab]") == [(2, 6)]
+
+    def test_multiple_escapes_then_class(self) -> None:
+        # exercises the escape-skip index repeatedly (kills i+=2 arithmetic)
+        assert _class_spans(r"\d\w[ab]") == [(4, 8)]
+
+    def test_long_class_content(self) -> None:
+        # exercises the inner content-scan index (kills j+=1 / j+=2 arithmetic)
+        assert _class_spans(r"[abcdef]") == [(0, 8)]
+
+    def test_text_then_class(self) -> None:
+        # exercises the fallthrough index (kills i+=1 arithmetic)
+        assert _class_spans(r"xx[ab]y") == [(2, 6)]
+
+    def test_unterminated_class_runs_to_end(self) -> None:
+        # no closing ] — the span extends to end of string (kills min(j+1, n))
+        assert _class_spans(r"a[bc") == [(1, 4)]
+
+    def test_trailing_backslash(self) -> None:
+        # an escape with no next char must not run the index past the end
+        # (kills `while i != n`, which would IndexError here)
+        assert _class_spans("a\\") == []
+
+    def test_spans_are_well_formed(self) -> None:
+        # every reported span must bracket a real '[' .. ']' pair
+        patterns = (
+            r"[abc]",
+            r"a[bc]d[ef]",
+            r"[a\]b]",
+            r"[]x]",
+            r"[^]y]",
+            r"\[no[yes]",
+            r"[0-9][a-z]",
+        )
+        for p in patterns:
+            for s, e in _class_spans(p):
+                assert p[s] == "[", f"{p!r} span {(s, e)} start not ["
+                assert p[e - 1] == "]", f"{p!r} span {(s, e)} end not ]"
+
+
+class TestInClass:
+    """`_in_class` is a half-open membership test over ``[start, end)`` spans."""
+
+    def test_membership_boundaries(self) -> None:
+        spans = [(2, 5)]  # covers indices 2, 3, 4
+        assert _in_class(2, spans) is True  # start is inside (kills <= -> <)
+        assert _in_class(4, spans) is True
+        assert _in_class(5, spans) is False  # end is exclusive (kills < -> <=)
+        assert _in_class(6, spans) is False  # beyond end (kills < -> !=)
+        assert _in_class(1, spans) is False  # before start
+
+    def test_no_spans(self) -> None:
+        assert _in_class(3, []) is False
+
+    def test_multiple_spans(self) -> None:
+        spans = [(0, 2), (5, 8)]
+        assert _in_class(1, spans) is True
+        assert _in_class(3, spans) is False
+        assert _in_class(6, spans) is True
 
 
 class TestMutateRegexPattern:
