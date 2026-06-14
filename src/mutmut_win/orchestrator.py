@@ -139,6 +139,9 @@ class MutationOrchestrator:
         # worker's @argfile hand-off — BEFORE any staging work happens.
         _ensure_supported_pytest()
 
+        # Announce the active operator profile once per run (operator roadmap).
+        self._print_profile_hint()
+
         wall_start = time.monotonic()
 
         # ------------------------------------------------------------------
@@ -501,6 +504,26 @@ class MutationOrchestrator:
         result = MutationRunResult(total_mutants=total)
         print(f"Dry run: {total} mutants would be generated.")
         return result
+
+    def _print_profile_hint(self) -> None:
+        """Announce the active profile and how many operators it enables.
+
+        Printed once per run by ``run()``. Under ``basic`` a one-line note
+        points users at the richer profiles — informational, not a warning
+        (``advanced`` is the default, so this is never a "you broke something"
+        message). The count is read from the actual filtered operator list so
+        it stays correct as later phases add operators.
+        """
+        from mutmut_win.node_mutation import operators_for_profile
+
+        profile = self._config.mutation_profile
+        count = len(operators_for_profile(profile))
+        print(f"profile={profile.to_name()} — {count} operators active")
+        if profile is Profile.BASIC:
+            print(
+                "  (basic = mutmut parity; '--profile advanced' or '--profile all' "
+                "enables more operators)"
+            )
 
     def _warn_unmatched_exclusions(self, walked_paths: list[str]) -> None:
         """Warn for ``do_not_mutate`` patterns that matched no walked file.

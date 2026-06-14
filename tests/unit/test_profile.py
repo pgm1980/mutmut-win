@@ -276,3 +276,32 @@ class TestProfileWiredThroughGeneration:
             return len(names)
 
         assert _count(Profile.BASIC, "b.py") < _count(Profile.ADVANCED, "a.py")
+
+
+class TestProfileStartupHint:
+    """C5: the orchestrator announces the active profile + its operator count
+    once per run, with a parity note only under basic (no warning tone).
+    """
+
+    def _orch(self, profile: Profile) -> MutationOrchestrator:
+        return MutationOrchestrator(
+            MutmutConfig(mutation_profile=profile),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        )
+
+    def test_advanced_hint_is_a_single_exact_line(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Exact match pins the whole line so any string/void-call mutation of the
+        # hint is killed; advanced = 24 operators (15 base + 9 extras), no note.
+        self._orch(Profile.ADVANCED)._print_profile_hint()
+        assert capsys.readouterr().out == "profile=advanced — 24 operators active\n"
+
+    def test_basic_hint_is_exact_and_adds_the_parity_note(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._orch(Profile.BASIC)._print_profile_hint()
+        assert capsys.readouterr().out == (
+            "profile=basic — 15 operators active\n"
+            "  (basic = mutmut parity; '--profile advanced' or '--profile all' "
+            "enables more operators)\n"
+        )
