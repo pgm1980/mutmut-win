@@ -14,7 +14,10 @@ sprint_36_progress is archived.
   setup.cfg parity for mutation_profile + do_not_mutate_patterns in
   _load_setup_cfg; dedup regression guard (test_all_tier_operators). NOT done
   (owner scope): WRK-002 pre-bootstrap worker-hang; advanced-default = intended.
-  Pre-existing create_db migration-coverage gap = spawned tech-debt task.
+  Pre-existing create_db migration-coverage gap RESOLVED (test-only follow-up,
+  merge e30b766): test_db.py TestSchemaMigration + TestWriteDurability lifted
+  create_db function-wise mutation 66.1%->94.9%; 3 residual survivors are genuine
+  equivalents (PRAGMA case-insensitivity x2 + DDL-autocommit conn.commit->pass).
 - Last gates: full suite 1409 passed / 5 skipped, ruff 0, mypy 14 baseline,
   import-linter KEPT, Semgrep 0. v2.19.0 acceptance_harness 204/200/98% unchanged
   (no operator/profile behaviour changed in v2.19.1).
