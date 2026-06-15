@@ -82,13 +82,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.1"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.1" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0" --dev
 ```
 
 ## Quick start
@@ -395,10 +395,16 @@ removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 regex `fullmatch` equivalents). v2.19.1 is a robustness patch from an external
 360° re-test: a corrupt `.mutmut-cache` DB now surfaces a clean message instead
 of a raw traceback (recover with `run --force`), and `setup.cfg` now honours the
-`mutation_profile` / `do_not_mutate_patterns` keys. Details: the
-[release notes](https://github.com/pgm1980/mutmut-win/releases).
+`mutation_profile` / `do_not_mutate_patterns` keys. v2.20.0 continues that
+hardening from the same re-test: the mutant-staging worker pool moved from
+`multiprocessing.Pool` to `concurrent.futures.ProcessPoolExecutor`, which detects
+workers that die during interpreter bootstrap (a crashing `sitecustomize`/`.pth`
+that `os._exit`s before the child connects) and aborts with a clear, diagnosed
+error instead of hanging forever (WRK-002); and `do_not_mutate_patterns` now also
+matches the qualified `Class.method` name, not only the bare method name. Details:
+the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.19.1 is the current release — the `all` profile strictly exceeds
+**Status:** v2.20.0 is the current release — the `all` profile strictly exceeds
 `advanced`. Active development is in a documented pause with a clean slate — zero
 open issues, zero known backlog entries. The issue tracker stays open; the
 resumption baseline (a full self-run over the tool's own codebase — 7231

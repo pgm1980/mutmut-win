@@ -14,7 +14,7 @@ paths_to_mutate = ["src/"]
 tests_dir = ["tests/"]
 
 [tool.uv.sources]
-mutmut-win = { git = "https://github.com/pgm1980/mutmut-win.git", rev = "v2.19.1" }
+mutmut-win = { git = "https://github.com/pgm1980/mutmut-win.git", rev = "v2.20.0" }
 
 [dependency-groups]
 dev = [

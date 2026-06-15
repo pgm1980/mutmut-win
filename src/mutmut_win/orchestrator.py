@@ -26,6 +26,7 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    OrchestratorError,
     UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
@@ -632,16 +633,37 @@ class MutationOrchestrator:
                 )
             )
 
-        # Step 5: Generate per-file mutants.
-        # Use multiprocessing.Pool for parallel generation (mirrors mutmut 3.5.0)
-        # when max_children > 1; fall back to sequential for max_children == 1.
+        # Step 5: Generate per-file mutants in parallel when max_children > 1;
+        # fall back to sequential for max_children == 1.
+        #
+        # ProcessPoolExecutor (NOT multiprocessing.Pool) — external QA WRK-002:
+        # a worker that dies during interpreter bootstrap (a crashing
+        # sitecustomize/.pth/site-packages os._exit before the mp child connects)
+        # makes ``Pool.imap_unordered`` block FOREVER — it has no broken-worker
+        # detection, so a wedged environment hung the whole run unboundedly.
+        # ProcessPoolExecutor's management thread detects the dead worker and
+        # raises BrokenProcessPool (~0.3s in the repro), which we turn into a
+        # clean, diagnosed abort instead of an unbounded hang.
         import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures.process import BrokenProcessPool
 
         if self._config.max_children > 1:
-            with multiprocessing.Pool(processes=self._config.max_children) as pool:
-                raw_results: list[tuple[str, list[str], Exception | None, list[str], bool]] = list(
-                    pool.imap_unordered(_create_mutants_worker, file_args)
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=self._config.max_children,
+                    mp_context=multiprocessing.get_context("spawn"),
+                ) as pool:
+                    raw_results: list[tuple[str, list[str], Exception | None, list[str], bool]] = (
+                        list(pool.map(_create_mutants_worker, file_args))
+                    )
+            except BrokenProcessPool as exc:
+                msg = (
+                    "worker pool collapsed during mutant generation — workers are "
+                    "dying at interpreter startup (a crashing sitecustomize/.pth/"
+                    "site-packages wedges every spawn). Aborting the run."
                 )
+                raise OrchestratorError(msg) from exc
         else:
             raw_results = [_create_mutants_worker(args) for args in file_args]
 

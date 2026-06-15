@@ -1,7 +1,7 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.19.1
+**Version:** v2.20.0
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 ---
@@ -20,14 +20,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.1" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.19.1`
+Erwartete Ausgabe: `mutmut-win, version 2.20.0`
 
 ## Schritt 2: pyproject.toml konfigurieren
 
@@ -154,6 +154,7 @@ Zeilennummern der Originaldatei).
 - **Exit-Codes von `run`:** 0 Erfolg, 1 Laufzeitfehler oder `--min-score` verfehlt, 2 ungültige Konfiguration/Option, 130 unterbrochen (Ctrl-C; Teilergebnisse persistiert, Score-Gate übersprungen).
 - **Editable Installs (.pth):** Bei editierbaren Installationen (`uv pip install -e .`) kann die `.pth`-Datei in `site-packages/` die Trampolin-Mechanik überschatten. Workaround: `.pth`-Datei temporär umbenennen vor dem Lauf.
 - **Langsame Suiten:** `clean_run_timeout` (Default 300 s) erhöhen, wenn die trampolinierte Suite im Staging länger braucht.
+- **`@staticmethod`-Mutation ist strikt gegated (by-design):** Nur Methoden, die AUSSCHLIESSLICH mit `@staticmethod` dekoriert sind, werden mutiert. Trägt eine Methode `@staticmethod` zusammen mit einem weiteren Dekorator, bleibt sie ungetestet — der zweite Dekorator könnte zur Definitionszeit laufen oder den Trampolin-Freifunktions-Dispatch brechen. `@classmethod` wird aus demselben Grund nicht mutiert (der klassengebundene `__name__` ist read-only). Das ist eine bewusste, korrektheitswahrende Entscheidung (externe QA v2.19.0), kein Bug — ein „fehlender" Mutant auf einer mehrfach dekorierten Statisch-Methode ist erwartet.
 
 ## Nützliche CLI-Flags
 

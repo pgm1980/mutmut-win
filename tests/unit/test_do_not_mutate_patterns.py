@@ -60,3 +60,43 @@ class TestNodeSkip:
         names = _names(_CLASSES, ["Skip"])
         assert any("Keep" in n for n in names)  # the other class still mutates
         assert not any("Skip" in n for n in names)
+
+
+_TWO_METHODS = (
+    "class Keep:\n    def shared(self):\n        return 1 + 1\n\n\n"
+    "class Drop:\n    def shared(self):\n        return 2 + 2\n"
+)
+
+
+class TestQualifiedNameMatching:
+    """do_not_mutate_patterns may match the QUALIFIED ``Class.method`` name, not
+    only the bare method name (external QA v2.19.0: matcher was name-only)."""
+
+    def test_qualified_pattern_targets_one_class_method(self) -> None:
+        # `Drop\.shared` skips ONLY Drop.shared; Keep.shared still mutates
+        names = _names(_TWO_METHODS, [r"Drop\.shared"])
+        assert any("Keepǁshared" in n for n in names)
+        assert not any("Dropǁshared" in n for n in names)
+
+    def test_bare_method_name_still_matches_every_class(self) -> None:
+        # backward compatibility: a simple name skips the method in EVERY class
+        assert not any("shared" in n for n in _names(_TWO_METHODS, ["shared"]))
+
+    def test_qualified_class_anchor(self) -> None:
+        # an anchored class pattern skips only that class
+        names = _names(_TWO_METHODS, [r"^Keep$"])
+        assert not any("Keep" in n for n in names)
+        assert any("Drop" in n for n in names)
+
+    def test_anchored_bare_name_matches_via_the_simple_name(self) -> None:
+        # `^shared$` matches the SIMPLE name but NOT the qualified "Class.shared",
+        # so the simple-name half of the OR is load-bearing (skips both methods)
+        assert not any("shared" in n for n in _names(_TWO_METHODS, [r"^shared$"]))
+
+    def test_anchored_qualified_pattern_requires_a_correct_class_stack(self) -> None:
+        # `^Drop\.shared$` matches only when the stack is exactly ["Drop"]; a
+        # broken on_visit push or on_leave pop would yield "shared" /
+        # "Keep.Drop.shared" and miss it. Pins the qualified name end to end.
+        names = _names(_TWO_METHODS, [r"^Drop\.shared$"])
+        assert not any("Dropǁshared" in n for n in names)
+        assert any("Keepǁshared" in n for n in names)

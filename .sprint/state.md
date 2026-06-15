@@ -1,10 +1,10 @@
 ---
-current_sprint: "v2.19.1 (external-QA patch)"
-sprint_goal: "v2.19.1: risikoarme Fixes aus dem externen v2.19.0-Verifikationsbericht — CACHE-001 (korrupte Cache-DB → saubere Message statt Traceback), setup.cfg-Parität für mutation_profile + do_not_mutate_patterns, Dedup-Regressionsguard. Akzeptanz: geänderte Zeilen ≥80% Mutation, volle Suite grün."
-branch: "main"
-started_at: "2026-06-14"
-housekeeping_done: true
-memory_updated: true
+current_sprint: "v2.20.0 (external-QA hardening)"
+sprint_goal: "v2.20.0: WRK-002 (Staging-Worker-Pool gegen bootstrap-sterbende Worker absichern — ProcessPoolExecutor erkennt tote Worker → sauberer OrchestratorError statt Endlos-Hang) + do_not_mutate_patterns matcht jetzt auch den qualifizierten Class.method-Namen. Striktes @staticmethod-Gating als by-design dokumentiert. Akzeptanz: geaenderte Zeilen >=80% Mutation, volle Suite gruen."
+branch: "feature/v2.20.0-wrk002-qualified"
+started_at: "2026-06-15"
+housekeeping_done: false
+memory_updated: false
 github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
@@ -12,102 +12,67 @@ tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (v2.19.1 — external-QA patch)
+# Sprint State (v2.20.0 — external-QA hardening)
 
-## v2.19.1 Patch (External 360°-Re-Test)
-Externer Verifikationsbericht zu v2.19.0: production-ready, Roadmap+Bug-Report
-getreu umgesetzt (Harness 204/200/4 unabhängig reproduziert). 3 risikoarme Fixes
-(User-Scope-Wahl):
-1. **CACHE-001** — korrupte `.mutmut-cache.db` warf `sqlite3.DatabaseError` als
-   Raw-Traceback aus run/results/export-cicd-stats. Fix: `db.create_db` fängt es →
-   `CorruptCacheError(MutmutWinError)`; CLI-Helper `_load_results_or_exit` rendert
-   sauber (Exit 1, stderr). `run --force` heilt. Gate: except-Zweig 100%,
-   _load_results_or_exit 14/14.
-2. **setup.cfg-Parität** — `_load_setup_cfg` parste `mutation_profile` +
-   `do_not_mutate_patterns` nicht (in model_fields → kein "unknown"-Warn, aber stumm
-   ignoriert). Fix: beide Keys ergänzt.
-3. **Dedup-Regressionsguard** — Test gegen künftige Operator-Overlaps (kein
-   visitor-level Dedup; aktuell 0 Duplikate bestätigt).
-NICHT gefixt (User-Scope): WRK-002 (pre-bootstrap Worker-Hang), Minor name-only/
-@static-gating. PROF-001 (advanced-Default) = vom Owner als intended bestätigt.
-Vorbestehend geflaggt: create_db-Migrations-Coverage-Lücke (Tech-Debt-Task).
-Gates: volle Suite 1409 passed / 5 skipped, ruff 0, mypy 14, import-linter KEPT, Semgrep 0.
-**v2.19.1 RELEASED** (Merge `5338b1e`, Tag v2.19.1,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.19.1)).
-PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE.
+## v2.20.0 — die letzten zwei offenen Punkte aus dem externen v2.19.0-Bericht
+User-Scope-Wahl: "WRK-002 + qualified-name" fixen, @staticmethod-strict-gating
+als by-design dokumentieren.
 
-## Phase 4 (v2.19.0) — History
-## Current Focus
-Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports** —
-**ABGESCHLOSSEN (W1–W6), v2.19.0 RELEASED** (Merge `027cb41`, Tag v2.19.0,
-[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.19.0)).
-`all` ⊋ advanced (basic 15 / advanced 34 /
-all 41). acceptance_harness `--profile all`: **204 / 200 / 98%** (4 dokumentierte
-Regex-`fullmatch`-Äquivalente, KEINE neuen Phase-4-Survivors). Volle Suite 1397
-passed / 5 skipped. **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** (0 Issues / Backlog).
-W6: Doku (Roadmap §1/§6, Matrix mutmut-win-Spalte, ROADMAP_SPEC Phase-4-Verifikation,
-README/install/CLAUDE.md @v2.19.0), Version-Bump 2.19.0, Harness re-pinnt @v2.19.0.
+1. **WRK-002 (Pre-Bootstrap-Worker-Hang)** — die STAGING-Phase nutzte
+   `multiprocessing.Pool.imap_unordered`, das keine Broken-Worker-Erkennung hat:
+   stirbt ein Worker beim Interpreter-Bootstrap (crashendes sitecustomize/.pth/
+   site-packages, `os._exit` bevor das mp-Child connectet), blockiert der ganze
+   Lauf FUER IMMER (empirisch >80s, kein Abbruch; der SpawnPoolExecutor-Watchdog
+   WRK-001 wird nie erreicht, weil Staging davor haengt). Fix: `_generate_mutants`
+   nutzt jetzt `concurrent.futures.ProcessPoolExecutor` (spawn-Kontext) — dessen
+   Management-Thread wirft `BrokenProcessPool` (~0.3s in der Repro), das zu einem
+   sauberen `OrchestratorError` (Exit 1) wird statt eines unbegrenzten Hangs.
+   `pool.map` stellt zudem deterministische Ergebnis-Reihenfolge her (vorher
+   `imap_unordered`; wir `list()`en ohnehin alles).
+2. **do_not_mutate_patterns qualified-name** — der Matcher griff nur auf den
+   blanken Funktions-/Methodennamen. Jetzt baut ein Klassennamen-Stack
+   (`on_visit` push / `on_leave` pop ClassDef) den qualifizierten `Class.method`-
+   Namen, der ZUSAETZLICH zum simplen Namen gematcht wird (additiv, rueckwaerts-
+   kompatibel: `Drop\.shared` trifft nur Drop.shared, `shared` weiter jede Klasse).
+3. **@staticmethod-strict-Gating = by-design** (kein Code-Change) — nur Methoden,
+   die AUSSCHLIESSLICH `@staticmethod` tragen, werden mutiert; Kombination mit
+   weiterem Dekorator bleibt geskippt (`_is_static_only`). Dokumentiert in
+   `_config/mutmut-win-install.md` (Wichtige Hinweise) als bewusste, korrektheits-
+   wahrende Entscheidung. @classmethod bleibt deferred (bound `__name__` read-only).
 
-## Wellen-Plan (6)
-1. **W1 AOD (#2) + exception-swap (#44)** — ✅ **ABGESCHLOSSEN**. Profile.ALL,
-   `all` ⊋ advanced. Per-Operator-Mutation 18/18 = 100%, e2e all-Layer-Invarianten
-   (advanced⊆all + exakte all-Counts: my_lib 147, config 38, type_checking 19,
-   py3_14 14, covered 123).
-2. **W2 member-assign (#29) + statement-removal (#27)** — ✅ **ABGESCHLOSSEN**.
-   Zwei neue Profile.ALL-Operatoren auf cst.SimpleStatementLine (void_call_removal-
-   Scaffold): operator_member_assignment_removal (single Attribute-Target
-   `self.x = v` → pass) + operator_statement_removal (effektbehaftete Expr-Statements
-   await/yield/subscript/walrus → pass; Calls=advanced, Docstrings/Ellipsis/
-   Pure-Value per ToT-Entscheidung ausgeschlossen). Per-Operator-Mutation
-   46/50 = 92% (4 dokumentierte Scaffold-Äquivalente: 2× `[0]≡[-1]` bei len==1,
-   2× `body=[]` rendert via libcst zu `pass`). all-Counts: my_lib 153, type_checking 20.
-3. **W3 UOI (#12) — HIGH RISK [ToT]** — ✅ **ABGESCHLOSSEN**. ToT-Scope (Option B,
-   0.89): drei Profile.ALL-Operatoren — operator_uoi_negate_while (While.test `not`,
-   Gap zu negate_condition), operator_uoi_minus_operand (`(-name)` auf arithm.
-   Name-Operanden, Literale=CRCR), operator_uoi_negate_boolean_operand (`not` auf
-   and/or-Operanden). **T4 (comparison-Operanden) ausgeschlossen** (präzedenz-fragil,
-   niedrigstes Signal, Explosion). Ausschlüsse: If.test=negate_condition,
-   Literal-`-`=CRCR. Präzedenz: inserted unary in Operand-Position bekommt explizite
-   Parens (`(-x) ** y`); `not`>and/or → kein outer-paren, nur _safe_unwrap.
-   Per-Operator-Mutation 42/42 = 100%.
-4. **W4 Backports do_not_mutate_patterns + pragma-block** — ✅ **ABGESCHLOSSEN**.
-   (A) pragma-block/start-end: `pragma_no_mutate_lines()` erweitert (Text-Indentation
-   per ToT, self-contained) + Helfer _pragma_no_mutate_suffix/_pragma_block_range/
-   _indent_width. (B) do_not_mutate_patterns: config-Feld + fail-loud-Validator +
-   Skip in `_skip_node_and_children` (FunctionDef/ClassDef-Name re.search), gethreadet
-   wie active_profile (create_mutations→mutate_file_contents→write_all_mutants_to_file→
-   create_mutants_for_file→orchestrator Pool-Tupel 7. Element + dry_run). Profil-
-   unabhängig (kein e2e-Count-Effekt). Mutation: Pragma-Scanner 193/197 = 98%
-   (4 dok. Äquivalente: `<`/`!=`-Boundary, redundanter Check, rpartition-Doppelmarker);
-   neue Skip-Zeilen 100% gekillt (Validator decorator-geskippt, via Tests abgedeckt).
-5. **W5 @staticmethod/@classmethod-Backport — HIGH RISK [ToT]** — ✅ **ABGESCHLOSSEN**.
-   Empirische Probe widerlegte die Roadmap ("name-dispatched → sollte gehen"): BEIDE
-   Formen waren kaputt (static droppt erstes Arg + AttributeError; class doppeltes cls
-   + bound-`__name__` read-only). ToT-Scope (Option B, 0.84): **@staticmethod-only**,
-   @classmethod dokumentiert deferred (Blast-Radius: nur create_trampoline_wrapper).
-   `_is_static_only` (solely-@staticmethod) relaxt den decorator-skip; Wrapper dispatcht
-   static wie free function (forward-all, self_arg=None, orig via `{Class}.{mangled}_orig`).
-   Exec-verifiziert (orig + Mutant-Dispatch). `_is_static_only` 100%. e2e my_lib +11
-   (Point.from_coords, intendierte Flächen-Expansion vs 3.5.0-Snapshot → w5_static_prefixes-
-   Allowance + Pins 140/174). Wrapper-Self-Gate undercreditet (Engine-Self-Mutation
-   Coverage-Lücke; _19/_23 manuell als killbar bewiesen, _4 echtes Äquivalent).
-6. **W6 Harness-all-Akzeptanz + Doku + Release v2.19.0**.
+## Gates (alle gruen)
+- volle Suite **1419 passed / 5 skipped**, ruff 0, mypy 14 = Baseline,
+  import-linter KEPT, Semgrep 0 (geaenderte Dateien). Keine neuen Dependencies
+  (ProcessPoolExecutor/concurrent.futures sind stdlib) -> pip-audit unveraendert
+  ggue. v2.19.1.
+- **Mutation geaenderte Zeilen:**
+  - WRK-002 (`_generate_mutants` neue Zeilen): die Safety-Net-Mutanten
+    (`raise`->`pass`, msg=None, msg-String, OrchestratorError(None), list()-drop)
+    **11/11 = 100%** gekillt — bewiesen via wrk002-only-Gate (forciert die
+    Test-Zuordnung; der tests/unit-weite Gate ordnet wrk002 wegen der
+    Engine-Self-Mutation-Coverage-Luecke NICHT zu). Aequivalente: max_workers=None/
+    weggelassen, mp_context=None/get_context(None) — auf Windows == spawn-Default,
+    worker-Anzahl aendert die generierten Mutanten nicht. Die `> 1`-Bedingung ist
+    vorbestehend (Legacy, nicht geaendert).
+  - qualified-name (`_skip_node_and_children` + `on_leave`): die neuen Zeilen
+    (qualified-OR, on_visit-push, on_leave-pop) **100%** gekillt; verbleibende
+    23 Survivors sind dieselbe Legacy-Klasse wie W4 (never-mutate-Gate, annotation/
+    param-default/@staticmethod-relaxation/decorator).
 
-## Architektur-Leitplanken
-- all-tier-Operatoren sind `Profile.ALL`-getaggt → advanced-Counts bleiben
-  UNVERÄNDERT (Schicht-Invariante basic⊆snap⊆adv⊆all + Per-Projekt-Count-Pins).
-- Per-Operator-Gate: `mutmut-win run --paths-to-mutate <file> --tests-dir
-  <unit-test> --profile all --force "*operator_X*"` (fnmatch-Glob via
-  match_mutant_names). Neu geschriebene Funktionen zählen voll (Gate-Methodik #6).
+## Test-Haertung (wrk002)
+- `_BrokenPool.map` ist LAZY (Generator, raise bei Iteration) wie echtes
+  `ProcessPoolExecutor.map` -> pinnt das `list(...)` im try als load-bearing
+  (Mutant 85: list()-drop laesst die Exception sonst aus dem try entkommen).
+- exakte Diagnose-Message-Assertion (`str(exc) == _EXPECTED_MSG`) statt blossem
+  `match=`-Substring -> killt jede msg-Segment-Mutation + msg=None + raise->pass.
 
-## W1–W5 Ergebnis (Gates)
-W5: 1397 passed / 5 skipped, ruff 0 (bare `.`), mypy 14 = Baseline, import-linter
-KEPT, Semgrep 0. _is_static_only 100%; static-Dispatch exec-verifiziert. e2e my_lib-Pins
-auf 140/174 angehoben (W5 @staticmethod-Flächen-Expansion, +11 Point.from_coords),
-übrige 4 Projekte unverändert (kein @staticmethod). advanced ist ab W5 NICHT mehr
-eingefroren (Surface-Backport, nicht profil-getaggt).
-W4: 1385 passed, Pragma-Mutation 193/197 = 98%, neue Skip-Zeilen 100%. W3: 42/42 = 100%,
-all = basic15/adv34/all41. W2: 46/50 = 92%. W1: 18/18 = 100%.
+## Reusable lesson (neu)
+Engine-Self-Mutation-Coverage-Luecke gilt auch fuer den Orchestrator: ein Test,
+der `_generate_mutants` direkt mit Mock aufruft, wird im tests/unit-weiten Stats-
+Lauf NICHT als covering test zugeordnet -> ehrlicher Beweis = Gate mit genau
+diesem Test als einzigem `--tests-dir`.
 
-## Out of scope (Phase 5+)
-Weitere Surface-Backports jenseits §5; PyPI-Publishing.
+## Status
+v2.20.0 RELEASE in Arbeit (Branch feature/v2.20.0-wrk002-qualified). Nach Merge/
+Tag/Push/Release: Close-Commit setzt housekeeping_done + memory_updated, zurueck
+in die Entwicklungspause (0 Issues / Backlog).
