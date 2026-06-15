@@ -254,3 +254,29 @@ class TestUoiNegateBooleanOperand:
     def test_existing_not_right_operand_skipped(self) -> None:
         # symmetric: the already-negated RIGHT operand is skipped too
         assert _uoi_bool("a and not b") == ["not a and not b"]
+
+
+def test_no_duplicate_mutants_across_overlapping_operators() -> None:
+    """Regression guard (external QA v2.19.0): the operators avoid duplicate
+    mutants by construction (e.g. ROR excludes the base boundary swap; the
+    all-tier ops are disjoint by node kind). There is NO visitor-level dedup, so
+    a future overlapping operator that re-emitted an existing mutant would
+    silently add a redundant one for the same node — caught here.
+    """
+    from mutmut_win.constants import Profile
+    from mutmut_win.mutation import create_mutations
+
+    source = (
+        "def f(a, b):\n"
+        "    total = a + b\n"
+        "    if a < b:\n"
+        "        return a and b\n"
+        "    return 7\n"
+    )
+    _module, mutations = create_mutations(source, active_profile=Profile.ALL)
+    renderer = cst.Module(body=[])
+    seen: set[tuple[int, str]] = set()
+    for mutation in mutations:
+        key = (id(mutation.original_node), renderer.code_for_node(mutation.mutated_node))
+        assert key not in seen, f"duplicate mutant for one node: {key[1]!r}"
+        seen.add(key)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -15,7 +16,7 @@ from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.db import DEFAULT_DB_PATH, load_results
-from mutmut_win.exceptions import MutmutWinError
+from mutmut_win.exceptions import CorruptCacheError, MutmutWinError
 from mutmut_win.mutant_diff import apply_mutant, render_function_diff, resolve_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
@@ -26,6 +27,9 @@ from mutmut_win.test_mapping import (
     match_mutant_names,
     tests_for_mutant_names,
 )
+
+if TYPE_CHECKING:
+    from mutmut_win.models import MutationResult
 
 
 @click.group()
@@ -63,6 +67,22 @@ def _load_config_or_exit() -> MutmutConfig:
     except ConfigError as exc:
         click.echo(str(exc), err=True)
         sys.exit(2)
+
+
+def _load_results_or_exit(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
+    """Load cached results; on a corrupt cache DB, exit 1 with a clean message.
+
+    External QA CACHE-001: a garbage ``mutmut-cache.db`` used to escape as a raw
+    ``sqlite3`` traceback from the read commands (``results`` /
+    ``export-cicd-stats`` / ``show`` / ``time-estimates``); ``run`` already had
+    its clean path via the orchestrator's domain-error handler. ``run --force``
+    recovers by deleting ``.mutmut-cache/`` first.
+    """
+    try:
+        return load_results(path)
+    except CorruptCacheError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
 
 
 @cli.command()
@@ -447,7 +467,7 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     if treat_timeout_as_kill:
         _warn_treat_timeout_as_kill_deprecated()
 
-    all_results = load_results(DEFAULT_DB_PATH)
+    all_results = _load_results_or_exit(DEFAULT_DB_PATH)
 
     if not all_results:
         click.echo("No results found. Run 'mutmut-win run' first.")
@@ -602,7 +622,8 @@ def show(mutant_name: str) -> None:
 
     if DEFAULT_DB_PATH.exists():
         row = next(
-            (r for r in load_results(DEFAULT_DB_PATH) if r.mutant_name == resolved_name), None
+            (r for r in _load_results_or_exit(DEFAULT_DB_PATH) if r.mutant_name == resolved_name),
+            None,
         )
         if row is not None:
             panel = _format_forensics_panel(row.status, row.forensics)
@@ -695,7 +716,7 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
         )
         sys.exit(1)
 
-    all_results = load_results(DEFAULT_DB_PATH)
+    all_results = _load_results_or_exit(DEFAULT_DB_PATH)
     if not all_results:
         click.echo("No results found. Run 'mutmut-win run' first.")
         return
@@ -740,7 +761,7 @@ def export_cicd_stats_cmd() -> None:
     queries (issue #109 / A4-UI-013): an empty result set in a gate context
     means the pipeline ran nothing, and silence would read as green.
     """
-    all_results = load_results(DEFAULT_DB_PATH)
+    all_results = _load_results_or_exit(DEFAULT_DB_PATH)
     if not all_results:
         click.echo("No results found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
