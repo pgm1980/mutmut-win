@@ -1,6 +1,6 @@
 ---
-current_sprint: "Phase 4"
-sprint_goal: "Phase 4: die aggressiven all-tier-Operatoren (#2 AOD, #12 UOI, #27/#29 removal, #44 exception-swap) + mutmut-3.6.0-Backports (@static/classmethod, pragma-block, do_not_mutate_patterns). Akzeptanz: per-operator Mutation ≥80%, all⊋advanced, e2e wellen-stabil, acceptance_harness all-Tabelle grün."
+current_sprint: "v2.19.1 (external-QA patch)"
+sprint_goal: "v2.19.1: risikoarme Fixes aus dem externen v2.19.0-Verifikationsbericht — CACHE-001 (korrupte Cache-DB → saubere Message statt Traceback), setup.cfg-Parität für mutation_profile + do_not_mutate_patterns, Dedup-Regressionsguard. Akzeptanz: geänderte Zeilen ≥80% Mutation, volle Suite grün."
 branch: "main"
 started_at: "2026-06-14"
 housekeeping_done: true
@@ -12,8 +12,28 @@ tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (Phase 4 — all-tier aggressive Operatoren + 3.6.0-Backports)
+# Sprint State (v2.19.1 — external-QA patch)
 
+## v2.19.1 Patch (External 360°-Re-Test)
+Externer Verifikationsbericht zu v2.19.0: production-ready, Roadmap+Bug-Report
+getreu umgesetzt (Harness 204/200/4 unabhängig reproduziert). 3 risikoarme Fixes
+(User-Scope-Wahl):
+1. **CACHE-001** — korrupte `.mutmut-cache.db` warf `sqlite3.DatabaseError` als
+   Raw-Traceback aus run/results/export-cicd-stats. Fix: `db.create_db` fängt es →
+   `CorruptCacheError(MutmutWinError)`; CLI-Helper `_load_results_or_exit` rendert
+   sauber (Exit 1, stderr). `run --force` heilt. Gate: except-Zweig 100%,
+   _load_results_or_exit 14/14.
+2. **setup.cfg-Parität** — `_load_setup_cfg` parste `mutation_profile` +
+   `do_not_mutate_patterns` nicht (in model_fields → kein "unknown"-Warn, aber stumm
+   ignoriert). Fix: beide Keys ergänzt.
+3. **Dedup-Regressionsguard** — Test gegen künftige Operator-Overlaps (kein
+   visitor-level Dedup; aktuell 0 Duplikate bestätigt).
+NICHT gefixt (User-Scope): WRK-002 (pre-bootstrap Worker-Hang), Minor name-only/
+@static-gating. PROF-001 (advanced-Default) = vom Owner als intended bestätigt.
+Vorbestehend geflaggt: create_db-Migrations-Coverage-Lücke (Tech-Debt-Task).
+Gates: volle Suite 1407+ passed, ruff 0, mypy 14, import-linter KEPT, Semgrep 0.
+
+## Phase 4 (v2.19.0) — History
 ## Current Focus
 Phase 4 — **die aggressiven `all`-tier-Operatoren + mutmut-3.6.0-Backports** —
 **ABGESCHLOSSEN (W1–W6), v2.19.0 RELEASED** (Merge `027cb41`, Tag v2.19.0,

@@ -458,6 +458,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "paths_to_mutate": _get("paths_to_mutate", []),
         "tests_dir": _get("tests_dir", ["tests/"]),
         "do_not_mutate": _get("do_not_mutate", []),
+        "do_not_mutate_patterns": _get("do_not_mutate_patterns", []),
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
@@ -484,6 +485,12 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         value = _get(il_key, None)
         if value is not None:
             normalized[il_key] = value
+    # mutation_profile (external QA: setup.cfg silently ignored it). Like the IL
+    # keys, an absent key stays absent so the model default (advanced) applies;
+    # a present value (basic/advanced/all) is coerced by the model validator.
+    profile_value = _get("mutation_profile", None)
+    if profile_value is not None:
+        normalized["mutation_profile"] = profile_value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
     return MutmutConfig.model_validate(normalized)

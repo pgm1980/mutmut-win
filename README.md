@@ -82,13 +82,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.1"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.19.1" --dev
 ```
 
 ## Quick start
@@ -392,14 +392,17 @@ operand deletion, exception swap, general-statement and member-assignment
 removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 (pragma `block`/`start`-`end`, regex `do_not_mutate_patterns`, and
 `@staticmethod` mutation — harness 204/200, the 4 survivors are documented
-regex `fullmatch` equivalents). Details: the
+regex `fullmatch` equivalents). v2.19.1 is a robustness patch from an external
+360° re-test: a corrupt `.mutmut-cache` DB now surfaces a clean message instead
+of a raw traceback (recover with `run --force`), and `setup.cfg` now honours the
+`mutation_profile` / `do_not_mutate_patterns` keys. Details: the
 [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.19.0 is the current release — the `all` profile now strictly
-exceeds `advanced`. Active development is in a documented pause with a clean
-slate — zero open issues, zero known backlog entries. The issue tracker stays
-open; the resumption baseline (a full self-run over the tool's own codebase —
-7231 mutants, 69.2 % killed) is recorded in the repository docs.
+**Status:** v2.19.1 is the current release — the `all` profile strictly exceeds
+`advanced`. Active development is in a documented pause with a clean slate — zero
+open issues, zero known backlog entries. The issue tracker stays open; the
+resumption baseline (a full self-run over the tool's own codebase — 7231
+mutants, 69.2 % killed) is recorded in the repository docs.
 
 ## License
 

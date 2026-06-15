@@ -13,6 +13,8 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mutmut_win.exceptions import CorruptCacheError
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -84,19 +86,34 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
 
     Args:
         path: Filesystem path to the SQLite database file.
+
+    Raises:
+        CorruptCacheError: if the file exists but is not a valid SQLite
+            database (external QA CACHE-001); recover with ``run --force``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with contextlib.closing(sqlite3.connect(path)) as conn:
-        conn.execute(_CREATE_TABLE_SQL)
-        # Migrate existing databases from older schemas.
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(mutant)").fetchall()}
-        if "last_output" not in columns:
-            _add_column_if_missing(conn, _MIGRATE_ADD_LAST_OUTPUT)
-        if "forensics" not in columns:
-            _add_column_if_missing(conn, _MIGRATE_ADD_FORENSICS)
-        if "tests_fingerprint" not in columns:
-            _add_column_if_missing(conn, _MIGRATE_ADD_TESTS_FINGERPRINT)
-        conn.commit()
+    try:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            conn.execute(_CREATE_TABLE_SQL)
+            # Migrate existing databases from older schemas.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(mutant)").fetchall()}
+            if "last_output" not in columns:
+                _add_column_if_missing(conn, _MIGRATE_ADD_LAST_OUTPUT)
+            if "forensics" not in columns:
+                _add_column_if_missing(conn, _MIGRATE_ADD_FORENSICS)
+            if "tests_fingerprint" not in columns:
+                _add_column_if_missing(conn, _MIGRATE_ADD_TESTS_FINGERPRINT)
+            conn.commit()
+    except sqlite3.DatabaseError as exc:
+        # A garbage / truncated DB file raises "file is not a database" on the
+        # first execute (external QA CACHE-001). Surface a clean, recoverable
+        # message instead of a raw traceback — ``run --force`` deletes
+        # .mutmut-cache/ and rebuilds a fresh DB.
+        msg = (
+            f"cache database at '{path}' is corrupt or unreadable ({exc}). "
+            "Delete the .mutmut-cache/ directory or re-run with --force."
+        )
+        raise CorruptCacheError(msg) from exc
 
 
 def save_result(

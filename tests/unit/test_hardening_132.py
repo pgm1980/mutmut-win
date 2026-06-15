@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from mutmut_win.config import MutmutConfig, load_config
+from mutmut_win.constants import Profile
 from mutmut_win.runner import PytestRunner
 
 if TYPE_CHECKING:
@@ -300,6 +301,35 @@ class TestSetupCfgParity:
         err = capsys.readouterr().err
         assert "infinite_loop_windw" in err
         assert "unknown" in err.lower()
+
+    def test_mutation_profile_and_patterns_load_from_setup_cfg(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # external QA (v2.19.0): these two newer fields are valid model fields
+        # (so no "unknown" warning) but _load_setup_cfg never parsed them, so a
+        # setup.cfg-only project silently fell to the advanced/empty defaults.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\n"
+            "paths_to_mutate = src/\n"
+            "mutation_profile = basic\n"
+            "do_not_mutate_patterns = test_.*, _internal\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.mutation_profile is Profile.BASIC
+        assert config.do_not_mutate_patterns == ["test_.*", "_internal"]
+
+    def test_setup_cfg_without_profile_keeps_the_model_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8"
+        )
+        config = load_config(tmp_path)
+        assert config.mutation_profile is Profile.ADVANCED  # default applies, not lost
+        assert config.do_not_mutate_patterns == []
 
     def test_unknown_key_warning_is_word_exact_and_sorted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

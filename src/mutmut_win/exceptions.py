@@ -77,6 +77,19 @@ class StaleStagingError(MutmutWinError):
     """
 
 
+class CorruptCacheError(MutmutWinError):
+    """The ``.mutmut-cache/`` SQLite database is corrupt or unreadable.
+
+    Producer: ``db.create_db`` (and therefore every reader via
+    ``db.load_results``) wraps ``sqlite3.DatabaseError`` — a garbage / truncated
+    DB file used to escape as a raw traceback from ``run`` / ``results`` /
+    ``export-cicd-stats`` (external QA CACHE-001). Mirrors the domain-error
+    contract of the other state errors (e.g. :class:`StaleStagingError`): a clean
+    message + a defined exit code, never a traceback. ``run --force`` recovers by
+    deleting ``.mutmut-cache/`` first.
+    """
+
+
 class AmbiguousMutantNameError(MutmutWinError):
     """A mutant name pattern matched more than one mutant.
 
