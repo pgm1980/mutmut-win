@@ -3,8 +3,8 @@ current_sprint: "v2.20.0 (external-QA hardening)"
 sprint_goal: "v2.20.0: WRK-002 (Staging-Worker-Pool gegen bootstrap-sterbende Worker absichern — ProcessPoolExecutor erkennt tote Worker → sauberer OrchestratorError statt Endlos-Hang) + do_not_mutate_patterns matcht jetzt auch den qualifizierten Class.method-Namen. Striktes @staticmethod-Gating als by-design dokumentiert. Akzeptanz: geaenderte Zeilen >=80% Mutation, volle Suite gruen."
 branch: "feature/v2.20.0-wrk002-qualified"
 started_at: "2026-06-15"
-housekeeping_done: false
-memory_updated: false
+housekeeping_done: true
+memory_updated: true
 github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
@@ -73,6 +73,6 @@ Lauf NICHT als covering test zugeordnet -> ehrlicher Beweis = Gate mit genau
 diesem Test als einzigem `--tests-dir`.
 
 ## Status
-v2.20.0 RELEASE in Arbeit (Branch feature/v2.20.0-wrk002-qualified). Nach Merge/
-Tag/Push/Release: Close-Commit setzt housekeeping_done + memory_updated, zurueck
-in die Entwicklungspause (0 Issues / Backlog).
+**v2.20.0 RELEASED** (Merge db71e53, Tag v2.20.0,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.20.0)).
+PROJEKT ZURUECK IN DER ENTWICKLUNGSPAUSE (0 Issues / Backlog).
