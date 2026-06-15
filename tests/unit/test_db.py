@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
@@ -133,3 +135,144 @@ class TestLoadResults:
         results = load_results(db_path)
         assert len(results) == 1
         assert results[0].mutant_name == "x.y__mutmut_1"
+
+
+# ---------------------------------------------------------------------------
+# schema migration on the read path (mutation hardening for create_db)
+# ---------------------------------------------------------------------------
+
+
+def _make_old_schema_db(path: Path) -> None:
+    """Create a pre-migration cache the way mutmut-win < v2.5 did.
+
+    The ``mutant`` table is created WITHOUT the ``last_output``, ``forensics``
+    and ``tests_fingerprint`` columns and seeded with one row, so a later
+    ``create_db`` / ``load_results`` has real migrations to perform on the
+    read path.
+
+    Args:
+        path: Destination database file.
+    """
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            "CREATE TABLE mutant ("
+            "mutant_name TEXT PRIMARY KEY, status TEXT NOT NULL, "
+            "exit_code INTEGER, duration REAL)"
+        )
+        conn.execute(
+            "INSERT INTO mutant VALUES (?, ?, ?, ?)",
+            ("pkg.mod.fn__mutmut_1", "survived", 0, 0.5),
+        )
+        conn.commit()
+
+
+def _table_columns(path: Path) -> set[str]:
+    """Return the column names of the ``mutant`` table.
+
+    Args:
+        path: Database file to inspect.
+
+    Returns:
+        Column names as reported by ``PRAGMA table_info``.
+    """
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        return {row[1] for row in conn.execute("PRAGMA table_info(mutant)").fetchall()}
+
+
+class TestSchemaMigration:
+    """Migration-on-read coverage for the ``create_db`` schema branches.
+
+    These pin the migration guards to >=80% function-wise mutation. The
+    residual survivors under ``--profile all --force "*create_db*"`` are all
+    EQUIVALENT and cannot be killed: case-only respellings of the
+    ``PRAGMA table_info(mutant)`` query (SQLite keywords and identifiers are
+    case-insensitive), and ``conn.commit()`` -> ``pass`` (``create_db`` only
+    issues DDL, which autocommits — no transaction is ever open for the commit
+    to flush; the upsert commit on the DML path IS load-bearing and is pinned
+    by :class:`TestWriteDurability`).
+    """
+
+    _NEW_COLUMNS = frozenset({"last_output", "forensics", "tests_fingerprint"})
+
+    def test_old_schema_is_migrated_with_new_columns(self, tmp_path: Path) -> None:
+        # A pre-v2.5 cache lacks the columns the SELECT in load_results names;
+        # create_db must add every one of them on the read path. Pins the
+        # "X not in columns -> ALTER" branches against mutants that skip a
+        # genuinely needed migration.
+        db_path = tmp_path / "old-cache.db"
+        _make_old_schema_db(db_path)
+
+        create_db(db_path)
+
+        assert _table_columns(db_path) >= self._NEW_COLUMNS
+
+    def test_migration_preserves_existing_rows(self, tmp_path: Path) -> None:
+        # The ALTERs must not drop the pre-existing row, and the brand-new
+        # columns read back as NULL for it.
+        db_path = tmp_path / "old-cache.db"
+        _make_old_schema_db(db_path)
+
+        results = load_results(db_path)
+
+        assert len(results) == 1
+        row = results[0]
+        assert row.mutant_name == "pkg.mod.fn__mutmut_1"
+        assert row.status == "survived"
+        assert row.last_output is None
+        assert row.forensics is None
+        assert row.tests_fingerprint is None
+
+    def test_no_redundant_migration_on_current_schema(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The "X not in columns" guards exist to AVOID firing an ALTER when the
+        # schema is already current (issue #100 / A3-FD-007 — migrations are
+        # race-tolerant, but must also not run needlessly). On a freshly
+        # created DB every column is present, so not one migration may be
+        # attempted. _add_column_if_missing swallows duplicate-column errors,
+        # so a redundant ALTER is otherwise INVISIBLE — spying on the migration
+        # primitive is what pins the contract and kills the always-migrate
+        # mutants (if True, case-swapped names, wrong PRAGMA index).
+        from mutmut_win import db as db_module
+
+        db_path = tmp_path / "cache.db"
+        create_db(db_path)  # fully-current schema, all columns present
+
+        attempted: list[str] = []
+        real_add = db_module._add_column_if_missing
+
+        def spy(conn: sqlite3.Connection, ddl: str) -> None:
+            attempted.append(ddl)
+            real_add(conn, ddl)
+
+        monkeypatch.setattr(db_module, "_add_column_if_missing", spy)
+
+        create_db(db_path)  # second call on an already-current schema
+
+        assert attempted == [], f"create_db ran redundant migrations: {attempted}"
+
+
+class TestWriteDurability:
+    """Persistence guard for the upsert commit path."""
+
+    def test_save_result_is_durable_across_connections(self, tmp_path: Path) -> None:
+        # The upsert must be committed: without conn.commit() the INSERT is
+        # rolled back when the writer closes its connection, and a later reader
+        # on a brand-new connection sees nothing. Reading back through both a
+        # fresh load_results AND a raw connection proves the write survived the
+        # close.
+        db_path = tmp_path / "cache.db"
+        save_result(db_path, "mod.fn__mutmut_7", "killed", 1, 0.25, last_output="boom")
+
+        results = load_results(db_path)  # fresh connection
+        assert len(results) == 1
+        assert results[0].mutant_name == "mod.fn__mutmut_7"
+        assert results[0].status == "killed"
+        assert results[0].last_output == "boom"
+
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            persisted = conn.execute(
+                "SELECT status, last_output FROM mutant WHERE mutant_name = ?",
+                ("mod.fn__mutmut_7",),
+            ).fetchall()
+        assert persisted == [("killed", "boom")]
