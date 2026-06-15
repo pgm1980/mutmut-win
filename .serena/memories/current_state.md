@@ -1,15 +1,23 @@
-# Current State — v2.19.0 (Phase 4 complete: all-tier operators + 3.6.0 backports)
+# Current State — v2.19.1 (Phase 4 + external-QA robustness patch)
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
 
 ## Release status
-- **Current release: v2.19.0** (Phase 4). History: v2.16 (profiles), v2.17
-  (Phase 2: 6 advanced ops), v2.18 (Phase 3: regex suite), v2.19 (Phase 4).
-- Back in the documented development pause after v2.19.0.
-- Last gates: full suite 1397 passed / 5 skipped, ruff 0, mypy 14 baseline,
-  import-linter KEPT, Semgrep 0, acceptance_harness 204/200/98% (4 documented
-  regex equivalents, NO new Phase-4 survivors).
+- **Current release: v2.19.1** (external-QA patch on Phase 4's v2.19.0). History:
+  v2.16 (profiles), v2.17 (Phase 2), v2.18 (Phase 3 regex), v2.19.0 (Phase 4
+  all-tier + backports), v2.19.1 (robustness patch).
+- Back in the documented development pause after v2.19.1.
+- **v2.19.1 fixes (external 360° re-test of v2.19.0)**: CACHE-001 (corrupt
+  .mutmut-cache DB → CorruptCacheError clean message via db.create_db +
+  cli._load_results_or_exit, not a raw sqlite traceback; run --force recovers);
+  setup.cfg parity for mutation_profile + do_not_mutate_patterns in
+  _load_setup_cfg; dedup regression guard (test_all_tier_operators). NOT done
+  (owner scope): WRK-002 pre-bootstrap worker-hang; advanced-default = intended.
+  Pre-existing create_db migration-coverage gap = spawned tech-debt task.
+- Last gates: full suite 1409 passed / 5 skipped, ruff 0, mypy 14 baseline,
+  import-linter KEPT, Semgrep 0. v2.19.0 acceptance_harness 204/200/98% unchanged
+  (no operator/profile behaviour changed in v2.19.1).
 
 ## Operator profiles
 - Registry node_mutation.mutation_operators = (node_type, operator, Profile).

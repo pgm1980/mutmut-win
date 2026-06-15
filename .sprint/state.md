@@ -31,7 +31,10 @@ getreu umgesetzt (Harness 204/200/4 unabhängig reproduziert). 3 risikoarme Fixe
 NICHT gefixt (User-Scope): WRK-002 (pre-bootstrap Worker-Hang), Minor name-only/
 @static-gating. PROF-001 (advanced-Default) = vom Owner als intended bestätigt.
 Vorbestehend geflaggt: create_db-Migrations-Coverage-Lücke (Tech-Debt-Task).
-Gates: volle Suite 1407+ passed, ruff 0, mypy 14, import-linter KEPT, Semgrep 0.
+Gates: volle Suite 1409 passed / 5 skipped, ruff 0, mypy 14, import-linter KEPT, Semgrep 0.
+**v2.19.1 RELEASED** (Merge `5338b1e`, Tag v2.19.1,
+[GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.19.1)).
+PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE.
 
 ## Phase 4 (v2.19.0) — History
 ## Current Focus
