@@ -1,10 +1,10 @@
 ---
 current_sprint: "38"
 sprint_goal: "v2.21.0: alle bestaetigten False-Green-, Prozess-, Persistenz-, pytest-, Security-, Supply-Chain- und Releasegate-Befunde des adversarialen 360-Grad-Reviews schliessen; lokal vollstaendig verifizieren und als GitHub-Tag/Release publizieren."
-branch: "fix/360-review-hardening"
+branch: "fix/v2.21.0-release-blockers"
 started_at: "2026-08-30"
 housekeeping_done: false
-memory_updated: false
+memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
 semgrep_passed: true
@@ -18,15 +18,25 @@ documentation_updated: true
 
 ## Aktiver Releasekandidat v2.21.0
 
-Der autoritative Arbeitszweig ist `fix/360-review-hardening`, abgezweigt von
-`main@6cb727d`. Analyse und Bugfix-Roadmap liegen unter `bug_reporting/`; die
-lokalen Abschlussgates, PR-Integration, der annotierte Tag `v2.21.0` und das
-GitHub-Release werden in dieser Reihenfolge abgeschlossen. GitHub-CI wird auf
-ausdrueckliche Nutzeranweisung wegen des Billing-Problems uebersprungen und
-darf nicht als PASS markiert werden. Die abgeschlossenen lokalen Test-,
-Semgrep- und Dokumentationsnachweise sind im Frontmatter `true`; die erst nach
-Integration und Release abschliessbaren Housekeeping-/Remote-Punkte bleiben
-ehrlich `false`.
+PR #134 wurde als Mergecommit
+`55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit dem unveraenderten
+Kandidatentree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert.
+GitHub-CI lief daraufhin tatsaechlich und deckte MW220-112, MW220-113 und
+MW220-114 als drei weitere Releaseblocker auf; es gibt keinen CI-PASS. Der autoritative
+Reparaturzweig ist deshalb `fix/v2.21.0-release-blockers`, abgezweigt von diesem
+Mergecommit. Alle davor gebauten integrierten Artefakte und Abschlussclaims sind
+durch die nachfolgenden Fixes ungueltig und muessen auf dem neuen Kandidaten
+vollstaendig neu erhoben werden.
+
+Der abschliessende Report-Vertragsaudit fand und schloss zusaetzlich MW220-115.
+Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder GitHub-Releasepublikation
+wieder entfernt; Tag und Release sind derzeit nicht vorhanden. Nach vollstaendiger
+Revalidierung der implementierten Fixes und geprueftem Follow-up-PR
+folgen der annotierte Tag und das GitHub-Release. Eine weitere Remote-CI darf
+wegen des akzeptierten Billing-Problems ausbleiben, wird dann aber niemals als
+PASS gewertet. Lokale Test-, Semgrep-, Memory- und Dokumentationsflags sind
+belegt `true`; Housekeeping und GitHub-Issue-Closure bleiben bis zur
+Veröffentlichung ehrlich `false`.
 
 <!-- LIVE_STATE_END -->
 

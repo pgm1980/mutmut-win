@@ -1,18 +1,22 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-08-31. Source of truth for sprint state is `.sprint/state.md`;
+> Last refresh: 2026-09-01. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 
 <!-- LIVE_STATE_START -->
 
-> **STATUS: v2.21.0 release candidate in progress.** The authoritative branch
-> is `fix/360-review-hardening`, based on `main@6cb727d`. The adversarial
+> **STATUS: v2.21.0 follow-up candidate in finalization.** PR #134 was integrated as
+> merge commit `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` with candidate tree
+> `761e264a91a52bda4c284f3f36fe53954d7fff2b`. The authoritative repair branch
+> is `fix/v2.21.0-release-blockers`, based on that merge. The adversarial
 > 360-degree review, fixes and local release evidence are tracked in
 > `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
-> `bug_reporting/BUGFIXUNG_ROADMAP.md`. GitHub CI
-> is intentionally skipped because of the acknowledged billing problem and is
-> not a PASS; publication proceeds only after the remaining local gates.
+> `bug_reporting/BUGFIXUNG_ROADMAP.md`. GitHub CI did run and exposed MW220-112,
+> MW220-113 and MW220-114; it is not a PASS. Their focused fixes and the local
+> final matrix are green. The final report-contract audit additionally found and
+> closed MW220-115. Pre-fix artifacts remain invalidated. A premature `v2.21.0`
+> tag was removed before any release, and publication remains pending.
 
 ## What it is
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
@@ -32,12 +36,14 @@ and a platform-aware confidence band.
 
 ## Where we are
 
-- **Release target:** v2.21.0; local hardening and release verification in
-  progress on `fix/360-review-hardening`.
+- **Release target:** v2.21.0; MW220-112, MW220-113, MW220-114 and MW220-115 are
+  implemented on `fix/v2.21.0-release-blockers`; final candidate publication is
+  in progress after PR #134 integration.
 - **Authoritative review state:** `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
   `bug_reporting/BUGFIXUNG_ROADMAP.md`.
-- **Remote state:** must be live-read again immediately before branch, PR, tag
-  or release writes.
+- **Remote state:** PR #134 is integrated at `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf`;
+  the annotated tag and GitHub release remain absent and must be live-read again
+  immediately before any further remote write.
 - **Release sequence:** version bump on the release branch, final gates, merge
   to `main`, annotated tag, then GitHub release.
   <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->

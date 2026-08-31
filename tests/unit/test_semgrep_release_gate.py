@@ -1093,6 +1093,15 @@ def test_semgrep_is_bound_to_active_exact_repository_virtualenv(project: Project
         )
 
 
+def test_release_scan_is_serial_but_rule_bootstrap_remains_sharded() -> None:
+    """The full scan must not reintroduce Windows fixpoint contention."""
+    bootstrap = gate._semgrep_dump_command("semgrep")
+    scan = gate._semgrep_bundle_command("semgrep", Path("bundle.json"))
+
+    assert bootstrap[bootstrap.index("--jobs") + 1] == gate.SEMGREP_BOOTSTRAP_JOBS == "4"
+    assert scan[scan.index("--jobs") + 1] == gate.SEMGREP_SCAN_JOBS == "1"
+
+
 def test_temporary_mirror_must_be_external(
     project: Project, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -32,6 +32,14 @@ def _prepare(project: Path, staging: Path, tests_dir: list[str] | None = None) -
     )
 
 
+def _keep_file_identity_live(path: Path) -> tuple[int, int]:
+    """Prevent immediate inode reuse while a replacement is under test."""
+
+    identity = path.stat().st_dev, path.stat().st_ino
+    os.link(path, path.with_name(f".{path.name}.identity-anchor"))
+    return identity
+
+
 def test_schema_v2_round_trip_binds_root_config_and_allowed_paths(tmp_path: Path) -> None:
     project, staging = _project(tmp_path)
     tests = staging / "tests"
@@ -58,8 +66,10 @@ def test_same_byte_config_replacement_is_identity_drift(tmp_path: Path) -> None:
     config.write_bytes(payload)
     boundary = _prepare(project, staging)
 
+    original_identity = _keep_file_identity_live(config)
     config.unlink()
     config.write_bytes(payload)
+    assert (config.stat().st_dev, config.stat().st_ino) != original_identity
 
     with pytest.raises(PytestBoundaryError, match="identity changed"):
         boundary.arguments()
@@ -442,8 +452,10 @@ def test_external_test_file_same_byte_replacement_is_rejected(tmp_path: Path) ->
     external_file.write_bytes(payload)
     boundary = _prepare(project, staging, [str(external_file)])
 
+    original_identity = _keep_file_identity_live(external_file)
     external_file.unlink()
     external_file.write_bytes(payload)
+    assert (external_file.stat().st_dev, external_file.stat().st_ino) != original_identity
 
     with pytest.raises(PytestBoundaryError, match="test target identity changed"):
         boundary.canonical_allowed_test_paths()

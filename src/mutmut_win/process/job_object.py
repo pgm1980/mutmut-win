@@ -19,6 +19,7 @@ import ctypes
 import ctypes.wintypes
 import logging
 import sys
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,15 @@ if sys.platform == "win32":
 
     _kernel32.ResumeThread.argtypes = [ctypes.wintypes.HANDLE]
     _kernel32.ResumeThread.restype = ctypes.wintypes.DWORD
+else:
+    # Public functions reject non-Windows callers before using these names.
+    # Explicit placeholders retain that runtime contract while allowing the
+    # same module to be checked under both Windows and POSIX typeshed views.
+    _kernel32: Any = None
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 0
+    _PROCESS_ASSIGN_ACCESS = 0
+    _JOBOBJECT_EXTENDED_LIMIT_INFORMATION: Any = None
 
 
 def create_kill_on_close_job() -> int:

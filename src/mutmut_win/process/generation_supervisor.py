@@ -183,11 +183,11 @@ def _hard_exit_own_tree() -> None:
     if os.name == "posix":
         with contextlib.suppress(BaseException):
             process_group = int(
-                os.getpgrp()  # type: ignore[attr-defined]  # guarded by os.name
+                os.getpgrp()  # type: ignore[attr-defined,unused-ignore]
             )
-            os.killpg(  # type: ignore[attr-defined]  # POSIX-only API
+            os.killpg(  # type: ignore[attr-defined,unused-ignore]
                 process_group,
-                signal.SIGKILL,  # type: ignore[attr-defined]  # Windows typeshed omission
+                signal.SIGKILL,  # type: ignore[attr-defined,unused-ignore]
             )
     os._exit(1)
 
@@ -196,17 +196,24 @@ def _establish_posix_session() -> int | None:
     if os.name != "posix":
         return None
     try:
-        os.setsid()  # type: ignore[attr-defined]  # Windows typeshed omits POSIX APIs
+        os.setsid()  # type: ignore[attr-defined,unused-ignore]
     except PermissionError:
         # SessionContainedSpawnProcess establishes this before exec so even
         # .pth/sitecustomize runs in the killable group. A second setsid from
         # the session leader is expected to fail with EPERM.
         if (
-            os.getsid(0) != os.getpid()  # type: ignore[attr-defined]
-            or os.getpgrp() != os.getpid()  # type: ignore[attr-defined]
+            os.getsid(0)  # type: ignore[attr-defined,unused-ignore]
+            != os.getpid()
+            or os.getpgrp()  # type: ignore[attr-defined,unused-ignore]
+            != os.getpid()
         ):
             raise
-    return int(os.getpgrp())  # type: ignore[attr-defined]  # guarded by os.name
+    return int(os.getpgrp())  # type: ignore[attr-defined,unused-ignore]
+
+
+def _as_connection(connection: object) -> Connection:
+    """Return a Pipe endpoint with one stable type across platform stubs."""
+    return cast("Connection", connection)
 
 
 def _generation_supervisor_main(
@@ -625,7 +632,7 @@ def run_generation_supervised[ArgT, ResultT](
         child_connection.close()
 
         ready = _wait_for_wire_event(
-            cast("Connection", parent_connection),
+            _as_connection(parent_connection),
             process,
             deadline=progress_deadline,
         )
@@ -643,7 +650,7 @@ def run_generation_supervised[ArgT, ResultT](
 
         while True:
             message = _wait_for_wire_event(
-                cast("Connection", parent_connection),
+                _as_connection(parent_connection),
                 process,
                 deadline=progress_deadline,
             )
