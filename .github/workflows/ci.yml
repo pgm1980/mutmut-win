@@ -1,0 +1,300 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  PYTHONUTF8: "1"
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  lock:
+    name: Lock consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Verify lock file
+        run: uv lock --check
+
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Bootstrap locked build backend
+        run: uv sync --locked --only-group build --no-install-project
+      - name: Sync locked development environment
+        run: uv sync --locked --extra dev --group build --no-build-isolation
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+      - name: Type check
+        run: uv run --no-sync mypy src/ scripts/
+      - name: Check architecture contracts
+        run: uv run --no-sync lint-imports
+
+  security:
+    name: Security gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync the locked Semgrep environment
+        run: uv sync --locked --only-group security --no-install-project
+      - name: Run the pinned fail-closed Semgrep gate
+        run: uv run --no-sync python -I scripts/semgrep_release_gate.py
+
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Bootstrap locked build backend
+        run: uv sync --locked --only-group build --no-install-project
+      - name: Sync locked development environment
+        run: uv sync --locked --extra dev --group build --no-build-isolation
+      - name: Run test suite
+        run: uv run --no-sync pytest
+
+  pytest-compat:
+    name: Pytest 8.2 boundary compatibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.13"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Exercise the validated pytest floor
+        run: >-
+          uv run --isolated --frozen --no-dev --no-cache --with pytest==8.2.2
+          pytest -q -p no:cacheprovider tests/unit/test_pytest_boundary_security_220.py
+          tests/unit/test_surface_hardening_220.py::test_child_guard_rejects_external_directory_replacement
+          tests/unit/test_surface_hardening_220.py::test_exact_external_file_does_not_authorize_adjacent_conftest
+          tests/unit/test_surface_hardening_220.py::test_external_directory_authorizes_only_its_own_conftest_tree
+          tests/unit/test_surface_hardening_220.py::test_staged_config_cannot_collect_an_unbound_external_test_tree
+
+  audit:
+    name: Dependency audit (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Bootstrap locked build backend
+        run: uv sync --locked --only-group build --no-install-project
+      - name: Sync locked audit tool
+        run: uv sync --locked --extra dev --group build --no-build-isolation
+      - name: Export the complete locked dependency set
+        run: >-
+          uv export --frozen --all-extras --all-groups --no-hashes
+          --no-emit-project --output-file audit-requirements.txt
+      - name: Query current vulnerability advisories
+        run: >-
+          uv run --no-sync pip-audit --requirement audit-requirements.txt
+          --progress-spinner off
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync locked build backend
+        run: uv sync --locked --only-group build --no-install-project
+      - name: Build twice from locked inputs
+        shell: bash
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${RUNNER_TEMP}/dist-first"
+          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${RUNNER_TEMP}/dist-second"
+          diff --recursive --brief "${RUNNER_TEMP}/dist-first" "${RUNNER_TEMP}/dist-second"
+          mkdir dist
+          cp "${RUNNER_TEMP}/dist-first"/*.whl "${RUNNER_TEMP}/dist-first"/*.tar.gz dist/
+      - name: Require exactly one wheel and one source distribution
+        shell: bash
+        run: |
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  artifacts:
+    name: Installed artifact smoke test
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.6"
+          enable-cache: false
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distributions
+          path: dist
+      - name: Install and smoke-test wheel and source distribution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $wheel = @(Get-ChildItem -LiteralPath dist -Filter *.whl -File)
+          $sdist = @(Get-ChildItem -LiteralPath dist -Filter *.tar.gz -File)
+          if ($wheel.Count -ne 1 -or $sdist.Count -ne 1) {
+              throw "Expected one wheel and one source distribution"
+          }
+          $wheelPath = $wheel[0].FullName
+          $sdistPath = $sdist[0].FullName
+
+          uv venv --python "3.12" .artifact-wheel
+          uv pip install --python .artifact-wheel\Scripts\python.exe $wheelPath
+          uv pip check --python .artifact-wheel\Scripts\python.exe
+          & .artifact-wheel\Scripts\mutmut-win.exe --version
+
+          $requirements = Join-Path $env:RUNNER_TEMP "sdist-build-requirements.txt"
+          uv export --frozen --group build --no-emit-project --output-file $requirements
+          uv venv --python "3.12" .artifact-sdist
+          uv pip sync --python .artifact-sdist\Scripts\python.exe $requirements
+          uv pip install --offline --no-build-isolation --no-deps --python .artifact-sdist\Scripts\python.exe $sdistPath
+          uv pip check --python .artifact-sdist\Scripts\python.exe
+          & .artifact-sdist\Scripts\mutmut-win.exe --help | Out-Null

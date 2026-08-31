@@ -1,7 +1,7 @@
-# Code Style & Conventions (as of v2.13.0)
+# Code Style & Conventions (as of v2.21.0)
 
 ## Language & versions
-- Python >= 3.12 (ruff target py312, mypy python_version 3.12; dev venv 3.14.3).
+- Python >= 3.12,<3.15 (ruff target py312; mypy checks against Python 3.12 semantics).
 - Code, docstrings and README in English; process docs (CLAUDE.md, sprint docs) in German.
 
 ## Naming
@@ -13,7 +13,8 @@
   possible.
 - No `# type: ignore` without a specific error code AND a justification comment
   (e.g. `# type: ignore[override]`).
-- Known baseline: 14 mypy errors @ v2.13.0 — changes must not add new ones.
+- Release gate: `uv run --no-sync mypy src/ scripts/` must complete without errors;
+  historical baseline counts are not active acceptance criteria.
 
 ## Docstrings & comments
 - Google-style docstrings for all public classes/functions.

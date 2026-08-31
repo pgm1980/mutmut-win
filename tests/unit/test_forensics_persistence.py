@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mutmut_win.db import create_db, load_results
+from mutmut_win.db import create_db, load_results, start_run
 from mutmut_win.models import MutationRunResult, TaskCompleted
 from mutmut_win.orchestrator import _update_summary_and_persist
 
@@ -33,6 +33,7 @@ class TestForensicsPersistence:
     def test_forensics_roundtrip_to_db(self, tmp_path: Path) -> None:
         db_path = tmp_path / "results.sqlite"
         create_db(db_path)
+        start_run(db_path, ["pkg.x_f__mutmut_1"])
         summary = MutationRunResult(total_mutants=1)
         event = TaskCompleted(
             mutant_name="pkg.x_f__mutmut_1",
@@ -51,6 +52,7 @@ class TestForensicsPersistence:
     def test_missing_forensics_stays_null(self, tmp_path: Path) -> None:
         db_path = tmp_path / "results.sqlite"
         create_db(db_path)
+        start_run(db_path, ["pkg.x_f__mutmut_2"])
         summary = MutationRunResult(total_mutants=1)
         event = TaskCompleted(
             mutant_name="pkg.x_f__mutmut_2", worker_pid=1, exit_code=1, duration=0.1

@@ -19,6 +19,7 @@ import coverage
 import pytest
 
 from mutmut_win.code_coverage import gather_coverage, get_covered_lines_for_file
+from mutmut_win.exceptions import CoverageCollectionError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,6 +81,32 @@ class TestGatherCoverage:
         assert covered[os.path.normcase(measured_path)] == {1, 2, 5}
         assert get_covered_lines_for_file("src/mod.py", covered) == {1, 2, 5}
 
+    def test_collection_uses_fresh_data_file_inside_mutants(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        mutants_dir = tmp_path / "mutants"
+        mutants_dir.mkdir()
+        expected_data_file = mutants_dir / ".coverage.mutmut"
+        expected_data_file.write_bytes(b"stale coverage data")
+        measured_path = str((mutants_dir / "src" / "mod.py").absolute())
+
+        runner = MagicMock()
+
+        def fake_collection(data_file: Path) -> int:
+            # Path equality deliberately follows the host filesystem's case
+            # semantics: case-only spellings are equivalent on Windows.
+            assert data_file == expected_data_file
+            assert not data_file.exists()
+            self._write_data_file(data_file, {measured_path: [2, 7]})
+            return 0
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+
+        assert covered == {os.path.normcase(measured_path): {2, 7}}
+
     def test_nonzero_exit_raises_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -87,10 +114,25 @@ class TestGatherCoverage:
         # ended with an uncaused "No mutants generated." (A3-CM-003).
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
         runner = MagicMock()
-        runner.run_coverage_collection.return_value = 1
-        with pytest.raises(Exception, match="coverage"):
+
+        def fake_collection(data_file: Path) -> int:
+            # A valid data file ensures the exit-code failure cannot be
+            # accidentally replaced by a later missing/empty-data failure.
+            self._write_data_file(data_file, {measured_path: [1]})
+            return 17
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        with pytest.raises(CoverageCollectionError) as exc_info:
             gather_coverage(runner, ["src/mod.py"])
+
+        assert str(exc_info.value) == (
+            "coverage collection run failed with exit code 17 — "
+            "the test suite must pass before mutate_only_covered_lines can "
+            "measure it."
+        )
 
     def test_missing_data_file_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -99,8 +141,36 @@ class TestGatherCoverage:
         (tmp_path / "mutants").mkdir()
         runner = MagicMock()
         runner.run_coverage_collection.return_value = 0  # but writes nothing
-        with pytest.raises(Exception, match="data file"):
+        with pytest.raises(CoverageCollectionError) as exc_info:
             gather_coverage(runner, ["src/mod.py"])
+
+        assert str(exc_info.value) == (
+            "coverage collection produced no data file — coverage did not record anything."
+        )
+
+    def test_mixed_measurement_preserves_empty_set_for_unmeasured_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        mutants_dir = tmp_path / "mutants"
+        mutants_dir.mkdir()
+        measured_path = str((mutants_dir / "src" / "measured.py").absolute())
+        unmeasured_path = str((mutants_dir / "src" / "unmeasured.py").absolute())
+
+        runner = MagicMock()
+
+        def fake_collection(data_file: Path) -> int:
+            self._write_data_file(data_file, {measured_path: [3, 9]})
+            return 0
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        covered = gather_coverage(runner, ["src/measured.py", "src/unmeasured.py"])
+
+        assert covered == {
+            os.path.normcase(measured_path): {3, 9},
+            os.path.normcase(unmeasured_path): set(),
+        }
 
     def test_empty_measurement_raises_with_subprocess_hint(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -120,5 +190,12 @@ class TestGatherCoverage:
 
         runner.run_coverage_collection.side_effect = fake_collection
 
-        with pytest.raises(Exception, match="no coverage"):
+        with pytest.raises(CoverageCollectionError) as exc_info:
             gather_coverage(runner, ["src/mod.py"])
+
+        assert str(exc_info.value) == (
+            "coverage collection measured no coverage in any source file — "
+            "suites that run their code in subprocesses or pytest-xdist "
+            "workers are not supported with mutate_only_covered_lines "
+            "(their execution is invisible to the bridge)."
+        )

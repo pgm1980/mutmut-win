@@ -198,8 +198,11 @@ def test_my_lib_mutation_generation(tmp_path: Path) -> None:
     _assert_profile_layered(
         [source_file],
         EXPECTED_MY_LIB,
-        expected_advanced_count=140,
-        expected_all_count=174,
+        # MW220 correctness hardening removes rendered no-ops/duplicates and
+        # conservatively excludes the async generator (its full protocol cannot
+        # be delegated transparently without async ``yield from``).
+        expected_advanced_count=128,
+        expected_all_count=161,
         # W5 backport: Point.from_coords (@staticmethod) now mutates (+11) — the
         # mutmut-3.5.0 snapshot skipped it, so allow its mutants in basic-purity.
         w5_static_prefixes=("xǁPointǁfrom_coords__mutmut_",),
@@ -241,8 +244,10 @@ def test_mutate_only_covered_lines_mutation_generation(tmp_path: Path) -> None:
     _assert_profile_layered(
         [source_file],
         EXPECTED_COVERAGE,
-        expected_advanced_count=113,
-        expected_all_count=127,
+        # Rendered no-op/cross-operator deduplication intentionally removes two
+        # score-distorting candidates from both profiles.
+        expected_advanced_count=111,
+        expected_all_count=125,
         basic_within_snapshot=False,
     )
 

@@ -19,11 +19,23 @@ Sprint 24 backlog for the recovery design.
 from __future__ import annotations
 
 from queue import Queue
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from mutmut_win.models import MutationTask, TaskCompleted
 from mutmut_win.process.worker import worker_main
+from tests.unit.phase_mock_util import frozen_worker_config
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mutants").mkdir()
 
 
 def _make_config(**overrides: Any) -> dict[str, Any]:
@@ -43,7 +55,7 @@ def _make_config(**overrides: Any) -> dict[str, Any]:
         "infinite_loop_detection": False,
     }
     base.update(overrides)
-    return base
+    return frozen_worker_config(base)
 
 
 class _SimpleQueue:

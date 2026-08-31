@@ -139,7 +139,7 @@ class TestTimeEstimatesGlob:
         ]
         with (
             patch("mutmut_win.cli.load_stats", return_value=stats),
-            patch("mutmut_win.cli.load_results", return_value=rows),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=rows),
         ):
             result = CliRunner().invoke(cli, ["time-estimates", "src.mod.*"])
         assert result.exit_code == 0
@@ -199,7 +199,10 @@ class TestSummaryAlignment:
             MutationResult(mutant_name="m1", status="suspicious"),
             MutationResult(mutant_name="m2", status="killed"),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=rows):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, rows),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert result.exit_code == 0
         assert "Suspicious:1" not in result.output
@@ -212,7 +215,10 @@ class TestSummaryAlignment:
             MutationResult(mutant_name="m2", status="killed"),
             MutationResult(mutant_name="m3", status="survived"),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=rows):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, rows),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         value_columns = set()
         for line in result.output.splitlines():

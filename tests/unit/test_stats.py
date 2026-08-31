@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 import pytest
 
+import mutmut_win.atomic_file as atomic_file_module
+from mutmut_win.atomic_file import UnsafeAtomicWriteError
 from mutmut_win.stats import (
     _CICD_STATS_FILENAME,
     _STATS_FILENAME,
@@ -84,11 +86,60 @@ class TestSaveStats:
             "t::test_b",
         ]
 
-    def test_creates_parent_dir_if_missing(self, tmp_path: Path) -> None:
+    def test_refuses_missing_parent_without_creating_it(self, tmp_path: Path) -> None:
         nested = tmp_path / "deep" / "mutants"
         stats = MutmutStats()
-        save_stats(stats, mutants_dir=nested)
-        assert (nested / _STATS_FILENAME).exists()
+        with pytest.raises(UnsafeAtomicWriteError, match="cannot inspect atomic-write parent"):
+            save_stats(stats, mutants_dir=nested)
+        assert not (tmp_path / "deep").exists()
+
+    def test_refuses_redirected_parent_without_writing_outside(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        staging = tmp_path / "mutants"
+        try:
+            staging.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        with pytest.raises(UnsafeAtomicWriteError, match="parent must be a real directory"):
+            save_stats(MutmutStats(), mutants_dir=staging)
+
+        assert list(outside.iterdir()) == []
+
+    def test_detects_parent_swap_and_cleans_external_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        staging = tmp_path / "mutants"
+        staging.mkdir()
+        original = tmp_path / "original-mutants"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        probe = tmp_path / "symlink-probe"
+        try:
+            probe.symlink_to(outside, target_is_directory=True)
+            probe.unlink()
+        except OSError as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        real_open = atomic_file_module._open_random_sibling
+        swapped = False
+
+        def swap_parent_then_open(path: Path) -> tuple[int, Path, tuple[int, int]]:
+            nonlocal swapped
+            if not swapped:
+                staging.rename(original)
+                staging.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return real_open(path)
+
+        monkeypatch.setattr(atomic_file_module, "_open_random_sibling", swap_parent_then_open)
+
+        with pytest.raises(UnsafeAtomicWriteError, match="parent changed"):
+            save_stats(MutmutStats(), mutants_dir=staging)
+
+        assert swapped
+        assert list(outside.iterdir()) == []
 
     def test_overwrites_existing_file(self, tmp_path: Path) -> None:
         stats_v1 = MutmutStats(stats_time=1.0)
@@ -114,6 +165,22 @@ class TestLoadStats:
         (tmp_path / _STATS_FILENAME).write_text("not json", encoding="utf-8")
         result = load_stats(mutants_dir=tmp_path)
         assert result is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {"tests_by_mangled_function_name": []},
+            {"tests_by_mangled_function_name": {"m": [[]]}},
+            {"duration_by_test": {"t": float("nan")}},
+            {"stats_time": float("inf")},
+        ],
+    )
+    def test_returns_none_on_structurally_invalid_cache(
+        self, payload: object, tmp_path: Path
+    ) -> None:
+        (tmp_path / _STATS_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        assert load_stats(mutants_dir=tmp_path) is None
 
     def test_roundtrip(self, tmp_path: Path) -> None:
         original = MutmutStats(
@@ -399,7 +466,39 @@ class TestSaveCicdStats:
         assert isinstance(cicd, CicdStats)
         assert cicd.killed == 1
 
-    def test_creates_parent_dir(self, tmp_path: Path) -> None:
+    def test_refuses_missing_parent_without_creating_it(self, tmp_path: Path) -> None:
         nested = tmp_path / "deep" / "mutants"
-        save_cicd_stats([], mutants_dir=nested)
-        assert (nested / _CICD_STATS_FILENAME).exists()
+        with pytest.raises(UnsafeAtomicWriteError, match="cannot inspect atomic-write parent"):
+            save_cicd_stats([], mutants_dir=nested)
+        assert not (tmp_path / "deep").exists()
+
+    def test_refuses_redirected_parent_without_writing_outside(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        staging = tmp_path / "mutants"
+        try:
+            staging.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+        with pytest.raises(UnsafeAtomicWriteError, match="parent must be a real directory"):
+            save_cicd_stats([], mutants_dir=staging)
+
+        assert list(outside.iterdir()) == []
+
+    def test_failed_publish_preserves_previous_artifact_and_cleans_temp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / _CICD_STATS_FILENAME
+        artifact.write_text('{"known": "good"}\n', encoding="utf-8")
+
+        def fail_dump(_payload: object, **_kwargs: object) -> str:
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr("mutmut_win.stats.json.dumps", fail_dump)
+
+        with pytest.raises(OSError, match="ENOSPC"):
+            save_cicd_stats([("m1", "killed")], mutants_dir=tmp_path)
+
+        assert artifact.read_text(encoding="utf-8") == '{"known": "good"}\n'
+        assert not list(tmp_path.glob(f".{_CICD_STATS_FILENAME}.*.tmp"))

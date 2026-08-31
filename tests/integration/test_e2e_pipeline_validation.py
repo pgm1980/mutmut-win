@@ -11,8 +11,8 @@ The existing tests gave us two pieces in isolation:
 These tests close the gap: full pipeline + per-mutant comparison against
 ``tests/e2e_projects/expected_results.py``.
 
-Marked ``slow`` + ``integration`` because each test pip-installs the fixture
-project and runs ``mutmut-win run`` end-to-end (≈30-60 s per test).
+Marked ``slow`` + ``integration`` because each test runs ``mutmut-win run``
+end-to-end against an isolated fixture copy (approximately 30-60 s per test).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -46,23 +47,6 @@ def _copy_project(src: Path, tmp_path: Path) -> Path:
     return dst
 
 
-def _pip_install_editable(project_dir: Path) -> None:
-    """Install the project in editable mode so its package becomes importable."""
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
-        cwd=project_dir,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=60,
-        check=False,
-    )
-    if result.returncode != 0:
-        pytest.skip(
-            f"pip install failed in test env "
-            f"(probably offline / restricted PyPI):\n{result.stderr or result.stdout}"
-        )
-
-
 def _run_mutmut_win(project_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run ``mutmut-win`` inside *project_dir* with the given CLI args."""
     return subprocess.run(  # noqa: S603
@@ -80,7 +64,7 @@ def _read_mutant_statuses(project_dir: Path) -> dict[str, str]:
     db_path = project_dir / ".mutmut-cache" / "mutmut-cache.db"
     if not db_path.exists():
         return {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute("SELECT mutant_name, status FROM mutant").fetchall()
     return dict(rows)
 
@@ -119,8 +103,6 @@ def test_simple_lib_pipeline_no_survived_mutants(tmp_path: Path) -> None:
     regression in either mutmut-win or the simple_lib fixture.
     """
     project_dir = _copy_project(_SIMPLE_LIB_DIR, tmp_path)
-    _pip_install_editable(project_dir)
-
     result = _run_mutmut_win(project_dir, "run", "--no-progress")
     assert result.returncode in {0, 1}, (
         f"mutmut-win run crashed with exit {result.returncode}.\n"
@@ -156,8 +138,6 @@ def test_my_lib_pipeline_matches_expected_snapshot(tmp_path: Path) -> None:
     readme = project_dir / "README.md"
     if not readme.exists():
         readme.write_text("# my_lib fixture\n", encoding="utf-8")
-    _pip_install_editable(project_dir)
-
     result = _run_mutmut_win(
         project_dir,
         "run",

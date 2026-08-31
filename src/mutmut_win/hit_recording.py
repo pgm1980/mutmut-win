@@ -21,6 +21,12 @@ v2.11.0.
 from __future__ import annotations
 
 
+def _is_test_runner_filename(filename: str) -> bool:
+    """Return whether *filename* belongs to a pytest/unittest package frame."""
+    components = filename.replace("\\", "/").split("/")
+    return any(component in {"pytest", "_pytest", "unittest"} for component in components)
+
+
 def _get_max_stack_depth() -> int:
     """Return the configured max_stack_depth, caching after first load.
 
@@ -61,14 +67,22 @@ def record_trampoline_hit(name: str) -> None:
 
         frame = inspect.currentframe()
         remaining = max_depth
-        while remaining and frame:
-            filename = frame.f_code.co_filename
-            if "pytest" in filename or "unittest" in filename:
-                break
-            frame = frame.f_back
-            remaining -= 1
-        if not remaining:
-            # Depth limit reached without finding a test frame — discard hit.
+        found_test_frame = False
+        try:
+            while remaining and frame:
+                filename = frame.f_code.co_filename
+                if _is_test_runner_filename(filename):
+                    found_test_frame = True
+                    break
+                frame = frame.f_back
+                remaining -= 1
+        finally:
+            # Frame objects participate in reference cycles; do not retain the
+            # inspected stack beyond this extremely hot instrumentation path.
+            del frame
+        if not found_test_frame:
+            # Either the configured depth was exhausted or the real stack ended
+            # early.  Both mean no test frame was proven — discard the hit.
             return
 
     from mutmut_win._state import _stats

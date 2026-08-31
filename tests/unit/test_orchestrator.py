@@ -24,6 +24,7 @@ from mutmut_win.orchestrator import (
     _update_source_data,
     _update_summary_and_persist,
 )
+from mutmut_win.stats import RunBasisEvidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +33,21 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stable_unit_run_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep orchestrator unit tests independent of live editable-tree drift.
+
+    Execution-basis stability and mid-run drift have dedicated integration
+    coverage.  This module mocks runner/executor behavior and must not turn its
+    result-, timeout-, or persistence assertions into live dependency audits.
+    """
+    evidence = RunBasisEvidence("a" * 64, True)
+    monkeypatch.setattr(
+        "mutmut_win.orchestrator.build_run_basis_evidence",
+        lambda *_args, **_kwargs: evidence,
+    )
 
 
 def _config(**overrides: Any) -> MutmutConfig:
@@ -268,7 +284,7 @@ class TestPytestVersionGuard:
         message = str(excinfo.value)
         assert message.startswith("pytest 8.1.2 is too old for mutation runs")
         assert "@argfile syntax, which exists since pytest 8.2" in message
-        assert 'uv add "pytest>=8.2" --dev' in message  # names the @argfile mechanism as the reason
+        assert 'uv add "pytest>=8.2,<10" --dev' in message
 
     def test_rejects_old_major(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from mutmut_win.exceptions import UnsupportedPytestVersionError
@@ -289,7 +305,7 @@ class TestPytestVersionGuard:
         # Kills regex mutants of the (\d+)\.(\d+) pattern: '10.11' must parse
         # as (10, 11) — single-digit or character-class mutants either fail
         # to match (spurious warning) or truncate the comparison.
-        monkeypatch.setattr(pytest, "__version__", "10.11.2")
+        monkeypatch.setattr(pytest, "__version__", "9.11.2")
         self._guard()()  # must not raise
         assert capsys.readouterr().out == ""  # parsed cleanly — no warning
 
@@ -303,19 +319,19 @@ class TestPytestVersionGuard:
         self._guard()()  # must not raise
         assert capsys.readouterr().out == ""
 
-    def test_unparseable_version_warns_and_proceeds(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # Fail-open by design: the resolver floor is the primary defence; an
-        # exotic dev build must not block the run (documented trade-off).
-        # The warning line is pinned verbatim — diagnostics are contract.
+    def test_rejects_unreviewed_future_major(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mutmut_win.exceptions import UnsupportedPytestVersionError
+
+        monkeypatch.setattr(pytest, "__version__", "10.0.0rc1")
+        with pytest.raises(UnsupportedPytestVersionError, match="newer than the validated"):
+            self._guard()()
+
+    def test_unparseable_version_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mutmut_win.exceptions import UnsupportedPytestVersionError
+
         monkeypatch.setattr(pytest, "__version__", "exotic-build")
-        self._guard()()  # must not raise
-        expected = (
-            "Warning: could not parse pytest version 'exotic-build' — proceeding "
-            "(the pytest>=8.2 dependency floor is the primary guard)."
-        )
-        assert expected in capsys.readouterr().out.splitlines()
+        with pytest.raises(UnsupportedPytestVersionError, match="Could not parse"):
+            self._guard()()
 
     def test_floor_pin_matches_guard_constant(self) -> None:
         # Drift protection (the #110 pin-test pattern): the pyproject runtime
@@ -323,7 +339,10 @@ class TestPytestVersionGuard:
         import tomllib
         from pathlib import Path as _Path
 
-        from mutmut_win.constants import MINIMUM_PYTEST_VERSION
+        from mutmut_win.constants import (
+            MAXIMUM_PYTEST_VERSION_EXCLUSIVE,
+            MINIMUM_PYTEST_VERSION,
+        )
 
         pyproject = _Path(__file__).parents[2] / "pyproject.toml"
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
@@ -331,7 +350,8 @@ class TestPytestVersionGuard:
             dep for dep in data["project"]["dependencies"] if dep.startswith("pytest")
         )
         major, minor = MINIMUM_PYTEST_VERSION
-        assert pytest_dep == f"pytest>={major}.{minor}"
+        maximum_major, _maximum_minor = MAXIMUM_PYTEST_VERSION_EXCLUSIVE
+        assert pytest_dep == f"pytest>={major}.{minor},<{maximum_major}"
 
     def test_run_aborts_before_any_staging(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -746,9 +766,10 @@ class TestUpdateSummaryAndPersist:
         assert summary.killed == 0
 
     def test_task_completed_killed(self, tmp_path: Path) -> None:
-        from mutmut_win.db import load_results
+        from mutmut_win.db import load_results, start_run
 
         db = tmp_path / "db.sqlite"
+        start_run(db, ["m1"])
         summary = MutationRunResult(total_mutants=1)
         event = TaskCompleted(mutant_name="m1", worker_pid=1, exit_code=1, duration=0.5)
         _update_summary_and_persist(event, summary, db, {})
@@ -756,12 +777,40 @@ class TestUpdateSummaryAndPersist:
         results = load_results(db)
         assert results[0].status == "killed"
 
+    def test_fatal_completion_remains_pending_without_suspicious_verdict(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from mutmut_win.db import load_current_run, load_results, start_run
+
+        db = tmp_path / "db.sqlite"
+        start_run(db, ["m1"])
+        summary = MutationRunResult(total_mutants=1)
+        event = TaskCompleted(
+            mutant_name="m1",
+            worker_pid=1,
+            exit_code=35,
+            duration=0.0,
+            last_output="pytest guard publisher unavailable",
+            fatal=True,
+        )
+
+        is_completion = _update_summary_and_persist(event, summary, db, {})
+
+        assert is_completion is False
+        assert summary.suspicious == 0
+        assert load_results(db) == []
+        current = load_current_run(db)
+        assert current is not None
+        assert current.pending_names == ("m1",)
+
     def test_worker_reported_timeout(self, tmp_path: Path) -> None:
         """Timeouts arrive as TaskCompleted with exit code 36 since the dead
         WallClockTimeout monitor was removed (issue #81)."""
-        from mutmut_win.db import load_results
+        from mutmut_win.db import load_results, start_run
 
         db = tmp_path / "db.sqlite"
+        start_run(db, ["m1"])
         summary = MutationRunResult(total_mutants=1)
         event = TaskCompleted(mutant_name="m1", worker_pid=1, exit_code=36, duration=60.0)
         _update_summary_and_persist(event, summary, db, {})

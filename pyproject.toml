@@ -1,14 +1,15 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.0", "editables==0.5"]
 build-backend = "hatchling.build"
 
 [project]
 name = "mutmut-win"
-version = "2.20.0"
+version = "2.21.0"
 description = "Windows-native mutation testing for Python, based on mutmut 3.5.0"
 readme = "README.md"
-license = "ISC"
-requires-python = ">=3.12"
+license = "ISC AND BSD-3-Clause AND PSF-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.15"
 authors = [
     { name = "pgm1980" },
 ]
@@ -17,15 +18,18 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: ISC License (ISCL)",
+    "License :: OSI Approved :: BSD License",
+    "License :: OSI Approved :: Python Software Foundation License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "click>=8.0.0",
+    "click>=8.3.3",
     "coverage>=7.3.0",
     "libcst>=1.8.5",
     "psutil>=5.9",
@@ -34,14 +38,16 @@ dependencies = [
     # ("Added in version 8.2"); with older pytest every covered mutant became
     # "suspicious" (issue #125 / 360 analysis A2). Pinned against
     # constants.MINIMUM_PYTEST_VERSION by a test.
-    "pytest>=8.2",
+    # <10: pytest config discovery is explicitly mirrored for majors 8 and 9;
+    # unknown future precedence changes must be reviewed before execution.
+    "pytest>=8.2,<10",
     "setproctitle>=1.1.0",
     "textual>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3",
+    "pytest>=8.3,<10",
     "pytest-cov>=6.1",
     "pytest-asyncio>=0.25",
     "pytest-mock>=3.14",
@@ -51,12 +57,45 @@ dev = [
     # mutmut-win is this project itself — no external mutation testing dependency needed.
     # To run mutation testing: uv run mutmut-win run --paths-to-mutate src/mutmut_win/
     "mypy>=1.13",
+    "msgpack>=1.2.1",
+    "pip>=26.2",
     "ruff>=0.8",
     "pip-audit>=2.7",
 ]
 
+[dependency-groups]
+build = [
+    "hatchling==1.32.0",
+    "editables==0.5",
+]
+security = [
+    "semgrep==1.175.0",
+]
+
 [project.scripts]
 mutmut-win = "mutmut_win.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mutmut_win"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/scripts",
+    "/.semgrepignore",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+exclude = [
+    "/tests/**/.pytest_cache",
+    "/tests/**/.venv",
+    "/tests/**/__pycache__",
+    "/tests/**/*.pyc",
+    "/tests/**/*.pyo",
+]
 
 [tool.mutmut]
 paths_to_mutate = ["src/mutmut_win/"]
@@ -65,7 +104,7 @@ tests_dir = ["tests/unit/"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = [
+extend-exclude = [
     # Reference fixture projects copied from mutmut 3.5.0 — not subject to our lint rules.
     "tests/e2e_projects",
     # Tooling sandbox (hook scripts etc.) — not project code; without this

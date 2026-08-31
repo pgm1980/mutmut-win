@@ -1,6 +1,8 @@
 """This module contains code for managing mutant creation for whole files."""
 
+import io
 import re
+import tokenize
 import warnings
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -9,7 +11,12 @@ from typing import cast
 
 import libcst as cst
 import libcst.matchers as m
-from libcst.metadata import MetadataWrapper, PositionProvider
+from libcst.metadata import (
+    MetadataWrapper,
+    PositionProvider,
+    QualifiedNameProvider,
+    QualifiedNameSource,
+)
 
 from mutmut_win.constants import Profile
 from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
@@ -103,7 +110,7 @@ def create_mutations(
     return module, visitor.mutations
 
 
-class OuterFunctionProvider(cst.BatchableMetadataProvider):
+class OuterFunctionProvider(cst.BatchableMetadataProvider[cst.CSTNode]):
     """Link all nodes to the top-level function or method that contains them.
 
     For instance given this module:
@@ -162,7 +169,7 @@ class MutationVisitor(cst.CSTVisitor):
 
     The created mutations will be accessible at `self.mutations`."""
 
-    METADATA_DEPENDENCIES = (PositionProvider, OuterFunctionProvider)
+    METADATA_DEPENDENCIES = (PositionProvider, OuterFunctionProvider, QualifiedNameProvider)
 
     def __init__(
         self,
@@ -192,11 +199,22 @@ class MutationVisitor(cst.CSTVisitor):
         if self._skip_node_and_children(node):
             return False
 
+        # Declaration identifiers are not runtime name reads.  Applying the
+        # generic Name operator to ``def deepcopy(...)`` used to create a
+        # mutant that was immediately overwritten by the private trampoline
+        # name and was therefore byte-for-byte identical to the original.
+        # Parameter declaration names have the same problem (and can also
+        # produce an inconsistent signature/body pair), so prune those Name
+        # nodes before libcst visits them.  References with the same spelling
+        # inside the function body remain mutable.
+        if isinstance(node, (cst.FunctionDef, cst.ClassDef, cst.Param)):
+            self._skip_subtree_ids.add(id(node.name))
+
         # If this is a typing.cast(...) call, mark its first argument's entire
         # subtree as no-mutate. The first argument is a pure type annotation
         # (``cast`` is the identity function at runtime) and mutations there
         # are observable-equivalent — see Bug #4.
-        if isinstance(node, cst.Call) and _is_cast_call(node) and node.args:
+        if isinstance(node, cst.Call) and self._is_typing_cast_call(node) and node.args:
             node.args[0].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
 
         if self._should_mutate_node(node):
@@ -221,7 +239,7 @@ class MutationVisitor(cst.CSTVisitor):
             self._class_stack.pop()
 
     def _create_mutations(self, node: cst.CSTNode) -> None:
-        is_cast = isinstance(node, cst.Call) and _is_cast_call(node)
+        is_cast = isinstance(node, cst.Call) and self._is_typing_cast_call(node)
         original_first_arg: cst.Arg | None = None
         if is_cast:
             # mypy: the is_cast guard already proves node is a cst.Call
@@ -245,12 +263,27 @@ class MutationVisitor(cst.CSTVisitor):
                     mutation = Mutation(
                         original_node=node,
                         mutated_node=mutated_node,
-                        # type: ignore[arg-type] - libcst metadata API returns Any
-                        contained_by_top_level_function=self.get_metadata(  # type: ignore[arg-type]
-                            OuterFunctionProvider, node, None
+                        contained_by_top_level_function=cast(
+                            "cst.FunctionDef | None",
+                            self.get_metadata(OuterFunctionProvider, node, None),
                         ),
                     )
                     self.mutations.append(mutation)
+
+    def _is_typing_cast_call(self, node: cst.Call) -> bool:
+        """True only when scope metadata resolves the callable to ``typing.cast``.
+
+        A spelling-only ``cast(...)`` check suppresses real mutations for a
+        perfectly ordinary user function with that name.  QualifiedNameProvider
+        distinguishes imported/aliased ``typing.cast`` from local definitions
+        and from a locally shadowed ``typing`` object.
+        """
+        qualified_names = self.get_metadata(QualifiedNameProvider, node.func, set())
+        return any(
+            qualified_name.name == "typing.cast"
+            and qualified_name.source is QualifiedNameSource.IMPORT
+            for qualified_name in qualified_names
+        )
 
     def _should_mutate_node(self, node: cst.CSTNode) -> bool:
         # currently, the position metadata does not always exist
@@ -277,6 +310,29 @@ class MutationVisitor(cst.CSTVisitor):
             isinstance(node, cst.FunctionDef) and node.name.value in NEVER_MUTATE_FUNCTION_NAMES
         )
         if is_never_mutate_call or is_never_mutate_func:
+            return True
+
+        # Python has no ``async yield from``.  A hand-written async-generator
+        # proxy cannot transparently preserve the complete asend/athrow/aclose
+        # protocol, while turning the public wrapper into a plain ``def``
+        # breaks inspect.isasyncgenfunction and framework dispatch.  Leave
+        # async generators intact until the trampoline can preserve both
+        # contracts.  Synchronous generators are delegated with ``yield from``
+        # in create_trampoline_wrapper and remain safe to mutate.
+        if (
+            isinstance(node, cst.FunctionDef)
+            and node.asynchronous is not None
+            and _is_generator(node)
+        ):
+            return True
+
+        # PEP-695 type parameters are function-local runtime objects and may be
+        # referenced by the body (``def f[T](): return T``).  Recreating them on
+        # private copies changes object identity; removing them makes such a
+        # body fail with NameError.  Until private implementations can close
+        # over the public definition's type-parameter scope, leave generic
+        # functions untouched rather than corrupting the clean run.
+        if isinstance(node, cst.FunctionDef) and node.type_parameters is not None:
             return True
 
         # do_not_mutate_patterns (mutmut-3.6.0 backport): skip a function/class
@@ -327,26 +383,6 @@ class MutationVisitor(cst.CSTVisitor):
         return bool(isinstance(node, (cst.FunctionDef, cst.ClassDef)) and len(node.decorators))
 
 
-def _is_cast_call(node: cst.Call) -> bool:
-    """Return True if ``node`` is a call to ``typing.cast`` or unqualified ``cast``.
-
-    The first argument of :func:`typing.cast` is a *type annotation* — at runtime
-    ``cast`` is the identity function and returns the second argument unchanged.
-    Mutating the first argument therefore can never change observable behaviour,
-    which makes such mutants unkillable (see Bug #4 in critique-model-service's
-    ``_misc/mutmut-win-bugs.md``).
-    """
-    func = node.func
-    if isinstance(func, cst.Name) and func.value == "cast":
-        return True
-    return (
-        isinstance(func, cst.Attribute)
-        and isinstance(func.value, cst.Name)
-        and func.value.value == "typing"
-        and func.attr.value == "cast"
-    )
-
-
 class _SubtreeIdCollector(cst.CSTVisitor):
     """Collect ``id()`` of every node in a CST subtree (including the root)."""
 
@@ -361,11 +397,39 @@ class _SubtreeIdCollector(cst.CSTVisitor):
 
 MODULE_STATEMENT = cst.SimpleStatementLine | cst.BaseCompoundStatement
 
-# convert str trampoline implementations to CST nodes with some whitespace
-trampoline_impl_cst = list(cst.parse_module(trampoline_impl).body)
-trampoline_impl_cst[-1] = trampoline_impl_cst[-1].with_changes(
-    leading_lines=[cst.EmptyLine(), cst.EmptyLine()]
-)
+# The generated artifact needs only the runtime helper function.  Injecting the
+# template's typing imports and ``MutantDict`` alias overwrote perfectly legal
+# user globals named Annotated/Callable/ClassVar/MutantDict.  Lookup annotations
+# are removed below, so keep only the function and give it a module-unique name.
+trampoline_function_cst = cst.ensure_type(
+    cst.parse_module(trampoline_impl).body[-1], cst.FunctionDef
+).with_changes(leading_lines=[cst.EmptyLine(), cst.EmptyLine()])
+
+
+class _NameValueCollector(cst.CSTVisitor):
+    """Collect every statically spelled identifier in one source module."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Name(self, node: cst.Name) -> None:  # noqa: N802
+        self.names.add(node.value)
+
+
+def _source_name_values(module: cst.Module) -> set[str]:
+    collector = _NameValueCollector()
+    module.visit(collector)
+    return collector.names
+
+
+def _fresh_module_name(base: str, source_names: set[str]) -> str:
+    """Return an internal module identifier absent from all source Name nodes."""
+    candidate = base
+    suffix = 1
+    while candidate in source_names:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _warn_unmanglable_function(qualified_name: str, exc: ValueError) -> None:
@@ -393,16 +457,27 @@ def combine_mutations_to_source(
     :param module: The original parsed module
     :param mutations: Mutations that should be applied.
     :return: Mutated code and list of mutation names"""
+    source_names = _source_name_values(module)
+    trampoline_name = _fresh_module_name("_mutmut_trampoline", source_names)
 
     # copy start of the module (in particular __future__ imports)
     result: list[MODULE_STATEMENT] = get_statements_until_func_or_class(module.body)
     mutation_names: list[str] = []
+    # Python permits repeated definitions in one scope.  Their public binding
+    # semantics are positional (later definitions replace earlier ones), but
+    # private trampoline symbols and persistent mutant IDs must remain unique.
+    # Count every syntactic same-name definition, including an earlier one that
+    # is decorated/uncovered/unmutatable, so the ordinal also locates the exact
+    # source node for show/apply/diff.  Method counts span repeated top-level
+    # class definitions with the same class name in module order.
+    definition_counts: defaultdict[tuple[str | None, str], int] = defaultdict(int)
 
     # statements we still need to potentially mutate and add to the result
     remaining_statements = module.body[len(result) :]
 
-    # trampoline functions
-    result.extend(trampoline_impl_cst)
+    # A per-module collision-free trampoline helper.  Later source assignments
+    # to the conventional ``_mutmut_trampoline`` name cannot rebind this symbol.
+    result.append(trampoline_function_cst.with_changes(name=cst.Name(trampoline_name)))
 
     mutations_within_function = group_by_top_level_node(mutations)
 
@@ -412,13 +487,21 @@ def combine_mutations_to_source(
     for statement in remaining_statements:
         if isinstance(statement, cst.FunctionDef):
             func = statement
+            top_definition_key = (None, func.name.value)
+            definition_counts[top_definition_key] += 1
+            definition_ordinal = definition_counts[top_definition_key]
             func_mutants = mutations_within_function.get(func)
             if not func_mutants:
                 result.append(func)
                 continue
             try:
                 nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
-                    func, func_mutants, class_name=None
+                    func,
+                    func_mutants,
+                    class_name=None,
+                    trampoline_name=trampoline_name,
+                    source_names=source_names,
+                    definition_ordinal=definition_ordinal,
                 )
             except ValueError as exc:
                 # Issue #121 / external QA MUT-002: an unmanglable identifier
@@ -426,6 +509,12 @@ def combine_mutations_to_source(
                 # to drop the WHOLE file as "Unsupported syntax" — the skip is
                 # function-granular now and names the engine limitation.
                 _warn_unmanglable_function(func.name.value, exc)
+                result.append(func)
+                continue
+            if not mutant_names:
+                # Every candidate was either a declaration-name/no-op mutation
+                # or rendered identically to an earlier candidate.  Do not
+                # replace a perfectly ordinary function by an empty trampoline.
                 result.append(func)
                 continue
             result.extend(nodes)
@@ -441,6 +530,11 @@ def combine_mutations_to_source(
                 # Lookup dicts go AFTER the class at module level (issue #77).
                 class_lookup_nodes: list[MODULE_STATEMENT] = []
                 for method in cls.body.body:
+                    definition_ordinal = 1
+                    if isinstance(method, cst.FunctionDef):
+                        method_definition_key = (cls.name.value, method.name.value)
+                        definition_counts[method_definition_key] += 1
+                        definition_ordinal = definition_counts[method_definition_key]
                     method_mutants = mutations_within_function.get(method)
                     if not isinstance(method, cst.FunctionDef) or not method_mutants:
                         mutated_body.append(method)
@@ -453,13 +547,21 @@ def combine_mutations_to_source(
                         continue
                     try:
                         nodes, lookup_nodes, mutant_names = function_trampoline_arrangement(
-                            method, method_mutants, class_name=cls.name.value
+                            method,
+                            method_mutants,
+                            class_name=cls.name.value,
+                            trampoline_name=trampoline_name,
+                            source_names=source_names,
+                            definition_ordinal=definition_ordinal,
                         )
                     except ValueError as exc:
                         # Same function-granular skip for methods/classes
                         # whose names collide with the mangling separator
                         # (issue #121 / MUT-002).
                         _warn_unmanglable_function(f"{cls.name.value}.{method.name.value}", exc)
+                        mutated_body.append(method)
+                        continue
+                    if not mutant_names:
                         mutated_body.append(method)
                         continue
                     mutated_body.extend(nodes)
@@ -479,6 +581,10 @@ def function_trampoline_arrangement(
     function: cst.FunctionDef,
     mutants: Iterable[Mutation],
     class_name: str | None,
+    *,
+    trampoline_name: str = "_mutmut_trampoline",
+    source_names: set[str] | None = None,
+    definition_ordinal: int = 1,
 ) -> tuple[Sequence[MODULE_STATEMENT], Sequence[MODULE_STATEMENT], Sequence[str]]:
     """Create mutated functions and a trampoline that switches between versions.
 
@@ -489,51 +595,265 @@ def function_trampoline_arrangement(
 
     :return: A tuple of (nodes for the original scope, module-level lookup
         nodes, mutant names)"""
+    if function.asynchronous is not None and _is_generator(function):
+        # See MutationVisitor._skip_node_and_children.  Keep this public helper
+        # fail-closed as well, so a direct caller cannot accidentally publish a
+        # coroutine wrapper for an async-generator function.
+        return (), (), ()
+    if function.type_parameters is not None:
+        # Same defensive invariant for PEP-695 generics: their public TypeVars
+        # cannot be transparently shared with module-level private copies.
+        return (), (), ()
+
     nodes: list[MODULE_STATEMENT] = []
     mutant_names: list[str] = []
 
     name = function.name.value
-    mangled_name = mangle_function_name(name=name, class_name=class_name) + "__mutmut"
+    mangled_name = (
+        mangle_function_name(
+            name=name,
+            class_name=class_name,
+            definition_ordinal=definition_ordinal,
+        )
+        + "__mutmut"
+    )
+    collisions = (
+        sorted(
+            source_name
+            for source_name in source_names
+            if source_name.startswith(f"{mangled_name}_")
+        )
+        if source_names is not None
+        else []
+    )
+    if collisions:
+        # A statically present source identifier would overwrite (or be
+        # overwritten by) this function's private orig/mutant/dict namespace.
+        # Skipping one function is safer than corrupting the clean module.
+        qualified_name = f"{class_name}.{name}" if class_name else name
+        warnings.warn(
+            f"cannot mutate function '{qualified_name}': source identifier "
+            f"{collisions[0]!r} collides with its internal trampoline namespace — "
+            "function left unmutated",
+            SyntaxWarning,
+            stacklevel=3,
+        )
+        return (), (), ()
 
     # trampoline with same signature, that forwards the calls to the activated mutant/original
     # (put first, s.t. it stays next to @overload definitions of this function. mypy needs this)
-    nodes.append(create_trampoline_wrapper(function, mangled_name, class_name))
+    nodes.append(
+        create_trampoline_wrapper(
+            function, mangled_name, class_name, trampoline_name=trampoline_name
+        )
+    )
 
-    # copy of original function
-    nodes.append(function.with_changes(name=cst.Name(mangled_name + "_orig")))
+    # Private implementations receive already-bound arguments from the public
+    # wrapper.  Defaults, annotations, decorators and PEP-695 type parameters
+    # must therefore exist only on that public definition: evaluating them on
+    # every private copy repeats arbitrary import-time side effects.  In
+    # particular, @staticmethod must decorate only the public method.
+    original_implementation = _implementation_function(function, mangled_name + "_orig")
+    nodes.append(original_implementation)
+
+    # Deduplicate on the fully rendered private implementation, not merely on
+    # the local replacement node.  Different operators can generate the same
+    # function (True->False vs force-false, +1 vs CRCR), and declaration-name
+    # replacements can disappear when the implementation receives its private
+    # name.  Both are equivalent mutants and must not affect the score.
+    seen_renderings = {_rendered_function_key(original_implementation)}
 
     # mutated versions of the function
-    for i, mutant in enumerate(mutants):
-        mutant_name = f"{mangled_name}_{i + 1}"
-        mutant_names.append(mutant_name)
-        mutated_method = function.with_changes(name=cst.Name(mutant_name))
-        mutated_method = deep_replace(mutated_method, mutant.original_node, mutant.mutated_node)
-        nodes.append(mutated_method)  # type: ignore[arg-type]
+    for mutant in mutants:
+        mutated_function = cst.ensure_type(
+            deep_replace(function, mutant.original_node, mutant.mutated_node),
+            cst.FunctionDef,
+        )
+        candidate = _implementation_function(mutated_function, "_mutmut_candidate")
+        rendered = _rendered_function_key(candidate)
+        if rendered in seen_renderings:
+            continue
+        seen_renderings.add(rendered)
 
-    lookup_nodes = list(
-        cst.parse_module(
-            create_trampoline_lookup(orig_name=name, mutants=mutant_names, class_name=class_name)
-        ).body
+        mutant_name = f"{mangled_name}_{len(mutant_names) + 1}"
+        mutant_names.append(mutant_name)
+        nodes.append(candidate.with_changes(name=cst.Name(mutant_name)))
+
+    lookup_nodes = _unannotated_trampoline_lookup(
+        orig_name=name,
+        mutants=mutant_names,
+        class_name=class_name,
+        capture_class_original=class_name is not None,
+        definition_ordinal=definition_ordinal,
     )
     lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
     return nodes, lookup_nodes, mutant_names
 
 
+def _unannotated_trampoline_lookup(
+    *,
+    orig_name: str,
+    mutants: list[str],
+    class_name: str | None,
+    capture_class_original: bool,
+    definition_ordinal: int,
+) -> list[MODULE_STATEMENT]:
+    """Build lookup statements without injecting a user-visible typing alias."""
+    lookup_nodes: list[MODULE_STATEMENT] = list(
+        cst.parse_module(
+            create_trampoline_lookup(
+                orig_name=orig_name,
+                mutants=mutants,
+                class_name=class_name,
+                definition_ordinal=definition_ordinal,
+            )
+        ).body
+    )
+    first_line = cst.ensure_type(lookup_nodes[0], cst.SimpleStatementLine)
+    annotated_assignment = cst.ensure_type(first_line.body[0], cst.AnnAssign)
+    value = annotated_assignment.value
+    if value is None:  # defensive: the template always emits a dict value
+        msg = "trampoline lookup template produced an annotation without a value"
+        raise ValueError(msg)
+    assignment = cst.Assign(
+        targets=[cst.AssignTarget(annotated_assignment.target)],
+        value=value,
+        semicolon=annotated_assignment.semicolon,
+    )
+    lookup_nodes[0] = first_line.with_changes(body=[assignment])
+    if capture_class_original:
+        if class_name is None:  # pragma: no cover - guarded by the caller
+            msg = "a class original capture requires a class name"
+            raise ValueError(msg)
+        mangled_name = (
+            mangle_function_name(
+                name=orig_name,
+                class_name=class_name,
+                definition_ordinal=definition_ordinal,
+            )
+            + "__mutmut"
+        )
+        capture = cst.SimpleStatementLine(
+            [
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_orig_ref"))],
+                    value=cst.Attribute(
+                        value=cst.Name(class_name),
+                        attr=cst.Name(f"{mangled_name}_orig"),
+                    ),
+                )
+            ]
+        )
+        lookup_nodes.insert(0, capture)
+    return lookup_nodes
+
+
+def _implementation_param(param: cst.Param) -> cst.Param:
+    """Return a private-implementation parameter without definition-time metadata."""
+    return param.with_changes(
+        annotation=None,
+        default=None,
+        equal=cst.MaybeSentinel.DEFAULT,
+    )
+
+
+def _implementation_parameters(params: cst.Parameters) -> cst.Parameters:
+    """Strip annotations/defaults while preserving the public call shape."""
+    star_arg = params.star_arg
+    if isinstance(star_arg, cst.Param):
+        star_arg = _implementation_param(star_arg)
+    star_kwarg = params.star_kwarg
+    if star_kwarg is not None:
+        star_kwarg = _implementation_param(star_kwarg)
+    return params.with_changes(
+        posonly_params=[_implementation_param(param) for param in params.posonly_params],
+        params=[_implementation_param(param) for param in params.params],
+        star_arg=star_arg,
+        kwonly_params=[_implementation_param(param) for param in params.kwonly_params],
+        star_kwarg=star_kwarg,
+    )
+
+
+def _implementation_function(function: cst.FunctionDef, name: str) -> cst.FunctionDef:
+    """Build one side-effect-free private implementation of ``function``."""
+    return function.with_changes(
+        name=cst.Name(name),
+        params=_implementation_parameters(function.params),
+        decorators=(),
+        returns=None,
+        type_parameters=None,
+        leading_lines=(),
+        lines_after_decorators=(),
+    )
+
+
+def _rendered_function_key(function: cst.FunctionDef) -> str:
+    """Canonical rendered key for original/no-op and cross-operator deduplication."""
+    normalized = function.with_changes(name=cst.Name("_mutmut_candidate"), leading_lines=())
+    return cst.Module(body=[]).code_for_node(normalized)
+
+
+def _fresh_wrapper_name(base: str, used_names: set[str]) -> str:
+    """Choose a deterministic wrapper-local name outside the public signature."""
+    candidate = base
+    suffix = 1
+    while candidate in used_names:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def _docstring_statement(function: cst.FunctionDef) -> cst.BaseStatement | None:
+    """Return a standalone copy of the public function's docstring statement."""
+
+    def is_docstring(expression: cst.BaseSmallStatement) -> bool:
+        return isinstance(expression, cst.Expr) and isinstance(
+            expression.value, (cst.SimpleString, cst.ConcatenatedString)
+        )
+
+    if isinstance(function.body, cst.IndentedBlock):
+        if not function.body.body:
+            return None
+        first = function.body.body[0]
+        if (
+            isinstance(first, cst.SimpleStatementLine)
+            and len(first.body) == 1
+            and is_docstring(first.body[0])
+        ):
+            return first
+        return None
+
+    if isinstance(function.body, cst.SimpleStatementSuite) and function.body.body:
+        first_small_statement = function.body.body[0]
+        if is_docstring(first_small_statement):
+            # A one-line suite may contain more statements after a semicolon.
+            # Keep only the leading string expression in the wrapper.
+            assert isinstance(first_small_statement, cst.Expr)  # noqa: S101 - narrowed above
+            return cst.SimpleStatementLine([cst.Expr(first_small_statement.value)])
+    return None
+
+
 def create_trampoline_wrapper(
-    function: cst.FunctionDef, mangled_name: str, class_name: str | None
+    function: cst.FunctionDef,
+    mangled_name: str,
+    class_name: str | None,
+    *,
+    trampoline_name: str = "_mutmut_trampoline",
 ) -> cst.FunctionDef:
     """Create a trampoline wrapper function that dispatches to original or mutant.
 
     Codegen safety (issue #76): the instance/class argument is referenced by
     its REAL first-parameter name (``cls`` for ``__init_subclass__``,
     ``this``, … — the old hardcoded ``self`` raised NameError in the clean
-    run, A1-MT-001); wrapper locals are prefixed so user parameters named
-    ``args``/``kwargs`` cannot collide (A1-MT-002); ``*args`` is forwarded
-    intact (A1-MT-003); async generators get a plain ``def`` wrapper that
-    returns the generator object untouched so ``asend``/``athrow`` keep
-    working (A1-MT-006).  Callers guarantee that methods have a named first
-    parameter (others are left unmutated).
+    run, A1-MT-001); wrapper locals are chosen outside the complete public
+    parameter set (A1-MT-002); ``*args`` is forwarded intact (A1-MT-003);
+    synchronous generators delegate through ``yield from`` and retain their
+    generator-function identity.  Async generators are conservatively excluded
+    before this helper is called because Python has no transparent async
+    ``yield from`` equivalent.  Callers guarantee that methods have a named
+    first parameter (others are left unmutated).
     """
     named_params = [*function.params.posonly_params, *function.params.params]
     # A @staticmethod has no instance/class parameter, so it is dispatched like a
@@ -542,12 +862,29 @@ def create_trampoline_wrapper(
     instance_bound = class_name is not None and not is_static
     self_name = named_params[0].name.value if instance_bound else None
 
+    used_names = {
+        param.name.value
+        for param in [
+            *function.params.posonly_params,
+            *function.params.params,
+            *function.params.kwonly_params,
+        ]
+    }
+    if isinstance(function.params.star_arg, cst.Param):
+        used_names.add(function.params.star_arg.name.value)
+    if function.params.star_kwarg is not None:
+        used_names.add(function.params.star_kwarg.name.value)
+    args_local_name = _fresh_wrapper_name("_mutmut_args", used_names)
+    kwargs_local_name = _fresh_wrapper_name("_mutmut_kwargs", used_names)
+
     forwarded_params = named_params[1:] if instance_bound else named_params
     args: list[cst.Element | cst.StarredElement] = [cst.Element(p.name) for p in forwarded_params]
     if isinstance(function.params.star_arg, cst.Param):
         args.append(cst.StarredElement(function.params.star_arg.name))
 
-    args_assignemnt = cst.Assign([cst.AssignTarget(cst.Name(value="_mutmut_args"))], cst.List(args))
+    args_assignment = cst.Assign(
+        [cst.AssignTarget(cst.Name(value=args_local_name))], cst.List(args)
+    )
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
         cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)
@@ -557,7 +894,7 @@ def create_trampoline_wrapper(
         kwargs.append(cst.StarredDictElement(function.params.star_kwarg.name))
 
     kwargs_assignment = cst.Assign(
-        [cst.AssignTarget(cst.Name(value="_mutmut_kwargs"))], cst.Dict(kwargs)
+        [cst.AssignTarget(cst.Name(value=kwargs_local_name))], cst.Dict(kwargs)
     )
 
     def _get_local_name(func_name: str) -> cst.BaseExpression:
@@ -565,67 +902,71 @@ def create_trampoline_wrapper(
         if class_name is None:
             return cst.Name(func_name)
         # a @staticmethod has no instance to dispatch through — resolve the
-        # original via the class object (a module global at call time).
+        # original through the module-level reference captured immediately
+        # after class creation.  Rebinding the public class name later must not
+        # break saved class aliases or their static methods.
         if is_static:
-            return cst.Attribute(cst.Name(class_name), cst.Name(func_name))
-        # for class methods, use object.__getattribute__(<first param>, name)
+            return cst.Name(f"{mangled_name}_orig_ref")
+        # Bind the captured private function as a descriptor.  Looking it up on
+        # the runtime instance used to fail for legal unbound calls such as
+        # ``C.m(object())`` and could be shadowed by an ``object`` parameter.
         return cst.Call(
-            func=cst.Attribute(cst.Name("object"), cst.Name("__getattribute__")),
-            args=[
-                cst.Arg(cst.Name(cast("str", self_name))),
-                cst.Arg(cst.SimpleString(f"'{func_name}'")),
-            ],
+            func=cst.Attribute(cst.Name(f"{mangled_name}_orig_ref"), cst.Name("__get__")),
+            args=[cst.Arg(cst.Name(cast("str", self_name)))],
         )
 
     result: cst.BaseExpression = cst.Call(
-        func=cst.Name("_mutmut_trampoline"),
+        func=cst.Name(trampoline_name),
         args=[
             cst.Arg(_get_local_name(f"{mangled_name}_orig")),
             # The mutants dict lives at module level (issue #77), so it is
             # resolved as a global name even from inside a method body.
             cst.Arg(cst.Name(f"{mangled_name}_mutants")),
-            cst.Arg(cst.Name("_mutmut_args")),
-            cst.Arg(cst.Name("_mutmut_kwargs")),
+            cst.Arg(cst.Name(args_local_name)),
+            cst.Arg(cst.Name(kwargs_local_name)),
             cst.Arg(cst.Name("None" if self_name is None else self_name)),
         ],
     )
-    # For sync functions (and async generators, see below) simply return the
-    # value or generator object.
+    # Plain synchronous functions simply return the selected implementation's
+    # value.  A synchronous generator must contain a yield in the public wrapper
+    # as well, otherwise inspect.isgeneratorfunction and framework dispatch are
+    # silently changed.  ``yield from`` also preserves send/throw/close and the
+    # generator return value.
     result_statement: cst.BaseStatement = cst.SimpleStatementLine([cst.Return(result)])
 
-    async_generator = bool(function.asynchronous) and _is_generator(function)
-    if function.asynchronous and not async_generator:
+    if _is_generator(function):
+        delegated_yield = cst.Yield(
+            value=cst.From(item=result),
+            lpar=[cst.LeftParen()],
+            rpar=[cst.RightParen()],
+        )
+        result_statement = cst.SimpleStatementLine([cst.Return(delegated_yield)])
+    elif function.asynchronous:
         result_statement = cst.SimpleStatementLine([cst.Return(cst.Await(result))])
 
     type_ignore_whitespace = cst.TrailingWhitespace(comment=cst.Comment("# type: ignore"))
 
-    wrapper_changes: dict[str, object] = {
-        "body": cst.IndentedBlock(
-            [
-                cst.SimpleStatementLine(
-                    [args_assignemnt], trailing_whitespace=type_ignore_whitespace
-                ),
-                cst.SimpleStatementLine(
-                    [kwargs_assignment], trailing_whitespace=type_ignore_whitespace
-                ),
-                result_statement,
-            ],
-        ),
-    }
-    if async_generator:
-        # A sync wrapper returning the async-generator object preserves the
-        # full protocol; re-yielding via ``async for`` swallowed ``asend()``
-        # values and bypassed ``athrow()`` (issue #76 / A1-MT-006).
-        wrapper_changes["asynchronous"] = None
-
-    return function.with_changes(**wrapper_changes)
+    wrapper_body: list[cst.BaseStatement] = []
+    docstring = _docstring_statement(function)
+    if docstring is not None:
+        wrapper_body.append(docstring)
+    wrapper_body.extend(
+        [
+            cst.SimpleStatementLine([args_assignment], trailing_whitespace=type_ignore_whitespace),
+            cst.SimpleStatementLine(
+                [kwargs_assignment], trailing_whitespace=type_ignore_whitespace
+            ),
+            result_statement,
+        ]
+    )
+    return function.with_changes(body=cst.IndentedBlock(wrapper_body))
 
 
 def get_statements_until_func_or_class(
     statements: Sequence[MODULE_STATEMENT],
 ) -> list[MODULE_STATEMENT]:
     """Get all statements until we encounter the first function or class definition."""
-    result = []
+    result: list[MODULE_STATEMENT] = []
 
     for stmt in statements:
         if m.matches(stmt, m.FunctionDef() | m.ClassDef()):
@@ -676,10 +1017,7 @@ def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
     """1-based line range covered by a ``block`` pragma at ``lines[pragma_index]``.
 
     The pragma line plus the suite below it: every following line indented
-    deeper than the pragma line, through the last such non-blank line. A
-    dedented continuation line of a multi-line string would end the block
-    early, but triple-quoted strings are never mutated anyway (documented
-    limitation of the text-based scan).
+    deeper than the pragma line, through the last such non-blank line.
     """
     base = _indent_width(lines[pragma_index])
     last_body = pragma_index
@@ -708,11 +1046,30 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     lines = source.split("\n")
     ignored: set[int] = set()
     open_start: int | None = None
-    for index, line in enumerate(lines):
-        suffix = _pragma_no_mutate_suffix(line)
+    # Tokenization is essential here: scanning raw source text mistakes pragma
+    # lookalikes in ordinary, raw, f- and triple-quoted strings for comments and
+    # can suppress every mutation through EOF.  Only Python COMMENT tokens are
+    # directives; the original physical lines are still used to determine a
+    # ``block`` pragma's indentation extent.
+    try:
+        comment_tokens = [
+            token
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT
+        ]
+    except tokenize.TokenError:
+        # pragma_no_mutate_lines runs before libcst parsing.  An incomplete
+        # token stream (unclosed bracket/string, etc.) must not replace the
+        # parser's established graceful-error path with an earlier TokenError.
+        # Ignore all provisional directives and let the real parser adjudicate
+        # the invalid source.
+        return set()
+    for token in comment_tokens:
+        suffix = _pragma_no_mutate_suffix(token.string)
         if suffix is None:
             continue
-        lineno = index + 1
+        lineno = token.start[0]
+        index = lineno - 1
         if suffix == "start":
             if open_start is None:
                 open_start = lineno
@@ -748,7 +1105,10 @@ class ChildReplacementTransformer(cst.CSTTransformer):
         # Also, we stop recursion when we already replaced the node.
         return not (self.replaced_node or node is self.old_node)
 
-    def on_leave(self, original_node: cst.CSTNode, updated_node: cst.CSTNode) -> cst.CSTNode:
+    # Replacement operators may intentionally change the concrete CST type.
+    def on_leave(  # type: ignore[override]
+        self, original_node: cst.CSTNode, updated_node: cst.CSTNode
+    ) -> cst.CSTNode:
         if original_node is self.old_node:
             self.replaced_node = True
             return self.new_node

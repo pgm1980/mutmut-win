@@ -1,29 +1,28 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-06-13. Source of truth for sprint state is `.sprint/state.md`;
+> Last refresh: 2026-08-31. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 
-> **STATUS: Sprint 37 in progress** — *v2.15.0 Maintenance 5: External 360°
-> QA of v2.14.0*. Current release: **v2.14.0** (Sprint 36, 2026-06-13). The
-> documented development pause (re-entered after v2.14.0) was interrupted
-> again on user decision: a second external test-management project ran a
-> 360° audit against the RELEASED v2.14.0 and produced 6 findings (1 Medium,
-> 5 Low). All 6 fixed on `feature/v2.15.0-maintenance-5` — **not yet merged,
-> not yet released** (merge + release stay a user decision). Baseline /
-> resumption anchors: dogfooding pause baseline (7231 mutants, 69.2% gross),
-> the Fable-5 360° report (`_docs/audit/`) and the external QA inventory
-> (serena memory `external_360_test_v2140_findings`).
+<!-- LIVE_STATE_START -->
+
+> **STATUS: v2.21.0 release candidate in progress.** The authoritative branch
+> is `fix/360-review-hardening`, based on `main@6cb727d`. The adversarial
+> 360-degree review, fixes and local release evidence are tracked in
+> `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
+> `bug_reporting/BUGFIXUNG_ROADMAP.md`. GitHub CI
+> is intentionally skipped because of the acknowledged billing problem and is
+> not a PASS; publication proceeds only after the remaining local gates.
 
 ## What it is
 Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
 adapted to Windows: native subprocess + Job Object orphan-protection, no POSIX
 fork dependency, in-process pytest stats collection, libcst-based mutation
-generation. Since v2.5.0 (made honest in v2.8.0): infinite-loop detection —
-a psutil-based sampling classifier (CPU + progress signals, process status on
-POSIX only) with persisted forensics and a platform-aware confidence band.
+generation. Infinite-loop detection uses a psutil-based sampling classifier
+(CPU + progress signals, process status on POSIX only) with persisted forensics
+and a platform-aware confidence band.
 
-- Python 3.12 – 3.14
+- Python >= 3.12,<3.15 (CPython 3.12–3.14)
 - Stack: click (CLI), libcst (mutations), pydantic v2 (config), textual (TUI),
   coverage (coverage-guided), psutil (IL detection), SQLite (results),
   pytest (test runner).
@@ -32,6 +31,23 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   `mutmut-win`.
 
 ## Where we are
+
+- **Release target:** v2.21.0; local hardening and release verification in
+  progress on `fix/360-review-hardening`.
+- **Authoritative review state:** `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
+  `bug_reporting/BUGFIXUNG_ROADMAP.md`.
+- **Remote state:** must be live-read again immediately before branch, PR, tag
+  or release writes.
+- **Release sequence:** version bump on the release branch, final gates, merge
+  to `main`, annotated tag, then GitHub release.
+  <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->
+
+<!-- LIVE_STATE_END -->
+
+<!-- ARCHIVE_START -->
+
+## Archived release history through v2.20.0
+
 - **Sprint**: 37 — *v2.15.0 Maintenance 5: External 360° QA of v2.14.0* —
   implementation complete 2026-06-13 on `feature/v2.15.0-maintenance-5`
   (light branch, Wellen-Commits, NO GitHub issues — the external report IS
@@ -319,7 +335,7 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
   C2 codegen correctness (clean-run breakers, parenless-yield class incl.
   BUG-1) → C3 pool robustness / C4 timeout architecture (incl. BUG-2).
 
-## Open Decisions / Open Items
+### Archived Open Decisions / Open Items
 **NONE — register closed by Sprint 34 / #117 (2026-06-11):**
 - `--treat-timeout-as-kill` → deprecated now (warning on use, marked in
   help/README), functional through 2.x, removal in a future major.
@@ -328,8 +344,10 @@ POSIX only) with persisted forensics and a platform-aware confidence band.
 - `_bug_reporting/BUG_REPORT_9.md` → moot; the file no longer exists
   (verified 2026-06-11), its bugs were fixed in v2.2.0–v2.4.0.
 - Release cadence → documented in the README ("Release policy"):
-  demand-driven, gates → merge → bump → annotated tag → GitHub release,
+  demand-driven, bump → final gates → merge → annotated tag → GitHub release,
   triggered only by an explicit user "Release"; no PyPI step.
+
+<!-- ARCHIVE_END -->
 
 ## Architecture Cheatsheet
 - `cli.py` / `browser.py` — UI layer (click + textual).

@@ -63,6 +63,7 @@ from mutmut_win.constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 try:
@@ -368,10 +369,11 @@ class ProcessMonitor(threading.Thread):
     def __init__(
         self,
         pid: int,
-        log_path: Path,
+        log_path: Path | None = None,
         *,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         window_seconds: float = 10.0,
+        output_counter: Callable[[], int] | None = None,
     ) -> None:
         # daemon=True belongs here, not as a class attribute shadowing the
         # Thread property (A2-JT-012: it worked, but left _daemonic stale).
@@ -384,6 +386,7 @@ class ProcessMonitor(threading.Thread):
             raise RuntimeError(msg)
         self._pid = pid
         self._log_path = log_path
+        self._output_counter = output_counter
         self._poll_interval = poll_interval
         self._window_seconds = window_seconds
         maxlen = max(4, int(window_seconds / poll_interval) * 2)
@@ -481,6 +484,8 @@ class ProcessMonitor(threading.Thread):
             # 2) pytest's --forked / xdist plugins spawn their own children.
             cpu = self._cached_cpu_percent(self._proc)
             io_ops = self._io_ops(self._proc)
+            root_status = str(self._proc.status())
+            tree_running = root_status == "running"
             try:
                 live_pids: set[int] = {self._pid}
                 for child in self._proc.children(recursive=True):
@@ -489,6 +494,8 @@ class ProcessMonitor(threading.Thread):
                     if child_io is not None:
                         io_ops = child_io if io_ops is None else io_ops + child_io
                     live_pids.add(child.pid)
+                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                        tree_running = tree_running or str(child.status()) == "running"
                 # Drop cached processes that have exited so the dict doesn't
                 # grow without bound during long runs.
                 self._proc_cache = {
@@ -496,15 +503,25 @@ class ProcessMonitor(threading.Thread):
                 }
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-            status_value = self._proc.status()
-            status = str(status_value)
+            # POSIX status is a tree signal just like CPU/I/O: a sleeping
+            # launcher with a spinning child is running for classification
+            # purposes. Windows declares this signal unavailable downstream.
+            status = "running" if tree_running else root_status
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
-        try:
-            output_bytes: int | None = self._log_path.stat().st_size
-        except OSError:
-            # Missing data, not "output stagnated" — clamping to 0 was a
-            # pro-IL bias (A2-JT-015). The classifier skips None samples.
+        if self._output_counter is not None:
+            try:
+                output_bytes: int | None = self._output_counter()
+            except Exception:
+                output_bytes = None
+        elif self._log_path is not None:
+            try:
+                output_bytes = self._log_path.stat().st_size
+            except OSError:
+                # Missing data, not "output stagnated" — clamping to 0 was a
+                # pro-IL bias (A2-JT-015). The classifier skips None samples.
+                output_bytes = None
+        else:
             output_bytes = None
         return IlSample(
             timestamp=time.monotonic(),

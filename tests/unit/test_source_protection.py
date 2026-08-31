@@ -12,7 +12,6 @@ Two destructive findings:
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -148,10 +147,12 @@ class TestApplySafety:
         b_mutant, cfg = _setup_two_class_project(tmp_path)
         src_file = tmp_path / "src" / "mod.py"
         before = src_file.read_bytes()
-
-        # Source modified AFTER the mutants were generated -> staging stale.
-        future = time.time() + 60
-        os.utime(src_file, (future, future))
+        stat = src_file.stat()
+        drifted = before.replace(b'"aaa"', b'"ccc"')
+        assert len(drifted) == len(before)
+        src_file.write_bytes(drifted)
+        # Restore the old timestamp: content identity must still reject it.
+        os.utime(src_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
         # StaleStagingError since issue #123 / CLI-003 (was a raw
         # RuntimeError that escaped the CLI's domain-error rendering).
@@ -159,4 +160,4 @@ class TestApplySafety:
 
         with pytest.raises(StaleStagingError, match="re-run"):
             apply_mutant(b_mutant, cfg)
-        assert src_file.read_bytes() == before  # untouched
+        assert src_file.read_bytes() == drifted  # changed source untouched

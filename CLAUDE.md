@@ -2,7 +2,7 @@
 
 ## Projekt
 
-- **Stack**: Python 3.14.3
+- **Stack**: CPython >=3.12,<3.15 (3.12–3.14)
 - **Repository**: https://github.com/pgm1980/mutmut-win.git
 - **Ziel**: 
 
@@ -38,7 +38,7 @@ PROJEKT-STANDARDS (NICHT VERHANDELBAR):
 - FS MCP Server für ALLE Filesystem-Operationen (KEIN cat, cp, mv, rm, find, grep via Bash)
 - Serena für Code-Navigation (KEIN Grep für Klassen/Funktionen/Variablen)
 - Context7 VOR Nutzung neuer APIs konsultieren
-- Semgrep-Scan auf JEDE geänderte Datei
+- Kanonisches Semgrep-Releasegate auf dem vollständigen Git-owned Scope; keine Raw- oder Changed-file-Scans als PASS-Ersatz
 - Ruff Lint + Format auf JEDE geänderte Datei — 0 Findings
 - mypy strict — 0 Errors
 - pytest + hypothesis für alle Tests — kein unittest.TestCase
@@ -61,7 +61,7 @@ Auch wenn Subagenten MCP-Zugriff haben, MUSS die Hauptsession nach jeder Subagen
 - [ ] mypy: 0 Errors? (`uv run mypy src/` selbst ausführen)
 - [ ] Alle Tests grün? (`uv run pytest` selbst ausführen)
 - [ ] Serena `get_symbols_overview` auf neue Dateien — Strukturcheck
-- [ ] Bei Security-relevantem Code: Semgrep-Scan selbst bestätigen
+- [ ] Bei Security-relevantem Code: das kanonische Semgrep-Releasegate selbst bestätigen
 - [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80%?
 
 **Vertrauen, aber verifizieren.** Subagent-Aussagen "Build sauber, Tests grün" sind Hinweise, keine Beweise.
@@ -84,7 +84,7 @@ Jeder Subagent-Prompt MUSS die folgenden 5 Sektionen enthalten. Unvollständige 
 [Welche MCP-Server für diese Aufgabe relevant sind und wie sie eingesetzt werden sollen]
 Beispiel:
 - Serena: `find_symbol` vor jeder Code-Änderung, `get_symbols_overview` auf neue Dateien
-- Semgrep: Scan auf alle geänderten Dateien vor Abschluss
+- Semgrep: kanonisches Releasegate auf dem vollständigen Git-owned Scope vor Abschluss
 - Context7: Bei Nutzung neuer APIs konsultieren
 - FS MCP: Für alle Filesystem-Operationen (kein cat/cp/rm)
 
@@ -114,7 +114,7 @@ Inklusive Unit Tests mit pytest + hypothesis für Roundtrip-Properties.
 ## MCP-ANWEISUNGEN
 - Serena: get_symbols_overview auf base_service.py um bestehende Patterns zu verstehen
 - Context7: asyncio.Lock API prüfen (Reentrancy, Timeout)
-- Semgrep: Scan auf neue Dateien nach Implementierung
+- Semgrep: kanonisches Releasegate nach Implementierung
 - FS MCP: Für alle Dateioperationen
 
 ## OUTPUT
@@ -237,18 +237,23 @@ Serena ist als MCP-Server verfügbar und bietet präzise, symbolbasierte Code-Na
 
 ### Semgrep — Security-Scanning
 
-Semgrep MUSS als Security-Scanner eingesetzt werden. Python hat die beste Semgrep-Regelabdeckung aller Sprachen.
+Semgrep MUSS ausschließlich über den getrackten, fail-closed Release-Wrapper ausgeführt werden. Der Wrapper bindet Semgrep 1.175.0 aus `uv.lock`, spiegelt den vollständigen Git-owned Release-Scope in ein externes Root, verwendet das content-gepinnte Offline-Regelbundle und validiert Findings, Parserfehler, übersprungene Regeln, Fixpoint-Timeouts sowie Manifest-/Target-/Policy-/TOCTOU-Drift.
 
-**Wann Semgrep verwenden (PFLICHT):**
-- **Vor jedem Sprint-Abschluss**: Vollständiger Scan der Codebase
-- **Bei Code Reviews**: Scan der geänderten Dateien
-- **Nach sicherheitsrelevantem Code**: Sofortiger Scan (Auth, Crypto, Input-Validierung, Deserialisierung, Pickle-Loading)
-- **Supply-Chain-Analyse**: Bei neuen PyPI-Abhängigkeiten
-- **AI-spezifisch**: Scan bei Model-Loading, User-Input-to-Prompt Pipelines, API-Key-Handling
+```bash
+uv sync --locked --only-group security --no-install-project
+uv run --no-sync python -I scripts/semgrep_release_gate.py
+```
+
+**Wann das kanonische Gate verwenden (PFLICHT):**
+- **Vor jedem Sprint- und Release-Abschluss**: vollständiger Git-owned Release-Scope
+- **Bei Code Reviews und nach sicherheitsrelevantem Code**: Auth, Crypto, Input-Validierung, Deserialisierung, Pickle-Loading
+- **AI-spezifisch**: Model-Loading, User-Input-to-Prompt-Pipelines, API-Key-Handling
+- **Supply-Chain-Analyse**: zusätzlich bei neuen PyPI-Abhängigkeiten den gelockten Dependency-Audit ausführen
 
 **VERBOTEN:**
-- **NICHT** einen Sprint abschließen ohne bestandenen Semgrep-Scan
-- **NICHT** Security-Findings ignorieren oder als False Positive markieren ohne dokumentierte Begründung
+- **NICHT** direkte, registryabhängige oder auf geänderte Dateien begrenzte Semgrep-Aufrufe als Gate-Evidenz oder `semgrep_passed` werten
+- **NICHT** einen Sprint oder Release ohne bestandenen kanonischen Wrapperlauf abschließen
+- **NICHT** Security-Findings ignorieren oder als False Positive markieren ohne dokumentierte Begründung und exakte Allowlist-Signatur
 - **NICHT** `pickle.load()` auf nicht-vertrauenswürdige Daten ohne Semgrep-Review
 
 ### Context7 — Aktuelle Dokumentation
@@ -258,7 +263,7 @@ Context7 MUSS vor der Nutzung von APIs und Libraries konsultiert werden.
 **Wann Context7 verwenden (PFLICHT):**
 - **Vor Nutzung neuer APIs**: Python stdlib, PyTorch, Transformers, FastAPI, Pydantic, etc.
 - **Bei Unsicherheit über API-Verhalten**: Parameter, Rückgabewerte, Exceptions
-- **Bei Versionswechseln**: Breaking Changes prüfen (Python 3.14 Features, Library Major Versions)
+- **Bei Versionswechseln**: Breaking Changes und die CPython-3.12–3.14-Kompatibilität prüfen
 - **Best Practices verifizieren**: Aktuelle Empfehlungen für Patterns und Anti-Patterns
 - **AI-Libraries**: Aktuelle API-Docs für PyTorch, HuggingFace, LangChain etc. — diese ändern sich häufig
 
@@ -390,7 +395,7 @@ dev = [
     "pytest-benchmark>=5.1",
     "hypothesis>=6.119",
     "import-linter>=2.1",
-    "mutmut-win>=0.6.0",
+    "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0",
 ]
 
 [tool.pytest.ini_options]
@@ -422,7 +427,7 @@ mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität de
 
 **Installation** (PyPI-Publishing ist nicht Teil der Release-Sequenz — Installation erfolgt über die Git-URL; führendes Dokument: `_config\mutmut-win-install.md`):
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0" --dev
 ```
 
 **Wann mutmut-win verwenden (PFLICHT):**
@@ -551,7 +556,7 @@ Er MUSS bevorzugt vor Built-In Tools (Read, Write, Edit, Glob, Grep) verwendet w
 | **Tier 3: Built-In BLEIBT (mit Einschränkungen)** | Siehe Tier-3-Klarstellung unten                                                                                | Read, Edit, Glob, Grep nur unter den definierten Bedingungen        |
 | **Tier 4: EINZIGARTIG**                           | Pipelines, Auto-Versioning, Tagging, Snapshots, Templates, Use Cases, Security Scan                            | `execute_workflow` mit Steps, `sensitive_scan`, `project_overview`  |
 
-**Bash bleibt ERLAUBT für:** `uv run pytest`, `uv run ruff`, `uv run mypy`, `uv run mutmut-win`, `uv run lint-imports`, `semgrep`, `uv run pip-audit` — Build/Test/Lint-Befehle die KEINE Filesystem-Operationen sind.
+**Bash bleibt ERLAUBT für:** `uv run pytest`, `uv run ruff`, `uv run mypy`, `uv run mutmut-win`, `uv run lint-imports`, `uv run --no-sync python -I scripts/semgrep_release_gate.py`, `uv run pip-audit` — Build/Test/Lint-Befehle die KEINE Filesystem-Operationen sind.
 
 **VERBOTEN UND HART GESPERRT (settings.json `deny`):**
 - `cat`, `head`, `tail`, `cp`, `mv`, `rm`, `find`, `grep`, `rg`, `diff`, `tar`, `du`, `stat`, `ls`, `tree`, `sort`, `uniq`, `sed`, `awk`, `wc`, `base64`, `sha256sum`, `mkdir`, `touch` — **werden vom Harness blockiert**
@@ -597,8 +602,8 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 | `uv run lint-imports`                                | Architektur-Contracts prüfen              |
 | `uv run mutmut-win run --paths-to-mutate src/<package>/` | Mutation Testing                      |
 | `uv run mutmut-win results`                              | Mutation Testing Ergebnisse           |
-| `semgrep scan --config auto .`                       | Security-Scan (vollständig)               |
-| `semgrep scan --config auto --changed-files`         | Security-Scan (nur geänderte Dateien)     |
+| `uv sync --locked --only-group security --no-install-project` | Gelockte Security-only-Umgebung herstellen |
+| `uv run --no-sync python -I scripts/semgrep_release_gate.py` | Kanonisches fail-closed Semgrep-Releasegate |
 | `uv run pip-audit`                                   | Dependency-Audit auf Vulnerabilities      |
 
 ---
@@ -652,13 +657,13 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 
 | Voraussetzung               | Version           | Zweck                                         |
 |-----------------------------|-------------------|-----------------------------------------------|
-| Python                      | 3.14.3            | Runtime                                       |
+| Python                      | >=3.12,<3.15      | Unterstützte CPython-Runtime                  |
 | uv                          | aktuell           | Package Manager + Virtual Environments        |
 | Ruff                        | aktuell           | Linting + Formatting                          |
 | mypy                        | aktuell           | Statische Typ-Prüfung                         |
-| mutmut-win                  | >=0.6.0           | Mutation Testing (Windows)                    |
+| mutmut-win                  | 2.21.0            | Mutation Testing (Windows)                    |
 | pip-audit                   | aktuell           | Dependency-Audit                              |
-| Semgrep CLI                 | aktuell           | Security-Scanning                             |
+| Semgrep CLI                 | 1.175.0 (uv.lock) | Security-Scanning über den Release-Wrapper    |
 | Serena MCP-Server           | aktuell           | Symbolbasierte Code-Analyse                   |
 | Context7 MCP-Server         | aktuell           | Aktuelle API-Dokumentation                    |
 | Git                         | aktuell           | Versionskontrolle                             |
@@ -732,7 +737,7 @@ documentation_updated: false           # true = Docs/Docstrings aktualisiert
 | `post-compact-reminder.sh` | PostCompact | `current_sprint`, `sprint_goal`, `branch`, `housekeeping_done` | CLAUDE.md-Reminders + Sprint-State |
 | `sprint-housekeeping-reminder.sh` | Stop | `current_sprint`, `housekeeping_done`, `memory_updated`, `github_issues_closed`, `sprint_backlog_written` | Session-End-Warnung |
 | `sprint-state-save.sh` | PreCompact | Gesamte Datei | Hängt Git-Context an state.md an |
-| `verify-after-agent.sh` | SubagentStop | — (prüft Code direkt) | Ruff + mypy + pytest + Semgrep |
+| `verify-after-agent.sh` | SubagentStop | — (prüft Code direkt) | Ruff + mypy + pytest + kanonisches Semgrep-Gate |
 
 ### Validierung
 
@@ -830,13 +835,13 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 - **mutmut-win Laufzeit**: Kann bei großen Projekten extrem lang sein. `--paths-to-mutate` für gezieltes Testen verwenden. `--max-children 4` bei RAM-knappen Systemen.
 - **mypy + AI-Libraries**: PyTorch, Transformers, sklearn haben unvollständige Type Stubs. `ignore_missing_imports` pro Modul konfigurieren, nicht global.
 - **`pickle.load()` ist ein Security-Risiko**: Nie auf nicht-vertrauenswürdige Daten anwenden. `safetensors` oder `torch.load(weights_only=True)` bevorzugen.
-- **Python 3.14 Features nutzen**: Template Strings (PEP 750), `@override` Decorator, verbesserte Error Messages — Context7 für aktuelle Feature-Liste konsultieren.
+- **Runtime-Kompatibilität halten**: Produktionscode MUSS unter CPython 3.12–3.14 funktionieren; keine 3.14-exklusiven Sprachfeatures ohne kompatiblen Fallback.
 - **`# noqa` ist verboten** ohne dokumentierte Begründung im Code-Kommentar direkt darüber.
 - **`# type: ignore` ist verboten** ohne dokumentierte Begründung und spezifischen Error-Code (`# type: ignore[override]`).
 - **Notebooks sind kein Produktionscode**: Jupyter Notebooks nur für Exploration/Prototyping. Produktionscode MUSS in `src/` als getestete Module leben.
 - **GPU-Tests markieren**: Tests die GPU benötigen mit `@pytest.mark.gpu` markieren und in CI separat ausführen.
 - **Reproducibility**: Seeds für Random, NumPy, PyTorch IMMER setzen und dokumentieren. `torch.use_deterministic_algorithms(True)` wo möglich.
-- **Semgrep bei Python**: Beste Regelabdeckung aller Sprachen — `--config auto` liefert umfassende Ergebnisse.
+- **Semgrep bei Python**: Nur der gelockte, zweiphasige Release-Wrapper besitzt Gate-Autorität: isolierte Regelmaterialisierung, anschließend contentgeprüfter Offline-Bundlescan; Teil- oder Direktläufe sind höchstens diagnostisch.
 - **uv statt pip**: Immer `uv` verwenden — schneller, reproduzierbar, Lockfile-Support.
 
 ---
@@ -872,7 +877,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 
 ## Projektspezifische Regeln
 
-- **Sprache**: Python 3.14
+- **Sprache**: CPython 3.12–3.14 (`>=3.12,<3.15`)
 - **Package Manager**: uv
 - **Projektformat**: `pyproject.toml` (PEP 621)
 - **Async Framework**: asyncio + FastAPI (empfohlen für API-Serving, nicht Pflicht)

@@ -1,5 +1,5 @@
 """Strong kill-tests for the planned operators. Each is designed to kill BOTH
-the current v2.14.0 mutants on the construct AND the planned operator's future
+the original v2.14.0 mutants on the construct AND the planned operator's future
 mutant(s). On correct code every assertion holds, so the suite is green today.
 """
 
@@ -28,8 +28,8 @@ def test_negate_cond():
 
 def test_force_cond():
     assert t.force_cond(5) == "pos"
-    assert t.force_cond(1) == "pos"      # kills current number 0 -> 1 (boundary at x=1)
-    assert t.force_cond(0) == "nonpos"   # kills current > -> >=
+    assert t.force_cond(1) == "pos"  # kills current number 0 -> 1 (boundary at x=1)
+    assert t.force_cond(0) == "nonpos"  # kills current > -> >=
     assert t.force_cond(-1) == "nonpos"  # future if True/False (#23)
 
 
@@ -43,8 +43,8 @@ def test_collections():
 
 def test_match_guard():
     assert t.match_guard(5) == "pos"
-    assert t.match_guard(1) == "pos"     # kills current guard number 0 -> 1
-    assert t.match_guard(0) == "other"   # kills current guard `>` -> `>=`
+    assert t.match_guard(1) == "pos"  # kills current guard number 0 -> 1
+    assert t.match_guard(0) == "other"  # kills current guard `>` -> `>=`
     assert t.match_guard(-1) == "other"  # future guard True/False (#41)
 
 
@@ -77,18 +77,19 @@ def test_calc_static_class():
 
 # --- regex suite (#42) ------------------------------------------------------
 
+
 def test_regex_digits():
-    assert rt.all_digits("12") is True   # kills \d->\D, \d->literal d
+    assert rt.all_digits("12") is True  # kills \d->\D, \d->literal d
     assert rt.all_digits("1a") is False  # kills \d->[\d\D]
-    assert rt.all_digits("") is False    # kills + -> * (quantifier)
-    assert rt.all_digits("1") is True    # kills + -> {2,} (short->range)
+    assert rt.all_digits("") is False  # kills + -> * (quantifier)
+    assert rt.all_digits("1") is True  # kills + -> {2,} (short->range)
 
 
 def test_regex_class():
-    assert rt.only_abc("abc") is True    # kills range [a-c]->[a-b]
-    assert rt.only_abc("abd") is False   # kills range ->[a-d], negation, to-any
+    assert rt.only_abc("abc") is True  # kills range [a-c]->[a-b]
+    assert rt.only_abc("abd") is False  # kills range ->[a-d], negation, to-any
     assert rt.only_abc("") is False
-    assert rt.only_abc("a") is True      # kills + -> {2,} (short->range)
+    assert rt.only_abc("a") is True  # kills + -> {2,} (short->range)
 
 
 def test_regex_prefix():
@@ -98,8 +99,8 @@ def test_regex_prefix():
 
 def test_regex_repeat():
     assert rt.repeat_ab("abab") == "ab"
-    assert rt.repeat_ab("aba") is None         # kills (ab)+ quantifier change
-    assert rt.repeat_ab("ab") == "ab"          # kills (ab)+ -> (ab){2,}
+    assert rt.repeat_ab("aba") is None  # kills (ab)+ quantifier change
+    assert rt.repeat_ab("ab") == "ab"  # kills (ab)+ -> (ab){2,}
     # group->non-capturing would break .group(1) -> error -> killed
 
 

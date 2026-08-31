@@ -7,6 +7,7 @@ read_mutant_function, get_diff_for_mutant, and apply_mutant.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -349,7 +350,12 @@ def x_foo__mutmut_1() -> int:
 
             meta_path = tmp_path / "mutants" / "src" / "mod.py.meta"
             meta_path.write_text(
-                json.dumps({"exit_code_by_key": {"mod.x_foo__mutmut_1": 0}}),
+                json.dumps(
+                    {
+                        "exit_code_by_key": {"mod.x_foo__mutmut_1": 0},
+                        "source_hash": hashlib.sha256(src_file.read_bytes()).hexdigest(),
+                    }
+                ),
                 encoding="utf-8",
             )
 

@@ -174,7 +174,7 @@ class TestTypeCheckCommandError:
     def test_timeout_raises_domain_error(self) -> None:
         with (
             patch(
-                "subprocess.run",
+                "mutmut_win.type_checking._run_type_check_process",
                 side_effect=subprocess.TimeoutExpired(cmd="mypy", timeout=300),
             ),
             pytest.raises(TypeCheckCommandError, match="timed out"),
@@ -183,21 +183,30 @@ class TestTypeCheckCommandError:
 
     def test_checker_failure_exit_raises_domain_error(self) -> None:
         with (
-            patch("subprocess.run", return_value=_completed(2, stderr="fatal")),
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(2, stderr="fatal"),
+            ),
             pytest.raises(TypeCheckCommandError, match="exit code"),
         ):
             run_type_checker(["mypy", "--output=json", "src/"])
 
     def test_non_json_output_raises_domain_error(self) -> None:
         with (
-            patch("subprocess.run", return_value=_completed(0, stdout="not json")),
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(0, stdout="not json"),
+            ),
             pytest.raises(TypeCheckCommandError, match="JSON"),
         ):
             run_type_checker(["mypy", "--output=json", "src/"])
 
     def test_invalid_pyright_report_raises_domain_error(self) -> None:
         with (
-            patch("subprocess.run", return_value=_completed(0, stdout='{"wrong": 1}')),
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(0, stdout='{"wrong": 1}'),
+            ),
             pytest.raises(TypeCheckCommandError, match="generalDiagnostics"),
         ):
             run_type_checker(["pyright", "--outputjson"])

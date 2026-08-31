@@ -101,15 +101,17 @@ if [[ -f "build.sbt" ]]; then
 fi
 
 # ── Semgrep (all languages) ───────────────────────────────
-if command -v semgrep &>/dev/null; then
-  # Only scan staged files that are source code
-  STAGED_CODE=$(echo "$STAGED_FILES" | grep -E '\.(py|cs|rs|java|kt|scala|js|ts|go)$' || true)
-  if [[ -n "$STAGED_CODE" ]]; then
-    echo "Pre-commit: Running Semgrep security scan..."
-    echo "$STAGED_CODE" | xargs semgrep scan --config auto --quiet 2>/dev/null
-    if [[ $? -ne 0 ]]; then
-      ERRORS="$ERRORS\n  FAIL: Semgrep found security issues"
-    fi
+if ! command -v uv >/dev/null 2>&1; then
+  ERRORS="$ERRORS\n  FAIL: Semgrep gate prerequisite 'uv' is missing"
+elif [[ ! -f "scripts/semgrep_release_gate.py" ]]; then
+  ERRORS="$ERRORS\n  FAIL: canonical Semgrep gate script is missing"
+else
+  echo "Pre-commit: Running canonical Semgrep gate over the full Git-owned release scope..."
+  SEMGREP_OUTPUT=$(uv run --no-sync python -I scripts/semgrep_release_gate.py 2>&1)
+  SEMGREP_EXIT=$?
+  if [[ $SEMGREP_EXIT -ne 0 ]]; then
+    ERRORS="$ERRORS\n  FAIL: canonical Semgrep release gate failed"
+    echo "$SEMGREP_OUTPUT" | head -20
   fi
 fi
 

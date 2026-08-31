@@ -1,20 +1,40 @@
 ---
-current_sprint: "v2.20.0 (external-QA hardening)"
-sprint_goal: "v2.20.0: WRK-002 (Staging-Worker-Pool gegen bootstrap-sterbende Worker absichern — ProcessPoolExecutor erkennt tote Worker → sauberer OrchestratorError statt Endlos-Hang) + do_not_mutate_patterns matcht jetzt auch den qualifizierten Class.method-Namen. Striktes @staticmethod-Gating als by-design dokumentiert. Akzeptanz: geaenderte Zeilen >=80% Mutation, volle Suite gruen."
-branch: "feature/v2.20.0-wrk002-qualified"
-started_at: "2026-06-15"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "38"
+sprint_goal: "v2.21.0: alle bestaetigten False-Green-, Prozess-, Persistenz-, pytest-, Security-, Supply-Chain- und Releasegate-Befunde des adversarialen 360-Grad-Reviews schliessen; lokal vollstaendig verifizieren und als GitHub-Tag/Release publizieren."
+branch: "fix/360-review-hardening"
+started_at: "2026-08-30"
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
 documentation_updated: true
 ---
 
-# Sprint State (v2.20.0 — external-QA hardening)
+# Sprint State (v2.21.0 — adversarial 360-review hardening)
 
-## v2.20.0 — die letzten zwei offenen Punkte aus dem externen v2.19.0-Bericht
+<!-- LIVE_STATE_START -->
+
+## Aktiver Releasekandidat v2.21.0
+
+Der autoritative Arbeitszweig ist `fix/360-review-hardening`, abgezweigt von
+`main@6cb727d`. Analyse und Bugfix-Roadmap liegen unter `bug_reporting/`; die
+lokalen Abschlussgates, PR-Integration, der annotierte Tag `v2.21.0` und das
+GitHub-Release werden in dieser Reihenfolge abgeschlossen. GitHub-CI wird auf
+ausdrueckliche Nutzeranweisung wegen des Billing-Problems uebersprungen und
+darf nicht als PASS markiert werden. Die abgeschlossenen lokalen Test-,
+Semgrep- und Dokumentationsnachweise sind im Frontmatter `true`; die erst nach
+Integration und Release abschliessbaren Housekeeping-/Remote-Punkte bleiben
+ehrlich `false`.
+
+<!-- LIVE_STATE_END -->
+
+<!-- ARCHIVE_START -->
+
+## Archiv: v2.20.0 — external-QA hardening
+
+### v2.20.0 — die letzten zwei offenen Punkte aus dem externen v2.19.0-Bericht
 User-Scope-Wahl: "WRK-002 + qualified-name" fixen, @staticmethod-strict-gating
 als by-design dokumentieren.
 
@@ -40,7 +60,7 @@ als by-design dokumentieren.
    `_config/mutmut-win-install.md` (Wichtige Hinweise) als bewusste, korrektheits-
    wahrende Entscheidung. @classmethod bleibt deferred (bound `__name__` read-only).
 
-## Gates (alle gruen)
+### Gates (alle gruen)
 - volle Suite **1419 passed / 5 skipped**, ruff 0, mypy 14 = Baseline,
   import-linter KEPT, Semgrep 0 (geaenderte Dateien). Keine neuen Dependencies
   (ProcessPoolExecutor/concurrent.futures sind stdlib) -> pip-audit unveraendert
@@ -59,20 +79,22 @@ als by-design dokumentieren.
     23 Survivors sind dieselbe Legacy-Klasse wie W4 (never-mutate-Gate, annotation/
     param-default/@staticmethod-relaxation/decorator).
 
-## Test-Haertung (wrk002)
+### Test-Haertung (wrk002)
 - `_BrokenPool.map` ist LAZY (Generator, raise bei Iteration) wie echtes
   `ProcessPoolExecutor.map` -> pinnt das `list(...)` im try als load-bearing
   (Mutant 85: list()-drop laesst die Exception sonst aus dem try entkommen).
 - exakte Diagnose-Message-Assertion (`str(exc) == _EXPECTED_MSG`) statt blossem
   `match=`-Substring -> killt jede msg-Segment-Mutation + msg=None + raise->pass.
 
-## Reusable lesson (neu)
+### Reusable lesson (neu)
 Engine-Self-Mutation-Coverage-Luecke gilt auch fuer den Orchestrator: ein Test,
 der `_generate_mutants` direkt mit Mock aufruft, wird im tests/unit-weiten Stats-
 Lauf NICHT als covering test zugeordnet -> ehrlicher Beweis = Gate mit genau
 diesem Test als einzigem `--tests-dir`.
 
-## Status
+### Status
 **v2.20.0 RELEASED** (Merge db71e53, Tag v2.20.0,
 [GitHub-Release](https://github.com/pgm1980/mutmut-win/releases/tag/v2.20.0)).
 PROJEKT ZURUECK IN DER ENTWICKLUNGSPAUSE (0 Issues / Backlog).
+
+<!-- ARCHIVE_END -->

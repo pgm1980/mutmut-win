@@ -58,8 +58,11 @@ EXPECTED_MY_LIB: dict[str, dict[str, int]] = {
         "my_lib.x_async_consumer__mutmut_2": 1,
         "my_lib.x_async_consumer__mutmut_3": 0,
         "my_lib.x_async_consumer__mutmut_4": 0,
-        "my_lib.x_async_generator__mutmut_1": 1,
-        "my_lib.x_async_generator__mutmut_2": 1,
+        # No async-generator entries by design.  The historical mutmut-3.5.0
+        # snapshot produced two, but a trampoline cannot transparently forward
+        # asend/athrow/aclose because Python has no async ``yield from``.  Those
+        # candidates changed the public protocol, so mutmut-win now leaves the
+        # function intact instead of publishing semantically invalid mutants.
         "my_lib.x_simple_consumer__mutmut_1": 1,
         "my_lib.x_simple_consumer__mutmut_2": 1,
         "my_lib.x_simple_consumer__mutmut_3": 1,

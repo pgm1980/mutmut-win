@@ -32,6 +32,10 @@ class OrchestratorError(MutmutWinError):
     """Error in the mutation testing orchestration."""
 
 
+class PytestBoundaryError(OrchestratorError):
+    """The frozen pytest config/root/test-location boundary is invalid or drifted."""
+
+
 class CleanTestFailedError(OrchestratorError):
     """The clean test run (no mutations) failed."""
 
@@ -41,15 +45,12 @@ class ForcedFailError(OrchestratorError):
 
 
 class UnsupportedPytestVersionError(OrchestratorError):
-    """The pytest in the target venv is too old for the ``@argfile`` hand-off.
+    """The target venv's pytest is outside the validated execution range.
 
     Producer: the orchestrator's run-start guard (issue #125 / 360°-A2).
-    Workers pass per-mutant tests via pytest's ``@argfile`` syntax, which
-    exists since pytest 8.2 — under an older pytest every covered mutant
-    floods into ``suspicious`` (usage error) despite a green clean run.
-    The ``pytest>=8.2`` dependency floor is the primary defence; this
-    guard catches bypassed resolvers (``pip --no-deps``, hand-patched
-    environments) BEFORE any staging or test execution.
+    Workers require pytest >= 8.2 for ``@argfile`` and the frozen config
+    boundary mirrors only pytest majors 8 and 9. The guard fails before
+    staging/mutation so an incompatible dependency cannot produce false data.
     """
 
 
@@ -77,6 +78,26 @@ class StaleStagingError(MutmutWinError):
     """
 
 
+class UnsafeStagingError(MutmutWinError):
+    """The staging destination resolves outside its canonical workspace tree.
+
+    Producer: staging mirror and generation writes reject a ``mutants`` root,
+    parent directory, or file path redirected through a symlink/junction.  A
+    stale or hostile staging tree must never turn a refresh into an external
+    write.
+    """
+
+
+class UnsafeWorkspaceStateError(MutmutWinError):
+    """A fixed workspace state root is redirected outside the workspace.
+
+    The CLI validates ``mutants/`` and ``.mutmut-cache/`` before deriving a
+    lock path or touching persistent state.  A symlink, Junction, or otherwise
+    redirected root must never turn a local run/apply/export operation into an
+    external filesystem or SQLite write.
+    """
+
+
 class CorruptCacheError(MutmutWinError):
     """The ``.mutmut-cache/`` SQLite database is corrupt or unreadable.
 
@@ -98,6 +119,10 @@ class AmbiguousMutantNameError(MutmutWinError):
     candidates (issue #115 / A4-UI-012). ``run`` deliberately accepts
     multi-matches (filtering many mutants is its job).
     """
+
+
+class ProcessContainmentError(MutmutWinError):
+    """A subprocess could not be placed inside a reliable process boundary."""
 
 
 class TypeCheckCommandError(MutmutWinError):

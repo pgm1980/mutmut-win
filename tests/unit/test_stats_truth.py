@@ -55,7 +55,9 @@ class TestStatsFailureNeverPoisonsTheCache:
 
         result = collect_or_load_stats(runner, tmp_path)
 
-        assert result.duration_by_test.keys() >= cached.duration_by_test.keys()
+        # Disk recovery remains intact, but the current run must not consume
+        # mapping that it has just proven stale.
+        assert result.duration_by_test == {}
         on_disk = load_stats(tmp_path)
         assert on_disk is not None
         assert "tests/test_a.py::test_one" in on_disk.duration_by_test  # cache intact
@@ -104,13 +106,22 @@ class TestObsoleteCleanupOnDeletion:
         _good_cache(tmp_path)
         runner = _runner(collected=["tests/test_a.py::test_one"])  # test_two deleted
 
+        def plugin_writes_refreshed_stats() -> int:
+            save_stats(
+                MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.5}),
+                tmp_path,
+            )
+            return 0
+
+        runner.run_stats.side_effect = plugin_writes_refreshed_stats
+
         result = collect_or_load_stats(runner, tmp_path)
 
         assert "tests/test_b.py::test_two" not in result.duration_by_test
         on_disk = load_stats(tmp_path)
         assert on_disk is not None
         assert "tests/test_b.py::test_two" not in on_disk.duration_by_test
-        runner.run_stats.assert_not_called()  # no new tests -> no re-run needed
+        runner.run_stats.assert_called_once()
 
 
 class TestPluginStatsTimeIsPreserved:
@@ -158,6 +169,7 @@ class TestChangedTestFileInvalidation:
         test_file.parent.mkdir()
         test_file.write_text("def test_one(): pass\n", encoding="utf-8")
         mutants = tmp_path / "mutants"
+        mutants.mkdir()
         save_stats(
             MutmutStats(
                 tests_by_mangled_function_name={"x_f__mutmut_1": {"tests/test_a.py::test_one"}},
@@ -183,6 +195,7 @@ class TestChangedTestFileInvalidation:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
 
         save_stats(
             MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
@@ -218,6 +231,18 @@ class TestChangedTestFileInvalidation:
         )
         runner = _runner(collected=["tests/test_a.py::test_one"])
 
+        def plugin_writes_fresh_stats() -> int:
+            save_stats(
+                MutmutStats(
+                    duration_by_test={"tests/test_a.py::test_one": 1.0},
+                    stats_time=2.0,
+                ),
+                mutants,
+            )
+            return 0
+
+        runner.run_stats.side_effect = plugin_writes_fresh_stats
+
         collect_or_load_stats(runner, mutants)
 
         runner.run_stats.assert_called_once()  # legacy heal
@@ -227,15 +252,15 @@ class TestFingerprintHardening:
     """Mutation-hardening pins for the #130 fingerprint machinery."""
 
     def test_fingerprint_format_is_pinned(self, tmp_path: Path) -> None:
-        # The "mtime_ns:size" format is a cache contract: a silent format
-        # change would read every cached entry as 'changed' once per run.
+        # Content identity, not timestamp/size coincidence, is the contract.
         from mutmut_win.stats import _fingerprint_test_files
 
         test_file = tmp_path / "test_a.py"
         test_file.write_text("def test_one(): pass\n", encoding="utf-8")
-        stat = test_file.stat()
         fps = _fingerprint_test_files([f"{test_file}::test_one"])
-        assert fps == {str(test_file): f"{stat.st_mtime_ns}:{stat.st_size}"}
+        import hashlib
+
+        assert fps == {str(test_file): hashlib.sha256(test_file.read_bytes()).hexdigest()}
 
     def test_missing_file_fingerprints_as_the_pinned_sentinel(self) -> None:
         from mutmut_win.stats import _fingerprint_test_files
@@ -283,6 +308,18 @@ class TestFingerprintHardening:
         )
         runner = _runner(collected=["tests/test_a.py::test_one"])
 
+        def plugin_writes_custom_stats() -> int:
+            save_stats(
+                MutmutStats(
+                    duration_by_test={"tests/test_a.py::test_one": 1.0},
+                    stats_time=2.0,
+                ),
+                mutants,
+            )
+            return 0
+
+        runner.run_stats.side_effect = plugin_writes_custom_stats
+
         collect_or_load_stats(runner, mutants)
 
         runner.run_stats.assert_called_once()  # legacy cache → re-collection
@@ -319,6 +356,7 @@ class TestFingerprintHardening:
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_a.py").write_text("def test_one(): pass\n", encoding="utf-8")
         mutants = tmp_path / "mutants"
+        mutants.mkdir()
         save_stats(
             MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
             mutants,
@@ -338,6 +376,7 @@ class TestFingerprintHardening:
         test_file.parent.mkdir()
         test_file.write_text("def test_one(): pass\n", encoding="utf-8")
         mutants = tmp_path / "mutants"
+        mutants.mkdir()
         save_stats(
             MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.0}),
             mutants,

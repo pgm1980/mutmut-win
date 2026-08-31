@@ -1,23 +1,24 @@
 # `roadmap` — executable acceptance spec for mutmut-win's planned operators
 
 This project is a **TDD / acceptance harness** for the operators in
-`reporting/MUTMUT_WIN_OPERATOR_ROADMAP.md`. Each planned operator has a **target
-construct** (`src/roadmap/…`) and a **strong kill-test** (`tests/test_roadmap.py`)
+[`../MUTMUT_WIN_OPERATOR_ROADMAP.md`](../MUTMUT_WIN_OPERATOR_ROADMAP.md). Each
+planned operator has a **target construct** (`src/roadmap/…`) and a **strong
+kill-test** (`tests/test_roadmap.py`)
 that will kill the operator's expected mutant **once it is implemented** — and
-passes trivially today (v2.14.0), because the mutant is not yet generated.
+passed trivially in the original v2.14.0 baseline, because the mutant was not yet generated.
 
 ## How the maintainer uses this
 
-1. Drop this project (or its `src/` + `tests/`) into a mutmut-win checkout that
-   has the new operators implemented.
-2. `mutmut-win run --force` (with `--profile advanced` / `--profile all` once
-   the profile system exists).
+1. Use this project in the mutmut-win checkout whose operator behavior is under
+   verification (or copy its `src/` + `tests/` there).
+2. Run `mutmut-win run --force --profile advanced`; use `--profile all` for the
+   aggressive operator tier.
 3. **Acceptance per target:** the mutant count rises from *Current* to *Expected*
    **and** the score stays **100 %** (every new mutant killed by the provided
    test). A survivor ⇒ either an operator bug or a genuine equivalent mutant to
    document. A missing count ⇒ operator not (fully) generating.
 
-**Baseline today (v2.14.0, all operators on, no profiles yet): 71 mutants, 71 killed, 100 %, pytest 14 green.** Per-construct current counts are the *Current* column below.
+**Original baseline (v2.14.0, all operators on, no profiles yet): 71 mutants, 71 killed, 100 %, pytest 14 green.** Per-construct baseline counts are the *Current* column below.
 
 **Phase 1 verification (v2.16.0 — profile scaffold, no new operators yet):**
 `--profile advanced` (the default) reproduces the baseline exactly — **71 / 71 /
@@ -107,11 +108,17 @@ read-only, which the trampoline-lookup codegen cannot set), so `Calc.triple` sta
 |---|---|--:|--:|---|
 | `@staticmethod` mutation (`@classmethod` deferred) | `targets.Calc` | **0** (decorated → skipped) | `Calc.double` (`@staticmethod`) mutates; `Calc.triple` (`@classmethod`) stays **0** (deferred); `@property` stays 0 | `test_calc_static_class` |
 
-The other two surface backports are skip-behaviors best tested with dedicated
-constructs (ready to add, not wired live to keep this baseline clean):
+The other two surface backports are skip behaviors that shipped in v2.19.0 and
+remain covered by dedicated main-repository regressions rather than additional
+targets in this standalone harness:
 
-- **Pragma `block` / `start`-`end`:** add a function with `# pragma: no mutate block` (or a `start`/`end` region). Acceptance: that region's mutant count drops to **0** after the backport (today the block-pragma is unrecognized, so the region is still mutated).
-- **`do_not_mutate_patterns` (regex):** add `do_not_mutate_patterns = ["targets\\.crcr"]` (say) to `[tool.mutmut]` + a matching target. Acceptance: matching constructs yield **0** mutants after the backport. (Not added now: the unknown key would warn on v2.14.0.)
+- **Pragma `block` / `start`-`end`:** `# pragma: no mutate block` and inclusive
+  `start`/`end` regions are implemented; the dedicated mutation regressions verify
+  that excluded regions generate no mutants.
+- **`do_not_mutate_patterns` (regex):** the configuration key is implemented and
+  excludes matching simple names. v2.20.0 additionally verifies qualified
+  `Class.method` matches; dedicated configuration and mutation regressions cover
+  both forms.
 
 ## Regex sub-mutator coverage (#42) — which target exercises what
 

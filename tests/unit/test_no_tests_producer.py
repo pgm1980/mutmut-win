@@ -5,29 +5,29 @@ task without node-id arguments, so pytest ran the FULL suite for that one
 mutant — for every unmapped mutant.  That burned the entire suite runtime
 per mutant and produced random full-suite kills that inflated the score.
 
-The two meanings are now separated at assignment time:
+The two meanings are now separated by an explicit authority bit:
 
-* Mapping EXISTS, mutant has no entry -> the honest verdict is ``no tests``
-  (exit 33): persisted directly, never dispatched — the same pattern that
-  issue #93 established for type-check kills.
-* No mapping at all (stats collection failed or recorded nothing — possibly
-  the hit-recording bugs QX-017/018) -> the full-suite fallback REMAINS the
-  safe choice (loud since #99): deciding "no tests for everything" on an
-  empty mapping would misreport a broken stats run as untested code.
+* Only an authoritative collector may turn an absent mapping into ``no tests``.
+* The current collector cannot observe every import/subprocess/xdist hit, so
+  its mapping is non-authoritative and unmapped mutants use the full suite.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.constants import EXIT_CODE_NO_TESTS
 from mutmut_win.db import load_results
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
-from mutmut_win.orchestrator import MutationOrchestrator, _split_no_test_tasks
-from mutmut_win.stats import MutmutStats, save_stats
+from mutmut_win.orchestrator import (
+    MutationOrchestrator,
+    _assign_tests_to_tasks,
+    _split_no_test_tasks,
+)
+from mutmut_win.stats import MutmutStats, load_stats, save_stats
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,11 +39,16 @@ def _task(name: str, tests: list[str] | None = None) -> MutationTask:
     return MutationTask(mutant_name=name, tests=tests or [])
 
 
-def _stats(mapping: dict[str, set[str]] | None = None) -> MutmutStats:
+def _stats(
+    mapping: dict[str, set[str]] | None = None,
+    *,
+    authoritative: bool = False,
+) -> MutmutStats:
     return MutmutStats(
         tests_by_mangled_function_name=mapping or {},
         duration_by_test={"tests/test_x.py::test_one": 0.5},
         stats_time=1.0,
+        mapping_is_authoritative=authoritative,
     )
 
 
@@ -55,7 +60,7 @@ class TestSplitNoTestTasks:
         ]
         mapping = {"src/a.py::x_f": {"tests/test_x.py::test_one"}}
 
-        dispatchable, no_tests = _split_no_test_tasks(tasks, _stats(mapping))
+        dispatchable, no_tests = _split_no_test_tasks(tasks, _stats(mapping, authoritative=True))
 
         assert [t.mutant_name for t in dispatchable] == ["src/a.py::x_f__mutmut_1"]
         assert no_tests == {"src/a.py::x_g__mutmut_1"}
@@ -66,6 +71,68 @@ class TestSplitNoTestTasks:
         tasks = [_task("src/a.py::x_f__mutmut_1"), _task("src/a.py::x_g__mutmut_1")]
 
         dispatchable, no_tests = _split_no_test_tasks(tasks, _stats(mapping=None))
+
+        assert len(dispatchable) == 2
+        assert no_tests == set()
+
+    def test_non_authoritative_mapping_cannot_narrow_even_observed_mutant(self) -> None:
+        task = _task("src/a.py::x_f__mutmut_1")
+        mapping = {"src/a.py::x_f": {"tests/test_x.py::test_parent_only"}}
+
+        [assigned] = _assign_tests_to_tasks([task], _stats(mapping))
+
+        # An unobserved subprocess/xdist test may be the one that kills this
+        # mutant. Empty node IDs select the full pytest suite in the worker.
+        assert assigned.tests == []
+
+    def test_authoritative_mapping_may_narrow_observed_mutant(self) -> None:
+        task = _task("src/a.py::x_f__mutmut_1")
+        mapping = {"src/a.py::x_f": {"tests/test_x.py::test_one"}}
+
+        [assigned] = _assign_tests_to_tasks([task], _stats(mapping, authoritative=True))
+
+        assert assigned.tests == ["tests/test_x.py::test_one"]
+
+    def test_persisted_authority_bit_cannot_activate_selective_testing(
+        self, tmp_path: Path
+    ) -> None:
+        stats_path = tmp_path / "mutmut-stats.json"
+        stats_path.write_text(
+            json.dumps(
+                {
+                    "tests_by_mangled_function_name": {
+                        "src/a.py::x_f": ["tests/test_x.py::test_one"]
+                    },
+                    "duration_by_test": {"tests/test_x.py::test_one": 0.5},
+                    "stats_time": 1.0,
+                    "context_fingerprint": "current-context",
+                    "mapping_is_authoritative": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = load_stats(tmp_path)
+
+        assert loaded is not None
+        assert loaded.mapping_is_authoritative is False
+        tasks = [
+            _task("src/a.py::x_f__mutmut_1"),
+            _task("src/a.py::x_g__mutmut_1"),
+        ]
+        assigned = _assign_tests_to_tasks(tasks, loaded)
+        dispatchable, no_tests = _split_no_test_tasks(assigned, loaded)
+        assert [task.tests for task in dispatchable] == [[], []]
+        assert no_tests == set()
+
+    def test_partial_non_authoritative_mapping_keeps_full_suite(self) -> None:
+        tasks = [
+            _task("src/a.py::x_f__mutmut_1", tests=["tests/test_x.py::test_one"]),
+            _task("src/a.py::x_g__mutmut_1"),
+        ]
+        mapping = {"src/a.py::x_f": {"tests/test_x.py::test_one"}}
+
+        dispatchable, no_tests = _split_no_test_tasks(tasks, _stats(mapping))
 
         assert len(dispatchable) == 2
         assert no_tests == set()
@@ -126,24 +193,23 @@ class _OrchestratorHarness:
 
 
 class TestNoTestsAreRecordedNotDispatched:
-    def test_all_unmapped_mutants_never_reach_the_executor(
+    def test_all_unmapped_mutants_use_conservative_full_suite(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # A mapping exists but covers none of the generated mutants: every
-        # mutant is honestly 'no tests' — nothing may be dispatched (each
-        # dispatch would have been a full-suite run, QX-007).
+        # A partial mapping cannot prove absence because import/subprocess
+        # hits may be invisible. Every mutant is dispatched conservatively.
         monkeypatch.chdir(tmp_path)
         harness = _OrchestratorHarness(tmp_path)
         harness.write_stats({"src/other.py::x_unrelated": {"tests/test_x.py::test_one"}})
 
         result = harness.run()
 
-        harness.executor.start.assert_not_called()
-        assert result.no_tests == result.total_mutants
+        assert harness.executor.start.called
+        assert result.no_tests == 0
         assert result.total_mutants > 0
-        assert "no tests" in capsys.readouterr().out.lower()
+        assert "no covering tests" not in capsys.readouterr().out.lower()
 
-    def test_no_tests_rows_are_persisted_with_exit_33(
+    def test_non_authoritative_unmapped_rows_receive_real_verdicts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Three-channel consistency (#91/#93): `results` and the CICD export
@@ -157,8 +223,8 @@ class TestNoTestsAreRecordedNotDispatched:
 
         rows = load_results(harness.db_path)
         assert rows, "expected persisted result rows"
-        assert {r.status for r in rows} == {"no tests"}
-        assert {r.exit_code for r in rows} == {EXIT_CODE_NO_TESTS}
+        assert {r.status for r in rows} == {"killed"}
+        assert {r.exit_code for r in rows} == {1}
 
     def test_empty_mapping_dispatches_everything(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

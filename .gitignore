@@ -47,6 +47,7 @@ mlruns/
 # Mutation testing
 .mutmut-cache/
 mutants/
+.mutmut-win-*.run.lock*
 _tmp_mutmut/
 html/
 

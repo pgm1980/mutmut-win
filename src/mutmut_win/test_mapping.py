@@ -12,12 +12,22 @@ Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 from __future__ import annotations
 
 import fnmatch
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mutmut_win.trampoline import CLASS_NAME_SEPARATOR
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionDefinitionLocation:
+    """Decoded source location carried by a mangled mutant identifier."""
+
+    function_name: str
+    class_name: str | None
+    definition_ordinal: int
 
 
 def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> list[str]:
@@ -55,40 +65,90 @@ def mangled_name_from_mutant_name(mutant_name: str) -> str:
         The portion of the mutant name up to (and not including) ``__mutmut_``.
 
     Raises:
-        AssertionError: If ``__mutmut_`` is not present in *mutant_name*.
+        ValueError: If ``__mutmut_`` is not present in *mutant_name*.
     """
-    assert "__mutmut_" in mutant_name, mutant_name  # noqa: S101
+    if "__mutmut_" not in mutant_name:
+        msg = f"Not a mutant name (missing '__mutmut_'): {mutant_name!r}"
+        raise ValueError(msg)
     return mutant_name.partition("__mutmut_")[0]
 
 
-def orig_function_and_class_names_from_key(mutant_name: str) -> tuple[str, str | None]:
-    """Extract the original function name and optional class name from a mutant key.
+def function_definition_location_from_key(mutant_name: str) -> FunctionDefinitionLocation:
+    """Decode function, class and same-name definition ordinal from a mutant key.
+
+    Definition occurrence 1 uses the historical encoding.  Occurrences 2+
+    end in ``ǁ<ordinal>``; the separator cannot occur in source function or
+    class names accepted by the mutation engine, so decoding is unambiguous.
 
     Given a mutant name such as ``src.module.xǁMyClassǁmy_func__mutmut_1``,
-    returns ``("my_func", "MyClass")``.  For a top-level function like
-    ``src.module.x_my_func__mutmut_1`` returns ``("my_func", None)``.
+    returns location ``("my_func", "MyClass", 1)``.  A second top-level
+    definition ``src.module.x_my_funcǁ2__mutmut_1`` decodes to
+    ``("my_func", None, 2)``.
 
     Args:
         mutant_name: Fully qualified mutant identifier.
 
     Returns:
-        A tuple of ``(function_name, class_name)`` where ``class_name`` is
-        ``None`` for module-level functions.
+        Frozen decoded source location.
 
     Raises:
-        AssertionError: If the name does not start with the expected prefix
+        ValueError: If the name does not start with the expected prefix
             (``x_`` or ``xǁ…ǁ``).
     """
     r = mangled_name_from_mutant_name(mutant_name)
     _, _, r = r.rpartition(".")
     class_name: str | None = None
-    if CLASS_NAME_SEPARATOR in r:
-        class_name = r[r.index(CLASS_NAME_SEPARATOR) + 1 : r.rindex(CLASS_NAME_SEPARATOR)]
-        r = r[r.rindex(CLASS_NAME_SEPARATOR) + 1 :]
-    else:
-        assert r.startswith("x_"), r  # noqa: S101
+    class_prefix = f"x{CLASS_NAME_SEPARATOR}"
+    if r.startswith(class_prefix):
+        class_and_function = r[len(class_prefix) :]
+        class_name, separator, r = class_and_function.partition(CLASS_NAME_SEPARATOR)
+        if not separator or not class_name or not r:
+            msg = f"Malformed class-method mutant name: {mutant_name!r}"
+            raise ValueError(msg)
+    elif r.startswith("x_") and len(r) > 2:
         r = r[2:]
-    return r, class_name
+    else:
+        msg = f"Malformed mutant function prefix: {mutant_name!r}"
+        raise ValueError(msg)
+    function_name, separator, ordinal_text = r.rpartition(CLASS_NAME_SEPARATOR)
+    if separator:
+        if (
+            not function_name
+            or CLASS_NAME_SEPARATOR in function_name
+            or not ordinal_text.isascii()
+            or not ordinal_text.isdecimal()
+            or int(ordinal_text) < 2
+            or str(int(ordinal_text)) != ordinal_text
+        ):
+            msg = f"Malformed definition ordinal in mutant name: {mutant_name!r}"
+            raise ValueError(msg)
+        definition_ordinal = int(ordinal_text)
+        r = function_name
+    else:
+        definition_ordinal = 1
+    return FunctionDefinitionLocation(
+        function_name=r,
+        class_name=class_name,
+        definition_ordinal=definition_ordinal,
+    )
+
+
+def orig_function_and_class_names_from_key(mutant_name: str) -> tuple[str, str | None]:
+    """Extract the source function and optional class name from a mutant key.
+
+    This compatibility API intentionally retains its historical two-tuple.
+    Consumers that must distinguish repeated definitions use
+    :func:`function_definition_location_from_key`.
+
+    Args:
+        mutant_name: Fully qualified mutant identifier.
+
+    Returns:
+        Tuple of ``(function_name, class_name)`` with any definition ordinal
+        decoded and removed from the source function name.
+    """
+    location = function_definition_location_from_key(mutant_name)
+    return location.function_name, location.class_name
 
 
 def is_mutated_method_name(name: str) -> bool:
@@ -112,14 +172,15 @@ def tests_for_mutant_names(
 ) -> set[str]:
     """Map mutant names to the specific test node IDs that should run.
 
-    Supports wildcard patterns (``*``) in *mutant_names* via
-    :func:`fnmatch.fnmatch`.  For each wildcard entry every mangled name
-    matching the pattern contributes its tests.  For exact names the
-    ``__mutmut_``-prefix is stripped and the remainder is looked up directly.
+    Supports all fnmatch patterns (``*``, ``?`` and ``[...]``).  Patterns may
+    name a mangled function directly or include a ``__mutmut_`` suffix; the
+    suffix is intentionally removed because stats map tests at function, not
+    individual-mutant, granularity.  Malformed/unknown user input simply has no
+    matching tests instead of surfacing an optimization-dependent assertion.
 
     Args:
         mutant_names: List of mutant identifiers to resolve.  May contain
-            ``*`` wildcards.
+            fnmatch wildcards, with or without a ``__mutmut_`` suffix.
         tests_by_mangled_function_name: Mapping produced by stats collection —
             keys are mangled function names, values are sets of pytest node IDs.
 
@@ -128,12 +189,17 @@ def tests_for_mutant_names(
     """
     tests: set[str] = set()
     for mutant_name in mutant_names:
-        if "*" in mutant_name:
+        # ``partition`` is deliberately tolerant: exact mangled function keys
+        # without a mutant suffix are useful API input too, while a suffix glob
+        # such as ``pkg.x_f__mutmut_[12]`` maps to the same function-level stats.
+        mangled_pattern, separator, _suffix = mutant_name.partition("__mutmut_")
+        if not separator:
+            mangled_pattern = mutant_name
+
+        if any(magic in mangled_pattern for magic in "*?["):
             for name, tests_of_this_name in tests_by_mangled_function_name.items():
-                if fnmatch.fnmatch(name, mutant_name):
+                if fnmatch.fnmatchcase(name, mangled_pattern):
                     tests |= set(tests_of_this_name)
         else:
-            mangled = mangled_name_from_mutant_name(mutant_name)
-            if mangled in tests_by_mangled_function_name:
-                tests |= set(tests_by_mangled_function_name[mangled])
+            tests |= set(tests_by_mangled_function_name.get(mangled_pattern, ()))
     return tests

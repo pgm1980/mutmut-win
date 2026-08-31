@@ -7,14 +7,28 @@ forced-fail verification to ensure the trampoline mechanism works.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mutmut_win.atomic_file import atomic_write_bytes
+
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
 from mutmut_win.constants import SOURCE_ROOT_NAMES
+from mutmut_win.exceptions import OrchestratorError
+from mutmut_win.process.worker import (
+    PYTEST_PHASE_GUARD_PLUGIN,
+    apply_pytest_boundary_environment,
+    consume_pytest_phase_guard,
+    prepare_pytest_collection_guard,
+    prepare_pytest_phase_guard,
+    validated_pytest_args,
+    validated_pytest_targets,
+)
+from mutmut_win.pytest_boundary import PytestBoundary, prepare_pytest_boundary
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -30,6 +44,7 @@ MUTANT_STATS_SENTINEL = "stats"
 #: Used to attribute a forced-fail failure to the trampoline (A2-RN-006)
 #: instead of accepting any arbitrary broken test as proof.
 FORCED_FAIL_MARKER = "MutmutProgrammaticFailException"
+_MAX_COLLECTION_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
 #: Human explanations for pytest exit classes — a failing gate used to say
@@ -58,6 +73,76 @@ def decode_pytest_exit(exit_code: int) -> str:
     return _EXIT_EXPLANATIONS.get(exit_code, f"unrecognised exit code {exit_code}")
 
 
+def _run_collection_process(
+    cmd: list[str],
+    *,
+    cwd: str | None,
+    env: dict[str, str] | None,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run collection with bounded output and complete tree cleanup."""
+    from mutmut_win.process.output_capture import BoundedOutputCapture
+    from mutmut_win.process.worker import (
+        _contained_creationflags,
+        _kill_proc_tree,
+        _popen_contained,
+    )
+
+    with (
+        BoundedOutputCapture(max_tail_bytes=_MAX_COLLECTION_OUTPUT_BYTES) as stdout_capture,
+        BoundedOutputCapture(max_tail_bytes=_MAX_COLLECTION_OUTPUT_BYTES) as stderr_capture,
+    ):
+        proc: subprocess.Popen[bytes] | None = None
+        job_handle: int | None = None
+        tree_cleanup_done = False
+        try:
+            proc, job_handle = _popen_contained(
+                cmd,
+                stdout=stdout_capture.writer_fd,
+                stderr=stderr_capture.writer_fd,
+                cwd=cwd,
+                env=env,
+                start_new_session=sys.platform != "win32",
+                creationflags=_contained_creationflags(),
+            )
+            stdout_capture.close_writer()
+            stderr_capture.close_writer()
+            try:
+                return_code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_proc_tree(proc, job_handle)
+                job_handle = None
+                tree_cleanup_done = True
+                return_code = 36
+            except BaseException:
+                _kill_proc_tree(proc, job_handle)
+                job_handle = None
+                tree_cleanup_done = True
+                raise
+            finally:
+                if job_handle is not None:
+                    with contextlib.suppress(Exception):
+                        from mutmut_win.process.job_object import close_job
+
+                        close_job(job_handle)
+                elif not tree_cleanup_done:
+                    _kill_proc_tree(proc)
+        finally:
+            stdout_capture.close_writer()
+            stderr_capture.close_writer()
+
+        stdout_capture.close()
+        stderr_capture.close()
+        if stdout_capture.truncated or stderr_capture.truncated:
+            raise OrchestratorError("pytest collection output exceeded the 16 MiB safety limit")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=return_code,
+            stdout=stdout_capture.text(),
+            stderr=stderr_capture.text(),
+        )
+
+
 class PytestRunner:
     """Abstracts pytest execution for the mutation testing pipeline.
 
@@ -73,6 +158,8 @@ class PytestRunner:
 
     def __init__(self, config: MutmutConfig) -> None:
         self._config = config
+        self._project_root = Path.cwd().resolve()
+        self._pytest_boundary: PytestBoundary | None = None
         self._last_diagnostic_output: str | None = None
         self._forced_fail_attributed: bool | None = None
 
@@ -89,6 +176,42 @@ class PytestRunner:
         phases used to pipe to DEVNULL, leaving zero output on failure).
         """
         return self._last_diagnostic_output
+
+    @property
+    def pytest_boundary_data(self) -> dict[str, object]:
+        """Return the validated boundary payload transported to spawn workers."""
+
+        self.prepare_pytest_boundary()
+        boundary = self._pytest_boundary
+        if boundary is None:  # pragma: no cover - prepare either returns or raises
+            raise OrchestratorError("pytest boundary was not prepared")
+        boundary.arguments()
+        return boundary.to_dict()
+
+    def prepare_pytest_boundary(self, mutants_dir: Path | None = None) -> None:
+        """Freeze one staged config/root boundary before the first pytest phase."""
+
+        staging = Path("mutants") if mutants_dir is None else mutants_dir
+        existing = self._pytest_boundary
+        if existing is not None:
+            try:
+                requested_root = staging.resolve(strict=True)
+                frozen_root = Path(existing.staging_root).resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise OrchestratorError("Could not validate the frozen pytest boundary.") from exc
+            if requested_root != frozen_root:
+                raise OrchestratorError(
+                    "pytest boundary is already frozen for a different staging root"
+                )
+            # Never refresh the digest or selected config. A changed/missing
+            # file is run-input drift and must fail, not become re-authorized.
+            existing.arguments()
+            return
+        self._pytest_boundary = prepare_pytest_boundary(
+            project_root=self._project_root,
+            staging_root=staging,
+            tests_dir=self._pytest_targets(),
+        )
 
     @property
     def last_forced_fail_attributed(self) -> bool | None:
@@ -112,10 +235,9 @@ class PytestRunner:
         Returns:
             The pytest exit code (0 means all tests passed).
         """
-        cmd = self._base_pytest_cmd()
-        cmd.extend(self._config.pytest_add_cli_args)
-        if self._config.tests_dir:
-            cmd.extend(self._config.tests_dir)
+        cmd = self._guarded_pytest_cmd()
+        cmd.extend(self._configured_pytest_args())
+        cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
         return self._run_phase("clean test suite", cmd, env)
@@ -130,10 +252,10 @@ class PytestRunner:
     ) -> int:
         """Run one pytest phase with tail capture and full-tree reaping.
 
-        Captures stdout+stderr into a temp file (the worker's deadlock-safe
-        pattern — PIPE deadlocks on Windows when grandchildren inherit
-        handles) and keeps the tail in :attr:`last_diagnostic_output` when
-        the phase fails, so gate errors can finally show WHY.
+        Drains stdout+stderr concurrently into a bounded in-memory tail. This
+        avoids both an unread ``PIPE`` deadlock and the unbounded disk growth
+        of a runaway temporary log, while retaining diagnostics in
+        :attr:`last_diagnostic_output` when the phase fails.
 
         Issue #132 / 360°-B5: ``subprocess.run(timeout=...)`` killed only
         the direct child on expiry — pytest's own grandchildren (xdist
@@ -151,53 +273,86 @@ class PytestRunner:
         Returns:
             The exit code (36 on timeout, mirroring the worker convention).
         """
-        import os
-        import tempfile
-
+        from mutmut_win.process.output_capture import BoundedOutputCapture
         from mutmut_win.process.worker import (
             _MAX_DIAGNOSTIC_LINES,
-            _create_task_job,
+            _contained_creationflags,
             _kill_proc_tree,
-            _read_last_lines,
+            _popen_contained,
         )
 
         budget = timeout if timeout is not None else self._config.clean_run_timeout
         self._last_diagnostic_output = None
-        log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="mutmut_phase_", text=True)
-        log_path = Path(log_path_str)
+        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
+        capture = BoundedOutputCapture()
+        proc: subprocess.Popen[bytes] | None = None
+        job_handle: int | None = None
+        tree_cleanup_done = False
         try:
-            proc = subprocess.Popen(  # noqa: S603  # command is fully controlled — no user input
-                cmd,
-                stdout=log_fd,
-                stderr=subprocess.STDOUT,
-                cwd="mutants",
-                env=env,
-            )
-            job_handle = _create_task_job(proc.pid)
             try:
-                exit_code = proc.wait(timeout=budget)
-            except subprocess.TimeoutExpired:
-                print(
-                    f"Warning: {phase_name} timed out after {budget}s "
-                    f"(configure [tool.mutmut].{timeout_hint})"
+                proc, job_handle = _popen_contained(
+                    cmd,
+                    stdout=capture.writer_fd,
+                    stderr=subprocess.STDOUT,
+                    cwd="mutants",
+                    env=env,
+                    start_new_session=sys.platform != "win32",
+                    creationflags=_contained_creationflags(),
                 )
-                _kill_proc_tree(proc, job_handle)
-                job_handle = None  # the sweep closed it
-                exit_code = 36  # timeout exit code
-            finally:
-                if job_handle is not None:
-                    # Normal completion: closing the kill-on-close job reaps
-                    # background processes the phase left behind (issue #82).
-                    with contextlib.suppress(Exception):
-                        from mutmut_win.process.job_object import close_job
+                capture.close_writer()
+                try:
+                    exit_code = proc.wait(timeout=budget)
+                except subprocess.TimeoutExpired:
+                    print(
+                        f"Warning: {phase_name} timed out after {budget}s "
+                        f"(configure [tool.mutmut].{timeout_hint})"
+                    )
+                    _kill_proc_tree(proc, job_handle)
+                    job_handle = None  # the sweep closed it
+                    tree_cleanup_done = True
+                    exit_code = 36  # timeout exit code
+                except BaseException:
+                    # POSIX process-group cleanup and the psutil sweep reap the
+                    # root/tree on Ctrl-C or another non-timeout exception.
+                    # Windows reached this point only after Job containment.
+                    _kill_proc_tree(proc, job_handle)
+                    job_handle = None
+                    tree_cleanup_done = True
+                    raise
+                finally:
+                    if job_handle is not None:
+                        # Normal completion: closing the kill-on-close job reaps
+                        # background processes the phase left behind (issue #82).
+                        with contextlib.suppress(Exception):
+                            from mutmut_win.process.job_object import close_job
 
-                        close_job(job_handle)
-        finally:
-            os.close(log_fd)
+                            close_job(job_handle)
+                    elif not tree_cleanup_done:
+                        _kill_proc_tree(proc)
+            finally:
+                capture.close_writer()
+        except BaseException:
+            # KeyboardInterrupt/SystemExit and unexpected BaseExceptions must
+            # not leak per-phase proof or diagnostic artifacts. Do not treat a
+            # proof as success here: the phase did not return a verdict.
+            consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
+            capture.close()
+            raise
+        capture.close()
+        phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
+        if exit_code == 0 and not phase_executed:
+            diagnostic = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+            message = (
+                f"{phase_name} exited 0 without executing a pytest test call; "
+                "the phase was neutralized by pytest arguments/configuration "
+                "or every selected test was skipped"
+            )
+            self._last_diagnostic_output = (
+                f"{message}\n{diagnostic}" if diagnostic is not None else message
+            )
+            raise OrchestratorError(message)
         if exit_code != 0:
-            self._last_diagnostic_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
-        with contextlib.suppress(OSError):
-            log_path.unlink()
+            self._last_diagnostic_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
         return exit_code
 
     def collect_tests(self) -> list[str]:
@@ -215,27 +370,37 @@ class PytestRunner:
         Returns:
             Sorted list of test node ID strings (e.g. ``tests/unit/test_foo.py::test_bar``).
         """
-        cmd = [*self._base_pytest_cmd(), "--collect-only", "-q", "--no-header"]
-        cmd.extend(self._config.pytest_add_cli_args)
-        cmd.extend(self._config.pytest_add_cli_args_test_selection)
-        if self._config.tests_dir:
-            cmd.extend(self._config.tests_dir)
-
         staging_exists = Path("mutants").is_dir()
+        pytest_cmd = self._guarded_pytest_cmd() if staging_exists else self._base_pytest_cmd()
+        cmd = [*pytest_cmd, "--collect-only", "-q", "--no-header"]
+        cmd.extend(self._configured_pytest_args())
+        cmd.extend(self._pytest_target_args())
+
         env: dict[str, str] | None = None
         if staging_exists:
             env = self._mutants_env()
             env[MUTANT_ENV_VAR] = ""
             env["PYTHONIOENCODING"] = "utf-8"
+            prepare_pytest_collection_guard()
 
-        result = subprocess.run(  # noqa: S603  # command is fully controlled — no user input
+        result = _run_collection_process(
             cmd,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
             cwd="mutants" if staging_exists else None,
             env=env,
+            timeout=self._config.clean_run_timeout,
         )
+        if result.returncode != 0:
+            diagnostic = "\n".join(
+                part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+            )
+            if len(diagnostic) > 4000:
+                diagnostic = diagnostic[-4000:]
+            detail = f"\n{diagnostic}" if diagnostic else ""
+            raise OrchestratorError(
+                "pytest test collection failed — "
+                f"{decode_pytest_exit(result.returncode)} (exit {result.returncode})."
+                f"{detail}"
+            )
         tests: list[str] = []
         for line in result.stdout.splitlines():
             line = line.strip()
@@ -269,15 +434,19 @@ class PytestRunner:
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_STATS_SENTINEL
 
+        # Validate before writing even the generated plugin. Stats collection
+        # is deliberately single-process: independent xdist workers cannot
+        # merge the process-local trampoline hit set authoritatively.
+        stats_args = self._configured_pytest_args(stats_phase=True)
+
         # Inject the stats-collection pytest plugin into mutants/.
         mutants_abs = Path("mutants").absolute()
         self._write_stats_plugin(mutants_abs)
 
         # Run all tests with the stats plugin active.
-        cmd = [*self._base_pytest_cmd(), "-p", "_mutmut_stats_plugin", "--tb=no", "-q"]
-        cmd.extend(self._config.pytest_add_cli_args)
-        if self._config.tests_dir:
-            cmd.extend(self._config.tests_dir)
+        cmd = [*self._guarded_pytest_cmd(), "-p", "_mutmut_stats_plugin", "--tb=no", "-q"]
+        cmd.extend(stats_args)
+        cmd.extend(self._pytest_target_args())
 
         exit_code = self._run_phase("stats collection", cmd, env)
         if exit_code != 0:
@@ -325,26 +494,43 @@ class PytestRunner:
             "--source=.",
             "-m",
             "pytest",
+            "-p",
+            PYTEST_PHASE_GUARD_PLUGIN,
         ]
-        cmd.extend(self._config.pytest_add_cli_args)
-        if self._config.tests_dir:
-            cmd.extend(self._config.tests_dir)
+        cmd.extend(self._configured_pytest_args())
+        cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
+        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
         # Issue #132 / 360°-B5: same full-tree reaping as _run_phase — a
         # plain run(timeout=) left pytest's grandchildren alive on expiry.
-        from mutmut_win.process.worker import _create_task_job, _kill_proc_tree
+        from mutmut_win.process.worker import (
+            _contained_creationflags,
+            _kill_proc_tree,
+            _popen_contained,
+        )
 
-        proc = subprocess.Popen(  # noqa: S603  # command is fully controlled — no user input
+        proc, job_handle = _popen_contained(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             cwd="mutants",
             env=env,
+            start_new_session=sys.platform != "win32",
+            creationflags=_contained_creationflags(),
         )
-        job_handle = _create_task_job(proc.pid)
+        tree_cleanup_done = False
         try:
-            return proc.wait(timeout=self._config.clean_run_timeout)
+            exit_code = proc.wait(timeout=self._config.clean_run_timeout)
+            if exit_code == 0 and not consume_pytest_phase_guard(
+                phase_marker_path, phase_marker_token
+            ):
+                raise OrchestratorError(
+                    "coverage collection exited 0 without executing a pytest test call; "
+                    "the phase was neutralized by pytest arguments/configuration "
+                    "or every selected test was skipped"
+                )
+            return exit_code
         except subprocess.TimeoutExpired:
             print(
                 f"Warning: coverage collection timed out after "
@@ -353,13 +539,24 @@ class PytestRunner:
             )
             _kill_proc_tree(proc, job_handle)
             job_handle = None  # the sweep closed it
+            tree_cleanup_done = True
             return 36  # timeout exit code
+        except BaseException:
+            # Keep Ctrl-C and unexpected failures honest with the same tree
+            # cleanup as the timeout path (Job on Windows, group/sweep on POSIX).
+            _kill_proc_tree(proc, job_handle)
+            job_handle = None
+            tree_cleanup_done = True
+            raise
         finally:
+            consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
             if job_handle is not None:
                 with contextlib.suppress(Exception):
                     from mutmut_win.process.job_object import close_job
 
                     close_job(job_handle)
+            elif not tree_cleanup_done:
+                _kill_proc_tree(proc)
 
     def run_forced_fail(
         self,
@@ -388,10 +585,9 @@ class PytestRunner:
         # exception name and is never width-truncated; the -rfE summary
         # alone is cut to terminal width and could lose the marker behind
         # a long node id. COLUMNS widens that summary as belt and braces.
-        cmd = [*self._base_pytest_cmd(), "--tb=line", "-q", "-x", "-rfE"]
-        cmd.extend(self._config.pytest_add_cli_args)
-        if self._config.tests_dir:
-            cmd.extend(self._config.tests_dir)
+        cmd = [*self._guarded_pytest_cmd(), "--tb=line", "-q", "-x", "-rfE"]
+        cmd.extend(self._configured_pytest_args())
+        cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
         env["COLUMNS"] = "200"
@@ -423,6 +619,54 @@ class PytestRunner:
         """
         return [sys.executable, "-m", "pytest"]
 
+    def _guarded_pytest_cmd(self) -> list[str]:
+        """Build a pytest command that publishes proof of real test calls."""
+        return [*self._base_pytest_cmd(), "-p", PYTEST_PHASE_GUARD_PLUGIN]
+
+    def _configured_pytest_args(self, *, stats_phase: bool = False) -> list[str]:
+        """Return both configured pytest-argument groups after validation.
+
+        Test-selection arguments affect every phase, including workers: a
+        marker or expression that defines the suite must not disappear after
+        collection and silently change baseline, coverage, stats, or verdicts.
+
+        Args:
+            stats_phase: Apply the additional single-process stats contract.
+
+        Returns:
+            General arguments followed by test-selection arguments.
+        """
+        user_args = validated_pytest_args(
+            self._config.pytest_add_cli_args,
+            self._config.pytest_add_cli_args_test_selection,
+            stats_phase=stats_phase,
+            environment_addopts=os.environ.get("PYTEST_ADDOPTS", ""),
+        )
+        return [*user_args, *self._pytest_boundary_args()]
+
+    def _pytest_boundary_args(self) -> list[str]:
+        """Return the frozen boundary; keep only non-authoritative ad-hoc fallback open."""
+
+        if self._pytest_boundary is None:
+            if not Path("mutants").is_dir():
+                return []
+            self.prepare_pytest_boundary()
+        boundary = self._pytest_boundary
+        if boundary is None:  # pragma: no cover - prepare either returns or raises
+            raise OrchestratorError("pytest boundary was not prepared")
+        return boundary.arguments()
+
+    def _pytest_targets(self) -> list[str]:
+        """Return validated path/node-id targets from the dedicated config field."""
+
+        return validated_pytest_targets(self._config.tests_dir, field_name="tests_dir")
+
+    def _pytest_target_args(self) -> list[str]:
+        """Place test targets behind an internal end-of-options boundary."""
+
+        targets = self._pytest_targets()
+        return ["--", *targets] if targets else []
+
     def write_pth_blocker(self, mutants_dir: Path | None = None) -> None:
         """Write the ``sitecustomize.py`` .pth blocker into the staging dir.
 
@@ -437,6 +681,7 @@ class PytestRunner:
                 ``mutants/`` under the current working directory.
         """
         target = Path("mutants").absolute() if mutants_dir is None else mutants_dir
+        self.prepare_pytest_boundary(target)
         self._write_sitecustomize_pth_blocker(target)
 
     def _mutants_env(self) -> dict[str, str]:
@@ -460,6 +705,15 @@ class PytestRunner:
         import os
 
         env = os.environ.copy()
+        # PYTEST_ADDOPTS is parsed into the validated argv exactly once. Letting
+        # pytest prepend it again could place ``--`` or a config override ahead
+        # of the internal staged boundary.
+        env.pop("PYTEST_ADDOPTS", None)
+        self.prepare_pytest_boundary()
+        boundary = self._pytest_boundary
+        if boundary is None:  # pragma: no cover - prepare either returns or raises
+            raise OrchestratorError("pytest boundary was not prepared")
+        apply_pytest_boundary_environment(boundary, env)
         mutants_abs = Path("mutants").absolute()
         # Same paths as setup_source_paths: src, source, . — PLUS the
         # configured extra_paths (Bug #69). Only the worker had them before
@@ -507,8 +761,11 @@ class PytestRunner:
         The generated ``_mutmut_stats_plugin.py`` is loaded by pytest via
         ``-p _mutmut_stats_plugin`` during the stats subprocess.  It uses
         ``hookwrapper`` on ``pytest_runtest_protocol`` to track which
-        trampoline functions each test exercises, and writes the complete
-        mapping to ``mutmut-stats.json`` at session end.
+        trampoline functions each test exercises. Hits produced while test
+        modules are imported during collection are conservatively assigned to
+        every collected test instead of being erased before the first item.
+        The complete mapping is atomically written to ``mutmut-stats.json``
+        only after a successful, single-process session.
 
         This bridges the subprocess isolation gap: trampoline hits
         accumulate in ``_state._stats`` inside the subprocess, the plugin
@@ -516,8 +773,7 @@ class PytestRunner:
         that the parent process reads after the subprocess exits.
         """
         plugin_path = mutants_abs / "_mutmut_stats_plugin.py"
-        plugin_path.write_text(
-            '''\
+        plugin_source = '''\
 # Auto-generated by mutmut-win — pytest plugin for per-test trampoline hit collection
 import json
 from collections import defaultdict
@@ -525,13 +781,50 @@ from pathlib import Path
 
 import pytest
 
+from mutmut_win.atomic_file import atomic_write_bytes
+
 _tests_by_func: dict[str, set[str]] = defaultdict(set)
 _duration_by_test: dict[str, float] = {}
+_collection_hits: set[str] = set()
+_collected_test_ids: set[str] = set()
+
+
+def pytest_configure(config):
+    """Reject active xdist: process-local hit maps cannot be merged safely."""
+    num_processes = getattr(config.option, "numprocesses", None)
+    tx_specs = getattr(config.option, "tx", None)
+    dist_mode = getattr(config.option, "dist", "no")
+    loop_on_fail = getattr(config.option, "looponfail", False)
+    boxed = getattr(config.option, "boxed", False)
+    if (
+        hasattr(config, "workerinput")
+        or num_processes
+        or tx_specs
+        or dist_mode != "no"
+        or loop_on_fail
+        or boxed
+    ):
+        raise pytest.UsageError(
+            "mutmut-win stats collection does not support pytest-xdist; "
+            "remove -n/--numprocesses for an authoritative mapping"
+        )
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_collection_finish(session):
+    """Preserve import/collection hits and remember the authoritative suite."""
+    # Enter first and resume last so collection-finish hooks from the target
+    # project cannot add a hit after our snapshot.
+    yield
+    from mutmut_win._state import _stats
+    _collection_hits.update(_stats)
+    _stats.clear()
+    _collected_test_ids.update(item.nodeid for item in session.items)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item, nextitem):  # noqa: ARG001
-    """Wrap each test: clear hits before, snapshot after."""
+    """Wrap each test: clear per-test hits before, snapshot after."""
     from mutmut_win._state import _stats
     _stats.clear()
     yield
@@ -546,7 +839,11 @@ def pytest_runtest_makereport(item, call):
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
-    """Write the collected mapping to mutmut-stats.json."""
+    """Atomically publish a complete mapping after a successful session."""
+    if exitstatus != 0:
+        return
+    for func_name in _collection_hits:
+        _tests_by_func[func_name].update(_collected_test_ids)
     payload = {
         "tests_by_mangled_function_name": {
             k: sorted(v) for k, v in _tests_by_func.items()
@@ -554,12 +851,10 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         "duration_by_test": _duration_by_test,
         "stats_time": sum(_duration_by_test.values()),
     }
-    stats_path = Path("mutmut-stats.json")
-    with stats_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=4)
-''',
-            encoding="utf-8",
-        )
+    payload_bytes = json.dumps(payload, indent=4).encode("utf-8")
+    atomic_write_bytes(Path("mutmut-stats.json"), payload_bytes)
+'''
+        atomic_write_bytes(plugin_path, plugin_source.encode("utf-8"))
 
     def _write_sitecustomize_pth_blocker(self, mutants_abs: Path) -> None:
         """Write a sitecustomize.py that removes the real src/ from sys.path.
@@ -590,7 +885,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         # Write sitecustomize.py into mutants/ (the cwd of the subprocess)
         sitecustomize = mutants_abs / "sitecustomize.py"
         dirs_repr = repr(set(real_src_dirs))
-        sitecustomize.write_text(
+        blocker_source = (
             f"# Auto-generated by mutmut-win — removes editable-install .pth paths\n"
             f"import os\n"
             f"import sys\n"
@@ -604,6 +899,6 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
             f"        return os.path.normcase(p)\n"
             f"\n"
             f"\n"
-            f"sys.path[:] = [p for p in sys.path if _norm(p) not in _shadow]\n",
-            encoding="utf-8",
+            f"sys.path[:] = [p for p in sys.path if _norm(p) not in _shadow]\n"
         )
+        atomic_write_bytes(sitecustomize, blocker_source.encode("utf-8"))

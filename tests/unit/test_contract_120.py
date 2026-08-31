@@ -36,7 +36,11 @@ def _invoke_run(*args: str, src_paths: list[str] | None = None) -> tuple[Any, Ma
     orchestrator_cls = MagicMock()
     orchestrator = MagicMock()
     # Non-empty all-killed result: the score gate passes for any threshold.
-    orchestrator.run.return_value = MutationRunResult(total_mutants=10, killed=10)
+    orchestrator.run.return_value = MutationRunResult(
+        total_mutants=10,
+        killed=10,
+        execution_basis_complete=True,
+    )
     orchestrator.dry_run.return_value = MutationRunResult(total_mutants=10)
     orchestrator_cls.return_value = orchestrator
     config = MagicMock(max_children=2, debug=False)
@@ -106,6 +110,14 @@ class TestMinScoreRange:
         for value in ("0", "100"):
             result, _orch = _invoke_run("--min-score", value)
             assert result.exit_code == 0, result.output
+
+    @pytest.mark.parametrize("value", ["nan", "NaN", "inf", "+inf", "-inf"])
+    def test_non_finite_values_are_rejected_upfront(self, value: str) -> None:
+        """NaN made every ``score < threshold`` comparison false."""
+        result, orch = _invoke_run("--min-score", value)
+        assert result.exit_code == 2
+        assert orch.call_count == 0
+        assert "finite" in result.output.lower() or "range" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

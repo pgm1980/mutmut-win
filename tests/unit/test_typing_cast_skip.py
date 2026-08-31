@@ -24,7 +24,7 @@ def _mutant_codes_for(source: str) -> list[str]:
 
 
 def test_cast_unqualified_first_arg_string_is_skipped() -> None:
-    """``cast("Any", obj)`` must not generate string mutations on the first arg."""
+    """An imported ``typing.cast`` is resolved, not guessed from its spelling."""
     source = """\
 from typing import cast
 
@@ -115,3 +115,51 @@ def f(obj):
         "Generic call with string first-arg should still be mutated — only "
         f"cast() is special-cased. Mutated code:\n{mutated_code}"
     )
+
+
+def test_aliased_typing_cast_first_arg_is_skipped() -> None:
+    source = """\
+from typing import cast as type_cast
+
+
+def normalise(obj):
+    return type_cast("Any", obj)
+"""
+    mutated_code, _ = mutate_file_contents("m.py", source)
+
+    assert 'type_cast("XXAnyXX",' not in mutated_code
+    assert "type_cast(None," not in mutated_code
+
+
+def test_local_function_named_cast_keeps_first_argument_mutable() -> None:
+    source = """\
+def cast(kind, value):
+    return kind, value
+
+
+def use_local_cast():
+    return cast(1, 2)
+"""
+    mutated_code, names = mutate_file_contents("m.py", source)
+
+    assert names
+    assert "return cast(2, 2)" in mutated_code
+
+
+def test_locally_shadowed_typing_object_is_not_treated_as_typing_module() -> None:
+    source = """\
+class LocalTyping:
+    def cast(self, kind, value):
+        return kind, value
+
+
+typing = LocalTyping()
+
+
+def use_local_typing():
+    return typing.cast(1, 2)
+"""
+    mutated_code, names = mutate_file_contents("m.py", source)
+
+    assert names
+    assert "return typing.cast(2, 2)" in mutated_code

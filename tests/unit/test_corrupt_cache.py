@@ -76,18 +76,25 @@ class TestCliRendersCleanly:
         "(file is not a database). Delete the .mutmut-cache/ directory or re-run with --force."
     )
 
-    def test_results_renders_clean_exit(self) -> None:
+    def test_results_renders_clean_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with patch("mutmut_win.cli.load_results", side_effect=self._ERR):
+        monkeypatch.chdir(tmp_path)
+        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
             result = runner.invoke(cli, ["results"])
         assert result.exit_code == 1
         # the message goes to STDERR (errors must not pollute stdout pipelines)
         assert "corrupt or unreadable" in result.stderr
         assert "--force" in result.stderr
 
-    def test_export_cicd_stats_renders_clean_exit(self) -> None:
+    def test_export_cicd_stats_renders_clean_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with patch("mutmut_win.cli.load_results", side_effect=self._ERR):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
             result = runner.invoke(cli, ["export-cicd-stats"])
         assert result.exit_code == 1
         assert "corrupt or unreadable" in result.stderr

@@ -3,7 +3,7 @@
 syntax a new operator must mutate; the matching test in tests/test_roadmap.py
 is strong enough to KILL that operator's expected mutant(s) once implemented.
 
-Today (v2.14.0, operator absent) the future mutant is simply not generated, so
+In the original v2.14.0 baseline (operator absent) the future mutant was not generated, so
 the test passes trivially — and ROADMAP_SPEC.md records the expected-vs-current
 mutant gap as the maintainer's acceptance criterion.
 """
@@ -81,7 +81,7 @@ def guard_raise(x):
 
 
 # --- backport: @staticmethod / @classmethod must be mutated (mutmut 3.6.0) --
-# Today (v2.14.0) ALL decorated functions are skipped (mutation.py:245), so
+# In the original v2.14.0 baseline ALL decorated functions were skipped (mutation.py:245), so
 # these produce ZERO mutants. After the backport they must produce mutants
 # (killed by test_calc_static_class). @property must STAY skipped.
 class Calc:

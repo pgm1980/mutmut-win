@@ -47,7 +47,6 @@
       "Bash(git merge*)",
       "Bash(git stash*)",
       "Bash(git init*)",
-      "Bash(semgrep *)",
       "Bash(chmod *)",
       "Bash(bash .claude/hooks/*)"
     ]
@@ -137,8 +136,8 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/verify-after-agent.sh",
-            "timeout": 120,
-            "statusMessage": "Verifying agent results (ruff + mypy + pytest + semgrep)..."
+            "timeout": 600,
+            "statusMessage": "Verifying agent results (ruff + mypy + pytest + canonical Semgrep gate)..."
           }
         ]
       }

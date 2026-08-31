@@ -16,7 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 import mutmut_win.cli as cli_module
-from mutmut_win.db import create_db, load_results
+from mutmut_win.db import create_db, load_results, start_run
 from mutmut_win.models import MutationRunResult, TaskCompleted
 from mutmut_win.orchestrator import _update_summary_and_persist
 from mutmut_win.stats import compute_cicd_stats, save_cicd_stats
@@ -63,6 +63,7 @@ class TestThreeChannelConsistency:
     ) -> None:
         db_path = tmp_path / "results.sqlite"
         create_db(db_path)
+        start_run(db_path, [f"pkg.x_f__mutmut_{index}" for index in range(1, 4)])
         summary = MutationRunResult(total_mutants=3)
         events = [
             TaskCompleted(mutant_name="pkg.x_f__mutmut_1", worker_pid=1, exit_code=1, duration=0.1),

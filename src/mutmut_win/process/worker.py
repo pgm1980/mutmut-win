@@ -9,22 +9,35 @@ worker to exit cleanly.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import secrets
+import shlex
+import signal
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mutmut_win.atomic_file import atomic_write_bytes, ensure_atomic_bytes
 from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT, SOURCE_ROOT_NAMES
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
+from mutmut_win.exceptions import (
+    BadTestExecutionCommandsException,
+    ProcessContainmentError,
+    PytestBoundaryError,
+)
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
+from mutmut_win.process.output_capture import BoundedOutputCapture
 
 if TYPE_CHECKING:
     import multiprocessing.queues
+    from collections.abc import Callable
+
+    from mutmut_win.pytest_boundary import PytestAllowedPathIdentity, PytestBoundary
 
 #: Maximum number of pytest output lines to capture on timeout/suspicious.
 _MAX_DIAGNOSTIC_LINES: int = 50
@@ -34,6 +47,573 @@ _MAX_DIAGNOSTIC_LINES: int = 50
 #: collection errors (2), pytest internal errors (3), suspicious (35),
 #: crashes (NTSTATUS) — gets its last output captured (issue #91).
 _QUIET_EXIT_CODES: frozenset[int] = frozenset({0, 1, 5, 33, 34})
+
+# Retain the concrete class even when unit tests patch subprocess.Popen.  The
+# Windows fallback tracker must never inspect or kill a PID carried by a mock
+# or third-party Popen-like object.
+_REAL_POPEN_TYPE = subprocess.Popen
+_CREATE_SUSPENDED = 0x00000004
+_PYTEST_BOUNDARY_OPTIONS = frozenset(
+    {
+        "--config-file",
+        "--confcutdir",
+        "--inifilename",
+        "--rootdir",
+        "-c",
+    }
+)
+
+
+def _contained_creationflags(base_flags: int = 0) -> int:
+    """Suspend a real Windows child until its Job Object is assigned."""
+    if sys.platform == "win32":
+        return base_flags | _CREATE_SUSPENDED
+    return base_flags
+
+
+def _resume_suspended_process(proc: subprocess.Popen[bytes]) -> None:
+    """Resume the single primary thread created by CREATE_SUSPENDED."""
+    import ctypes
+    from ctypes import wintypes
+
+    import psutil  # type: ignore[import-untyped,unused-ignore]
+
+    threads = psutil.Process(proc.pid).threads()
+    if len(threads) != 1:
+        raise OSError(f"suspended subprocess {proc.pid} has {len(threads)} primary threads")
+
+    thread_suspend_resume = 0x0002
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    thread_handle = kernel32.OpenThread(thread_suspend_resume, False, threads[0].id)
+    if not thread_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        previous_count = kernel32.ResumeThread(thread_handle)
+        if previous_count == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(thread_handle)
+
+
+def _resume_after_containment(proc: subprocess.Popen[bytes], job_handle: int | None) -> None:
+    """Resume a Windows child only after reliable containment exists.
+
+    A venv launcher can create and lose an intermediate Python process before
+    post-Popen assignment.  Starting it suspended closes that race.  If the
+    Job Object is unavailable, execution fails closed rather than knowingly
+    permitting descendants to escape the workspace run.
+    """
+    if sys.platform != "win32" or not isinstance(proc, _REAL_POPEN_TYPE):
+        return
+    if job_handle is None:
+        with contextlib.suppress(Exception):
+            proc.kill()
+            proc.wait(timeout=2.0)
+        raise ProcessContainmentError(
+            "Could not establish a Windows Job Object for a subprocess; "
+            "refusing to run without reliable descendant cleanup."
+        )
+    try:
+        _resume_suspended_process(proc)
+    except BaseException as exc:
+        # Closing the kill-on-close Job atomically terminates the still-
+        # suspended child.  Callers clear their local handle before their own
+        # cleanup path to avoid a double-close/handle-reuse race.
+        with contextlib.suppress(Exception):
+            from mutmut_win.process.job_object import close_job
+
+            close_job(job_handle)
+        raise ProcessContainmentError(
+            "Could not resume a Windows subprocess after Job Object assignment; "
+            "the contained child was terminated."
+        ) from exc
+
+
+# Every real pytest phase gets a unique proof token.  The generated plugin
+# writes it only after pytest emits a call-phase report, so ``--collect-only``
+# and other successful early-exit modes cannot masquerade as test execution.
+PYTEST_PHASE_GUARD_PLUGIN: str = "_mutmut_phase_guard"
+_PYTEST_PHASE_SENTINEL_PATH_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
+_PYTEST_PHASE_SENTINEL_PROOF_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
+_PYTEST_ALLOWED_DIRS_ENV: str = "MUTMUT_PYTEST_ALLOWED_DIRS"
+_PYTEST_ALLOWED_FILES_ENV: str = "MUTMUT_PYTEST_ALLOWED_FILES"
+_PYTEST_PHASE_GUARD_SOURCE: str = '''\
+"""Auto-generated mutmut-win pytest phase-execution guard."""
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from mutmut_win.atomic_file import atomic_write_bytes
+
+_PATH_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
+_PROOF_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
+_ALLOWED_DIRS_ENV = "MUTMUT_PYTEST_ALLOWED_DIRS"
+_ALLOWED_FILES_ENV = "MUTMUT_PYTEST_ALLOWED_FILES"
+
+
+def _bound_identity(raw, expected_kind):
+    """Revalidate one parent-frozen filesystem identity in this child."""
+    if not isinstance(raw, dict) or set(raw) != {"path", "st_dev", "st_ino"}:
+        raise TypeError("boundary identity must contain path, st_dev and st_ino")
+    raw_path = raw["path"]
+    expected_dev = raw["st_dev"]
+    expected_ino = raw["st_ino"]
+    if (
+        not isinstance(raw_path, str)
+        or type(expected_dev) is not int
+        or type(expected_ino) is not int
+        or expected_dev < 0
+        or expected_ino <= 0
+    ):
+        raise TypeError("boundary identity fields are invalid")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise ValueError("boundary identity path must be absolute")
+    leaf = path.lstat()
+    resolved = path.resolve(strict=True)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(leaf, "st_file_attributes", 0)
+    if stat.S_ISLNK(leaf.st_mode) or (reparse_flag and attributes & reparse_flag):
+        raise ValueError(f"boundary identity became a link or reparse point: {path}")
+    if os.path.normcase(str(path)) != os.path.normcase(str(resolved)):
+        raise ValueError(f"boundary identity was redirected: {path}")
+    if expected_kind == "directory" and not stat.S_ISDIR(leaf.st_mode):
+        raise ValueError(f"boundary directory changed kind: {path}")
+    if expected_kind == "file" and not stat.S_ISREG(leaf.st_mode):
+        raise ValueError(f"boundary file changed kind: {path}")
+    if expected_kind == "file" and leaf.st_nlink != 1:
+        raise ValueError(f"boundary file became hard-linked: {path}")
+    if (leaf.st_dev, leaf.st_ino) != (expected_dev, expected_ino):
+        raise ValueError(f"boundary identity changed: {path}")
+    return resolved
+
+
+def _boundary_paths():
+    """Decode and revalidate the parent-authenticated collection allow-list."""
+    try:
+        raw_dirs = json.loads(os.environ[_ALLOWED_DIRS_ENV])
+        raw_files = json.loads(os.environ[_ALLOWED_FILES_ENV])
+        if not isinstance(raw_dirs, list) or not raw_dirs or not isinstance(raw_files, list):
+            raise TypeError("boundary identities must be non-empty/list records")
+        directories = tuple(_bound_identity(value, "directory") for value in raw_dirs)
+        files = tuple(_bound_identity(value, "file") for value in raw_files)
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise pytest.UsageError(
+            f"mutmut-win pytest location boundary is missing or invalid: {exc}"
+        ) from exc
+    return directories, files
+
+
+# ``-p _mutmut_phase_guard`` is loaded before initial conftest discovery.
+# Authenticate the exact roots at module import so a replaced external
+# conftest cannot execute before a later lifecycle hook notices the swap.
+_BOUNDARY_PATHS_AT_IMPORT = _boundary_paths()
+
+
+def _inside(path, directories):
+    for directory in directories:
+        try:
+            path.relative_to(directory)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_load_initial_conftests(early_config):
+    """Install a root-aware loader before pytest imports any conftest."""
+    pluginmanager = early_config.pluginmanager
+    if getattr(pluginmanager, "_mutmut_boundary_loader_installed", False):
+        return
+    original_loader = pluginmanager._loadconftestmodules
+
+    def boundary_loader(
+        path,
+        importmode,
+        rootpath,
+        *,
+        consider_namespace_packages,
+    ):
+        directories, files = _boundary_paths()
+        try:
+            canonical = Path(path).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise pytest.UsageError(
+                f"mutmut-win could not validate conftest search anchor: {exc}"
+            ) from exc
+
+        containing_roots = [
+            directory for directory in directories if _inside(canonical, (directory,))
+        ]
+        if containing_roots:
+            # Pick the outermost explicitly authorized root. Temporarily using
+            # it as confcutdir makes pytest's 8/9 upward walk include that root
+            # and descendants, but never its ancestors or an unrelated tree.
+            allowed_root = min(containing_roots, key=lambda value: len(value.parts))
+            previous_confcutdir = pluginmanager._confcutdir
+            pluginmanager._confcutdir = allowed_root
+            try:
+                return original_loader(
+                    path,
+                    importmode,
+                    rootpath,
+                    consider_namespace_packages=consider_namespace_packages,
+                )
+            finally:
+                pluginmanager._confcutdir = previous_confcutdir
+
+        if canonical in files or any(
+            canonical in target.parents for target in (*directories, *files)
+        ):
+            # Exact files and routing collectors above an allowed external
+            # target authorize no conftest code. Cache an empty chain before
+            # pytest can walk those parent directories.
+            directory = pluginmanager._get_directory(Path(path))
+            pluginmanager._dirpath2confmods[directory] = []
+            return None
+
+        raise pytest.UsageError(
+            "pytest attempted conftest discovery outside the frozen mutmut-win "
+            f"execution basis: {canonical}"
+        )
+
+    pluginmanager._loadconftestmodules = boundary_loader
+    pluginmanager._mutmut_boundary_loader_installed = True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    """Close the parent-to-child replacement window before collection."""
+    _boundary_paths()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_finish(session):
+    """Reject tests/conftests outside staging or explicit basis-bound roots."""
+    directories, files = _boundary_paths()
+    violations = []
+    for item in session.items:
+        try:
+            item_path = Path(item.path).resolve(strict=True)
+        except (AttributeError, OSError, RuntimeError) as exc:
+            raise pytest.UsageError(
+                f"mutmut-win could not validate collected test location: {exc}"
+            ) from exc
+        if not _inside(item_path, directories) and item_path not in files:
+            violations.append(f"test item {item.nodeid!r} at {item_path}")
+
+    conftest_plugins = getattr(session.config.pluginmanager, "_conftest_plugins", ())
+    for plugin in conftest_plugins:
+        raw_path = getattr(plugin, "__file__", None)
+        if not isinstance(raw_path, str):
+            raise pytest.UsageError("mutmut-win could not identify a loaded conftest plugin")
+        try:
+            conftest_path = Path(raw_path).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise pytest.UsageError(
+                f"mutmut-win could not validate loaded conftest location: {exc}"
+            ) from exc
+        if not _inside(conftest_path, directories):
+            violations.append(f"conftest at {conftest_path}")
+
+    if violations:
+        detail = "; ".join(violations[:10])
+        if len(violations) > 10:
+            detail += f"; and {len(violations) - 10} more"
+        raise pytest.UsageError(
+            "pytest collected or loaded files outside the frozen mutmut-win "
+            f"execution basis: {detail}"
+        )
+
+
+def pytest_runtest_logreport(report):
+    """Publish proof only after pytest produced a real call-phase report."""
+    if report.when != "call":
+        return
+    marker_path = os.environ.get(_PATH_ENV)
+    proof = os.environ.get(_PROOF_ENV)
+    if marker_path and proof:
+        atomic_write_bytes(Path(marker_path), proof.encode("utf-8"))
+'''
+
+# pytest accepts several informational/control options that exit successfully
+# without executing test bodies.  Allowing one through the shared config would
+# neutralise every mutation-testing phase while still looking green.  Selection
+# options such as ``-k``, ``-m`` and test paths deliberately stay unrestricted.
+_PYTEST_PHASE_NEUTRALIZERS: frozenset[str] = frozenset(
+    {
+        "--collect-only",
+        "--co",
+        "--fixtures",
+        "--fixtures-per-test",
+        "--funcargs",
+        "--help",
+        "--markers",
+        "--setup-only",
+        "--setup-plan",
+        "--version",
+        "-V",
+        "-h",
+    }
+)
+
+
+def validated_pytest_args(
+    general_args: object,
+    selection_args: object,
+    *,
+    stats_phase: bool = False,
+    environment_addopts: str = "",
+) -> list[str]:
+    """Merge and validate user-configured pytest arguments.
+
+    The function lives in the process layer so both the parent-side runner
+    and spawned workers enforce exactly the same contract without introducing
+    an upward import from ``process`` to ``runner``.
+
+    Args:
+        general_args: Serialized ``pytest_add_cli_args`` value.
+        selection_args: Serialized ``pytest_add_cli_args_test_selection`` value.
+        stats_phase: Reject pytest-xdist execution.  The generated stats plugin
+            owns one process-local hit set and therefore cannot publish a
+            trustworthy merged mapping from multiple xdist workers.
+
+    Returns:
+        A new list containing the two argument groups in configuration order.
+
+    Raises:
+        BadTestExecutionCommandsException: If the values are malformed, a
+            phase-neutralising option is present, or xdist is requested for
+            the stats phase.
+    """
+
+    try:
+        args: list[str] = shlex.split(environment_addopts) if environment_addopts else []
+    except ValueError as exc:
+        raise BadTestExecutionCommandsException(
+            [],
+            detail=f"PYTEST_ADDOPTS could not be parsed: {exc}",
+        ) from exc
+    for field_name, raw_args in (
+        ("pytest_add_cli_args", general_args),
+        ("pytest_add_cli_args_test_selection", selection_args),
+    ):
+        if not isinstance(raw_args, list) or not all(isinstance(arg, str) for arg in raw_args):
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=f"{field_name} must be a list of strings.",
+            )
+        args.extend(raw_args)
+
+    for arg in args:
+        if arg == "--":
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    "-- is not allowed in mutmut-win pytest arguments: it can hide "
+                    "the mandatory config/root boundary from pytest."
+                ),
+            )
+        if arg.startswith("@"):
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    "user pytest @argfiles are not allowed: their unbound contents can "
+                    "override the mandatory config/root boundary."
+                ),
+            )
+
+        option_name = arg.partition("=")[0]
+        if option_name in _PYTEST_BOUNDARY_OPTIONS or (
+            arg.startswith("-c") and not arg.startswith("--")
+        ):
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    f"{option_name} is owned by mutmut-win and cannot override the "
+                    "staged pytest config/root boundary."
+                ),
+            )
+        if option_name in _PYTEST_PHASE_NEUTRALIZERS:
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    f"{option_name} is not allowed in mutmut-win pytest arguments: "
+                    "it can exit successfully without executing test bodies."
+                ),
+            )
+
+        if stats_phase and (
+            option_name
+            in {
+                "--boxed",
+                "--dist",
+                "--looponfail",
+                "--numprocesses",
+                "--rsyncdir",
+                "--tx",
+                "-d",
+                "-n",
+            }
+            or (arg.startswith("-n") and not arg.startswith("--") and len(arg) > 2)
+        ):
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    "pytest-xdist is not supported during mutmut-win stats collection: "
+                    "parallel workers cannot publish one authoritative hit map."
+                ),
+            )
+
+    return args
+
+
+def validated_pytest_targets(raw_targets: object, *, field_name: str) -> list[str]:
+    """Validate argv values that are allowed to be pytest test targets only."""
+
+    if not isinstance(raw_targets, list) or not all(
+        isinstance(target, str) for target in raw_targets
+    ):
+        raise BadTestExecutionCommandsException(
+            [],
+            detail=f"{field_name} must be a list of strings.",
+        )
+    targets = list(raw_targets)
+    for target in targets:
+        if not target or target.isspace():
+            raise BadTestExecutionCommandsException(
+                targets,
+                detail=f"{field_name} entries must not be empty.",
+            )
+        if target.startswith(("-", "@")) or target == "--":
+            raise BadTestExecutionCommandsException(
+                targets,
+                detail=(
+                    f"{field_name} accepts test paths/node IDs only; pytest options, "
+                    "the -- separator, and user @argfiles are not allowed."
+                ),
+            )
+        if any(character in target for character in ("\0", "\r", "\n")):
+            raise BadTestExecutionCommandsException(
+                targets,
+                detail=(
+                    f"{field_name} entries must not contain NUL or line breaks; "
+                    "they could inject arguments into the internal pytest argfile."
+                ),
+            )
+    return targets
+
+
+def apply_pytest_boundary_environment(boundary: PytestBoundary, env: dict[str, str]) -> None:
+    """Publish frozen test-location identities to the child guard plugin."""
+
+    try:
+        identities = boundary.canonical_allowed_test_identities()
+    except PytestBoundaryError:
+        raise
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise PytestBoundaryError("Could not validate pytest test-location boundary.") from exc
+
+    directories = [identity for identity in identities if identity.kind == "directory"]
+    files = [identity for identity in identities if identity.kind == "file"]
+
+    def payload(identity: PytestAllowedPathIdentity) -> dict[str, object]:
+        return {
+            "path": str(identity.canonical_path),
+            "st_dev": identity.st_dev,
+            "st_ino": identity.st_ino,
+        }
+
+    env[_PYTEST_ALLOWED_DIRS_ENV] = json.dumps(
+        [payload(identity) for identity in directories],
+        separators=(",", ":"),
+    )
+    env[_PYTEST_ALLOWED_FILES_ENV] = json.dumps(
+        [payload(identity) for identity in files],
+        separators=(",", ":"),
+    )
+
+
+def _publish_pytest_guard(plugin_path: Path) -> None:
+    """Publish the immutable guard, or fail as an execution-boundary error."""
+    try:
+        ensure_atomic_bytes(plugin_path, _PYTEST_PHASE_GUARD_SOURCE.encode("utf-8"))
+    except OSError as exc:
+        raise PytestBoundaryError(
+            f"Could not publish the pytest execution guard at {plugin_path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def prepare_pytest_collection_guard() -> None:
+    """Install the location guard for collection-only phases."""
+
+    plugin_path = Path("mutants") / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
+    _publish_pytest_guard(plugin_path)
+
+
+def prepare_pytest_phase_guard(
+    env: dict[str, str],
+    mutants_dir: Path = Path("mutants"),
+) -> tuple[Path, str]:
+    """Install the guard plugin and add one unique proof target to *env*.
+
+    Byte-identical concurrent publishers share an idempotent atomic
+    publication. A different or unverifiable competing leaf is a fatal pytest
+    execution-boundary failure, never a mutant verdict.
+
+    Args:
+        env: Child-process environment to augment.
+        mutants_dir: Staging directory from which pytest loads the plugin.
+
+    Returns:
+        ``(marker_path, expected_token)`` for post-process verification.
+    """
+    plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
+    _publish_pytest_guard(plugin_path)
+
+    # Do not create and reopen a workspace marker through tempfile: an
+    # existing redirected staging parent would already have received that
+    # write. The generated plugin publishes this unpredictable leaf with the
+    # same safe atomic writer only after a real pytest call-phase report exists.
+    marker_path = (
+        mutants_dir / f".mutmut_pytest_executed_{secrets.token_hex(16)}.sentinel"
+    ).absolute()
+    token = secrets.token_hex(32)
+    env[_PYTEST_PHASE_SENTINEL_PATH_ENV] = str(marker_path)
+    env[_PYTEST_PHASE_SENTINEL_PROOF_ENV] = token
+    return marker_path, token
+
+
+def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
+    """Return whether a matching execution proof exists, then remove it."""
+    try:
+        return marker_path.read_text(encoding="utf-8") == expected_token
+    except OSError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            marker_path.unlink()
+
+
+def _write_pytest_argfile(tests: list[str], mutants_dir: Path = Path("mutants")) -> Path:
+    """Publish one private pytest argument file inside a verified staging parent."""
+    argfile = mutants_dir / f"mutmut_tests_{secrets.token_hex(16)}.txt"
+    payload = "".join(f"{test}\n" for test in tests).encode("utf-8")
+    atomic_write_bytes(argfile, payload)
+    return argfile
 
 
 def _suppress_windows_error_dialogs() -> None:
@@ -63,6 +643,7 @@ def worker_main(
     task_queue: multiprocessing.queues.Queue[dict[str, object] | None],
     event_queue: multiprocessing.queues.Queue[dict[str, object]],
     config_data: dict[str, object],
+    containment_queue: Any = None,
 ) -> None:
     """Main loop executed in each spawned worker process.
 
@@ -83,17 +664,30 @@ def worker_main(
     # Once per worker process — children inherit the error mode (issue #123
     # / external QA WIN-001).
     _suppress_windows_error_dialogs()
-    pytest_extra_args: list[str] = []
-    raw_extra = config_data.get("pytest_add_cli_args")
-    if isinstance(raw_extra, list):
-        pytest_extra_args = [str(a) for a in raw_extra]
+    pytest_extra_args = validated_pytest_args(
+        config_data.get("pytest_add_cli_args", []),
+        config_data.get("pytest_add_cli_args_test_selection", []),
+        environment_addopts=os.environ.get("PYTEST_ADDOPTS", ""),
+    )
+    pytest_targets = validated_pytest_targets(
+        config_data.get("tests_dir", []),
+        field_name="tests_dir",
+    )
+    from mutmut_win.pytest_boundary import PytestBoundary
+
+    raw_boundary = config_data.get("_pytest_boundary")
+    if raw_boundary is None:
+        raise PytestBoundaryError(
+            "Worker start refused: the parent supplied no frozen pytest boundary."
+        )
+    pytest_boundary = PytestBoundary.from_dict(raw_boundary)
+    pytest_boundary.arguments()
 
     while True:
         raw_item = task_queue.get()
         if raw_item is None:
             # Sentinel: no more tasks — exit cleanly.
             break
-
         # Best-effort extract mutant_name from the raw dict so we can still
         # report something useful if validation itself blows up.
         fallback_name = "unknown"
@@ -103,7 +697,16 @@ def worker_main(
                 fallback_name = raw_name
 
         try:
-            _process_task(raw_item, event_queue, pid, pytest_extra_args, config_data)
+            _process_task(
+                raw_item,
+                event_queue,
+                pid,
+                pytest_extra_args,
+                config_data,
+                pytest_boundary,
+                pytest_targets,
+                containment_queue,
+            )
         except Exception as exc:  # Bug #12 recovery: keep the worker alive
             # Any uncaught exception (Pydantic ValidationError, RuntimeError from
             # the subprocess layer, libcst hiccup, transient FS error, …) would
@@ -118,6 +721,7 @@ def worker_main(
                 file=sys.stderr,
                 flush=True,
             )
+            fatal = isinstance(exc, (ProcessContainmentError, PytestBoundaryError))
             event_queue.put(
                 TaskCompleted(
                     mutant_name=fallback_name,
@@ -125,8 +729,14 @@ def worker_main(
                     exit_code=35,  # suspicious
                     duration=0.0,
                     last_output=f"Worker recovery (Bug #12): {type(exc).__name__}: {exc}",
+                    fatal=fatal,
                 ).model_dump()
             )
+            if fatal:
+                # Continuing would turn a host-wide containment/boundary
+                # failure into one suspicious row per mutant. The executor
+                # treats this terminal event as a run-aborting failure.
+                break
 
 
 def _process_task(
@@ -135,6 +745,9 @@ def _process_task(
     pid: int,
     pytest_extra_args: list[str],
     config_data: dict[str, object],
+    pytest_boundary: PytestBoundary,
+    pytest_targets: list[str],
+    containment_queue: Any = None,
 ) -> None:
     """Process a single mutation task.
 
@@ -147,13 +760,18 @@ def _process_task(
     # A2-JT-003 the worker ignored it and used max(60, timeout_multiplier) —
     # the MULTIPLIER acted as flat absolute seconds for every task.
     timeout_seconds = task.timeout_seconds
-
-    # Notify main process that work has started.
-    event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
+    # The deadline starts before any per-task filesystem/process setup.  The
+    # executor separately bounds a worker that wedges before TaskStarted; once
+    # setup succeeds, only the remaining task budget is passed to wait().
+    start = time.monotonic()
+    deadline = start + timeout_seconds
 
     # Build the pytest command.
     cmd: list[str] = _pytest_base_cmd()
     cmd.extend(pytest_extra_args)
+    # Revalidate immediately before every task. A config/root/target identity
+    # that drifted after worker startup aborts the entire run.
+    cmd.extend(pytest_boundary.arguments())
 
     # Always use pytest's @file syntax for test arguments.
     # This avoids the Windows CreateProcess 32767-char command line limit
@@ -165,26 +783,28 @@ def _process_task(
     # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
     tests_argfile: Path | None = None
     if task.tests:
-        fd, argfile_path = tempfile.mkstemp(
-            suffix=".txt",
-            prefix="mutmut_tests_",
-            dir="mutants",
-            text=True,
+        validated_task_tests = validated_pytest_targets(
+            task.tests,
+            field_name="MutationTask.tests",
         )
-        tests_argfile = Path(argfile_path)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            for test in task.tests:
-                f.write(test + "\n")
+        tests_argfile = _write_pytest_argfile(validated_task_tests)
+        cmd.append("--")
         cmd.append(f"@{tests_argfile.name}")
-    else:
-        # No specific tests assigned — use tests_dir from config if available.
-        raw_tests_dir = config_data.get("tests_dir")
-        if isinstance(raw_tests_dir, list):
-            cmd.extend(str(d) for d in raw_tests_dir)
+    elif pytest_targets:
+        # The internal separator is deliberately AFTER every owned option.
+        # Even if a future validator regresses, targets cannot become config,
+        # root, plugin, or response-file options.
+        cmd.append("--")
+        cmd.extend(pytest_targets)
 
     # Activate the specific mutant via the trampoline env var.
     # Set PYTHONPATH so subprocess can import from mutants/src etc.
     env = os.environ.copy()
+    # The value has already been parsed and validated into ``cmd``. Removing
+    # it prevents pytest from prepending it a second time ahead of the internal
+    # config/root boundary (including a hostile ``--`` separator).
+    env.pop("PYTEST_ADDOPTS", None)
+    apply_pytest_boundary_environment(pytest_boundary, env)
     pythonpath_dirs: list[str] = []
     for subdir in [*SOURCE_ROOT_NAMES, "."]:
         candidate = Path("mutants") / subdir
@@ -211,25 +831,19 @@ def _process_task(
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs + ([existing] if existing else []))
     env[MUTANT_ENV_VAR] = task.mutant_name
     # Unbuffered stdout/stderr for the whole subprocess tree: with block
-    # buffering the log's st_size froze at 0 while the suite made progress,
+    # buffering the capture byte counter froze while the suite made progress,
     # blinding the IL classifier's output signal (issue #88 / A2-JT-002).
     env["PYTHONUNBUFFERED"] = "1"
     # Same env truth as every runner phase (issue #111 / A2-RN-012): the
     # copied test modules in mutants/ keep their original basenames, and
     # pytest's import-mismatch check would reject them via stale __pycache__.
     env["PY_IGNORE_IMPORTMISMATCH"] = "1"
+    phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
 
-    # Redirect stdout+stderr to a temp file instead of PIPE or DEVNULL.
-    # - PIPE deadlocks on Windows when grandchild processes inherit handles
-    # - DEVNULL loses diagnostic output needed for timeout investigation
-    # - Temp files: no deadlock (no pipe EOF semantics), output preserved
-    log_fd, log_path_str = tempfile.mkstemp(
-        suffix=".log",
-        prefix="mutmut_out_",
-        dir="mutants",
-        text=True,
-    )
-    log_path = Path(log_path_str)
+    # A continuously drained pipe avoids PIPE-buffer deadlock while retaining
+    # only a bounded tail. The monotonic byte counter remains an honest output
+    # progress signal without allowing a print loop to exhaust the disk.
+    capture = BoundedOutputCapture()
     last_output: str | None = None
     forensics_dict: dict[str, object] | None = None
     exit_code: int = 35  # default to suspicious so the finally clause is safe
@@ -247,45 +861,69 @@ def _process_task(
     # orchestrator, once per RUN — a per-worker guard meant N-fold spam on
     # N worker processes (issue #110 / DOG-002).
 
-    start = time.monotonic()
     proc: subprocess.Popen[bytes] | None = None
     task_job_handle: int | None = None
+    tree_cleanup_done = False
     try:
         # Popen + wait(timeout) so we can attach the monitor against a live PID
         # and run our classifier on timeout. (subprocess.run cannot expose the
         # PID until after the call returns.)
-        proc = subprocess.Popen(  # noqa: S603 - command is fully controlled
+        posix_register: Callable[[int], None] | None = None
+        if sys.platform != "win32" and containment_queue is not None:
+
+            def publish_process_group(process_group: int) -> None:
+                containment_queue.put(
+                    {
+                        "mutant_name": task.mutant_name,
+                        "worker_pid": pid,
+                        "process_group": process_group,
+                    }
+                )
+
+            posix_register = publish_process_group
+
+        proc, task_job_handle = _popen_contained(
             cmd,
+            posix_start_stopped=containment_queue is not None,
+            posix_register=posix_register,
             env=env,
-            stdout=log_fd,
+            stdout=capture.writer_fd,
             stderr=subprocess.STDOUT,
             cwd="mutants",
             # No console window for the pytest child (issue #123 / WIN-001);
             # 0 on POSIX where the attribute does not exist.
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=_contained_creationflags(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+            start_new_session=sys.platform != "win32",
         )
-        # Per-task kill-on-close job (issue #82 / A2-EW-008): descendants
-        # inherit membership at creation, so closing the handle reaps the
-        # whole pytest tree — even across already-dead intermediates, which
-        # a live-pid sweep cannot bridge (uv launcher chains showed exactly
-        # that).
-        task_job_handle = _create_task_job(proc.pid)
+        capture.close_writer()
+        # Windows membership is an atomic CreateProcess attribute.  POSIX
+        # registration and pre-exec gate release completed inside
+        # _popen_contained before it returned.
         monitor = _maybe_start_loop_monitor(
-            il_enabled, proc.pid, log_path, window_seconds=il_thresholds.window_seconds
+            il_enabled,
+            proc.pid,
+            None,
+            window_seconds=il_thresholds.window_seconds,
+            output_counter=lambda: capture.total_bytes,
         )
+        # A task is in flight only after its pytest process and containment
+        # boundary exist.  Before this point the pool startup watchdog remains
+        # armed, so mkstemp/Popen/job-setup hangs cannot disable it forever.
+        event_queue.put(TaskStarted(mutant_name=task.mutant_name, worker_pid=pid).model_dump())
         try:
-            exit_code = proc.wait(timeout=timeout_seconds)
+            remaining_seconds = max(0.001, deadline - time.monotonic())
+            exit_code = proc.wait(timeout=remaining_seconds)
         except subprocess.TimeoutExpired:
             # Kill the still-running subprocess tree before sampling so the
             # classifier sees the final state of the rolling window.
             _kill_proc_tree(proc, task_job_handle)
             task_job_handle = None  # consumed (closed) by the kill
+            tree_cleanup_done = True
             # Snapshot BEFORE the log read (A2-JT-014): the snapshot is a pure
             # deque copy, while the tail read can take long enough to matter.
             samples = monitor.take_samples_snapshot() if monitor is not None else []
-            os.close(log_fd)
-            log_fd = -1
-            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
+            capture.close()
+            last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
             if monitor is not None:
                 classification = _classify_with_monitor(
                     samples,
@@ -310,6 +948,13 @@ def _process_task(
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", file=sys.stderr, flush=True)
         exit_code = 35  # suspicious
     finally:
+        phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
+        if exit_code == 0 and not phase_executed:
+            exit_code = 35
+            last_output = (
+                "pytest exited 0 without executing a test call; the worker phase was "
+                "neutralized by pytest arguments/configuration or every selected test was skipped"
+            )
         if task_job_handle is not None:
             # Normal completion: closing the kill-on-close job reaps any
             # background processes the tests left behind (issue #82).
@@ -317,20 +962,26 @@ def _process_task(
                 from mutmut_win.process.job_object import close_job
 
                 close_job(task_job_handle)
+            tree_cleanup_done = True
+        elif proc is not None and not tree_cleanup_done:
+            # POSIX has no Job Object. Successful tests may still leave
+            # background descendants, so normal completion needs the same
+            # explicit process-group/PPID cleanup as timeout paths. A mocked
+            # Windows Popen can also reach this branch in unit tests.
+            _kill_proc_tree(proc)
+            tree_cleanup_done = True
         if monitor is not None:
             with contextlib.suppress(Exception):
                 monitor.shutdown()
-        if log_fd >= 0:
-            os.close(log_fd)
+        capture.close_writer()
+        capture.close()
         # Read diagnostics for every anomalous exit (if not already read by
         # the timeout path). Issue #91: exit 2 is a collection-error kill and
         # NTSTATUS codes are crashes — their forensics ARE the pytest output;
         # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
         # diagnostic value.
         if exit_code not in _QUIET_EXIT_CODES and last_output is None:
-            last_output = _read_last_lines(log_path, _MAX_DIAGNOSTIC_LINES)
-        with contextlib.suppress(OSError):
-            log_path.unlink()
+            last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
         if tests_argfile is not None and tests_argfile.exists():
             with contextlib.suppress(OSError):
                 tests_argfile.unlink()
@@ -380,7 +1031,12 @@ def _read_last_lines(path: Path, n: int) -> str | None:
 
 
 def _maybe_start_loop_monitor(
-    enabled: bool, pid: int, log_path: Path, window_seconds: float = 10.0
+    enabled: bool,
+    pid: int,
+    log_path: Path | None = None,
+    window_seconds: float = 10.0,
+    *,
+    output_counter: Any = None,
 ) -> Any:
     """Try to spawn an IL-detection monitor; return ``None`` on opt-out / failure.
 
@@ -400,7 +1056,12 @@ def _maybe_start_loop_monitor(
 
         if not has_psutil():
             return None
-        monitor = ProcessMonitor(pid=pid, log_path=log_path, window_seconds=window_seconds)
+        monitor = ProcessMonitor(
+            pid=pid,
+            log_path=log_path,
+            window_seconds=window_seconds,
+            output_counter=output_counter,
+        )
         monitor.start()
     except Exception as exc:  # graceful degradation: never poison the run
         print(f"WORKER MONITOR start failed: {exc}", file=sys.stderr, flush=True)
@@ -482,16 +1143,23 @@ def _pytest_base_cmd() -> list[str]:
     exit-35 floods despite a green clean run); ``sys.executable -m pytest``
     matches what the runner phases use.
     """
-    return [sys.executable, "-m", "pytest", "--tb=no", "-q"]
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-p",
+        PYTEST_PHASE_GUARD_PLUGIN,
+        "--tb=no",
+        "-q",
+    ]
 
 
-def _create_task_job(pid: int) -> int | None:
-    """Best-effort per-task Windows Job Object (issue #82 / A2-EW-008).
+def _create_task_job(pid: int | None = None) -> int | None:
+    """Create a per-task Windows Job (issue #82 / A2-EW-008).
 
-    Returns the job handle with *pid* assigned, or ``None`` off-win32 or
-    when creation/assignment fails (graceful degradation to the psutil
-    sweep).  The micro window between ``Popen`` and assignment is the
-    documented EW-018 race — pytest does not spawn children that fast.
+    Production creates the child atomically in this Job.  The optional *pid*
+    retains the old assign-before-resume path only for Popen test doubles;
+    real processes never cross that non-atomic boundary.
     """
     if sys.platform != "win32":
         return None
@@ -505,13 +1173,138 @@ def _create_task_job(pid: int) -> int | None:
         handle = create_kill_on_close_job()
     except (OSError, RuntimeError):
         return None
-    try:
-        assign_process_to_job(handle, pid)
-    except (OSError, RuntimeError):
-        with contextlib.suppress(Exception):
-            close_job(handle)
-        return None
+    if pid is not None:
+        try:
+            assign_process_to_job(handle, pid)
+        except (OSError, RuntimeError):
+            with contextlib.suppress(Exception):
+                close_job(handle)
+            return None
     return handle
+
+
+def _popen_contained(
+    cmd: list[str],
+    *,
+    posix_start_stopped: bool = False,
+    posix_register: Callable[[int], None] | None = None,
+    **kwargs: Any,
+) -> tuple[subprocess.Popen[bytes], int | None]:
+    """Start one subprocess with a parent-owned containment boundary.
+
+    Windows passes the Job through ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` so
+    membership and process creation are one kernel operation. Unit tests that
+    replace ``subprocess.Popen`` retain the old suspended handshake; no real
+    production child uses that compatibility branch.
+    """
+    if sys.platform != "win32":
+        launch_cmd = cmd
+        gate_read: int | None = None
+        gate_write: int | None = None
+        if posix_start_stopped:
+            if os.name != "posix":
+                raise ProcessContainmentError("POSIX stopped launch requested off POSIX")
+            if posix_register is None:
+                raise ProcessContainmentError(
+                    "POSIX gated launch requires synchronous process-group registration"
+                )
+            if kwargs.get("start_new_session") is not True:
+                raise ProcessContainmentError(
+                    "POSIX gated launch requires a dedicated process session"
+                )
+            # The shell cannot exec user code until it reads one release byte.
+            # Only the worker owns the write end.  If the worker hard-exits at
+            # any point before or during synchronous registration, EOF makes
+            # the gate terminate itself instead of leaving an unregistered,
+            # stopped orphan behind.
+            gate_read, gate_write = os.pipe()
+            inherited_fds = tuple(int(fd) for fd in kwargs.pop("pass_fds", ()))
+            kwargs["pass_fds"] = (*inherited_fds, gate_read)
+            launch_cmd = [
+                "/bin/sh",
+                "-c",
+                (
+                    '_mutmut_gate_fd="$1"; shift; '
+                    'if IFS= read -r _mutmut_gate <&"$_mutmut_gate_fd"; '
+                    'then exec "$@"; else exit 70; fi'
+                ),
+                "mutmut-posix-gate",
+                str(gate_read),
+                *cmd,
+            ]
+        proc: subprocess.Popen[bytes] | None = None
+        try:
+            proc = subprocess.Popen(launch_cmd, **kwargs)  # noqa: S603
+            _close_posix_gate_fd(gate_read)
+            gate_read = None
+            if posix_start_stopped:
+                if posix_register is None:  # defensive: checked before launch
+                    raise ProcessContainmentError("POSIX launch registration callback vanished")
+                posix_register(proc.pid)
+                if gate_write is None:
+                    raise ProcessContainmentError("POSIX launch gate lost its release handle")
+                os.write(gate_write, b"\n")
+            return proc, None
+        except BaseException as exc:
+            if proc is not None:
+                _abort_posix_gated_process(proc)
+            if posix_start_stopped and not isinstance(exc, ProcessContainmentError):
+                raise ProcessContainmentError(
+                    "Could not register and release the POSIX task process group."
+                ) from exc
+            raise
+        finally:
+            _close_posix_gate_fd(gate_read)
+            _close_posix_gate_fd(gate_write)
+
+    if subprocess.Popen is not _REAL_POPEN_TYPE:
+        proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
+        job_handle = _create_task_job(proc.pid)
+        try:
+            _resume_after_containment(proc, job_handle)
+        except BaseException:
+            job_handle = None
+            raise
+        return proc, job_handle
+
+    job_handle = _create_task_job()
+    if job_handle is None:
+        raise ProcessContainmentError(
+            "Could not establish a Windows Job Object for a subprocess; "
+            "refusing to run without reliable descendant cleanup."
+        )
+    kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) & ~_CREATE_SUSPENDED
+    try:
+        from mutmut_win.process.atomic_spawn import AtomicJobPopen
+
+        proc = AtomicJobPopen(cmd, job_handle=job_handle, **kwargs)
+    except BaseException as exc:
+        with contextlib.suppress(Exception):
+            from mutmut_win.process.job_object import close_job
+
+            close_job(job_handle)
+        if isinstance(exc, ProcessContainmentError):
+            raise
+        raise ProcessContainmentError(
+            "Could not create a subprocess atomically inside its Windows Job Object."
+        ) from exc
+    return proc, job_handle
+
+
+def _close_posix_gate_fd(fd: int | None) -> None:
+    if fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _abort_posix_gated_process(proc: subprocess.Popen[bytes]) -> None:
+    """Kill a failed gate session and bound direct-child reap time."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+    with contextlib.suppress(OSError):
+        proc.kill()
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        proc.wait(timeout=2.0)
 
 
 def _iter_descendants(root_pid: int) -> list[Any]:
@@ -563,6 +1356,12 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
             from mutmut_win.process.job_object import close_job
 
             close_job(job_handle)
+    elif sys.platform != "win32":
+        # Every POSIX caller starts the child in a dedicated session.  The
+        # root may already have exited normally, but its process group remains
+        # addressable while background descendants survive.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
 
     use_psutil = False
     try:

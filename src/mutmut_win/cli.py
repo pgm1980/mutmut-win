@@ -6,22 +6,42 @@ Provides run, results, show, apply, and browse sub-commands.
 
 from __future__ import annotations
 
+import json
+import math
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import click
 
 from mutmut_win import __version__
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.config import MutmutConfig, load_config
-from mutmut_win.db import DEFAULT_DB_PATH, load_results
-from mutmut_win.exceptions import CorruptCacheError, MutmutWinError
+from mutmut_win.db import (
+    DEFAULT_DB_PATH,
+    RunBasisIncompleteness,
+    invalidate_latest_run_evidence,
+    known_run_basis_incompleteness,
+    load_current_run,
+    load_results,
+    validate_cache_path,
+)
+from mutmut_win.exceptions import MutmutWinError, UnsafeWorkspaceStateError
 from mutmut_win.mutant_diff import apply_mutant, render_function_diff, resolve_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
+from mutmut_win.process.run_lock import (
+    DatabaseRunLocks,
+    WorkspaceRunLock,
+    run_lock_path_for_db,
+)
 from mutmut_win.runner import PytestRunner
-from mutmut_win.stats import load_stats, save_cicd_stats
+from mutmut_win.stats import (
+    build_run_basis_evidence,
+    compute_cicd_stats,
+    load_stats,
+    save_cicd_stats,
+)
 from mutmut_win.test_mapping import (
     mangled_name_from_mutant_name,
     match_mutant_names,
@@ -29,6 +49,7 @@ from mutmut_win.test_mapping import (
 )
 
 if TYPE_CHECKING:
+    from mutmut_win.db import MutationRunState
     from mutmut_win.models import MutationResult
 
 
@@ -53,7 +74,96 @@ def _warn_treat_timeout_as_kill_deprecated() -> None:
     )
 
 
-def _load_config_or_exit() -> MutmutConfig:
+def _finite_score(
+    _ctx: click.Context,
+    _param: click.Parameter,
+    value: float | None,
+) -> float | None:
+    """Reject NaN/Infinity before they can neutralise score comparisons."""
+    if value is not None and not math.isfinite(value):
+        raise click.BadParameter("must be a finite number between 0 and 100")
+    return value
+
+
+def _emit_json_error(stream: TextIO | None, message: str, exit_code: int) -> None:
+    """Keep the JSON channel machine-readable on an early run failure."""
+    if stream is not None:
+        click.echo(
+            json.dumps({"error": message, "exit_code": exit_code}, indent=2),
+            file=stream,
+        )
+
+
+def _fixed_workspace_root_refusal(dirname: str, *, action: str) -> str | None:
+    """Return a fail-closed reason when a fixed state root is redirected."""
+    path = Path(dirname)
+    try:
+        expected = Path.cwd().resolve() / dirname
+        resolved = path.resolve(strict=False)
+        junction_check = getattr(path, "is_junction", None)
+        is_link_like = path.is_symlink() or (callable(junction_check) and junction_check())
+    except (OSError, RuntimeError):
+        is_link_like = True
+        resolved = None
+        expected = Path.cwd() / dirname
+    if is_link_like or resolved != expected:
+        return (
+            f"Refusing {action}: {dirname}/ is a link, junction, or resolves outside the workspace."
+        )
+    return None
+
+
+def _force_cleanup_refusal(dirname: str) -> str | None:
+    """Return a fail-closed reason when a fixed --force root is unsafe."""
+    return _fixed_workspace_root_refusal(dirname, action="--force cleanup")
+
+
+def _require_safe_workspace_roots(
+    *dirnames: str,
+    action: str = "workspace state access",
+) -> None:
+    """Reject redirected fixed state roots without creating either root."""
+    for dirname in dirnames:
+        refusal = _fixed_workspace_root_refusal(dirname, action=action)
+        if refusal is not None:
+            raise UnsafeWorkspaceStateError(refusal)
+
+
+def _uses_default_cache_root(path: Path) -> bool:
+    """Return whether *path* is lexically inside this workspace's cache root."""
+    return path.absolute().parent == (Path.cwd() / DEFAULT_DB_PATH.parent).absolute()
+
+
+def _basis_excluded_paths(path: Path) -> tuple[Path, ...]:
+    database = path.absolute()
+    return (
+        database,
+        Path(f"{database}-journal"),
+        Path(f"{database}-wal"),
+        Path(f"{database}-shm"),
+    )
+
+
+def _stable_live_basis(config: MutmutConfig, path: Path) -> str:
+    """Compute one stable export-time basis or reject concurrent drift."""
+    excluded_paths = _basis_excluded_paths(path)
+    first = build_run_basis_evidence(config, excluded_paths=excluded_paths)
+    second = build_run_basis_evidence(config, excluded_paths=excluded_paths)
+    if first != second:
+        raise MutmutWinError(
+            "source, test, configuration, dependency, or environment inputs changed "
+            "while CI/CD evidence was being validated"
+        )
+    if not first.complete:
+        raise MutmutWinError(
+            "the complete execution basis cannot be fingerprinted; "
+            "CI/CD evidence is unavailable when dependency/import inputs are unobservable "
+            "or a generic type_check_command is configured"
+        )
+    return first.digest
+
+
+def _load_config_or_exit(json_stdout: TextIO | None = None) -> MutmutConfig:
     """Load the project config; exit 2 with the message on ConfigError.
 
     Issue #109 / A4-UI-011: a corrupted pyproject.toml surfaced as a RAW
@@ -65,7 +175,9 @@ def _load_config_or_exit() -> MutmutConfig:
     try:
         return load_config()
     except ConfigError as exc:
-        click.echo(str(exc), err=True)
+        message = str(exc)
+        click.echo(message, err=True)
+        _emit_json_error(json_stdout, message, 2)
         sys.exit(2)
 
 
@@ -78,9 +190,43 @@ def _load_results_or_exit(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
     its clean path via the orchestrator's domain-error handler. ``run --force``
     recovers by deleting ``.mutmut-cache/`` first.
     """
+    _current, results = _load_result_snapshot_or_exit(path)
+    return results
+
+
+def _load_result_snapshot_or_exit(
+    path: Path = DEFAULT_DB_PATH,
+) -> tuple[MutationRunState | None, list[MutationResult]]:
+    """Load the current run population, falling back only for legacy DBs."""
     try:
-        return load_results(path)
-    except CorruptCacheError as exc:
+        if _uses_default_cache_root(path):
+            _require_safe_workspace_roots(".mutmut-cache")
+        current = load_current_run(path)
+        if current is None:
+            return None, load_results(path)
+
+        from mutmut_win.models import MutationResult
+
+        completed_by_name = {result.mutant_name: result for result in current.completed_results}
+        results: list[MutationResult] = []
+        for mutant_name in current.planned_names:
+            completed = completed_by_name.get(mutant_name)
+            if completed is None:
+                results.append(MutationResult(mutant_name=mutant_name, status="not checked"))
+                continue
+            results.append(
+                MutationResult(
+                    mutant_name=completed.mutant_name,
+                    status=completed.status,
+                    exit_code=completed.exit_code,
+                    duration=completed.duration,
+                    last_output=completed.last_output,
+                    forensics=completed.forensics,
+                    tests_fingerprint=completed.tests_fingerprint,
+                )
+            )
+        return current, results
+    except MutmutWinError as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
@@ -114,6 +260,7 @@ def _load_results_or_exit(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
     # FloatRange: 150 used to execute the FULL run before the gate
     # trivially failed; -5 made the gate a no-op (issue #120 / CLI-001).
     type=click.FloatRange(0, 100),
+    callback=_finite_score,
     default=None,
     help="Exit with code 1 if mutation score is below this threshold (0-100).",
 )
@@ -229,6 +376,9 @@ def run(
     """
     import contextlib
 
+    json_stdout = sys.stdout if output == "json" else None
+    explicit_selection = bool(mutant_names or paths_to_mutate or since_commit is not None)
+
     if treat_timeout_as_kill:
         _warn_treat_timeout_as_kill_deprecated()
 
@@ -242,6 +392,63 @@ def run(
         if output == "json":
             prose_stack.enter_context(contextlib.redirect_stdout(sys.stderr))
 
+        # A linked cache can resolve the canonical DB lock into its external
+        # target, while linked staging can redirect generation writes. Reject
+        # both fixed roots before deriving/acquiring the lock for every real
+        # run (not just destructive --force). A dry-run is read-only.
+        if not dry_run or force:
+            action = "--force cleanup" if force else "workspace state access"
+            try:
+                _require_safe_workspace_roots(
+                    "mutants",
+                    ".mutmut-cache",
+                    action=action,
+                )
+            except UnsafeWorkspaceStateError as exc:
+                message = str(exc)
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 1)
+                sys.exit(1)
+
+        # Serialize every state-changing run before ``--force`` can remove
+        # shared staging/cache state. The OS guard survives crashes; owner
+        # metadata carries PID/start-time diagnostics and is never guessed
+        # stale. A read-only dry-run needs no lock unless --force itself was
+        # explicitly requested.
+        workspace_lock: WorkspaceRunLock | None = None
+        if not dry_run or force:
+            try:
+                # Validate the database file and SQLite sidecars before
+                # canonicalising the lock path.  Otherwise a file-level link
+                # could redirect the lock and its owner metadata outside the
+                # workspace before the database layer gets a chance to refuse
+                # the unsafe cache.
+                validate_cache_path(DEFAULT_DB_PATH)
+                workspace_lock = prose_stack.enter_context(
+                    WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH))
+                )
+            except MutmutWinError as exc:
+                if debug:
+                    import traceback
+
+                    click.echo(traceback.format_exc(), err=True)
+                message = f"Error: {exc}"
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 1)
+                sys.exit(1)
+
+            # Close the validate/acquire race before any cache or staging
+            # access. The concrete writers retain their own destination
+            # checks as a final boundary.
+            try:
+                _require_safe_workspace_roots("mutants", ".mutmut-cache")
+                validate_cache_path(DEFAULT_DB_PATH)
+            except UnsafeWorkspaceStateError as exc:
+                message = str(exc)
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 1)
+                sys.exit(1)
+
         # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
         if force:
             import shutil
@@ -249,23 +456,30 @@ def run(
             for dirname in ("mutants", ".mutmut-cache"):
                 p = Path(dirname)
                 if p.exists():
+                    refusal = _force_cleanup_refusal(dirname)
+                    if refusal is not None:
+                        click.echo(refusal, err=True)
+                        _emit_json_error(json_stdout, refusal, 1)
+                        sys.exit(1)
                     shutil.rmtree(p, ignore_errors=True)
                     # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
                     # unconditional success message sold a PARTIAL deletion
                     # (files locked by another process) as a clean slate.
                     if p.exists():
-                        click.echo(
-                            f"Warning: could not fully remove {dirname}/ "
-                            f"(files in use?) — the run may see stale state.",
-                            err=True,
+                        message = (
+                            f"Could not fully remove {dirname}/ (files in use?); "
+                            "refusing to run with stale state."
                         )
+                        click.echo(message, err=True)
+                        _emit_json_error(json_stdout, message, 1)
+                        sys.exit(1)
                     else:
                         click.echo(f"Removed {dirname}/")
 
         # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
         # escape as a 47-line traceback with exit 1 while CLI flags with the
         # SAME rules exited 2 — one config-error contract for every command.
-        config = _load_config_or_exit()
+        config = _load_config_or_exit(json_stdout)
 
         # --- Apply CLI overrides to config ---
         overrides: dict[str, object] = {}
@@ -290,6 +504,22 @@ def run(
         if infinite_loop_cpu_threshold is not None:
             overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
 
+        # Validate every ordinary override before --since-commit interprets
+        # changed paths.  In particular, the effective --tests-dir must be the
+        # exclusion boundary below; consulting the pre-override config let a
+        # changed custom_tests/*.py file become a mutation target.
+        if overrides:
+            from pydantic import ValidationError
+
+            try:
+                config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
+            except ValidationError as exc:
+                message = f"Invalid option value:\n{exc}"
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
+            overrides = {}
+
         # --since-commit: resolve changed .py files via git
         if since_commit is not None:
             import subprocess as sp
@@ -307,10 +537,11 @@ def run(
             # Issue #102 / A3-CM-006: the returncode was never checked — an
             # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
             if git_result.returncode != 0:
-                click.echo(
-                    f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}",
-                    err=True,
+                message = (
+                    f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}"
                 )
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
                 sys.exit(2)
             tests_dir_parts = tuple(Path(d.strip("/").strip("\\")).parts for d in config.tests_dir)
 
@@ -329,8 +560,10 @@ def run(
                 f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)
             ]
             if not changed_py:
-                click.echo("No .py files changed since the given commit.", err=True)
-                sys.exit(0)
+                message = "No mutation-target .py files changed since the given commit."
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
             overrides["paths_to_mutate"] = changed_py
 
         if overrides:
@@ -342,7 +575,9 @@ def run(
             try:
                 config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
             except ValidationError as exc:
-                click.echo(f"Invalid option value:\n{exc}", err=True)
+                message = f"Invalid option value:\n{exc}"
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
                 sys.exit(2)
 
         # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
@@ -351,31 +586,39 @@ def run(
         missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
         if missing_paths:
             plural = "ies do" if len(missing_paths) > 1 else "y does"
-            click.echo(
-                f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}",
-                err=True,
-            )
+            message = f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}"
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 2)
             sys.exit(2)
 
-        runner = PytestRunner(config)
-        executor = SpawnPoolExecutor(max_workers=config.max_children, config=config)
         # Only a FULL run may purge stale DB rows (issue #96): subset runs know
         # just a slice of the valid mutant set and must never delete history.
         # A --paths-to-mutate override narrows the staging to that slice, so it
         # counts as a subset run too (issue #120 / RUN-002 — the purge used to
         # delete every result outside the given paths).
         is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
-        orchestrator = MutationOrchestrator(
-            config,
-            runner=runner,
-            executor=executor,
-            mutant_names=mutant_names if mutant_names else None,
-            no_progress=no_progress,
-            purge_stale_results=is_full_run,
-            rerun_all=rerun_all,
-        )
-
         try:
+            runner = PytestRunner(config)
+            # A dry-run is a source-only preview: constructing the Windows
+            # executor here would create a Job Object even though no worker
+            # can be used.  Keep the existing injection point for real runs,
+            # but let MutationOrchestrator retain its lazy default for the
+            # preview path.
+            executor = (
+                None
+                if dry_run
+                else SpawnPoolExecutor(max_workers=config.max_children, config=config)
+            )
+            orchestrator = MutationOrchestrator(
+                config,
+                runner=runner,
+                executor=executor,
+                mutant_names=mutant_names if mutant_names else None,
+                no_progress=no_progress,
+                purge_stale_results=is_full_run,
+                rerun_all=rerun_all,
+                workspace_lock=workspace_lock,
+            )
             result = orchestrator.dry_run() if dry_run else orchestrator.run()
         except MutmutWinError as exc:
             # Issue #102 / A4-UI-005: --debug was a dead flag while this except
@@ -387,7 +630,9 @@ def run(
                 import traceback
 
                 click.echo(traceback.format_exc(), err=True)
-            click.echo(f"Error: {exc}", err=True)
+            message = f"Error: {exc}"
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 1)
             sys.exit(1)
 
     # --- Output ---
@@ -422,8 +667,27 @@ def run(
         )
         sys.exit(1)
 
+    # --- Empty-run honesty (MW220-034) ---
+    # A dry-run is an informational preview and may legitimately count zero.
+    # A real run that selected or generated nothing is not evidence that the
+    # mutation suite passed.  Explicit filters are usage/domain errors; a full
+    # empty generation is a runtime failure.  JSON was already emitted above.
+    if not dry_run and result.total_mutants == 0:
+        if explicit_selection:
+            click.echo("No mutants matched the explicit run selection.", err=True)
+            sys.exit(2)
+        click.echo("No testable mutants were generated; mutation run failed closed.", err=True)
+        sys.exit(1)
+
     # --- Score gate ---
     if min_score is not None:
+        if not result.execution_basis_complete:
+            click.echo(
+                "Execution basis incomplete — score gate failed closed; not all "
+                "execution inputs could be fingerprinted.",
+                err=True,
+            )
+            sys.exit(1)
         testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
         if testable <= 0:
             # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
@@ -467,7 +731,40 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     if treat_timeout_as_kill:
         _warn_treat_timeout_as_kill_deprecated()
 
-    all_results = _load_results_or_exit(DEFAULT_DB_PATH)
+    current_run, all_results = _load_result_snapshot_or_exit(DEFAULT_DB_PATH)
+
+    if current_run is not None:
+        reused = sum(result.reused for result in current_run.completed_results)
+        click.echo(
+            f"Run status: {current_run.status} "
+            f"({len(current_run.completed_names)} completed, "
+            f"{len(current_run.pending_names)} pending, {reused} reused)"
+        )
+        if current_run.evidence_invalidated:
+            click.echo(
+                "Evidence invalidated: yes; release-ready: no. "
+                "Source changed after this run; re-run 'mutmut-win run'.",
+                err=True,
+            )
+        elif current_run.status == "completed":
+            basis_issue = known_run_basis_incompleteness(current_run)
+            if basis_issue is RunBasisIncompleteness.MALFORMED:
+                click.echo(
+                    "WARNING: persisted execution-basis evidence is malformed; "
+                    "release-ready: no. Rebuild the cache with 'mutmut-win run --force'.",
+                    err=True,
+                )
+            elif basis_issue is RunBasisIncompleteness.GENERIC_TYPE_CHECK_COMMAND:
+                click.echo(
+                    "Run technically completed with a generic type_check_command; "
+                    "execution basis incomplete; release-ready: no.",
+                    err=True,
+                )
+            elif basis_issue is RunBasisIncompleteness.MISSING:
+                click.echo(
+                    "Run technically completed; execution basis incomplete; release-ready: no.",
+                    err=True,
+                )
 
     if not all_results:
         click.echo("No results found. Run 'mutmut-win run' first.")
@@ -481,24 +778,22 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     # Issue #122 / external QA SCO-003: `results` used to fold type-check
     # kills into "Killed" with no line of their own, while the run summary
     # and the CI JSON keep the category separate — one scheme everywhere.
-    type_check = counts.get("caught by type check", 0)
-    kill_aggregate = (
-        counts.get("killed", 0)
-        + counts.get("killed_by_infinite_loop", 0)  # Issue #71 — IL classification
-    )
-    il_killed = counts.get("killed_by_infinite_loop", 0)
-    segfault = counts.get("segfault", 0)
-    timeout = counts.get("timeout", 0)
-    skipped = counts.get("skipped", 0)
-    no_tests = counts.get("no tests", 0)
-
-    denominator = total - skipped - no_tests
-    # Kill class mirrors MutationRunResult.score / CicdStats.score (#91):
-    # a crash under a mutant is a detection.
-    effective_killed = (
-        kill_aggregate + type_check + segfault + (timeout if treat_timeout_as_kill else 0)
-    )
-    score = (effective_killed / denominator * 100.0) if denominator > 0 else 0.0
+    # Use the same aggregator as the CI export instead of maintaining a third
+    # score formula here (MW220-037). Rows without a verdict cannot contribute
+    # evidence and therefore leave the score input, matching MutationRunResult's
+    # ``unchecked`` denominator contract.
+    measured_pairs: list[tuple[str, str | None]] = [
+        (result.mutant_name, result.status)
+        for result in all_results
+        if result.status not in {"not checked", "check was interrupted by user"}
+    ]
+    aggregate = compute_cicd_stats(measured_pairs)
+    type_check = aggregate.caught_by_type_check
+    kill_aggregate = aggregate.killed
+    il_killed = aggregate.killed_by_infinite_loop
+    timeout = aggregate.timeout
+    score_kills = aggregate.effective_killed + (timeout if treat_timeout_as_kill else 0)
+    score = (score_kills / aggregate.scoreable * 100.0) if aggregate.scoreable > 0 else 0.0
 
     click.echo(f"Total:      {total}")
     if il_killed > 0:
@@ -640,14 +935,35 @@ def apply(mutant_name: str) -> None:
     exactly ONE mutant; an ambiguous pattern fails and lists the
     candidates — apply never applies a set.
     """
-    mutants_dir = Path("mutants")
-    if not mutants_dir.is_dir():
-        click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
-        sys.exit(1)
-
-    config = _load_config_or_exit()
     try:
-        apply_mutant(mutant_name, config)
+        _require_safe_workspace_roots("mutants", ".mutmut-cache")
+        validate_cache_path(DEFAULT_DB_PATH)
+        with (
+            WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH)),
+            DatabaseRunLocks(DEFAULT_DB_PATH),
+        ):
+            _require_safe_workspace_roots("mutants", ".mutmut-cache")
+            validate_cache_path(DEFAULT_DB_PATH)
+            mutants_dir = Path("mutants")
+            if not mutants_dir.is_dir():
+                click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
+                sys.exit(1)
+
+            config = _load_config_or_exit()
+            # Revoke prior evidence before the irreversible source replacement.
+            # If invalidation or artifact cleanup fails, apply must not touch
+            # the source.  If apply itself later fails, losing reusable evidence
+            # is conservative; retaining a green pre-apply snapshot is not.
+            invalidate_latest_run_evidence(DEFAULT_DB_PATH)
+            artifact_path = mutants_dir / "mutmut-cicd-stats.json"
+            try:
+                artifact_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise MutmutWinError(
+                    f"Could not remove CI/CD artifact before applying mutant "
+                    f"{artifact_path}: {exc}; source was not changed"
+                ) from exc
+            apply_mutant(mutant_name, config)
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
@@ -664,8 +980,12 @@ def apply(mutant_name: str) -> None:
 )
 def browse(show_killed: bool) -> None:
     """Launch TUI result browser."""
-    app = ResultBrowser(show_killed=show_killed)
-    app.run()
+    try:
+        app = ResultBrowser(show_killed=show_killed)
+        app.run()
+    except MutmutWinError as exc:
+        click.echo(f"Could not open result browser: {exc}", err=True)
+        sys.exit(1)
 
 
 @cli.command("tests-for-mutant")
@@ -686,6 +1006,14 @@ def tests_for_mutant_cmd(name: str) -> None:
         sys.exit(1)
 
     mapped_tests = tests_for_mutant_names([name], stats.tests_by_mangled_function_name)
+    if not stats.mapping_is_authoritative:
+        click.echo(
+            "Test mapping is incomplete; mutation runs execute the full test suite "
+            "for this mutant. Observed tests follow:"
+        )
+        for test in sorted(mapped_tests):
+            click.echo(test)
+        return
     if not mapped_tests:
         click.echo(f"No tests found for mutant '{name}'.")
         return
@@ -737,15 +1065,22 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
     for result in target_results:
         try:
             mangled = mangled_name_from_mutant_name(result.mutant_name)
-        except AssertionError:
+        except ValueError:
             times_and_names.append((0.0, result.mutant_name))
             continue
-        test_ids = stats.tests_by_mangled_function_name.get(mangled, set())
+        if stats.mapping_is_authoritative:
+            test_ids = stats.tests_by_mangled_function_name.get(mangled, set())
+        else:
+            # Runtime safety matches `_assign_tests_to_tasks`: a partial
+            # mapping cannot narrow execution, so estimate the clean suite.
+            test_ids = set(stats.duration_by_test)
         estimated = sum(stats.duration_by_test.get(t, 0.0) for t in test_ids)
         times_and_names.append((estimated, result.mutant_name))
 
     for estimated, mutant_name in sorted(times_and_names):
-        if estimated == 0.0:
+        if not stats.mapping_is_authoritative:
+            click.echo(f"{int(estimated * 1000)}ms (full suite; mapping incomplete)  {mutant_name}")
+        elif estimated == 0.0:
             click.echo(f"<no tests>  {mutant_name}")
         else:
             click.echo(f"{int(estimated * 1000)}ms  {mutant_name}")
@@ -761,13 +1096,121 @@ def export_cicd_stats_cmd() -> None:
     queries (issue #109 / A4-UI-013): an empty result set in a gate context
     means the pipeline ran nothing, and silence would read as green.
     """
-    all_results = _load_results_or_exit(DEFAULT_DB_PATH)
+    try:
+        _require_safe_workspace_roots("mutants", ".mutmut-cache")
+        validate_cache_path(DEFAULT_DB_PATH)
+        with (
+            WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH)),
+            DatabaseRunLocks(DEFAULT_DB_PATH),
+        ):
+            _require_safe_workspace_roots("mutants", ".mutmut-cache")
+            validate_cache_path(DEFAULT_DB_PATH)
+            _export_cicd_stats_locked()
+    except MutmutWinError as exc:
+        click.echo(f"CI/CD export could not acquire a consistent state: {exc}", err=True)
+        sys.exit(1)
+
+
+def _export_cicd_stats_locked() -> None:
+    """Export one snapshot while the cache/staging state lock is held."""
+    _require_safe_workspace_roots("mutants", ".mutmut-cache")
+    mutants_dir = Path("mutants")
+    artifact_path = mutants_dir / "mutmut-cicd-stats.json"
+    # Revoke any previous artifact before reading persisted authority. A
+    # corrupt snapshot must not leave an older green export in place merely
+    # because validation fails before the normal evidence checks below.
+    artifact_path.unlink(missing_ok=True)
+    current_run, all_results = _load_result_snapshot_or_exit(DEFAULT_DB_PATH)
+    if current_run is None:
+        artifact_path.unlink(missing_ok=True)
+        if all_results:
+            click.echo(
+                "Legacy mutation results have no verifiable run basis; "
+                "CI/CD export failed closed. Re-run 'mutmut-win run'.",
+                err=True,
+            )
+        else:
+            click.echo("No results found. Run 'mutmut-win run' first.", err=True)
+        sys.exit(1)
     if not all_results:
+        artifact_path.unlink(missing_ok=True)
         click.echo("No results found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
-    pairs: list[tuple[str, str | None]] = [(r.mutant_name, r.status) for r in all_results]
-    mutants_dir = Path("mutants")
+    if current_run is not None and (current_run.status != "completed" or current_run.pending_names):
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run is incomplete "
+            f"(status={current_run.status}, pending={len(current_run.pending_names)}); "
+            "CI/CD export failed closed.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if current_run is not None and current_run.evidence_invalidated:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run evidence was invalidated by an applied mutant; "
+            "re-run 'mutmut-win run' before CI/CD export.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if current_run.universe_fingerprint is None or current_run.plan_digest is None:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run predates verifiable ordered-plan evidence; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'.",
+            err=True,
+        )
+        sys.exit(1)
+
+    if current_run.basis_fingerprint is None or current_run.basis_config_json is None:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run predates verifiable source/test/config evidence or its "
+            "execution basis was incomplete; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'.",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        effective_config = MutmutConfig.model_validate_json(current_run.basis_config_json)
+    except ValueError:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run has an invalid persisted basis config; "
+            "CI/CD export failed closed.",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        live_basis = _stable_live_basis(effective_config, DEFAULT_DB_PATH)
+    except MutmutWinError:
+        artifact_path.unlink(missing_ok=True)
+        raise
+    if live_basis != current_run.basis_fingerprint:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Source, test, configuration, dependency, or environment inputs changed since "
+            "the latest mutation run; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Persist the same measured population used by ``results``. An unchecked
+    # or interrupted row is not a mutation verdict and must not dilute the CI
+    # score (MW220-037).
+    pairs: list[tuple[str, str | None]] = [
+        (r.mutant_name, r.status)
+        for r in all_results
+        if r.status not in {"not checked", "check was interrupted by user"}
+    ]
+    if not pairs:
+        artifact_path.unlink(missing_ok=True)
+        click.echo("No completed mutation verdicts found; CI/CD export failed closed.", err=True)
+        sys.exit(1)
     cicd = save_cicd_stats(pairs, mutants_dir)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
     # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a

@@ -450,6 +450,7 @@ def operator_assignment(
     if not node.value:
         # do not mutate `a: sometype` to an assignment `a: sometype = ""`
         return
+    mutated_value: cst.BaseExpression
     if m.matches(node.value, m.Name("None")):
         mutated_value = cst.SimpleString('""')
     else:
@@ -506,21 +507,32 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     if not isinstance(first_arg.value, cst.SimpleString):
         return
 
-    # Extract the raw pattern string (strip quotes and r-prefix).
-    raw = first_arg.value.value
-    # Determine prefix (r, b, etc.) and quote style
-    quote_char = raw[-1]  # ' or "
-    prefix_end = raw.index(quote_char)
-    prefix = raw[:prefix_end]
-    # Skip f-strings and byte strings
-    if "f" in prefix.lower() or "b" in prefix.lower():
+    # Mutate the runtime pattern, not the Python source-token payload.  In a
+    # non-raw literal ``"\\d+"`` the token contains two backslashes while the
+    # regex engine receives one; mutating the token therefore missed shorthand
+    # operators and diverged from the equivalent raw spelling.  Bytes patterns
+    # remain outside this string-only engine.
+    pattern = first_arg.value.evaluated_value
+    if not isinstance(pattern, str):
         return
-    inner = raw[prefix_end + 1 : -1]  # pattern without quotes
 
-    mutations = mutate_regex_pattern(inner)
-    for mutated_pattern in mutations:
-        new_value = f"{prefix}{quote_char}{mutated_pattern}{quote_char}"
-        new_string = first_arg.value.with_changes(value=new_value)
+    for mutated_pattern in mutate_regex_pattern(pattern):
+        # ``repr`` chooses and escapes a safe Python literal independently for
+        # every candidate.  Reusing the source quote delimiter made a valid
+        # regex range mutation such as [!-#] -> ["-#] invalidate the complete
+        # generated module.  Parsing and round-tripping here is a candidate-
+        # local safety gate: one unrepresentable value is skipped without
+        # discarding the other regex/body mutants in the file.
+        try:
+            serialized = cst.parse_expression(repr(mutated_pattern))
+        except (cst.ParserSyntaxError, cst.CSTValidationError):
+            continue
+        if not isinstance(serialized, cst.SimpleString):
+            continue
+        if serialized.evaluated_value != mutated_pattern:
+            continue
+
+        new_string = first_arg.value.with_changes(value=serialized.value)
         new_arg = first_arg.with_changes(value=new_string)
         yield node.with_changes(args=[new_arg, *node.args[1:]])
 
@@ -1010,8 +1022,8 @@ def operator_uoi_negate_boolean_operand(
 # fire under the `all` profile and so never disturb the advanced surface.
 mutation_operators: TAGGED_OPERATORS_TYPE = [
     # --- mutmut base operators (profile: basic) ---
-    (cst.BaseNumber, operator_number, Profile.BASIC),
-    (cst.BaseString, operator_string, Profile.BASIC),
+    (cst.BaseNumber, operator_number, Profile.BASIC),  # type: ignore[type-abstract]
+    (cst.BaseString, operator_string, Profile.BASIC),  # type: ignore[type-abstract]
     (cst.Name, operator_name, Profile.BASIC),
     (cst.Assign, operator_assignment, Profile.BASIC),
     (cst.AnnAssign, operator_assignment, Profile.BASIC),
@@ -1022,8 +1034,8 @@ mutation_operators: TAGGED_OPERATORS_TYPE = [
     (cst.Call, operator_symmetric_string_methods_swap, Profile.BASIC),
     (cst.Call, operator_unsymmetrical_string_methods_swap, Profile.BASIC),
     (cst.Lambda, operator_lambda, Profile.BASIC),
-    (cst.CSTNode, operator_keywords, Profile.BASIC),
-    (cst.CSTNode, operator_swap_op, Profile.BASIC),
+    (cst.CSTNode, operator_keywords, Profile.BASIC),  # type: ignore[type-abstract]
+    (cst.CSTNode, operator_swap_op, Profile.BASIC),  # type: ignore[type-abstract]
     (cst.Match, operator_match, Profile.BASIC),
     # --- mutmut-win extras (profile: advanced) ---
     (cst.Call, operator_regex, Profile.ADVANCED),

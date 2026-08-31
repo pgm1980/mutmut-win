@@ -234,8 +234,8 @@ wheels = [
 
 [[package]]
 name = "mutmut-win"
-version = "2.14.0"
-source = { git = "https://github.com/pgm1980/mutmut-win.git?rev=v2.14.0#43a776226265a8e71856fd3f34f0673f37a88067" }
+version = "2.20.0"
+source = { git = "https://github.com/pgm1980/mutmut-win.git?rev=v2.20.0#db71e53e637114ebf893b8fb98f0a21de5998440" }
 dependencies = [
     { name = "click" },
     { name = "coverage" },
@@ -515,7 +515,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mutmut-win", git = "https://github.com/pgm1980/mutmut-win.git?rev=v2.14.0" },
+    { name = "mutmut-win", git = "https://github.com/pgm1980/mutmut-win.git?rev=v2.20.0" },
     { name = "pytest", specifier = ">=9.0.3" },
 ]
 

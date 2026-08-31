@@ -1,8 +1,8 @@
-# Suggested Commands (as of v2.13.0)
+# Suggested Commands (as of v2.21.0)
 
 ## Setup
-- `uv sync --extra dev` — install/sync all dependencies incl. dev extras
-  (mypy, ruff, hypothesis, import-linter, pytest plugins, pip-audit).
+- `uv sync --locked --all-extras --all-groups --no-build-isolation` — install the
+  complete locked development environment.
 
 ## Run the tool
 - `uv run mutmut-win <subcommand>` — canonical entry point.
@@ -11,8 +11,7 @@
   export-cicd-stats. There is NO `html` report command (that was upstream mutmut).
 
 ## Testing
-- `uv run pytest` — full suite: unit + integration + architecture
-  (1016 passed / 5 skipped @ v2.13.0).
+- `uv run pytest` — full suite: unit + integration + architecture.
 - `uv run pytest tests/unit/` | `tests/integration/` — partial runs.
 - `uv run pytest -m "not slow"` — skip long-running tests.
 - `uv run pytest --cov=src --cov-report=html` — coverage (pytest alone measures none).
@@ -20,10 +19,12 @@
 
 ## Lint / Types / Architecture / Security
 - `uv run ruff check .` (+ `--fix`) — lint; `uv run ruff format .` — format.
-- `uv run mypy src/` — strict; known baseline is **14 errors** @ v2.13.0 — a change must
-  not add new ones.
+- `uv run mypy src/ scripts/` — strict, zero-error gate.
 - `uv run lint-imports` — layer contracts (also enforced in the test suite).
-- `semgrep scan --config auto .` — security scan (best rule coverage for Python).
+- `uv sync --locked --only-group security --no-install-project` followed by
+  `uv run --no-sync python -I scripts/semgrep_release_gate.py` — canonical pinned,
+  two-phase fail-closed gate over the full Git-owned release scope: isolated rule
+  materialization followed by a content-verified offline bundle scan.
 - `uv run pip-audit` — dependency vulnerability audit.
 
 ## Mutation testing (dogfooding — the tool tests itself)
@@ -49,6 +50,6 @@
   navigation (activate by project NAME `mutmut-win`, not by Windows path); Context7
   before using new/changed APIs.
 - Filesystem bash commands (cat, ls, grep, find, cp, mv, rm, mkdir, sed, awk, …) are
-  hard-blocked via `.claude/settings.json`. Bash stays allowed for `uv run …`, `git`,
-  `gh`, `semgrep`.
+  hard-blocked via `.claude/settings.json`. Bash stays allowed for `uv run …`, `git`
+  and `gh`; Semgrep gate authority belongs only to the canonical wrapper above.
 - FS MCP allowed directories cover the project tree only (not user-profile paths).

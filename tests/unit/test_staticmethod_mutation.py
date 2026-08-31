@@ -18,7 +18,8 @@ from mutmut_win.mutation import _is_static_only, mutate_file_contents
 def _exec(source: str) -> tuple[dict[str, object], list[str]]:
     code, names = mutate_file_contents("m.py", source)
     namespace: dict[str, object] = {"__name__": "m"}
-    exec(code, namespace)  # noqa: S102 - exercising the generated trampoline code
+    # ``code`` derives solely from the literal test fixture passed by each caller.
+    exec(code, namespace)  # noqa: S102  # nosemgrep
     return namespace, list(names)
 
 

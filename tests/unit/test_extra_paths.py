@@ -26,6 +26,7 @@ from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.file_setup import copy_also_copy_files
 from mutmut_win.models import MutationTask
 from mutmut_win.process.worker import worker_main
+from tests.unit.phase_mock_util import frozen_worker_config
 
 
 def _config(**overrides: Any) -> MutmutConfig:
@@ -132,22 +133,24 @@ class TestExtraPathsPythonPath:
             task_q.put(MutationTask(mutant_name="src/foo.py::bar__mutmut_1").model_dump())
             task_q.put(None)
 
-            config_data = {
-                "paths_to_mutate": ["src/"],
-                "tests_dir": ["tests/"],
-                "do_not_mutate": [],
-                "also_copy": [],
-                "extra_paths": ["benchmarks/"],
-                "max_children": 1,
-                "timeout_multiplier": 10.0,
-                "max_stack_depth": -1,
-                "debug": False,
-                "pytest_add_cli_args": [],
-                "pytest_add_cli_args_test_selection": [],
-                "mutate_only_covered_lines": False,
-                "type_check_command": [],
-                "infinite_loop_detection": False,
-            }
+            config_data = frozen_worker_config(
+                {
+                    "paths_to_mutate": ["src/"],
+                    "tests_dir": ["tests/"],
+                    "do_not_mutate": [],
+                    "also_copy": [],
+                    "extra_paths": ["benchmarks/"],
+                    "max_children": 1,
+                    "timeout_multiplier": 10.0,
+                    "max_stack_depth": -1,
+                    "debug": False,
+                    "pytest_add_cli_args": [],
+                    "pytest_add_cli_args_test_selection": [],
+                    "mutate_only_covered_lines": False,
+                    "type_check_command": [],
+                    "infinite_loop_detection": False,
+                }
+            )
 
             with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
                 worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]

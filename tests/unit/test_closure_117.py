@@ -26,14 +26,20 @@ def _results_rows() -> list[MutationResult]:
 
 class TestDeprecationNotice:
     def test_results_with_flag_warns(self) -> None:
-        with patch("mutmut_win.cli.load_results", return_value=_results_rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, _results_rows()),
+        ):
             result = CliRunner().invoke(cli, ["results", "--treat-timeout-as-kill"])
         assert result.exit_code == 0
         assert "deprecated" in result.output
         assert "infinite-loop detection" in result.output
 
     def test_results_without_flag_stays_silent(self) -> None:
-        with patch("mutmut_win.cli.load_results", return_value=_results_rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, _results_rows()),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert result.exit_code == 0
         assert "deprecated" not in result.output
@@ -42,7 +48,7 @@ class TestDeprecationNotice:
         mock_orchestrator = MagicMock()
         from mutmut_win.models import MutationRunResult
 
-        mock_orchestrator.run.return_value = MutationRunResult()
+        mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
         with (
             patch("mutmut_win.cli.load_config", return_value=MagicMock(max_children=2)),
             patch("mutmut_win.cli.MutationOrchestrator", return_value=mock_orchestrator),
@@ -55,7 +61,10 @@ class TestDeprecationNotice:
 
     def test_flag_remains_functional(self) -> None:
         """Deprecated, NOT removed — the displayed score still shifts."""
-        with patch("mutmut_win.cli.load_results", return_value=_results_rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, _results_rows()),
+        ):
             result = CliRunner().invoke(cli, ["results", "--treat-timeout-as-kill"])
         assert "100.0%" in result.output  # timeout counted as kill
 

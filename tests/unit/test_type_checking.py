@@ -1,6 +1,7 @@
 """Unit tests for mutmut_win.type_checking."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -8,8 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mutmut_win.exceptions import TypeCheckCommandError
 from mutmut_win.type_checking import (
     TypeCheckingError,
+    _run_type_check_process,
     parse_mypy_report,
     parse_pyrefly_report,
     parse_pyright_report,
@@ -210,29 +213,40 @@ class TestParseTyReport:
 class TestRunTypeChecker:
     def test_invalid_json_raises_exception(self) -> None:
         with (
-            patch("subprocess.run", return_value=_completed("not json")),
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("not json"),
+            ),
             pytest.raises(Exception, match="did not return JSON"),
         ):
             run_type_checker(["pyright", "--outputjson", "."])
 
     def test_pyright_route(self) -> None:
         completed = _completed(json.dumps({"generalDiagnostics": []}))
-        with patch("subprocess.run", return_value=completed):
+        with patch("mutmut_win.type_checking._run_type_check_process", return_value=completed):
             errors = run_type_checker(["pyright", "--outputjson", "."])
         assert errors == []
 
     def test_mypy_route(self) -> None:
-        with patch("subprocess.run", return_value=_completed("")):  # empty = empty list
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process", return_value=_completed("")
+        ):  # empty = empty list
             errors = run_type_checker(["mypy", "--output=json", "."])
         assert errors == []
 
     def test_pyrefly_route(self) -> None:
-        with patch("subprocess.run", return_value=_completed(json.dumps({"errors": []}))):
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(json.dumps({"errors": []})),
+        ):
             errors = run_type_checker(["pyrefly", "check", "."])
         assert errors == []
 
     def test_ty_route(self) -> None:
-        with patch("subprocess.run", return_value=_completed(json.dumps([]))):
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(json.dumps([])),
+        ):
             errors = run_type_checker(["ty", "check", "."])
         assert errors == []
 
@@ -253,7 +267,10 @@ class TestCheckerDetection:
         ],
     )
     def test_windows_command_forms_take_the_mypy_route(self, command: list[str]) -> None:
-        with patch("subprocess.run", return_value=_completed(_MYPY_JSON_LINE, returncode=1)):
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(_MYPY_JSON_LINE, returncode=1),
+        ):
             errors = run_type_checker(command)
         assert len(errors) == 1
         assert errors[0].line_number == 3
@@ -271,7 +288,10 @@ class TestCheckerDetection:
                 ]
             }
         )
-        with patch("subprocess.run", return_value=_completed(report, returncode=1)):
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(report, returncode=1),
+        ):
             errors = run_type_checker(["pyright.exe", "--outputjson", "."])
         assert len(errors) == 1
 
@@ -285,38 +305,215 @@ class TestSubprocessRobustness:
         # zero errors — a silent no-op filter.
         completed = _completed("", returncode=2, stderr="mypy: can't read file 'x'")
         with (
-            patch("subprocess.run", return_value=completed),
+            patch("mutmut_win.type_checking._run_type_check_process", return_value=completed),
             pytest.raises(Exception, match="can't read file"),
         ):
             run_type_checker(["mypy", "--output=json", "x"])
 
     def test_findings_exit_code_is_not_an_error(self) -> None:
         # Exit 1 just means "errors found" for every supported checker.
-        with patch("subprocess.run", return_value=_completed(_MYPY_JSON_LINE, returncode=1)):
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(_MYPY_JSON_LINE, returncode=1),
+        ):
             errors = run_type_checker(["mypy", "--output=json", "."])
         assert len(errors) == 1
 
-    def test_subprocess_gets_timeout_and_tolerant_encoding(self) -> None:
+    def test_process_helper_gets_timeout(self) -> None:
         captured: dict[str, Any] = {}
 
         def fake_run(cmd: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
             captured.update(kwargs)
             return _completed("")
 
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("mutmut_win.type_checking._run_type_check_process", side_effect=fake_run):
             run_type_checker(["mypy", "--output=json", "."])
         assert captured.get("timeout") is not None
-        assert captured.get("errors") == "replace"
 
     def test_timeout_expiry_raises_a_clear_message(self) -> None:
         with (
             patch(
-                "subprocess.run",
+                "mutmut_win.type_checking._run_type_check_process",
                 side_effect=subprocess.TimeoutExpired(cmd="mypy", timeout=300),
             ),
             pytest.raises(Exception, match="timed out"),
         ):
             run_type_checker(["mypy", "--output=json", "."])
+
+
+class TestBoundedProcessRunner:
+    """The checker timeout must cover the tree, not just the direct process."""
+
+    def test_output_is_bounded_pipe_capture_instead_of_inherited_pipes(self) -> None:
+        process = MagicMock()
+        process.pid = 123
+        process.wait.return_value = 0
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process) as popen,
+            patch("mutmut_win.type_checking._terminate_type_checker_tree") as terminate_tree,
+        ):
+            result = _run_type_check_process(["mypy"], timeout=7)
+
+        kwargs = popen.call_args.kwargs
+        assert kwargs["stdout"] is not subprocess.PIPE
+        assert kwargs["stderr"] is not subprocess.PIPE
+        assert isinstance(kwargs["stdout"], int)
+        assert isinstance(kwargs["stderr"], int)
+        assert result.stdout == ""
+        assert result.stderr == ""
+        process.wait.assert_called_once_with(timeout=7)
+        terminate_tree.assert_called_once_with(process, None)
+
+    def test_internal_child_controls_are_sanitized_from_type_checker_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.constants import INTERNAL_CHILD_ENVIRONMENT_VARS
+
+        process = MagicMock()
+        process.pid = 123
+        process.wait.return_value = 0
+        for name in INTERNAL_CHILD_ENVIRONMENT_VARS:
+            monkeypatch.setenv(name, f"outer-{name}")
+        if os.name != "nt":
+            monkeypatch.setenv("mutant_under_test", "case-sensitive-user-input")
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process) as popen,
+            patch("mutmut_win.type_checking._terminate_type_checker_tree"),
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        child_environment = popen.call_args.kwargs["env"]
+        if os.name == "nt":
+            child_names = {name.upper() for name in child_environment}
+            assert child_names.isdisjoint(INTERNAL_CHILD_ENVIRONMENT_VARS)
+        else:
+            assert set(child_environment).isdisjoint(INTERNAL_CHILD_ENVIRONMENT_VARS)
+            assert child_environment["mutant_under_test"] == "case-sensitive-user-input"
+
+    def test_file_output_is_decoded_tolerantly(self) -> None:
+        process = MagicMock()
+        process.pid = 124
+        process.wait.return_value = 0
+
+        def fake_popen(command: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            os.write(kwargs["stdout"], b"bad: \xff")
+            os.write(kwargs["stderr"], b"err: \xfe")
+            return process
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking.subprocess.Popen", side_effect=fake_popen),
+        ):
+            result = _run_type_check_process(["mypy"], timeout=7)
+
+        assert result.stdout == "bad: \ufffd"
+        assert result.stderr == "err: \ufffd"
+
+    def test_output_limit_fails_closed_without_unbounded_capture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        process = MagicMock()
+        process.pid = 124
+        process.wait.return_value = 0
+
+        def fake_popen(command: list[str], **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            os.write(kwargs["stdout"], b"12345")
+            return process
+
+        monkeypatch.setattr("mutmut_win.type_checking._MAX_CHECKER_OUTPUT_BYTES", 4)
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking.subprocess.Popen", side_effect=fake_popen),
+            pytest.raises(TypeCheckCommandError, match="output exceeded"),
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+    def test_timeout_invokes_tree_termination_before_reraising(self) -> None:
+        process = MagicMock()
+        process.pid = 125
+        timeout = subprocess.TimeoutExpired(cmd="mypy", timeout=7)
+        process.wait.side_effect = timeout
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=77),
+            patch("mutmut_win.type_checking._assign_type_checker_to_job", return_value=True),
+            patch("mutmut_win.type_checking._close_type_checker_job") as close_job,
+            patch("mutmut_win.type_checking._terminate_type_checker_tree") as terminate,
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
+            pytest.raises(subprocess.TimeoutExpired),
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        terminate.assert_called_once_with(process, 77)
+        close_job.assert_not_called()  # termination owns the one-and-only close
+
+    def test_windows_job_is_assigned_and_closed_after_success(self) -> None:
+        process = MagicMock()
+        process.pid = 126
+        process.wait.return_value = 0
+
+        with (
+            patch("mutmut_win.type_checking.sys.platform", "win32"),
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=88),
+            patch(
+                "mutmut_win.type_checking._assign_type_checker_to_job", return_value=True
+            ) as assign,
+            patch("mutmut_win.type_checking._close_type_checker_job") as close_job,
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        assign.assert_called_once_with(88, 126)
+        close_job.assert_called_once_with(88)
+
+    def test_interrupt_also_reaps_the_process_tree(self) -> None:
+        process = MagicMock()
+        process.pid = 127
+        process.wait.side_effect = KeyboardInterrupt
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking._terminate_type_checker_tree") as terminate,
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        terminate.assert_called_once_with(process, None)
+
+    def test_job_close_failure_does_not_skip_fallback_kill_or_mask_timeout(self) -> None:
+        process = MagicMock()
+        process.pid = 128
+        timeout = subprocess.TimeoutExpired(cmd="mypy", timeout=7)
+        process.wait.side_effect = [timeout, 0]
+        captured_member = MagicMock()
+        captured_member.pid = 129
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=91),
+            patch("mutmut_win.type_checking._assign_type_checker_to_job", return_value=True),
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
+            patch(
+                "mutmut_win.type_checking._snapshot_process_tree",
+                return_value=[captured_member],
+            ),
+            patch(
+                "mutmut_win.type_checking._close_type_checker_job",
+                side_effect=OSError("close failed"),
+            ),
+            patch("mutmut_win.type_checking.psutil.wait_procs", return_value=([], [])),
+            pytest.raises(subprocess.TimeoutExpired) as exc_info,
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        assert exc_info.value is timeout
+        captured_member.kill.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        assert process.wait.call_args_list[-1].kwargs["timeout"] > 0
 
 
 class TestPyrightSeverityFilter:

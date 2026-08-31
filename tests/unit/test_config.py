@@ -131,6 +131,27 @@ class TestLoadConfig:
         assert config.paths_to_mutate == ["src/"]
         assert config.timeout_multiplier == pytest.approx(7.5)
 
+    def test_setup_cfg_percent_is_literal_and_quoted_args_stay_grouped(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            '[mutmut]\npytest_add_cli_args = -k "ratio%case"\n',
+            encoding="utf-8",
+        )
+
+        config = load_config(tmp_path)
+
+        assert config.pytest_add_cli_args == ["-k", "ratio%case"]
+
+    def test_malformed_setup_cfg_is_a_domain_config_error(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "missing section header\nkey = value\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            load_config(tmp_path)
+
     def test_setup_cfg_multiline_paths(self, tmp_path: Path) -> None:
         """F5: multi-line setup.cfg values are split into lists."""
         setup_cfg = tmp_path / "setup.cfg"
