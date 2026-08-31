@@ -7,9 +7,10 @@ by the OS kernel — preventing CPU overheating from orphaned pytest processes.
 Uses a private ``ctypes.WinDLL("kernel32", use_last_error=True)`` instance to
 call the Win32 Job Object API directly. No external dependencies required.
 
-Graceful degradation: if Job Objects are unavailable (e.g. restricted security
-policies), ``create_kill_on_close_job()`` raises ``OSError`` and the caller
-should fall back to running without orphan protection.
+If Job Objects are unavailable (for example under a restricted security
+policy), ``create_kill_on_close_job()`` raises ``OSError``. Production process
+launchers treat that as a containment failure and refuse to resume or dispatch
+work on Windows.
 """
 
 from __future__ import annotations
@@ -111,6 +112,9 @@ if sys.platform == "win32":
     _kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]  # hObject
     _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
+    _kernel32.ResumeThread.argtypes = [ctypes.wintypes.HANDLE]
+    _kernel32.ResumeThread.restype = ctypes.wintypes.DWORD
+
 
 def create_kill_on_close_job() -> int:
     """Create a Windows Job Object that kills all assigned processes on close.
@@ -161,14 +165,12 @@ def assign_process_to_job(job_handle: int, pid: int) -> None:
     assigns it to the job, then closes the process handle (the job keeps
     its own reference).
 
-    Note:
-        Assignment happens *after* the child process has already started —
-        there is no ``CREATE_SUSPENDED`` handshake. Between process start and
-        this call the child can spawn processes that are not yet covered by
-        this job (micro orphan window, audit EW-018/JT-007). In practice the
-        uv launcher child compensates: it places its own children in its own
-        kill-on-close job. Documented behavior; a ``CREATE_SUSPENDED``-based
-        rework is explicitly out of scope.
+    Production callers prevent work during assignment. Direct subprocesses
+    start with ``CREATE_SUSPENDED`` and use this PID-based helper before they
+    resume. Worker-pool interpreters use ``assign_process_handle_to_job`` on
+    the handle returned by ``CreateProcess`` while their primary thread is
+    still suspended. Assignment failure is therefore handled before any
+    uncontained Python startup or task code can run.
 
     Args:
         job_handle: Handle returned by ``create_kill_on_close_job()``.
@@ -188,12 +190,35 @@ def assign_process_to_job(job_handle: int, pid: int) -> None:
         raise OSError(msg)
 
     try:
-        success: int = _kernel32.AssignProcessToJobObject(job_handle, process_handle)
-        if not success:
-            msg = f"AssignProcessToJobObject failed for PID {pid} (error {ctypes.get_last_error()})"
-            raise OSError(msg)
+        assign_process_handle_to_job(job_handle, process_handle)
     finally:
         _kernel32.CloseHandle(process_handle)
+
+
+def assign_process_handle_to_job(job_handle: int, process_handle: int) -> None:
+    """Assign an already-open process handle to a Job Object.
+
+    This is the race-free primitive for ``CREATE_SUSPENDED`` launchers: no
+    Python startup code runs before the handle is assigned.
+    """
+    if sys.platform != "win32":
+        msg = "Job Objects are only available on Windows"
+        raise RuntimeError(msg)
+    success: int = _kernel32.AssignProcessToJobObject(job_handle, process_handle)
+    if not success:
+        msg = f"AssignProcessToJobObject failed (error {ctypes.get_last_error()})"
+        raise OSError(msg)
+
+
+def resume_thread_handle(thread_handle: int) -> None:
+    """Resume a primary thread created with ``CREATE_SUSPENDED``."""
+    if sys.platform != "win32":
+        msg = "ResumeThread is only available on Windows"
+        raise RuntimeError(msg)
+    previous_suspend_count: int = _kernel32.ResumeThread(thread_handle)
+    if previous_suspend_count == 0xFFFFFFFF:
+        msg = f"ResumeThread failed (error {ctypes.get_last_error()})"
+        raise OSError(msg)
 
 
 def close_job(job_handle: int) -> None:

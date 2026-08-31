@@ -28,7 +28,7 @@ from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.constants import EXIT_CODE_SKIPPED
-from mutmut_win.db import load_results, save_result
+from mutmut_win.db import MutationRunState, load_results, save_result
 from mutmut_win.models import MutationResult
 from mutmut_win.orchestrator import _persist_skipped_mutants
 from mutmut_win.stats import CicdStats, compute_cicd_stats
@@ -104,6 +104,31 @@ class TestSkippedProducerWiring:
         assert skipped, "filtered-out mutants must surface as 'skipped'"
         assert all(r.mutant_name != "mod.x_add__mutmut_1" for r in skipped)
 
+    def test_completely_unmatched_filter_does_not_write_false_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.config import MutmutConfig
+        from mutmut_win.orchestrator import MutationOrchestrator
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "mod.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        db = tmp_path / "db.sqlite"
+        orch = MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src"], max_children=1),
+            runner=MagicMock(),
+            executor=MagicMock(),
+            db_path=db,
+            mutant_names=("does.not.match.*",),
+        )
+
+        result = orch.run()
+
+        assert result.total_mutants == 0
+        assert load_results(db) == []
+
 
 # ---------------------------------------------------------------------------
 # SCO-001 — export console line uses the scoreable denominator
@@ -117,14 +142,36 @@ class TestExportDenominatorLine:
         assert stats.effective_killed == 40
         assert stats.score == pytest.approx(40 / 56 * 100.0)
 
-    def test_console_line_shows_scoreable_not_total(self) -> None:
+    def test_console_line_shows_scoreable_not_total(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rows = (
             [MutationResult(mutant_name=f"k{i}", status="killed") for i in range(40)]
             + [MutationResult(mutant_name=f"n{i}", status="no tests") for i in range(22)]
             + [MutationResult(mutant_name=f"s{i}", status="survived") for i in range(16)]
         )
+        current = MutationRunState(
+            run_id="verified-run",
+            status="completed",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:01:00+00:00",
+            planned_names=tuple(row.mutant_name for row in rows),
+            completed_results=(),
+            completed_names=tuple(row.mutant_name for row in rows),
+            pending_names=(),
+            universe_fingerprint="b" * 64,
+            plan_digest="c" * 64,
+            basis_fingerprint="a" * 64,
+            basis_config_json="{}",
+        )
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
         with (
-            patch("mutmut_win.cli.load_results", return_value=rows),
+            patch(
+                "mutmut_win.cli._load_result_snapshot_or_exit",
+                return_value=(current, rows),
+            ),
+            patch("mutmut_win.cli._stable_live_basis", return_value="a" * 64),
             patch("mutmut_win.cli.save_cicd_stats") as mock_save,
         ):
             mock_save.return_value = compute_cicd_stats([(r.mutant_name, r.status) for r in rows])
@@ -150,7 +197,10 @@ class TestResultsTypeCheckLine:
         ]
 
     def test_type_check_has_its_own_line(self) -> None:
-        with patch("mutmut_win.cli.load_results", return_value=self._rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, self._rows()),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert result.exit_code == 0
         assert "Type-check:  1" in result.output
@@ -158,13 +208,19 @@ class TestResultsTypeCheckLine:
     def test_killed_excludes_type_check(self) -> None:
         """run summary: Killed=3 (2 plain + 1 IL) and Type-check separate —
         results must agree instead of printing Killed=4."""
-        with patch("mutmut_win.cli.load_results", return_value=self._rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, self._rows()),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert "Killed:     3  (incl. 1 infinite-loop)" in result.output
 
     def test_score_still_counts_the_kill_class(self) -> None:
         """Presentation changes, the formula does not: (2+1+1)/5 = 80%."""
-        with patch("mutmut_win.cli.load_results", return_value=self._rows()):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, self._rows()),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert "Score:      80.0%" in result.output
 
@@ -179,7 +235,10 @@ class TestResultsTypeCheckLine:
         assert cicd.skipped == 1
         assert cicd.scoreable == 5  # 6 total - 1 skipped
         assert cicd.score == pytest.approx(80.0)
-        with patch("mutmut_win.cli.load_results", return_value=rows):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, rows),
+        ):
             result = CliRunner().invoke(cli, ["results"])
         assert "Skipped:    1" in result.output
         assert "Score:      80.0%" in result.output

@@ -13,22 +13,24 @@ test_show_forensics.py.
 from __future__ import annotations
 
 import json
+import sys
 from queue import Queue
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig, load_config
+from mutmut_win.exceptions import ProcessContainmentError
 from mutmut_win.models import MutationRunResult, MutationTask, TaskCompleted
 from mutmut_win.orchestrator import MutationOrchestrator, _print_summary
 from mutmut_win.process.executor import SpawnPoolExecutor
+from tests.unit.phase_mock_util import frozen_worker_config
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _config() -> MutmutConfig:
@@ -84,12 +86,86 @@ class TestExecutorPoolCollapse:
         assert executor.aborted is False
         assert executor.abort_reason is None
 
+    def test_fatal_containment_completion_aborts_remaining_pool(self) -> None:
+        executor = SpawnPoolExecutor(max_workers=1, config=_config())
+        executor._num_tasks = 2
+        executor._event_queue.put(
+            TaskCompleted(
+                mutant_name="m.x_f__mutmut_1",
+                worker_pid=101,
+                exit_code=35,
+                duration=0.0,
+                last_output="ProcessContainmentError: no Job Object",
+                fatal=True,
+            ).model_dump()
+        )
+
+        events = list(executor.get_events())
+        executor.shutdown()
+
+        assert len(events) == 1
+        assert events[0].fatal is True
+        assert executor.aborted is True
+        assert executor.abort_reason is not None
+        assert "fatal execution-boundary" in executor.abort_reason
+        assert "ProcessContainmentError" in executor.abort_reason
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object containment")
+class TestWindowsPoolContainmentBootstrap:
+    def test_missing_job_fails_before_executor_allocation(self) -> None:
+        with (
+            patch(
+                "mutmut_win.process.job_object.create_kill_on_close_job",
+                side_effect=OSError("denied"),
+            ),
+            pytest.raises(ProcessContainmentError, match="refusing to start"),
+        ):
+            SpawnPoolExecutor(max_workers=1, config=_config())
+
+    def test_assignment_failure_kills_worker_before_enqueuing_tasks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        with patch("mutmut_win.process.job_object.create_kill_on_close_job", return_value=77):
+            executor = SpawnPoolExecutor(max_workers=1, config=_config())
+        boundary_payload = frozen_worker_config(executor._config_data)["_pytest_boundary"]
+        assert isinstance(boundary_payload, dict)
+        executor.configure_pytest_boundary(boundary_payload)
+
+        fake_process = MagicMock()
+        fake_process.start.side_effect = ProcessContainmentError(
+            "assignment denied before worker resume"
+        )
+        task_queue = MagicMock()
+        event_queue = MagicMock()
+        executor._task_queue = task_queue
+        executor._event_queue = event_queue
+
+        try:
+            with (
+                patch.object(executor, "_make_worker_process", return_value=fake_process),
+                pytest.raises(ProcessContainmentError, match="before worker resume"),
+            ):
+                executor.start([MutationTask(mutant_name="m.x_f__mutmut_1")])
+        finally:
+            # The handle is synthetic; prevent shutdown from passing it to the
+            # real Windows API while still exercising queue cleanup.
+            executor._job_handle = None
+            executor.shutdown()
+
+        fake_process.start.assert_called_once()
+        task_queue.put.assert_not_called()
+
 
 class TestStartupWatchdog:
     """WRK-001: a worker that dies DURING interpreter startup (before the mp
     bootstrap) never pulls a task, and the liveness sweep cannot resolve it to
     a clean ``not any(is_alive())`` abort — the run hung >=50s. A time-based
-    watchdog aborts when no task is ever pulled within the startup grace."""
+    watchdog aborts when no task is ever pulled within the startup grace.  It
+    now remains armed for the mixed-pool variant, resetting on progress and
+    firing only when queued work exists without an in-flight task."""
 
     def test_watchdog_aborts_when_no_task_is_ever_pulled(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -125,18 +201,21 @@ class TestStartupWatchdog:
         )
         assert expected_err in capsys.readouterr().err.splitlines()
 
-    def test_watchdog_silent_once_a_task_was_pulled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_watchdog_silent_when_last_inflight_task_is_recovered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import mutmut_win.process.executor as executor_module
         from mutmut_win.models import TaskStarted
 
-        # Grace 0 would fire instantly IF the watchdog ignored progress.
+        # Grace 0 would fire instantly if the watchdog ignored the fact that
+        # recovery finishes the final task and leaves no queued remainder.
         monkeypatch.setattr(executor_module, "_STARTUP_GRACE_SECONDS", 0.0)
         monkeypatch.setattr(executor_module, "_EVENT_POLL_SECONDS", 0.01)
 
         executor = SpawnPoolExecutor(max_workers=1, config=_config())
         # Worker pulled a task (TaskStarted) then died mid-task: the normal
         # sweep synthesizes a 'suspicious' completion. The watchdog must stay
-        # silent because a task WAS pulled — otherwise grace 0 would abort.
+        # silent because no task remains after that completion.
         dead_after_pull = MagicMock()
         dead_after_pull.is_alive.return_value = False
         dead_after_pull.pid = 303
@@ -153,18 +232,98 @@ class TestStartupWatchdog:
         assert any(getattr(e, "exit_code", None) == 35 for e in events)
         assert executor.aborted is False
 
+    def test_watchdog_aborts_mixed_pool_after_earlier_progress(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """One healthy completion must not disarm protection for a wedged peer."""
+        import mutmut_win.process.executor as executor_module
+        from mutmut_win.models import TaskStarted
 
-def test_startup_grace_expired_predicate() -> None:
-    """The watchdog predicate: no pull + past grace → expired; a pull disarms it."""
-    from mutmut_win.process.executor import _STARTUP_GRACE_SECONDS, _startup_grace_expired
+        monkeypatch.setattr(executor_module, "_STARTUP_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(executor_module, "_EVENT_POLL_SECONDS", 0.01)
+
+        executor = SpawnPoolExecutor(max_workers=2, config=_config())
+        completed_worker = MagicMock()
+        completed_worker.is_alive.return_value = False
+        completed_worker.pid = 401
+        completed_worker.exitcode = 0
+        alive_but_wedged = MagicMock()
+        alive_but_wedged.is_alive.return_value = True
+        alive_but_wedged.pid = 402
+        executor._workers = [completed_worker, alive_but_wedged]
+        executor._num_tasks = 2
+        executor._event_queue.put(TaskStarted(mutant_name="m1", worker_pid=401).model_dump())
+        executor._event_queue.put(
+            TaskCompleted(mutant_name="m1", worker_pid=401, exit_code=0, duration=0.1).model_dump()
+        )
+
+        events = list(executor.get_events())
+        executor.shutdown()
+
+        assert len(events) == 2
+        assert executor.aborted is True
+        assert executor.abort_reason == (
+            "no worker pulled another task within 0s; 1 task(s) were never started"
+        )
+        assert "stopped pulling queued tasks" in capsys.readouterr().err
+
+    def test_watchdog_never_aborts_a_long_inflight_task(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Elapsed idle grace is irrelevant while a real task is in flight."""
+        import queue
+
+        import mutmut_win.process.executor as executor_module
+        from mutmut_win.models import TaskStarted
+
+        monkeypatch.setattr(executor_module, "_STARTUP_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(executor_module, "_EVENT_POLL_SECONDS", 0.0)
+
+        executor = SpawnPoolExecutor(max_workers=1, config=_config())
+        alive = MagicMock()
+        alive.is_alive.return_value = True
+        alive.pid = 501
+        executor._workers = [alive]
+        executor._num_tasks = 1
+        executor._event_queue = MagicMock()
+        executor._event_queue.get.side_effect = [
+            TaskStarted(mutant_name="slow", worker_pid=501).model_dump(),
+            queue.Empty,
+            queue.Empty,
+            TaskCompleted(
+                mutant_name="slow", worker_pid=501, exit_code=0, duration=120.0
+            ).model_dump(),
+        ]
+
+        events = list(executor.get_events())
+        executor.shutdown()
+
+        assert [type(event) for event in events] == [TaskStarted, TaskCompleted]
+        assert executor.aborted is False
+
+
+def test_idle_grace_expired_predicate() -> None:
+    """Only queued + idle + overdue work trips the progress watchdog."""
+    from mutmut_win.process.executor import _STARTUP_GRACE_SECONDS, _idle_grace_expired
 
     grace = _STARTUP_GRACE_SECONDS
-    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace + 1.0) is True
-    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace - 1.0) is False
+    assert (
+        _idle_grace_expired(remaining_tasks=1, in_flight_tasks=0, idle_elapsed=grace + 1.0) is True
+    )
+    assert (
+        _idle_grace_expired(remaining_tasks=1, in_flight_tasks=0, idle_elapsed=grace - 1.0) is False
+    )
     # boundary: strictly greater, not >=
-    assert _startup_grace_expired(any_task_pulled=False, elapsed=grace) is False
-    # a task was pulled → never expires, even long past the grace
-    assert _startup_grace_expired(any_task_pulled=True, elapsed=grace + 100.0) is False
+    assert _idle_grace_expired(remaining_tasks=1, in_flight_tasks=0, idle_elapsed=grace) is False
+    # A running task stays under its worker timeout, however long it needs.
+    assert (
+        _idle_grace_expired(remaining_tasks=1, in_flight_tasks=1, idle_elapsed=grace + 100.0)
+        is False
+    )
+    assert (
+        _idle_grace_expired(remaining_tasks=0, in_flight_tasks=0, idle_elapsed=grace + 100.0)
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,14 +439,17 @@ class TestRunAbortedWiring:
         assert result.run_aborted is True
         assert result.unchecked >= 1  # never-started remainder stays unchecked
 
-    def test_magicmock_executor_keeps_run_aborted_false(
+    def test_executor_without_any_attributable_completions_aborts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # End-to-end pin of the MagicMock-truthiness hardening.
+        # A falsey/missing ``aborted`` attribute is not enough to claim
+        # success: if planned tasks produce no attributable completions the
+        # run is incomplete and must fail closed.
         executor = MagicMock()
         executor.get_events.return_value = iter(())
         result = self._run_with_executor(tmp_path, monkeypatch, executor)
-        assert result.run_aborted is False
+        assert result.run_aborted is True
+        assert result.unchecked == result.total_mutants
 
 
 # ---------------------------------------------------------------------------
@@ -407,17 +569,29 @@ class _SimpleQueue:
 
 
 class TestWorkerDiagnosticsChannel:
-    def test_recovery_print_goes_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_recovery_print_goes_to_stderr(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
         # Child processes inherit OS fd 1 — the parent's json redirect can
         # never catch worker prints. Diagnostics must be born on stderr.
         from mutmut_win.process.worker import worker_main
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
 
         task_q = _SimpleQueue()
         event_q = _SimpleQueue()
         task_q.put({"not": "a task"})  # ValidationError → recovery path
         task_q.put(None)
 
-        worker_main(task_q, event_q, {"pytest_add_cli_args": []})  # type: ignore[arg-type]
+        worker_main(
+            task_q,
+            event_q,
+            frozen_worker_config({"pytest_add_cli_args": []}),
+        )  # type: ignore[arg-type]
 
         captured = capsys.readouterr()
         assert "WORKER RECOVERY" in captured.err
@@ -437,11 +611,20 @@ class TestWorkerDiagnosticsChannel:
         task_q.put(None)
 
         with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=OSError("boom")):
-            worker_main(task_q, event_q, {"pytest_add_cli_args": []})  # type: ignore[arg-type]
+            worker_main(
+                task_q,
+                event_q,
+                frozen_worker_config({"pytest_add_cli_args": []}),
+            )  # type: ignore[arg-type]
 
         captured = capsys.readouterr()
         assert "WORKER ERROR for m.x_f__mutmut_1: boom" in captured.err.splitlines()
         assert "WORKER ERROR" not in captured.out
+        # A subprocess that never started must not publish TaskStarted and
+        # thereby disarm the executor's startup watchdog.  The worker still
+        # returns one terminal suspicious result for the claimed queue item.
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 35
 
     def test_monitor_start_failure_print_is_verbatim_on_stderr(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

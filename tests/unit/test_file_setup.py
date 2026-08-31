@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import pytest
 
 from mutmut_win.config import MutmutConfig
-
-if TYPE_CHECKING:
-    import pytest
+from mutmut_win.exceptions import UnsafeStagingError
 from mutmut_win.file_setup import (
     copy_also_copy_files,
     copy_src_dir,
@@ -53,6 +54,28 @@ class TestWalkAllFiles:
         filenames = [f for _, f in files]
         assert "a.py" in filenames
         assert "b.txt" in filenames
+
+    def test_file_symlink_outside_project_is_not_walked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+        outside.write_text("SECRET = True\n", encoding="utf-8")
+        link = src / "leak.py"
+        try:
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                pytest.skip(f"file symlinks unavailable on this host: {exc}")
+
+            config = _config(paths_to_mutate=["src"])
+            assert list(walk_source_files(config)) == []
+            copy_src_dir(config)
+            assert not (tmp_path / "mutants" / "src" / "leak.py").exists()
+        finally:
+            outside.unlink(missing_ok=True)
 
     def test_single_file_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -166,14 +189,51 @@ class TestCopySrcDir:
         finally:
             os.chdir(original_cwd)
 
-    def test_changed_conftest_warns_about_stale_verdict_reuse(
+    def test_refresh_replaces_hardlink_without_writing_its_other_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 'source'\n", encoding="utf-8")
+        victim = tmp_path / "victim.py"
+        victim.write_text("VALUE = 'victim'\n", encoding="utf-8")
+        staged = tmp_path / "mutants" / "src" / "mod.py"
+        staged.parent.mkdir(parents=True)
+        os.link(victim, staged)
+
+        copy_src_dir(_config(paths_to_mutate=["src"]))
+
+        assert victim.read_text(encoding="utf-8") == "VALUE = 'victim'\n"
+        assert staged.read_text(encoding="utf-8") == "VALUE = 'source'\n"
+
+    def test_refresh_rejects_file_symlink_destination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text("VALUE = 'source'\n", encoding="utf-8")
+        victim = tmp_path / "victim.py"
+        victim.write_text("VALUE = 'victim'\n", encoding="utf-8")
+        staged = tmp_path / "mutants" / "src" / "mod.py"
+        staged.parent.mkdir(parents=True)
+        try:
+            staged.symlink_to(victim)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable on this host: {exc}")
+
+        with pytest.raises(UnsafeStagingError, match="symlink/junction"):
+            copy_src_dir(_config(paths_to_mutate=["src"]))
+
+        assert victim.read_text(encoding="utf-8") == "VALUE = 'victim'\n"
+
+    def test_changed_conftest_is_mirrored_without_obsolete_cache_warning(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # conftest.py changes alter fixture-driven test behaviour without
-        # changing any node ID, so the test-file fingerprints that gate verdict
-        # reuse cannot see them (stats.py). The mirror copy DOES detect the
-        # change, so it must warn rather than let a stale verdict be reused
-        # silently (external QA: conftest-not-fingerprinted).
+        # The stats context digest now includes conftest.py, so the mirror only
+        # needs to report the update; the old "not fingerprinted / --force"
+        # warning would be false and undermine the new cache contract.
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         conftest = tests_dir / "conftest.py"
@@ -200,26 +260,44 @@ class TestCopySrcDir:
             os.chdir(original_cwd)
 
         assert "conftest.py" in out
-        assert "stale" in out.lower()
-        assert "--force" in out
+        assert "updated" in out.lower()
+        assert "not fingerprinted" not in out.lower()
 
+    def test_workspace_run_lock_artifacts_are_never_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".MUTMUT-WIN.RUN.LOCK").write_text("owner", encoding="utf-8")
+        (tmp_path / ".Mutmut-Win.Run.Lock.Guard").write_bytes(b"\0")
 
-def test_conftest_staleness_warning_only_for_conftest() -> None:
-    """_conftest_staleness_warning returns the verbatim warning for conftest.py
-    and is silent otherwise (verbatim pin: the message is user-facing contract)."""
-    from mutmut_win.file_setup import _conftest_staleness_warning
+        copy_src_dir(_config(paths_to_mutate=["."]))
 
-    src = Path("tests/conftest.py")
-    expected = (
-        f"     WARNING: {src} changed but is not fingerprinted for "
-        f"verdict reuse — cached results depending on its fixtures may be "
-        f"stale; re-run with --force for an authoritative score."
-    )
-    assert _conftest_staleness_warning(src) == expected
+        assert not (tmp_path / "mutants" / ".MUTMUT-WIN.RUN.LOCK").exists()
+        assert not (tmp_path / "mutants" / ".Mutmut-Win.Run.Lock.Guard").exists()
 
-    # Any other file — including a confusingly named one — stays silent.
-    assert _conftest_staleness_warning(Path("tests/test_foo.py")) is None
-    assert _conftest_staleness_warning(Path("src/conftest_helper.py")) is None
+    def test_automatic_root_mirror_excludes_dotenv_secrets_but_keeps_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".ENV").write_text("TOKEN=secret\n", encoding="utf-8")
+        (tmp_path / ".Env.Production").write_text("TOKEN=prod\n", encoding="utf-8")
+        (tmp_path / ".Env.Example").write_text("TOKEN=replace-me\n", encoding="utf-8")
+        (tmp_path / "nested").mkdir()
+        (tmp_path / "nested" / ".Env.Local").write_text("TOKEN=nested\n", encoding="utf-8")
+        (tmp_path / "nested" / ".Env.Sample").write_text("TOKEN=replace-me\n", encoding="utf-8")
+        # Heal a secret mirrored by a pre-fix run even though the root grab-bag
+        # intentionally has no general deletion synchronization.
+        (tmp_path / "mutants" / "nested").mkdir(parents=True)
+        (tmp_path / "mutants" / "nested" / ".ENV.Stale").write_text("TOKEN=old\n", encoding="utf-8")
+
+        copy_src_dir(_config(paths_to_mutate=["."]))
+
+        assert not (tmp_path / "mutants" / ".ENV").exists()
+        assert not (tmp_path / "mutants" / ".Env.Production").exists()
+        assert (tmp_path / "mutants" / ".Env.Example").is_file()
+        assert not (tmp_path / "mutants" / "nested" / ".Env.Local").exists()
+        assert not (tmp_path / "mutants" / "nested" / ".ENV.Stale").exists()
+        assert (tmp_path / "mutants" / "nested" / ".Env.Sample").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +306,73 @@ def test_conftest_staleness_warning_only_for_conftest() -> None:
 
 
 class TestCopyAlsoCopyFiles:
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_nested_destination_junction_cannot_escape_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "tests" / "pkg" / "test_mod.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def test_ok(): pass\n", encoding="utf-8")
+        victim_dir = tmp_path / "junction-target"
+        victim_dir.mkdir()
+        victim = victim_dir / "test_mod.py"
+        victim.write_text("DO_NOT_OVERWRITE\n", encoding="utf-8")
+        junction = tmp_path / "mutants" / "tests" / "pkg"
+        junction.parent.mkdir(parents=True)
+        cmd_executable = Path(os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"))
+        created = subprocess.run(  # noqa: S603 - cmd builtin creates the test Junction
+            [
+                cmd_executable,
+                "/d",
+                "/u",
+                "/c",
+                "mklink",
+                "/J",
+                str(junction),
+                str(victim_dir),
+            ],
+            capture_output=True,
+            encoding="utf-16-le",
+            errors="replace",
+            check=False,
+        )
+        if created.returncode != 0:
+            pytest.skip(f"could not create Junction: {created.stdout}{created.stderr}")
+
+        try:
+            with pytest.raises(UnsafeStagingError, match="symlink/junction"):
+                copy_also_copy_files(_config(also_copy=["tests"]))
+            victim_content = victim.read_text(encoding="utf-8")
+        finally:
+            if junction.exists() and junction.is_junction():
+                junction.rmdir()
+
+        assert victim_content == "DO_NOT_OVERWRITE\n"
+
+    def test_nested_destination_symlink_cannot_escape_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "tests" / "pkg" / "test_mod.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def test_ok(): pass\n", encoding="utf-8")
+        victim_dir = tmp_path / "victim-dir"
+        victim_dir.mkdir()
+        victim = victim_dir / "test_mod.py"
+        victim.write_text("DO_NOT_OVERWRITE\n", encoding="utf-8")
+        redirected = tmp_path / "mutants" / "tests" / "pkg"
+        redirected.parent.mkdir(parents=True)
+        try:
+            redirected.symlink_to(victim_dir, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks unavailable on this host: {exc}")
+
+        with pytest.raises(UnsafeStagingError, match="symlink/junction"):
+            copy_also_copy_files(_config(also_copy=["tests"]))
+
+        assert victim.read_text(encoding="utf-8") == "DO_NOT_OVERWRITE\n"
+
     def test_copies_file(self, tmp_path: Path) -> None:
         # Use a relative path so the file is mirrored under mutants/<relpath>.
         extra = tmp_path / "extra.cfg"
@@ -459,10 +604,14 @@ class TestWriteAllMutantsToFile:
 
 
 class TestCreateMutantsForFile:
+    @pytest.fixture(autouse=True)
+    def _isolated_staging(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
     def test_creates_output_file(self, tmp_path: Path) -> None:
         src = tmp_path / "foo.py"
         src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
-        output = tmp_path / "mutants_foo.py"
+        output = tmp_path / "mutants" / "foo.py"
         output.parent.mkdir(parents=True, exist_ok=True)
 
         names, warns, _ = create_mutants_for_file(src, output)
@@ -473,7 +622,7 @@ class TestCreateMutantsForFile:
     def test_returns_qualified_method_names(self, tmp_path: Path) -> None:
         src = tmp_path / "foo.py"
         src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
-        output = tmp_path / "foo_mutated.py"
+        output = tmp_path / "mutants" / "foo_mutated.py"
 
         names, _, _ = create_mutants_for_file(src, output)
         # Each name should contain the mutmut marker.
@@ -482,7 +631,7 @@ class TestCreateMutantsForFile:
     def test_no_mutants_for_trivial_code(self, tmp_path: Path) -> None:
         src = tmp_path / "trivial.py"
         src.write_text("x = 1\n", encoding="utf-8")
-        output = tmp_path / "trivial_out.py"
+        output = tmp_path / "mutants" / "trivial_out.py"
 
         names, _, _ = create_mutants_for_file(src, output)
         # Trivial assignment may produce 0 or more mutants — just ensure
@@ -493,7 +642,7 @@ class TestCreateMutantsForFile:
         """When the mutant file is newer than the source, return existing names from .meta."""
         src = tmp_path / "mod.py"
         src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
-        output = tmp_path / "mod_out.py"
+        output = tmp_path / "mutants" / "mod_out.py"
 
         # First run: generate mutants normally.
         names_first, _, took_fast_first = create_mutants_for_file(src, output)
@@ -513,7 +662,7 @@ class TestCreateMutantsForFile:
         src = tmp_path / "bad.py"
         # Intentionally invalid Python that libcst cannot parse.
         src.write_text("def broken(\n    pass\n", encoding="utf-8")
-        output = tmp_path / "bad_out.py"
+        output = tmp_path / "mutants" / "bad_out.py"
 
         # Should not raise; may return empty names with a warning.
         names, _warns, _ = create_mutants_for_file(src, output)
@@ -525,12 +674,12 @@ class TestCreateMutantsForFile:
         try:
             src = tmp_path / "meta_test.py"
             src.write_text(_SIMPLE_SOURCE, encoding="utf-8")
-            output = tmp_path / "meta_out.py"
+            output = tmp_path / "mutants" / "meta_out.py"
 
             names, _, _ = create_mutants_for_file(src, output)
             if names:
                 # Meta file should be created relative to cwd.
-                meta = Path("mutants") / (str(src) + ".meta")
+                meta = Path("mutants/meta_out.py.meta")
                 assert meta.exists()
         finally:
             os.chdir(original_cwd)

@@ -136,10 +136,13 @@ class TestManglingSkipGranularity:
         assert any("mangling separator" in m for m in messages)
         assert all("Unsupported syntax" not in m for m in messages)
 
-    def test_create_mutants_for_file_collects_the_warning(self, tmp_path: Path) -> None:
+    def test_create_mutants_for_file_collects_the_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         src = tmp_path / "sep.py"
         src.write_text(self._SOURCE, encoding="utf-8")
-        out = tmp_path / "sep_out.py"
+        out = tmp_path / "mutants" / "sep_out.py"
         names, warns, _ = create_mutants_for_file(src, out)
         assert any("normal_neighbor" in n for n in names)
         assert any("mangling separator" in str(w.message) for w in warns)

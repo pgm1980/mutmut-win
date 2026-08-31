@@ -158,7 +158,7 @@ class TestRecordTrampolineHit:
         with patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=1):
             hit_recording.record_trampoline_hit("x_should_be_discarded")
         # The name should NOT be in _stats because no pytest frame was found within 1 frame
-        # (result depends on call stack; at minimum the function must not raise)
+        assert "x_should_be_discarded" not in _stats
         _stats.clear()
 
     def test_records_hit_when_depth_negative_one(self) -> None:

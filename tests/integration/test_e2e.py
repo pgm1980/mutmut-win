@@ -13,12 +13,19 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 #: Absolute path to the bundled E2E fixture project.
 _SIMPLE_LIB_DIR = Path(__file__).parent.parent / "e2e_projects" / "simple_lib"
+
+# The full mutation subprocess is intentionally bounded, but coverage tracing
+# propagates into the spawned CLI and its workers and can more than double the
+# Windows runtime.  Keep enough headroom for the repository's required full
+# coverage gate without turning a genuine hang into an unbounded test.
+_E2E_COMMAND_TIMEOUT_SECONDS = 300
 
 
 @pytest.fixture
@@ -49,7 +56,7 @@ def _run_mutmut_win(project_dir: Path, *args: str) -> subprocess.CompletedProces
         cwd=project_dir,
         capture_output=True,
         encoding="utf-8",
-        timeout=120,
+        timeout=_E2E_COMMAND_TIMEOUT_SECONDS,
     )
 
 
@@ -59,23 +66,10 @@ def test_e2e_mutations_generated_and_killed(simple_lib_project: Path) -> None:
     """Full pipeline: run mutation testing and verify results in the DB.
 
     Steps:
-    1. Install simple_lib into the temp environment (editable).
-    2. Run ``mutmut-win run`` inside the project directory.
-    3. Read the SQLite database and assert that mutations were generated and
+    1. Run ``mutmut-win run`` inside the isolated project directory.
+    2. Read the SQLite database and assert that mutations were generated and
        that at least one mutant was killed.
     """
-    # Install simple_lib so pytest can import it.
-    install_result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
-        cwd=simple_lib_project,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    assert install_result.returncode == 0, (
-        f"pip install failed:\n{install_result.stdout}\n{install_result.stderr}"
-    )
-
     # Run the full mutation testing pipeline.
     result = _run_mutmut_win(simple_lib_project, "run")
 
@@ -95,7 +89,7 @@ def test_e2e_mutations_generated_and_killed(simple_lib_project: Path) -> None:
         f"stderr:\n{result.stderr}"
     )
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute("SELECT mutant_name, status FROM mutant").fetchall()
 
     assert len(rows) > 0, "No mutation results found in the database."
@@ -125,16 +119,6 @@ def test_e2e_results_command(simple_lib_project: Path) -> None:
     Runs the pipeline first, then calls ``mutmut-win results`` and checks
     that the summary output contains expected fields.
     """
-    # Install package so tests can import it.
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
-        cwd=simple_lib_project,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=60,
-        check=True,
-    )
-
     # Run mutation testing.
     _run_mutmut_win(simple_lib_project, "run")
 

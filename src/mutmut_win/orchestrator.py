@@ -10,6 +10,9 @@ summarised in a ``MutationRunResult``.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,11 +20,22 @@ from typing import TYPE_CHECKING
 from mutmut_win.constants import (
     EXIT_CODE_TIMEOUT,
     EXIT_CODE_TYPE_CHECK,
+    MAXIMUM_PYTEST_VERSION_EXCLUSIVE,
     MINIMUM_PYTEST_VERSION,
     Profile,
     status_by_exit_code,
 )
-from mutmut_win.db import DEFAULT_DB_PATH, create_db, save_result
+from mutmut_win.db import (
+    DEFAULT_DB_PATH,
+    begin_run,
+    create_db,
+    finish_run,
+    load_current_run,
+    mark_reused_results,
+    save_result,
+    set_run_plan,
+    validate_cache_path,
+)
 from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
@@ -35,13 +49,22 @@ from mutmut_win.models import (
     MutationTask,
     SourceFileMutationData,
 )
-from mutmut_win.stats import MutmutStats, collect_or_load_stats
+from mutmut_win.stats import (
+    MutmutStats,
+    RunBasisEvidence,
+    build_run_basis_evidence,
+    build_stats_context_fingerprint,
+    canonical_run_basis_config,
+    collect_or_load_stats,
+    context_allows_result_reuse,
+)
 from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import TaskEvent
     from mutmut_win.process.executor import SpawnPoolExecutor
+    from mutmut_win.process.run_lock import WorkspaceRunLock
     from mutmut_win.runner import PytestRunner
 
 #: Minimum timeout in seconds for any single mutation task — also the lower
@@ -85,6 +108,7 @@ class MutationOrchestrator:
         no_progress: bool = False,
         purge_stale_results: bool = False,
         rerun_all: bool = False,
+        workspace_lock: WorkspaceRunLock | None = None,
     ) -> None:
         self._config = config
         self._db_path = db_path
@@ -100,6 +124,12 @@ class MutationOrchestrator:
         # reuse — every dispatchable mutant executes even when a cached
         # verdict could be reused.
         self._rerun_all = rerun_all
+        # The CLI acquires this before a destructive ``--force`` cleanup and
+        # hands the already-held lock through.  Direct API callers get the
+        # same cross-process boundary automatically in ``run``.
+        self._workspace_lock = workspace_lock
+        self._active_run_id: str | None = None
+        self._run_plan_finalized = False
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -126,6 +156,225 @@ class MutationOrchestrator:
             CleanTestFailedError: If the clean test run returns a non-zero exit code.
             ForcedFailError: If the forced-fail check does not detect failures.
         """
+        # This is an execution-environment precondition, not run state. Check
+        # it before locks, database creation, basis capture, or staging writes.
+        _ensure_supported_pytest()
+
+        from mutmut_win.process.run_lock import (
+            DatabaseRunLocks,
+            WorkspaceRunLock,
+            run_lock_path_for_db,
+        )
+
+        lock = self._workspace_lock
+        # Direct API callers receive the same fail-closed default-cache
+        # boundary as the CLI, before canonical lock derivation can follow a
+        # Junction/symlink outside the workspace.
+        validate_cache_path(self._db_path)
+        expected_lock_path = run_lock_path_for_db(self._db_path)
+        if lock is not None and lock.path != expected_lock_path:
+            raise OrchestratorError(
+                "injected workspace lock is not bound to the configured cache database: "
+                f"expected {expected_lock_path}, got {lock.path}"
+            )
+
+        def run_with_database_lock() -> MutationRunResult:
+            with DatabaseRunLocks(self._db_path) as database_locks:
+                # A missing database has no filesystem identity yet.  Create
+                # its schema while the canonical-path key is held, then add
+                # the inode key before abandoned-run recovery or any run-state
+                # transition can occur.
+                create_db(self._db_path)
+                database_locks.refresh_identity()
+                return self._run_with_identity()
+
+        if lock is not None and lock.acquired:
+            return run_with_database_lock()
+        if lock is None:
+            expected_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock = WorkspaceRunLock(expected_lock_path)
+        with lock:
+            return run_with_database_lock()
+
+    def _basis_excluded_paths(self) -> tuple[Path, ...]:
+        """Return mutable database files that are state, never run inputs."""
+        database = self._db_path.absolute()
+        return (
+            database,
+            Path(f"{database}-journal"),
+            Path(f"{database}-wal"),
+            Path(f"{database}-shm"),
+        )
+
+    def _stable_run_basis_evidence(self) -> RunBasisEvidence:
+        """Capture one stable execution-basis snapshot or fail closed."""
+        excluded_paths = self._basis_excluded_paths()
+        first = build_run_basis_evidence(
+            self._config,
+            excluded_paths=excluded_paths,
+        )
+        second = build_run_basis_evidence(
+            self._config,
+            excluded_paths=excluded_paths,
+        )
+        if first != second:
+            raise OrchestratorError(
+                "source, test, configuration, dependency, or environment inputs changed "
+                "while their run basis "
+                "was being fingerprinted"
+            )
+        return first
+
+    def _run_with_identity(self) -> MutationRunResult:
+        """Run under the workspace lock and publish one truthful run snapshot.
+
+        A previously hard-killed process leaves its database row ``running``.
+        Acquiring the workspace lock proves that no live cooperating runner
+        owns the workspace, so that orphan can now be closed as ``aborted``
+        before a new plan starts.  A hard kill during this invocation still
+        leaves the new plan durably running/pending for the next observer.
+        """
+        from mutmut_win.file_setup import validate_staging_root
+
+        mutants_root = validate_staging_root()
+        stale_cicd_artifact = mutants_root / "mutmut-cicd-stats.json"
+        try:
+            stale_cicd_artifact.unlink(missing_ok=True)
+        except OSError as exc:
+            raise OrchestratorError(
+                f"could not invalidate stale CI/CD artifact {stale_cicd_artifact}: {exc}"
+            ) from exc
+
+        self._recover_abandoned_run()
+        basis_evidence = self._stable_run_basis_evidence()
+        basis_fingerprint = basis_evidence.digest if basis_evidence.complete else None
+        basis_config_json = (
+            canonical_run_basis_config(self._config) if basis_evidence.complete else None
+        )
+        if not basis_evidence.complete:
+            print(
+                "The complete execution basis could not be fingerprinted — "
+                "cache reuse is disabled and this run cannot authorize CI/CD export "
+                "or --min-score."
+            )
+        # The attempt is durable before generation can mutate staging. A hard
+        # kill now leaves a visible running attempt; an ordinary generation
+        # failure becomes the latest failed run instead of silently exposing
+        # an older completed snapshot as current.
+        self._active_run_id = begin_run(
+            self._db_path,
+            basis_fingerprint=basis_fingerprint,
+            basis_config_json=basis_config_json,
+        )
+        self._run_plan_finalized = False
+        original_sys_path = sys.path.copy()
+        try:
+            try:
+                result = self._run_pipeline()
+            finally:
+                # ``setup_source_paths`` installs the generated staging roots
+                # for child-test discovery. They are part of the stats/verdict
+                # context, but never of the immutable live-workspace basis.
+                # Restore the caller's exact ordered import path before the
+                # pre-completion evidence is captured.
+                sys.path[:] = original_sys_path
+        except KeyboardInterrupt:
+            # Ctrl-C is an interrupted proof regardless of the pipeline
+            # phase in which it lands. Preserve the original interrupt while
+            # making the latest run snapshot truthful.
+            if self._active_run_id is not None:
+                with contextlib.suppress(Exception):
+                    finish_run(self._db_path, self._active_run_id, "interrupted")
+            raise
+        except BaseException:
+            # Cleanup must never mask the original failure.
+            if self._active_run_id is not None:
+                with contextlib.suppress(Exception):
+                    finish_run(self._db_path, self._active_run_id, "failed")
+            raise
+
+        if self._active_run_id is None:
+            # Every real pipeline path starts a persisted plan.  Treat drift
+            # between that invariant and the implementation as a product bug.
+            raise OrchestratorError("mutation run completed without a persisted run identity")
+
+        if result.was_interrupted:
+            terminal_status = "interrupted"
+        elif result.run_aborted or result.total_mutants == 0:
+            terminal_status = "aborted"
+        else:
+            terminal_status = "completed"
+        if terminal_status == "completed":
+            try:
+                live_basis = self._stable_run_basis_evidence()
+            except OrchestratorError:
+                finish_run(self._db_path, self._active_run_id, "failed")
+                raise
+            if live_basis != basis_evidence:
+                finish_run(self._db_path, self._active_run_id, "failed")
+                raise OrchestratorError(
+                    "source, test, configuration, dependency, or environment inputs changed "
+                    "during the mutation run; "
+                    "the run was recorded as failed and cannot authorize CI/CD export"
+                )
+        try:
+            finish_run(self._db_path, self._active_run_id, terminal_status)
+        except Exception as exc:
+            # ``completed`` refuses pending work. Preserve that evidence by
+            # closing the run as failed, then surface a clean domain failure.
+            with contextlib.suppress(Exception):
+                finish_run(self._db_path, self._active_run_id, "failed")
+            raise OrchestratorError(
+                f"could not finalize mutation run {self._active_run_id!r}: {exc}"
+            ) from exc
+        result.execution_basis_complete = terminal_status == "completed" and basis_evidence.complete
+        return result
+
+    def _recover_abandoned_run(self) -> None:
+        """Close a prior crash-orphan after exclusive workspace acquisition."""
+        current = load_current_run(self._db_path)
+        if current is None or current.status != "running":
+            return
+        finish_run(self._db_path, current.run_id, "aborted")
+        print(
+            "Recovered an unfinished prior mutation run as aborted "
+            f"({len(current.pending_names)} mutants remained pending)."
+        )
+
+    def _start_current_run(
+        self,
+        tasks: list[MutationTask],
+        source_data_by_file: dict[str, SourceFileMutationData] | None = None,
+    ) -> None:
+        """Persist the exact selected plan once, before any verdict producer."""
+        if self._active_run_id is None:
+            raise OrchestratorError("mutation run attempt was not started")
+        if self._run_plan_finalized:
+            raise OrchestratorError("mutation run identity was started more than once")
+        generation_fingerprint: str | None = None
+        if source_data_by_file is not None:
+            generation_payload = json.dumps(
+                [
+                    (
+                        path,
+                        data.source_hash,
+                        data.generation_fingerprint,
+                    )
+                    for path, data in sorted(source_data_by_file.items())
+                ],
+                separators=(",", ":"),
+            )
+            generation_fingerprint = hashlib.sha256(generation_payload.encode("utf-8")).hexdigest()
+        set_run_plan(
+            self._db_path,
+            self._active_run_id,
+            (task.mutant_name for task in tasks),
+            generation_fingerprint=generation_fingerprint,
+        )
+        self._run_plan_finalized = True
+
+    def _run_pipeline(self) -> MutationRunResult:
+        """Execute the mutation pipeline while ``run`` owns its state boundary."""
         import sys
 
         # Force line-buffered stdout so progress output is visible immediately
@@ -135,10 +384,6 @@ class MutationOrchestrator:
         if not sys.stdout.line_buffering:
             sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         _ensure_tolerant_stdout()
-
-        # Issue #125 / 360°-A2: fail fast on a pytest that cannot take the
-        # worker's @argfile hand-off — BEFORE any staging work happens.
-        _ensure_supported_pytest()
 
         # Announce the active operator profile once per run (operator roadmap).
         self._print_profile_hint()
@@ -151,6 +396,7 @@ class MutationOrchestrator:
         all_tasks, source_data_by_file, fast_path_names = self._generate_mutants()
 
         if not all_tasks:
+            self._start_current_run([], source_data_by_file)
             print("No mutants generated.")
             return MutationRunResult(
                 total_mutants=0,
@@ -173,13 +419,20 @@ class MutationOrchestrator:
             # finally has a producer. Rows are written only where none
             # exist: a real verdict is never overwritten (#96).
             filtered_out = all_generated_names - {t.mutant_name for t in all_tasks}
-            _persist_skipped_mutants(self._db_path, filtered_out)
             if not all_tasks:
+                self._start_current_run([], source_data_by_file)
                 print("No mutants match the given names.")
                 return MutationRunResult(
                     total_mutants=0,
                     duration_seconds=time.monotonic() - wall_start,
                 )
+            _persist_skipped_mutants(self._db_path, filtered_out)
+
+        # The exact post-selection plan is durable before type checking,
+        # clean/stats/forced-fail phases, reuse, or worker dispatch can fail.
+        # Every later ``save_result(s)`` automatically snapshots only names in
+        # this plan; the historical cache remains a separate reuse source.
+        self._start_current_run(all_tasks, source_data_by_file)
 
         # ------------------------------------------------------------------
         # Step 1b: Apply type-checker filter (if configured).
@@ -256,7 +509,14 @@ class MutationOrchestrator:
         # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
         print("Collecting test timing statistics…")
-        mutmut_stats: MutmutStats = collect_or_load_stats(self._runner)
+        stats_context = build_stats_context_fingerprint(
+            self._config,
+            excluded_paths=self._basis_excluded_paths(),
+        )
+        mutmut_stats: MutmutStats = collect_or_load_stats(
+            self._runner,
+            context_fingerprint=stats_context,
+        )
 
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
@@ -315,13 +575,24 @@ class MutationOrchestrator:
         # external QA RUN-001 — the README promised this cache for releases;
         # the DB was write-only for `run` until v2.13.0).
         # ------------------------------------------------------------------
-        tests_fp_by_name = _build_tests_fingerprints(all_tasks)
+        tests_fp_by_name = _build_tests_fingerprints(
+            all_tasks,
+            context_fingerprint=mutmut_stats.context_fingerprint,
+        )
+        if not context_allows_result_reuse(mutmut_stats.context_fingerprint):
+            print(
+                "Execution inputs could not be hashed completely — "
+                "cached verdict reuse is disabled for this run."
+            )
         reused_results: list[MutationResult] = []
         if not self._rerun_all and fast_path_names:
             reused_results, all_tasks = _split_reusable_tasks(
                 all_tasks, fast_path_names, tests_fp_by_name, self._db_path
             )
         if reused_results:
+            if self._active_run_id is None:  # pragma: no cover - invariant guard
+                raise OrchestratorError("cannot attribute reused results without an active run")
+            mark_reused_results(self._db_path, self._active_run_id, reused_results)
             print(
                 f"Reused {len(reused_results)} cached verdicts from the previous run "
                 f"({len(all_tasks)} dispatched; --rerun-all forces execution)."
@@ -420,6 +691,9 @@ class MutationOrchestrator:
         total = len(tasks_with_timeouts)
 
         executor = self._get_executor()
+        configure_boundary = getattr(executor, "configure_pytest_boundary", None)
+        if callable(configure_boundary):
+            configure_boundary(self._runner.pytest_boundary_data)
         interrupted = False
         try:
             executor.start(tasks_with_timeouts)
@@ -448,7 +722,11 @@ class MutationOrchestrator:
         summary.unchecked = max(0, total - completed)
         # Issue #127 / 360°-A7: a collapsed pool must not end like success —
         # the CLI turns this into exit 1 and skips the score gate.
-        summary.run_aborted = _executor_aborted(executor)
+        # A normal executor termination is only a complete run when every
+        # planned task produced an attributable completion.  In particular,
+        # a recovery event named ``unknown`` must not make the progress
+        # counter reach the total while leaving the real mutant unverdicted.
+        summary.run_aborted = _executor_aborted(executor) or (not interrupted and completed < total)
 
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
@@ -572,17 +850,28 @@ class MutationOrchestrator:
         )
 
         # Step 1-3: Prepare the mutants/ directory and sys.path.
-        copy_src_dir(self._config)
+        # The result database is mutable run-control state, not executable
+        # project input. Exclude this exact configured path from automatic
+        # staging while preserving arbitrary SQLite fixtures used by tests.
+        copy_src_dir(self._config, excluded_paths=(self._db_path,))
         copy_also_copy_files(self._config)
         setup_source_paths()
+        # Freeze pytest's config/root/conftest boundary before optional
+        # coverage, which is itself the first real pytest phase.
+        self._runner.prepare_pytest_boundary()
 
         # Collect all eligible source files (needed before coverage run).
         source_files: list[tuple[str, Path]] = []
         walked: list[str] = []
+        seen_sources: set[Path] = set()
         for src_file in walk_source_files(self._config):
             rel_path = str(src_file)
             walked.append(rel_path)
-            if not self._config.should_ignore_for_mutation(rel_path):
+            resolved_source = src_file.resolve()
+            if resolved_source not in seen_sources and not self._config.should_ignore_for_mutation(
+                rel_path
+            ):
+                seen_sources.add(resolved_source)
                 source_files.append((rel_path, src_file))
         self._warn_unmatched_exclusions(walked)
 
@@ -601,7 +890,17 @@ class MutationOrchestrator:
         # used to leave stale mutants in place (issue #101 / A3-OS-008).
         from mutmut_win.file_setup import config_fingerprint_matches
 
-        allow_fast_path = config_fingerprint_matches(self._config)
+        coverage_basis: dict[str, set[int]] | None = None
+        if covered_lines_map is not None:
+            from mutmut_win.code_coverage import get_covered_lines_for_file
+
+            coverage_basis = {
+                rel_path: get_covered_lines_for_file(rel_path, covered_lines_map) or set()
+                for rel_path, _src_file in source_files
+            }
+        # Compare only. Publishing here used to bless a partial generation
+        # when a later file worker failed (MW220-006).
+        allow_fast_path = config_fingerprint_matches(self._config, coverage_basis, persist=False)
         if not allow_fast_path:
             print("Configuration changed — regenerating all mutants.")
 
@@ -616,11 +915,7 @@ class MutationOrchestrator:
         ] = []
         for rel_path, src_file in source_files:
             output_path = Path("mutants") / src_file
-            file_covered: set[int] | None = None
-            if covered_lines_map is not None:
-                from mutmut_win.code_coverage import get_covered_lines_for_file
-
-                file_covered = get_covered_lines_for_file(rel_path, covered_lines_map)
+            file_covered = coverage_basis.get(rel_path) if coverage_basis is not None else None
             file_args.append(
                 (
                     rel_path,
@@ -633,51 +928,39 @@ class MutationOrchestrator:
                 )
             )
 
-        # Step 5: Generate per-file mutants in parallel when max_children > 1;
-        # fall back to sequential for max_children == 1.
-        #
-        # ProcessPoolExecutor (NOT multiprocessing.Pool) — external QA WRK-002:
-        # a worker that dies during interpreter bootstrap (a crashing
-        # sitecustomize/.pth/site-packages os._exit before the mp child connects)
-        # makes ``Pool.imap_unordered`` block FOREVER — it has no broken-worker
-        # detection, so a wedged environment hung the whole run unboundedly.
-        # ProcessPoolExecutor's management thread detects the dead worker and
-        # raises BrokenProcessPool (~0.3s in the repro), which we turn into a
-        # clean, diagnosed abort instead of an unbounded hang.
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
-        from concurrent.futures.process import BrokenProcessPool
+        # Every worker count, including one, runs behind a dedicated
+        # non-daemonic supervisor. Its Job Object/process group contains the
+        # complete PPE tree before project-dependent payload is transferred;
+        # the no-progress deadline covers bootstrap, submit serialization and
+        # execution (MW220-020).
+        from mutmut_win.process import GenerationSupervisorError, run_generation_supervised
 
-        if self._config.max_children > 1:
-            try:
-                with ProcessPoolExecutor(
-                    max_workers=self._config.max_children,
-                    mp_context=multiprocessing.get_context("spawn"),
-                ) as pool:
-                    raw_results: list[tuple[str, list[str], Exception | None, list[str], bool]] = (
-                        list(pool.map(_create_mutants_worker, file_args))
-                    )
-            except BrokenProcessPool as exc:
-                msg = (
-                    "worker pool collapsed during mutant generation — workers are "
-                    "dying at interpreter startup (a crashing sitecustomize/.pth/"
-                    "site-packages wedges every spawn). Aborting the run."
+        try:
+            raw_results = (
+                run_generation_supervised(
+                    file_args,
+                    max_children=self._config.max_children,
+                    no_progress_timeout=self._config.generation_timeout,
+                    worker=_create_mutants_worker,
                 )
-                raise OrchestratorError(msg) from exc
-        else:
-            raw_results = [_create_mutants_worker(args) for args in file_args]
+                if file_args
+                else []
+            )
+        except GenerationSupervisorError as exc:
+            raise OrchestratorError(f"mutant generation supervisor failed: {exc}") from exc
 
         # Mutants of files whose staging was reused unchanged — the result-
         # reuse candidates (issue #119): only for these can a prior verdict
         # still describe the current code.
         fast_path_names: set[str] = set()
 
+        generation_errors: list[str] = []
         for result in raw_results:
             rel_path_result, mutant_names, error, warn_msgs, took_fast_path = result
             for msg in warn_msgs:
                 print(f"Warning: {msg}")
             if error is not None:
-                print(f"Warning: could not mutate {rel_path_result}: {error}")
+                generation_errors.append(f"{rel_path_result}: {error}")
                 continue
             if not mutant_names:
                 continue
@@ -698,6 +981,17 @@ class MutationOrchestrator:
                 for qname in qualified_names
             )
 
+        if generation_errors:
+            details = "\n".join(f"  - {item}" for item in generation_errors)
+            msg = (
+                "mutant generation was incomplete; refusing to publish a new "
+                f"universe fingerprint:\n{details}"
+            )
+            raise OrchestratorError(msg)
+
+        from mutmut_win.file_setup import persist_config_fingerprint
+
+        persist_config_fingerprint(self._config, coverage_basis)
         return all_tasks, source_data, fast_path_names
 
     def _maybe_purge_stale(self, all_generated_names: set[str]) -> None:
@@ -821,47 +1115,47 @@ def _filter_tasks_by_names(
 
 
 def _ensure_supported_pytest() -> None:
-    """Abort before the first mutant when the venv's pytest predates 8.2.
+    """Abort before staging unless pytest is inside the validated range.
 
-    The worker hands per-mutant tests to pytest via the ``@argfile`` syntax
-    — deliberately the ONLY transfer path (no dual code paths) — and that
-    syntax exists since pytest 8.2. Under an older pytest every covered
-    mutant exits with a usage error and floods ``suspicious`` although the
-    clean run was green (issue #125 / 360°-A2). The in-process version is
-    authoritative: mutmut-win and the workers run the same interpreter
-    (``sys.executable -m pytest``), hence the same pytest installation.
-
-    Unparseable version strings fail OPEN with a warning: the dependency
-    floor (``pytest>=8.2``) is the primary defence, and an exotic dev
-    build must not block a run the resolver already vetted.
+    Pytest 8.2 is the minimum because workers use ``@argfile``.  The frozen
+    configuration-discovery boundary mirrors only pytest majors 8 and 9, so
+    unknown future majors and unparseable versions fail closed as well.  A
+    resolver constraint is not an execution-time authority: dependencies can
+    be installed with ``--no-deps`` or hand-modified after resolution.
 
     Raises:
         UnsupportedPytestVersionError: If the detected pytest version is
-            older than :data:`mutmut_win.constants.MINIMUM_PYTEST_VERSION`.
+            outside the validated half-open range.
     """
     import re
 
     import pytest
 
     version = pytest.__version__
-    match = re.match(r"(\d+)\.(\d+)", version)
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:[.\-+_A-Za-z0-9]*)", version)
     if match is None:
-        print(
-            f"Warning: could not parse pytest version {version!r} — proceeding "
-            "(the pytest>=8.2 dependency floor is the primary guard)."
+        raise UnsupportedPytestVersionError(
+            f"Could not parse pytest version {version!r}; mutation execution "
+            "is refused because its pytest configuration semantics cannot be verified."
         )
-        return
+
     found = (int(match.group(1)), int(match.group(2)))
+    required = ".".join(str(part) for part in MINIMUM_PYTEST_VERSION)
+    maximum = str(MAXIMUM_PYTEST_VERSION_EXCLUSIVE[0])
     if found < MINIMUM_PYTEST_VERSION:
-        required = ".".join(str(part) for part in MINIMUM_PYTEST_VERSION)
-        msg = (
+        raise UnsupportedPytestVersionError(
             f"pytest {version} is too old for mutation runs: the worker "
             f"passes per-mutant tests via pytest's @argfile syntax, which "
             f"exists since pytest {required}. Upgrade pytest in this "
-            f'project\'s environment (e.g. `uv add "pytest>={required}" --dev` '
-            f"or `pip install -U pytest`) and re-run."
+            f'project\'s environment (e.g. `uv add "pytest>={required},<{maximum}" --dev` '
+            "or `pip install -U pytest`) and re-run."
         )
-        raise UnsupportedPytestVersionError(msg)
+    if found >= MAXIMUM_PYTEST_VERSION_EXCLUSIVE:
+        raise UnsupportedPytestVersionError(
+            f"pytest {version} is newer than the validated mutation-run range "
+            f"pytest>={required},<{maximum}. Refusing to guess future pytest "
+            "configuration-discovery semantics; install a supported pytest release."
+        )
 
 
 def _executor_aborted(executor: object) -> bool:
@@ -989,6 +1283,13 @@ def _assign_tests_to_tasks(
     Returns:
         New list of ``MutationTask`` instances with ``tests`` populated.
     """
+    # A partial mapping is not merely unable to prove ``no tests``. It also
+    # cannot safely narrow a mutant to the tests it happened to observe: a
+    # subprocess/xdist-only hit may be the missing test that kills it. Empty
+    # assignments deliberately select pytest's full suite in the worker.
+    if not stats.mapping_is_authoritative:
+        return [task.model_copy(update={"tests": []}) for task in tasks]
+
     result: list[MutationTask] = []
     for task in tasks:
         assigned = tests_for_mutant_names(
@@ -1247,9 +1548,15 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
 REUSABLE_STATUSES: frozenset[str] = frozenset(
     {"killed", "survived", "segfault", "killed_by_infinite_loop"}
 )
+_TEST_BASIS_FINGERPRINT_MARKER = "mutmut-win:test-basis:v2"
+_FULL_SUITE_FINGERPRINT_MARKER = "mutmut-win:full-suite:v2"
 
 
-def _build_tests_fingerprints(tasks: list[MutationTask]) -> dict[str, str]:
+def _build_tests_fingerprints(
+    tasks: list[MutationTask],
+    *,
+    context_fingerprint: str | None = None,
+) -> dict[str, str]:
     """Fingerprint every task's test basis (issue #119 result reuse).
 
     One stat cache per call — the same few test files back thousands of
@@ -1259,18 +1566,32 @@ def _build_tests_fingerprints(tasks: list[MutationTask]) -> dict[str, str]:
         tasks: Tasks after test assignment.
 
     Returns:
-        Mapping of mutant name to fingerprint. Tasks without assigned tests
-        (full-suite fallback — no stats) get NO entry: nothing is known
-        about their test basis, so they are never reusable.
+        Mapping of mutant name to fingerprint. An empty test list is the
+        conservative full-suite fallback. It is reusable only when a complete
+        context fingerprint is available; that digest covers config, source,
+        tests, helpers, fixtures and lock/config files.
     """
+    if not context_allows_result_reuse(context_fingerprint):
+        return {}
     stat_cache: dict[str, str] = {}
     return {
-        task.mutant_name: _tests_fingerprint(task.tests, stat_cache) for task in tasks if task.tests
+        task.mutant_name: _tests_fingerprint(
+            task.tests,
+            stat_cache,
+            context_fingerprint=context_fingerprint,
+        )
+        for task in tasks
+        if task.tests or context_fingerprint is not None
     }
 
 
-def _tests_fingerprint(tests: list[str], stat_cache: dict[str, str] | None = None) -> str:
-    """Hash a test basis: sorted node IDs + per-test-file (mtime_ns, size).
+def _tests_fingerprint(
+    tests: list[str],
+    stat_cache: dict[str, str] | None = None,
+    *,
+    context_fingerprint: str | None = None,
+) -> str:
+    """Hash a test basis: context digest + node IDs + per-test-file SHA-256.
 
     Adding, removing or renaming a covering test changes the node-ID part;
     editing a test BODY changes the file part — both invalidate reuse
@@ -1284,26 +1605,35 @@ def _tests_fingerprint(tests: list[str], stat_cache: dict[str, str] | None = Non
         stat_cache: Optional shared file-stat cache (filled on demand).
 
     Returns:
-        A 16-hex-digit digest of the test basis.
+        A full 64-hex-digit SHA-256 digest of the test basis.
     """
     import hashlib
 
     if stat_cache is None:
         stat_cache = {}
     hasher = hashlib.sha256()
+    hasher.update(_TEST_BASIS_FINGERPRINT_MARKER.encode("ascii"))
+    hasher.update(b"\n")
+    if context_fingerprint is not None:
+        hasher.update(context_fingerprint.encode("utf-8"))
+        hasher.update(b"\n")
+    if not tests:
+        # Empty means "run the configured full suite" after the authoritative
+        # no-tests split. Keep it distinct from every selective node-id basis.
+        hasher.update(_FULL_SUITE_FINGERPRINT_MARKER.encode("utf-8"))
+        hasher.update(b"\n")
     for node_id in sorted(tests):
         hasher.update(node_id.encode("utf-8"))
         hasher.update(b"\n")
         file_part = node_id.split("::", 1)[0]
         if file_part not in stat_cache:
             try:
-                stat = Path(file_part).stat()
-                stat_cache[file_part] = f"{stat.st_mtime_ns}:{stat.st_size}"
+                stat_cache[file_part] = hashlib.sha256(Path(file_part).read_bytes()).hexdigest()
             except OSError:
                 stat_cache[file_part] = "missing"
         hasher.update(stat_cache[file_part].encode("utf-8"))
         hasher.update(b"\n")
-    return hasher.hexdigest()[:16]
+    return hasher.hexdigest()
 
 
 def _split_reusable_tasks(
@@ -1380,7 +1710,7 @@ def _split_no_test_tasks(
     Returns:
         ``(dispatchable_tasks, no_test_mutant_names)``
     """
-    if not stats.tests_by_mangled_function_name:
+    if not stats.tests_by_mangled_function_name or not stats.mapping_is_authoritative:
         return tasks, set()
     dispatchable = [t for t in tasks if t.tests]
     no_tests = {t.mutant_name for t in tasks if not t.tests}
@@ -1466,8 +1796,9 @@ def _update_summary_and_persist(
             verdict as the result-reuse condition of issue #119.
 
     Returns:
-        ``True`` if the event represents a completed mutant (i.e. a
-        progress-relevant event), ``False`` for ``TaskStarted``.
+        ``True`` if the event represents an attributable, non-fatal mutant
+        verdict. ``TaskStarted`` and fatal/unattributable control-plane events
+        return ``False`` so their mutants remain pending.
     """
     from mutmut_win.models import TaskCompleted, TaskStarted
 
@@ -1479,6 +1810,12 @@ def _update_summary_and_persist(
         mutant_name = event.mutant_name
         exit_code: int | None = event.exit_code
         duration: float | None = event.duration
+        if event.fatal:
+            # Fatal completions are control-plane evidence: the executor aborts
+            # the run and this mutant remains pending. Persisting exit 35 here
+            # would misrepresent an infrastructure/boundary failure as a
+            # domain-level suspicious mutant verdict.
+            return False
         # Plain-dict lookup (issue #132 / 360°-C6): unknown codes stay
         # suspicious without growing the shared table.
         status = status_by_exit_code.get(exit_code, "suspicious")
@@ -1489,14 +1826,14 @@ def _update_summary_and_persist(
 
     if mutant_name == "unknown":
         # Worker recovery could not extract a task name (issue #80 /
-        # A2-EW-012): keep the finished-accounting intact (the worker DID
-        # consume a task) but do not pollute the DB/meta with a ghost
-        # "unknown" mutant row — the real mutant stays visibly unchecked.
+        # A2-EW-012): do not pollute the DB/meta with a ghost ``unknown`` row
+        # and, crucially, do not claim an attributable completion.  The run
+        # loop leaves one item unchecked and marks the run aborted.
         print(
             "Warning: a worker failed before its task name was known — "
             "one mutant remains unchecked (no result row written)."
         )
-        return True
+        return False
 
     # Update summary counters.
     _increment_summary(summary, status)
@@ -1512,6 +1849,7 @@ def _update_summary_and_persist(
         last_output,
         forensics,
         tests_fingerprint=(tests_fp_by_name or {}).get(mutant_name),
+        require_planned=True,
     )
 
     # Update in-memory SourceFileMutationData.

@@ -7,8 +7,9 @@ on files under the ``mutants/`` staging directory produced by
 
 from __future__ import annotations
 
+import hashlib
 import re
-import shutil
+import stat
 from difflib import unified_diff
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 
+from mutmut_win.atomic_file import atomic_write_bytes
 from mutmut_win.exceptions import (
     AmbiguousMutantNameError,
     MutationParseError,
@@ -24,6 +26,7 @@ from mutmut_win.exceptions import (
 from mutmut_win.file_setup import walk_source_files
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.test_mapping import (
+    function_definition_location_from_key,
     mangled_name_from_mutant_name,
     match_mutant_names,
     orig_function_and_class_names_from_key,
@@ -178,7 +181,10 @@ def find_top_level_function_or_method(module: cst.Module, name: str) -> cst.Func
 
 
 def _find_function_in_scope(
-    module: cst.Module, name: str, class_name: str | None
+    module: cst.Module,
+    name: str,
+    class_name: str | None,
+    definition_ordinal: int = 1,
 ) -> cst.FunctionDef | None:
     """Scope-exact lookup for ``apply`` (issue #75 / A4-UI-001).
 
@@ -194,14 +200,22 @@ def _find_function_in_scope(
         name: Simple function/method name.
         class_name: Owning class name from the mutant key, or ``None`` for a
             top-level function.
+        definition_ordinal: One-based occurrence among same-named definitions
+            in the encoded scope. Method occurrences span repeated top-level
+            class definitions with the same class name in module order.
 
     Returns:
         The matching ``cst.FunctionDef`` node, or ``None`` if not found.
     """
+    if definition_ordinal < 1:
+        return None
+    matches_seen = 0
     for child in module.body:
         if class_name is None:
             if isinstance(child, cst.FunctionDef) and child.name.value == name:
-                return child
+                matches_seen += 1
+                if matches_seen == definition_ordinal:
+                    return child
             continue
         if (
             isinstance(child, cst.ClassDef)
@@ -210,7 +224,9 @@ def _find_function_in_scope(
         ):
             for method in child.body.body:
                 if isinstance(method, cst.FunctionDef) and method.name.value == name:
-                    return method
+                    matches_seen += 1
+                    if matches_seen == definition_ordinal:
+                        return method
     return None
 
 
@@ -334,16 +350,19 @@ def _original_start_line(path: Path | str, mutant_name: str) -> int | None:
     function is not found (e.g. the source changed since generation) —
     callers degrade to function-relative hunk numbering.
     """
-    func_name, class_name = orig_function_and_class_names_from_key(mutant_name)
+    location = function_definition_location_from_key(mutant_name)
     try:
         module = read_orig_module(path)
     except (OSError, MutationParseError):
         return None
     wrapper = MetadataWrapper(module)
     positions = wrapper.resolve(PositionProvider)
-    target = _find_function_in_scope(wrapper.module, func_name, class_name)
-    if target is None:
-        target = find_top_level_function_or_method(wrapper.module, func_name)
+    target = _find_function_in_scope(
+        wrapper.module,
+        location.function_name,
+        location.class_name,
+        location.definition_ordinal,
+    )
     if target is None:
         return None
     position = positions.get(target)
@@ -399,25 +418,33 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     source_path = Path(path)
     mutants_path = Path("mutants") / path
 
-    if source_path.stat().st_mtime > mutants_path.stat().st_mtime:
+    source_bytes = source_path.read_bytes()
+    source_mode = stat.S_IMODE(source_path.stat().st_mode)
+    current_hash = hashlib.sha256(source_bytes).hexdigest()
+    if data.source_hash is None or current_hash != data.source_hash:
         msg = (
-            f"{source_path} changed after its mutants were generated — "
+            f"{source_path} content changed after its mutants were generated — "
             "re-run 'mutmut-win run' before applying mutants."
         )
         raise StaleStagingError(msg)
 
-    orig_function_name, class_name = orig_function_and_class_names_from_key(mutant_name)
-    orig_function_name = orig_function_name.rpartition(".")[-1]
+    location = function_definition_location_from_key(mutant_name)
+    orig_function_name = location.function_name.rpartition(".")[-1]
 
     # Byte-exact reads: no universal-newline translation, so the patched file
     # keeps the original line endings.
-    orig_module = cst.parse_module(source_path.read_bytes().decode("utf-8"))
+    orig_module = cst.parse_module(source_bytes.decode("utf-8"))
     mutants_module = cst.parse_module(mutants_path.read_bytes().decode("utf-8"))
 
     mutant_function = read_mutant_function(mutants_module, mutant_name)
     mutant_function = mutant_function.with_changes(name=cst.Name(orig_function_name))
 
-    original_function = _find_function_in_scope(orig_module, orig_function_name, class_name)
+    original_function = _find_function_in_scope(
+        orig_module,
+        orig_function_name,
+        location.class_name,
+        location.definition_ordinal,
+    )
     if not original_function:
         raise FileNotFoundError(f"Could not apply mutant {mutant_name}")
 
@@ -425,8 +452,5 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     new_module = cast("cst.Module", orig_module.deep_replace(original_function, mutant_function))
 
     backup_path = source_path.with_name(source_path.name + ".mutmut-orig.bak")
-    shutil.copy2(source_path, backup_path)
-
-    tmp_file = source_path.with_name(source_path.name + ".mutmut-apply.tmp")
-    tmp_file.write_bytes(new_module.bytes)
-    tmp_file.replace(source_path)
+    atomic_write_bytes(backup_path, source_bytes, mode=source_mode)
+    atomic_write_bytes(source_path, new_module.bytes, mode=source_mode)

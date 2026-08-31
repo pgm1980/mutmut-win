@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from threading import Thread
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -19,8 +19,18 @@ from textual.widget import Widget
 from textual.widgets import DataTable, Footer, Static
 
 from mutmut_win.constants import emoji_by_status, status_by_exit_code
-from mutmut_win.db import DEFAULT_DB_PATH
+from mutmut_win.db import (
+    DEFAULT_DB_PATH,
+    RunBasisIncompleteness,
+    known_run_basis_incompleteness,
+)
+from mutmut_win.exceptions import CorruptCacheError
 from mutmut_win.models import MutationResult, SourceFileMutationData
+
+if TYPE_CHECKING:
+    from textual.binding import Binding
+
+    from mutmut_win.db import MutationRunState
 
 #: CSS file co-located with this package
 _CSS_PATH = Path(__file__).parent / "result_browser_layout.tcss"
@@ -200,7 +210,7 @@ class ResultBrowser(App[None]):
 
     CSS_PATH = str(_CSS_PATH)
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         ("q", "quit()", "Quit"),
         ("r", "retest_mutant()", "Retest mutant"),
         ("f", "retest_function()", "Retest function"),
@@ -223,9 +233,14 @@ class ResultBrowser(App[None]):
         self._source_data: dict[str, tuple[SourceFileMutationData, dict[str, int]]] = {}
         self._path_by_name: dict[str, str] = {}
         self._db_results: dict[str, MutationResult] = {}
+        self._current_run_names: set[str] | None = None
+        self._current_run_state: MutationRunState | None = None
+        self._run_state_error: str | None = None
+        self._unmapped_current_names: set[str] = set()
 
     def compose(self) -> ComposeResult:
         """Build the widget tree."""
+        yield Static(id="run_status")
         with Container(classes="container"):
             yield DataTable(id="files")
             yield DataTable(id="mutants")
@@ -246,7 +261,83 @@ class ResultBrowser(App[None]):
         mutants_table.add_columns("name", "status")
 
         self._read_data()
+        self._update_run_status()
         self._populate_files_table()
+
+    def _update_run_status(self) -> None:
+        """Render the persisted attempt status independently of verdict rows."""
+        run_status: Static = self.query_one("#run_status", Static)
+        if self._run_state_error is not None:
+            run_status.add_class("evidence-invalidated")
+            warning = Text()
+            warning.append(
+                "CORRUPT PERSISTED RUN EVIDENCE - NOT RELEASE-READY\n",
+                style="bold white on red",
+            )
+            warning.append(
+                "execution_basis_complete=false; release_ready=false; "
+                f"error={self._run_state_error}",
+                style="bold red",
+            )
+            run_status.update(warning)
+        elif self._current_run_state is None:
+            run_status.remove_class("evidence-invalidated")
+            run_status.update("No persisted mutation run")
+        else:
+            current = self._current_run_state
+            if current.evidence_invalidated:
+                run_status.add_class("evidence-invalidated")
+                warning = Text()
+                warning.append(
+                    "STALE / INVALIDATED EVIDENCE - NOT RELEASE-READY\n",
+                    style="bold white on red",
+                )
+                warning.append(
+                    "evidence_invalidated=true; release_ready=false; "
+                    f"run={current.run_id[:8]}; recorded_run_state={current.status}; "
+                    f"completed_mutants={len(current.completed_names)}/"
+                    f"{len(current.planned_names)}; "
+                    f"pending={len(current.pending_names)}; "
+                    f"plan_finalized={current.plan_finalized}; started={current.started_at}",
+                    style="bold red",
+                )
+                run_status.update(warning)
+                return
+
+            basis_issue = known_run_basis_incompleteness(current)
+            if current.status == "completed" and basis_issue is not None:
+                run_status.add_class("evidence-invalidated")
+                warning = Text()
+                if basis_issue is RunBasisIncompleteness.MALFORMED:
+                    warning.append(
+                        "MALFORMED EXECUTION BASIS - NOT RELEASE-READY\n",
+                        style="bold white on red",
+                    )
+                    detail_style = "bold red"
+                else:
+                    warning.append(
+                        "INCOMPLETE EXECUTION BASIS - NOT RELEASE-READY\n",
+                        style="bold black on yellow",
+                    )
+                    detail_style = "bold yellow"
+                warning.append(
+                    "execution_basis_complete=false; release_ready=false; "
+                    f"basis_reason={basis_issue.value}; "
+                    f"run={current.run_id[:8]}; recorded_run_state={current.status}; "
+                    f"completed_mutants={len(current.completed_names)}/"
+                    f"{len(current.planned_names)}; pending={len(current.pending_names)}",
+                    style=detail_style,
+                )
+                run_status.update(warning)
+                return
+
+            run_status.remove_class("evidence-invalidated")
+            run_status.update(
+                f"Run {current.run_id[:8]}: status={current.status}, "
+                f"completed={len(current.completed_names)}/{len(current.planned_names)}, "
+                f"pending={len(current.pending_names)}, "
+                f"plan_finalized={current.plan_finalized}, started={current.started_at}"
+            )
 
     # ------------------------------------------------------------------
     # Data loading
@@ -256,6 +347,45 @@ class ResultBrowser(App[None]):
         """Load mutation data from meta files and DB into instance state."""
         self._source_data = _load_source_file_data()
         self._path_by_name = {}
+        self._db_results = {}
+        self._current_run_names = None
+        self._current_run_state = None
+        self._run_state_error = None
+        self._unmapped_current_names = set()
+
+        # A persisted run snapshot, when present, is the display authority.
+        # Meta files and the historical mutant table are reusable caches and
+        # may still contain verdicts from a prior or only partially completed
+        # invocation (MW220-021).
+        from mutmut_win.db import load_latest_run_results
+
+        try:
+            current_run, latest_results = load_latest_run_results(self._db_path)
+        except CorruptCacheError as exc:
+            self._run_state_error = str(exc)
+            return
+        if current_run is not None:
+            self._current_run_state = current_run
+            self._current_run_names = set(current_run.planned_names)
+            self._db_results = {result.mutant_name: result for result in latest_results}
+
+            current_source_data: dict[str, tuple[SourceFileMutationData, dict[str, int]]] = {}
+            for file_path, (sfd, _old_counts) in self._source_data.items():
+                current_names = [
+                    name for name in sfd.exit_code_by_key if name in self._current_run_names
+                ]
+                if not current_names:
+                    continue
+                counts: dict[str, int] = {}
+                for name in current_names:
+                    result = self._db_results[name]
+                    counts[result.status] = counts.get(result.status, 0) + 1
+                    self._path_by_name[name] = file_path
+                current_source_data[file_path] = (sfd, counts)
+            mapped_names = set(self._path_by_name)
+            self._unmapped_current_names = self._current_run_names - mapped_names
+            self._source_data = current_source_data
+            return
 
         # Build name→path mapping from meta file data
         for file_path, (sfd, _counts) in self._source_data.items():
@@ -264,10 +394,7 @@ class ResultBrowser(App[None]):
 
         # Fallback: load from SQLite DB when meta files are absent
         if not self._source_data:
-            from mutmut_win.db import load_results
-
-            raw_results = load_results(self._db_path)
-            self._db_results = {r.mutant_name: r for r in raw_results}
+            self._db_results = {result.mutant_name: result for result in latest_results}
 
     def _populate_files_table(self) -> None:
         """Refresh the files DataTable with current source data."""
@@ -282,16 +409,29 @@ class ResultBrowser(App[None]):
             ]
             files_table.add_row(*row, key=file_path)
 
-        if not self._source_data and self._db_results:
-            # Fallback: show DB results aggregated by a single synthetic row
-            counts: dict[str, int] = {}
-            for r in self._db_results.values():
-                counts[r.status] = counts.get(r.status, 0) + 1
-            row_data: list[Any] = ["(all mutants)"] + [
-                Text(str(counts.get(status, 0)), justify="right")
+        if self._unmapped_current_names:
+            missing_counts: dict[str, int] = {}
+            for name in self._unmapped_current_names:
+                status = self._db_results[name].status
+                missing_counts[status] = missing_counts.get(status, 0) + 1
+            missing_cells: list[Any] = [
+                Text(str(missing_counts.get(status, 0)), justify="right")
                 for status, _label in _STATUS_COLUMNS[1:]
             ]
-            files_table.add_row(*row_data, key="__all__")
+            missing_row: list[Any] = ["(metadata missing)", *missing_cells]
+            files_table.add_row(*missing_row, key="__unmapped__")
+
+        if not self._source_data and self._db_results and not self._unmapped_current_names:
+            # Fallback: show DB results aggregated by a single synthetic row
+            db_counts: dict[str, int] = {}
+            for r in self._db_results.values():
+                db_counts[r.status] = db_counts.get(r.status, 0) + 1
+            all_cells: list[Any] = [
+                Text(str(db_counts.get(status, 0)), justify="right")
+                for status, _label in _STATUS_COLUMNS[1:]
+            ]
+            all_row: list[Any] = ["(all mutants)", *all_cells]
+            files_table.add_row(*all_row, key="__all__")
 
         files_table.move_cursor(row=selected_row)
 
@@ -324,12 +464,27 @@ class ResultBrowser(App[None]):
                     mutants_table.add_row(mutant_name, emoji, key=mutant_name)
             return
 
+        if file_path == "__unmapped__":
+            for mutant_name in sorted(self._unmapped_current_names):
+                status = self._db_results[mutant_name].status
+                if status not in _KILL_STATUSES or self._show_killed:
+                    emoji = _EMOJI_BY_STATUS.get(status, "?")
+                    mutants_table.add_row(mutant_name, emoji, key=mutant_name)
+            return
+
         if file_path not in self._source_data:
             return
 
         sfd, _counts = self._source_data[file_path]
         for mutant_name, exit_code in sfd.exit_code_by_key.items():
-            status = status_by_exit_code.get(exit_code, "suspicious")
+            if self._current_run_names is not None and mutant_name not in self._current_run_names:
+                continue
+            db_result = self._db_results.get(mutant_name)
+            status = (
+                db_result.status
+                if db_result is not None
+                else status_by_exit_code.get(exit_code, "suspicious")
+            )
             if status not in _KILL_STATUSES or self._show_killed:
                 emoji = _EMOJI_BY_STATUS.get(status, "?")
                 mutants_table.add_row(mutant_name, emoji, key=mutant_name)
@@ -347,6 +502,7 @@ class ResultBrowser(App[None]):
         estimated_duration: float | str = "?"
         duration: float | str = "?"
         type_check_error: str = "?"
+        status = "not checked"
 
         if file_path_str is not None and file_path_str in self._source_data:
             sfd, _counts = self._source_data[file_path_str]
@@ -354,12 +510,17 @@ class ResultBrowser(App[None]):
             estimated_duration = sfd.estimated_time_of_tests_by_mutant.get(mutant_name, "?")
             duration = sfd.durations_by_key.get(mutant_name, "?")
             type_check_error = sfd.type_check_error_by_key.get(mutant_name, "?")
-        elif mutant_name in self._db_results:
+            status = status_by_exit_code.get(exit_code, "suspicious")
+        if mutant_name in self._db_results:
             db_result = self._db_results[mutant_name]
             exit_code = db_result.exit_code
             duration = db_result.duration if db_result.duration is not None else "?"
+            # The database persists the canonical verdict.  Re-deriving it
+            # from the exit code loses information for classifier-produced
+            # statuses and turns legacy rows with a NULL code into
+            # "suspicious" in the fallback UI.
+            status = db_result.status
 
-        status = status_by_exit_code.get(exit_code, "suspicious")
         description = _describe_mutant(
             status, exit_code, duration, estimated_duration, type_check_error
         )
@@ -415,6 +576,7 @@ class ResultBrowser(App[None]):
             input("Press Enter to return to browser...")
 
         self._read_data()
+        self._update_run_status()
         self._populate_files_table()
 
     def action_retest_mutant(self) -> None:

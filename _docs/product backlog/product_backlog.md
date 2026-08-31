@@ -45,7 +45,7 @@
 - [ ] **Linting**: `uv run ruff check .` — 0 Findings
 - [ ] **Formatting**: `uv run ruff format .` — formatiert
 - [ ] **Type Check**: `uv run mypy src/` — 0 Errors (strict)
-- [ ] **Security**: `semgrep scan --config auto .` — 0 Findings
+- [ ] **Security**: `uv sync --locked --only-group security --no-install-project`, danach `uv run --no-sync python -I scripts/semgrep_release_gate.py` — kanonisches Gate grün
 - [ ] **Dependency Audit**: `uv run pip-audit` — 0 Advisories
 - [ ] **Architecture**: `uv run lint-imports` — 0 Verletzungen
 - [ ] **Property Tests**: hypothesis-basierte Roundtrip/Invarianten-Tests vorhanden

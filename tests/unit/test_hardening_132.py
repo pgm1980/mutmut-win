@@ -24,17 +24,35 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.constants import Profile
 from mutmut_win.runner import PytestRunner
+from tests.unit.phase_mock_util import frozen_worker_config
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
     import pytest
+
+
+def _successful_popen_with_phase_proof(proc: MagicMock) -> Callable[..., MagicMock]:
+    """Return a Popen mock that emulates the pytest execution guard hook."""
+
+    def fake_popen(*_args: object, **kwargs: object) -> MagicMock:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        marker = env["MUTMUT_PYTEST_PHASE_SENTINEL_PATH"]
+        token = env["MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"]
+        assert isinstance(marker, str)
+        assert isinstance(token, str)
+        Path(marker).write_text(token, encoding="utf-8")
+        return proc
+
+    return fake_popen
 
 
 class TestPhaseGrandchildReaping:
@@ -60,7 +78,7 @@ class TestPhaseGrandchildReaping:
         kill_tree.assert_called_once_with(fake_proc, None)
         assert "clean run timed out" in capsys.readouterr().out
 
-    def test_successful_phase_returns_the_exit_code_and_does_not_kill(
+    def test_successful_phase_reaps_fallback_tree_and_returns_exit_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -76,7 +94,7 @@ class TestPhaseGrandchildReaping:
         ):
             exit_code = runner._run_phase("stats", ["pytest"], env={})
         assert exit_code == 5
-        kill_tree.assert_not_called()
+        kill_tree.assert_called_once_with(fake_proc)
 
     def test_phase_job_handle_lifecycle_with_a_real_handle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -91,7 +109,7 @@ class TestPhaseGrandchildReaping:
         fake_proc.pid = 4242
         fake_proc.wait.return_value = 0
         with (
-            patch("subprocess.Popen", return_value=fake_proc),
+            patch("subprocess.Popen", side_effect=_successful_popen_with_phase_proof(fake_proc)),
             patch("mutmut_win.process.worker._create_task_job", return_value=42),
             patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
             patch("mutmut_win.process.job_object.close_job") as close_job,
@@ -132,7 +150,7 @@ class TestPhaseGrandchildReaping:
         fake_proc.pid = 4242
         fake_proc.wait.return_value = 0
         with (
-            patch("subprocess.Popen", return_value=fake_proc),
+            patch("subprocess.Popen", side_effect=_successful_popen_with_phase_proof(fake_proc)),
             patch("mutmut_win.process.worker._create_task_job", return_value=42) as job,
             patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
             patch("mutmut_win.process.job_object.close_job") as close_job,
@@ -227,15 +245,17 @@ class TestExtraPathsStagingParity:
         event_q: Queue[object] = Queue()
         task_q.put(MutationTask(mutant_name="src/foo.py::bar__mutmut_1").model_dump())
         task_q.put(None)
-        config_data = {
-            "paths_to_mutate": ["src/"],
-            "tests_dir": ["tests/"],
-            "extra_paths": ["../benchmarks"],
-            "pytest_add_cli_args": [],
-            "pytest_add_cli_args_test_selection": [],
-            "timeout_multiplier": 10.0,
-            "infinite_loop_detection": False,
-        }
+        config_data = frozen_worker_config(
+            {
+                "paths_to_mutate": ["src/"],
+                "tests_dir": ["tests/"],
+                "extra_paths": ["../benchmarks"],
+                "pytest_add_cli_args": [],
+                "pytest_add_cli_args_test_selection": [],
+                "timeout_multiplier": 10.0,
+                "infinite_loop_detection": False,
+            }
+        )
         with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
             worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]
 
@@ -324,9 +344,7 @@ class TestSetupCfgParity:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "setup.cfg").write_text(
-            "[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8"
-        )
+        (tmp_path / "setup.cfg").write_text("[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8")
         config = load_config(tmp_path)
         assert config.mutation_profile is Profile.ADVANCED  # default applies, not lost
         assert config.do_not_mutate_patterns == []

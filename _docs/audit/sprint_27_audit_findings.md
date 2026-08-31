@@ -530,7 +530,7 @@ Artefakten trennbar.
 
 **Neuzugänge für C8 (aus Sprint 30, User-bestätigt 2026-06-11):**
 1. Repo-weites `ruff format`-Gate war nie enforced — 23 Bestandsdateien
-   drift­en (`ruff format --check src/ tests/` rot); Sprint-Gates liefen
+   driften (`ruff format --check src/ tests/` rot); Sprint-Gates liefen
    historisch nur `ruff check`.
 2. Der Suite-Kanon `uv run pytest --ignore=tests/e2e_projects` lebt nur in
    Backlog-Prosa — ohne das Flag bricht die Collection (16 Errors). Gehört

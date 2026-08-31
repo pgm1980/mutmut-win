@@ -70,8 +70,41 @@ class TestCliInterruptHonesty:
         assert "gate" in output.lower()
         assert "below threshold" not in output
 
-    def test_complete_run_keeps_exit_0_and_gate_behaviour(self) -> None:
+
+class TestExecutionBasisScoreAuthority:
+    @pytest.mark.parametrize("minimum", ["0", "99"])
+    def test_incomplete_basis_fails_every_score_gate_closed(self, minimum: str) -> None:
         result = MutationRunResult(total_mutants=5, killed=5)
+
+        exit_code, output = _invoke_run_with(result, "--min-score", minimum)
+
+        assert exit_code == 1
+        assert "execution basis incomplete" in output.lower()
+        assert "below threshold" not in output.lower()
+
+    def test_incomplete_basis_is_serialized_before_json_gate_failure(self) -> None:
+        import json
+
+        result = MutationRunResult(total_mutants=5, killed=5)
+
+        exit_code, output = _invoke_run_with(
+            result,
+            "--min-score",
+            "99",
+            "--output",
+            "json",
+        )
+
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert exit_code == 1
+        assert payload["execution_basis_complete"] is False
+
+    def test_complete_run_keeps_exit_0_and_gate_behaviour(self) -> None:
+        result = MutationRunResult(
+            total_mutants=5,
+            killed=5,
+            execution_basis_complete=True,
+        )
         exit_code, output = _invoke_run_with(result, "--min-score", "99")
         assert exit_code == 0
         assert "below threshold" not in output
@@ -111,7 +144,11 @@ class TestZeroMutantGate:
         assert "below threshold" not in output
 
     def test_all_skipped_counts_as_zero_testable(self) -> None:
-        result = MutationRunResult(total_mutants=3, skipped=3)
+        result = MutationRunResult(
+            total_mutants=3,
+            skipped=3,
+            execution_basis_complete=True,
+        )
         exit_code, output = _invoke_run_with(result, "--min-score", "80")
         assert exit_code == 1
         assert "no testable mutants" in output.lower()

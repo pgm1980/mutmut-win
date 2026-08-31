@@ -48,6 +48,21 @@ class Profile(IntEnum):
 #: import mutmut_win for the env read) and is pinned against this value.
 MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
 
+#: Internal controls removed from the external type-checker environment as a
+#: hygiene boundary. The run basis still hashes every inherited environment
+#: value: Python startup hooks can observe a value before a later launcher has
+#: a chance to remove or overwrite it.
+INTERNAL_CHILD_ENVIRONMENT_VARS: frozenset[str] = frozenset(
+    {
+        MUTANT_ENV_VAR,
+        "MUTMUT_PYTEST_PHASE_SENTINEL_PATH",
+        "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF",
+        "MUTMUT_PYTEST_ALLOWED_DIRS",
+        "MUTMUT_PYTEST_ALLOWED_FILES",
+        "PY_IGNORE_IMPORTMISMATCH",
+    }
+)
+
 #: Minimum pytest version in the TARGET venv (issue #125 / 360°-A2). The
 #: worker hands per-mutant tests to pytest via the ``@argfile`` syntax — the
 #: only transfer path by design (no dual code paths, no 32k-limit
@@ -56,6 +71,11 @@ MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
 #: it at run start, the pyproject dependency floor encodes it for the
 #: resolver, and a pin test keeps both in sync (the #110 pattern).
 MINIMUM_PYTEST_VERSION: tuple[int, int] = (8, 2)
+
+#: Exclusive upper pytest version bound. The immutable configuration
+#: discovery boundary deliberately mirrors only pytest 8.2+ and pytest 9;
+#: unknown future majors must be reviewed before mutation execution.
+MAXIMUM_PYTEST_VERSION_EXCLUSIVE: tuple[int, int] = (10, 0)
 
 #: Source roots whose name is stripped from module paths AND mirrored into
 #: the staging / put on the worker PYTHONPATH (issue #126 / 360°-A3).
@@ -67,6 +87,42 @@ MINIMUM_PYTEST_VERSION: tuple[int, int] = (8, 2)
 #: ``"."`` is deliberately NOT part of this tuple: modules under the
 #: project root carry no prefix to strip.
 SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
+
+#: Workspace directory names that are neither copied into mutation staging nor
+#: execution-basis inputs.  Keeping one immutable set prevents generated tool
+#: state (for example import-linter or IDE caches) from invalidating a run even
+#: though the same bytes are deliberately absent from every worker tree.
+WORKSPACE_EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".git",
+        ".hypothesis",
+        ".tox",
+        ".nox",
+        "mutants",
+        ".mutmut-cache",
+        "dist",
+        "build",
+        "htmlcov",
+        "html",
+        "node_modules",
+        ".import_linter_cache",
+        ".benchmarks",
+        ".serena",
+        ".claude",
+        ".codex",
+        ".sprint",
+        "bug_reporting",
+        "_docs",
+        ".idea",
+        ".vscode",
+    }
+)
 
 # Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
 # deviations (issue #91, audit A2-EW-020 / A4-QX-025):

@@ -10,6 +10,7 @@ surrogate crashed ``save_result``, losing the upsert.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 from typing import TYPE_CHECKING
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 
 def _make_pre_v25_db(path: Path) -> None:
     """Create a cache the way mutmut-win < v2.5 did: no last_output, no forensics."""
-    with sqlite3.connect(path) as conn:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
         conn.execute(
             "CREATE TABLE mutant ("
             "mutant_name TEXT PRIMARY KEY, status TEXT NOT NULL, "
@@ -144,7 +145,7 @@ class TestMigrationRace:
 
         db = tmp_path / "cache.db"
         create_db(db)
-        with sqlite3.connect(db) as conn:
+        with contextlib.closing(sqlite3.connect(db)) as conn:
             # Second ALTER for an existing column must not raise.
             _add_column_if_missing(conn, "ALTER TABLE mutant ADD COLUMN forensics TEXT")
             _add_column_if_missing(conn, "ALTER TABLE mutant ADD COLUMN forensics TEXT")

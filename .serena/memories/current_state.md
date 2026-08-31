@@ -1,14 +1,39 @@
-# Current State — v2.20.0 (Phase 4 + external-QA hardening)
+# Current State — v2.21.0 release candidate
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
 
+<!-- LIVE_STATE_START -->
+
 ## Release status
-- **Current release: v2.20.0** (external-QA hardening on Phase 4). History:
+- **Release target: v2.21.0.** The authoritative branch is
+  `fix/360-review-hardening`, based on `main@6cb727d`. The adversarial review,
+  confirmed findings, fixes and release evidence are maintained in
+  `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
+  `bug_reporting/BUGFIXUNG_ROADMAP.md`.
+- Local tests, security, audit, reproducible-build and dogfood evidence must be
+  complete before PR integration and the annotated `v2.21.0` tag. GitHub CI is
+  skipped by explicit maintainer decision because of billing and is not a PASS.
+
+## Current next steps
+
+- Finish the quiescent post-review local gate matrix and freeze its evidence.
+- Commit and push the complete candidate, integrate it through a reviewed PR,
+  then validate the integrated `main` commit.
+- Create the annotated `v2.21.0` tag and GitHub release only from that integrated
+  commit. The local ZIP tree is not authoritative.
+
+<!-- LIVE_STATE_END -->
+
+<!-- ARCHIVE_START -->
+
+## Archived v2.20.0 state
+
+- **Previous release: v2.20.0** (external-QA hardening on Phase 4). History:
   v2.16 (profiles), v2.17 (Phase 2), v2.18 (Phase 3 regex), v2.19.0 (Phase 4
   all-tier + backports), v2.19.1 (robustness patch), v2.20.0 (WRK-002 +
   qualified do_not_mutate).
-- Back in the documented development pause after v2.20.0 (0 issues / backlog).
+- The project returned to the documented development pause after v2.20.0.
 - **v2.20.0 fixes (the last two open items from the external v2.19.0 re-test)**:
   WRK-002 — the staging phase used multiprocessing.Pool.imap_unordered (no
   broken-worker detection), so a worker dying at interpreter bootstrap (a crashing
@@ -45,11 +70,11 @@ sprint_36_progress is archived.
   stdlib) -> pip-audit unchanged. v2.19.0 acceptance_harness 204/200/98% unchanged
   (no operator/profile behaviour changed in v2.20.0).
 
-## Operator profiles
+### Operator profiles
 - Registry node_mutation.mutation_operators = (node_type, operator, Profile).
 - Counts: **basic 15, advanced 34, all 41**. `all` strictly exceeds `advanced`.
 
-## Phase 4 shipped (v2.19.0) — node_mutation.py operators + mutation.py backports
+### Phase 4 shipped (v2.19.0) — node_mutation.py operators + mutation.py backports
 - AOD (#2 operator_aod), exception-swap (#44 operator_exception_swap).
 - statement-removal (#27 operator_statement_removal, allow-list Await/Yield/
   Subscript/NamedExpr), member-assignment-removal (#29).
@@ -61,12 +86,12 @@ sprint_36_progress is archived.
   @staticmethod mutation (_is_static_only + create_trampoline_wrapper static
   dispatch). @classmethod DEFERRED (class-bound __name__ read-only).
 
-## Phases 1-3 (recap)
+### Phases 1-3 (recap)
 v2.16 profile system; v2.17 #3 ROR / #15 CRCR / #22 negate / #23 force / #38
 collection-empty / #41 match-guard; v2.18 14-sub-mutator regex suite
 (regex_mutation.py, string-based class-span tokenizer).
 
-## Reusable lessons (verified across Phase 4 + v2.20.0)
+### Reusable lessons (verified across Phase 4 + v2.20.0)
 - Per-operator gate: mutmut-win run --paths-to-mutate <file> --tests-dir <unit>
   --profile all --force "*operator_X*" (fnmatch via match_mutant_names).
 - **Engine-self-mutation coverage gap (now seen twice)**: a test that drives an
@@ -97,7 +122,10 @@ collection-empty / #41 match-guard; v2.18 14-sub-mutator regex suite
   extras -> always `uv sync --all-extras --all-groups`. `uv lock` (not sync)
   updates uv.lock for a version bump without the TLS-sensitive editable rebuild.
 
-## Open / next
+### Archived open / next at v2.20.0
 Development pause (0 issues / backlog). Future: @classmethod mutation (trampoline-
-lookup __func__.__name__), the two unwired backport harness targets (pragma /
-do_not_mutate), wrapper-codegen legacy coverage debt (multi-param self-index).
+lookup __func__.__name__), optional standalone-harness targets for the two
+already-regression-tested skip backports (pragma / do_not_mutate), and
+wrapper-codegen legacy coverage debt (multi-param self-index).
+
+<!-- ARCHIVE_END -->

@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,8 @@ def test_source_layout_mutants_are_killed_not_untested(source_layout_project: Pa
 
     db_path = source_layout_project / ".mutmut-cache" / "mutmut-cache.db"
     assert db_path.exists(), "no result database written"
-    rows = sqlite3.connect(db_path).execute("SELECT mutant_name, status FROM mutant").fetchall()
+    with closing(sqlite3.connect(db_path)) as conn:
+        rows = conn.execute("SELECT mutant_name, status FROM mutant").fetchall()
     assert rows, "no mutants recorded"
 
     statuses = [status for _name, status in rows]

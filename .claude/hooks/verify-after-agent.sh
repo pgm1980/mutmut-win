@@ -1,6 +1,6 @@
 #!/bin/bash
 # SubagentStop Hook: Automatische Verifikation nach Agent-Rückkehr
-# Führt Lint, Type-Check, Tests und Semgrep auf geänderte Dateien aus.
+# Führt Lint, Type-Check, Tests und das kanonische Semgrep-Release-Gate aus.
 #
 # OUTPUT: Normal stdout → Claude AI context
 #         JSON systemMessage → visible to user in chat
@@ -54,22 +54,25 @@ if [ "$HAS_ERRORS" = false ]; then
   fi
 fi
 
-# --- 4. Semgrep auf geänderte Dateien ---
-CHANGED_FILES=$(git diff --name-only HEAD 2>/dev/null | grep '\.py$' || true)
-if [ -n "$CHANGED_FILES" ]; then
-  SEMGREP_OUTPUT=$(echo "$CHANGED_FILES" | xargs semgrep scan --config auto --quiet 2>&1)
+# --- 4. Kanonisches Semgrep-Release-Gate (vollständiger Git-owned Scope) ---
+if ! command -v uv >/dev/null 2>&1; then
+  RESULTS="$RESULTS\nSEMGREP: FAILED (prerequisite 'uv' missing)"
+  HAS_ERRORS=true
+elif [ ! -f "scripts/semgrep_release_gate.py" ]; then
+  RESULTS="$RESULTS\nSEMGREP: FAILED (scripts/semgrep_release_gate.py missing)"
+  HAS_ERRORS=true
+else
+  SEMGREP_OUTPUT=$(uv run --no-sync python -I scripts/semgrep_release_gate.py 2>&1)
   SEMGREP_EXIT=$?
 
-  if [ $SEMGREP_EXIT -eq 0 ] && [ -z "$SEMGREP_OUTPUT" ]; then
-    RESULTS="$RESULTS\nSEMGREP: OK"
+  if [ $SEMGREP_EXIT -eq 0 ]; then
+    RESULTS="$RESULTS\nSEMGREP: OK (canonical full Git-owned release scope)"
   else
-    RESULTS="$RESULTS\nSEMGREP: FINDINGS"
+    RESULTS="$RESULTS\nSEMGREP: FAILED"
     HAS_ERRORS=true
     SEMGREP_FINDINGS=$(echo "$SEMGREP_OUTPUT" | head -20)
     RESULTS="$RESULTS\n$SEMGREP_FINDINGS"
   fi
-else
-  RESULTS="$RESULTS\nSEMGREP: SKIP (no changed .py files)"
 fi
 
 # --- Output ---

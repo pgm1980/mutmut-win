@@ -12,13 +12,13 @@ import contextlib
 import logging
 import multiprocessing
 import multiprocessing.queues
+import os
 import sys
 import time
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from mutmut_win.exceptions import WorkerError
+from mutmut_win.exceptions import ProcessContainmentError, PytestBoundaryError, WorkerError
 from mutmut_win.process.worker import worker_main
 
 if TYPE_CHECKING:
@@ -37,14 +37,14 @@ _EVENT_POLL_SECONDS: float = 1.0
 #: Exit code for synthesized completions of tasks whose worker died hard.
 _EXIT_CODE_SUSPICIOUS: int = 35
 
-#: Wall-clock grace (seconds) for the FIRST task to be pulled by any worker.
-#: WRK-001: a worker crashing during interpreter startup (before the mp
-#: bootstrap — e.g. a crashing sitecustomize/.pth/site-packages) never pulls a
-#: task and cannot be resolved to a clean ``not any(is_alive())`` abort, so the
-#: run hung (>=50s of fruitless respawns). If no worker pulls a task within this
-#: window the pool is declared collapsed. Generous on purpose (Defender can
-#: stretch a cold first spawn-import to 10-20s) — it only turns an unbounded
-#: hang into a bounded, diagnosed abort. Not a user knob (test-monkeypatchable).
+#: Wall-clock grace (seconds) for queued work to make progress while no task is
+#: in flight.  WRK-001 originally covered only total startup failure.  A mixed
+#: pool could still hang forever after one healthy worker completed a task while
+#: another worker remained alive but wedged before pulling its first task.  The
+#: same generous grace now applies after every real progress event, but only
+#: while *no* task is in flight.  This keeps slow, healthy mutants under their
+#: own per-task timeout instead of killing them from the executor.  Not a user
+#: knob (test-monkeypatchable).
 _STARTUP_GRACE_SECONDS: float = 60.0
 
 
@@ -63,15 +63,13 @@ def _sweep_stale_artifacts(mutants_dir: Path) -> None:
                 stale.unlink()
 
 
-def _startup_grace_expired(any_task_pulled: bool, elapsed: float) -> bool:
-    """True when no worker pulled a task within the startup grace (WRK-001).
+def _idle_grace_expired(*, remaining_tasks: int, in_flight_tasks: int, idle_elapsed: float) -> bool:
+    """Return whether queued work is stalled with no task currently running.
 
-    Once any task is pulled the watchdog is disarmed forever, so a slow but
-    healthy first task is protected — only a total startup failure (every spawn
-    crashing before the mp bootstrap) keeps *any_task_pulled* False past the
-    grace and trips this backstop.
+    ``in_flight_tasks`` is the safety guard: a long but healthy mutant must be
+    governed by its per-task timeout, not by this pool-level progress watchdog.
     """
-    return not any_task_pulled and elapsed > _STARTUP_GRACE_SECONDS
+    return remaining_tasks > 0 and in_flight_tasks == 0 and idle_elapsed > _STARTUP_GRACE_SECONDS
 
 
 class SpawnPoolExecutor:
@@ -90,13 +88,35 @@ class SpawnPoolExecutor:
     def __init__(self, max_workers: int, config: MutmutConfig) -> None:
         self._max_workers = max_workers
         self._config_data: dict[str, Any] = config.model_dump()
+        # On Windows the pool is a safety boundary, not an optional
+        # optimisation.  Fail before allocating/spawning anything if the
+        # kernel boundary cannot be established.
+        self._job_handle: int | None = None
+        if sys.platform == "win32":
+            try:
+                from mutmut_win.process.job_object import create_kill_on_close_job
+
+                self._job_handle = create_kill_on_close_job()
+            except (OSError, RuntimeError) as exc:
+                raise ProcessContainmentError(
+                    "Could not create a Windows Job Object for the worker pool; "
+                    "refusing to start uncontained workers."
+                ) from exc
+
         # Use "spawn" explicitly — required on Windows, safe on all platforms.
         self._mp_ctx = multiprocessing.get_context("spawn")
         self._task_queue: multiprocessing.queues.Queue[dict[str, object] | None] = (
             self._mp_ctx.Queue()
         )
         self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = self._mp_ctx.Queue()
+        # POSIX task subprocesses publish their process group synchronously
+        # here while blocked behind an EOF-safe pre-exec gate. Unlike
+        # Queue.put(), SimpleQueue.put() has no feeder thread; the gate releases
+        # only after the complete PGID record is visible.
+        self._containment_queue: Any = self._mp_ctx.SimpleQueue()
         self._workers: list[multiprocessing.process.BaseProcess] = []
+        self._posix_groups_by_worker: dict[int, set[int]] = {}
+        self._posix_group_by_task: dict[str, int] = {}
         self._num_tasks: int = 0
         self._shutdown_done: bool = False
         # Pool-collapse declaration (issue #127 / 360°-A7): set by
@@ -106,24 +126,27 @@ class SpawnPoolExecutor:
         self.aborted: bool = False
         self.abort_reason: str | None = None
 
-        # Orphan protection: Windows Job Object kills all children when parent dies.
-        self._job_handle: int | None = None
-        if sys.platform == "win32":
-            try:
-                from mutmut_win.process.job_object import create_kill_on_close_job
-
-                self._job_handle = create_kill_on_close_job()
-            except OSError:
-                warnings.warn(
-                    "Could not create Windows Job Object — orphan process protection "
-                    "is disabled. If mutmut-win crashes, worker processes may remain alive.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def configure_pytest_boundary(self, boundary: dict[str, object]) -> None:
+        """Freeze the parent-validated pytest boundary before worker spawn."""
+
+        from mutmut_win.pytest_boundary import PytestBoundary
+
+        if self._workers:
+            raise RuntimeError("pytest boundary cannot change after worker spawn")
+        validated = PytestBoundary.from_dict(boundary)
+        validated.arguments()
+        existing_payload = self._config_data.get("_pytest_boundary")
+        if existing_payload is not None:
+            existing = PytestBoundary.from_dict(existing_payload)
+            existing.arguments()
+            if existing.to_dict() != validated.to_dict():
+                raise PytestBoundaryError("pytest boundary is already frozen for this pool")
+            return
+        self._config_data["_pytest_boundary"] = validated.to_dict()
 
     def start(self, tasks: list[MutationTask]) -> None:
         """Spawn workers and enqueue all tasks.
@@ -136,37 +159,79 @@ class SpawnPoolExecutor:
         Args:
             tasks: List of mutation tasks to distribute among workers.
         """
+        raw_boundary = self._config_data.get("_pytest_boundary")
+        if raw_boundary is None:
+            raise PytestBoundaryError(
+                "Worker pool start refused: configure_pytest_boundary() was not called."
+            )
+        from mutmut_win.pytest_boundary import PytestBoundary
+
+        # Revalidate at the last parent-side moment before spawning workers.
+        # The workers repeat this check at startup and before every task.
+        PytestBoundary.from_dict(raw_boundary).arguments()
+
         _sweep_stale_artifacts(Path("mutants"))
         self._num_tasks = len(tasks)
 
-        # Enqueue tasks as plain dicts for pickle safety.
-        for task in tasks:
-            self._task_queue.put(task.model_dump())
+        try:
+            # Workers are spawned against an empty queue. On Windows the
+            # custom spawn backend creates the interpreter suspended, assigns
+            # its process handle to the Job, and resumes only afterwards — so
+            # even site/.pth/sitecustomize startup is already contained.
+            for _ in range(self._max_workers):
+                proc = self._make_worker_process()
+                proc.start()
+                self._workers.append(proc)
+            # Queue publication happens only after every Windows worker is
+            # contained.  This also makes assignment failure all-or-nothing.
+            for task in tasks:
+                self._task_queue.put(task.model_dump())
+            for _ in range(self._max_workers):
+                self._task_queue.put(None)
+        except BaseException:
+            for worker in self._workers:
+                pid = getattr(worker, "pid", None)
+                if isinstance(pid, int):
+                    self._kill_posix_worker_group(pid)
+                with contextlib.suppress(Exception):
+                    worker.kill()
+                with contextlib.suppress(Exception):
+                    worker.join(timeout=5.0)
+            self._workers.clear()
+            raise
 
-        # One sentinel per worker so each worker exits after draining tasks.
-        for _ in range(self._max_workers):
-            self._task_queue.put(None)
+    def _make_worker_process(self) -> multiprocessing.process.BaseProcess:
+        """Build one spawn worker with the platform containment contract."""
+        args = (
+            self._task_queue,
+            self._event_queue,
+            self._config_data,
+            self._containment_queue,
+        )
+        if sys.platform == "win32":
+            if self._job_handle is None:
+                raise ProcessContainmentError("Windows worker pool has no usable Job Object.")
+            from mutmut_win.process.suspended_spawn import JobContainedSpawnProcess
 
-        # Spawn workers after the queue is populated so they can start
-        # consuming immediately without a race on the sentinel count.
-        for _ in range(self._max_workers):
-            proc = self._mp_ctx.Process(
+            return JobContainedSpawnProcess(
+                job_handle=self._job_handle,
                 target=worker_main,
-                args=(self._task_queue, self._event_queue, self._config_data),
+                args=args,
                 daemon=True,
             )
-            proc.start()
+        if os.name == "posix":
+            from mutmut_win.process.posix_spawn import SessionContainedSpawnProcess
 
-            # Assign to Job Object for orphan protection (Windows only).
-            if self._job_handle is not None and proc.pid is not None:
-                try:
-                    from mutmut_win.process.job_object import assign_process_to_job
-
-                    assign_process_to_job(self._job_handle, proc.pid)
-                except OSError:
-                    logger.warning("Could not assign worker PID %d to Job Object", proc.pid)
-
-            self._workers.append(proc)
+            # The seekable bootstrap returns from Process.start() even when
+            # sitecustomize wedges before spawn_main.  A dedicated session also
+            # lets shutdown reap startup-time descendants that never reached
+            # worker_main.
+            return SessionContainedSpawnProcess(
+                target=worker_main,
+                args=args,
+                daemon=True,
+            )
+        return self._mp_ctx.Process(target=worker_main, args=args, daemon=True)
 
     def get_events(self) -> Iterator[TaskEvent]:
         """Yield domain events until all tasks have been reported as done.
@@ -183,7 +248,10 @@ class SpawnPoolExecutor:
         late-flushed REAL completion for an already-synthesized mutant is
         dropped so every task is counted exactly once.  When the whole pool
         is dead and tasks were never started, the loop aborts loudly instead
-        of fabricating results for them.
+        of fabricating results for them.  A progress watchdog also bounds a
+        mixed pool where at least one task completed but another worker stays
+        alive and never pulls queued work; it is active only while no task is
+        in flight.
 
         Yields:
             ``TaskStarted`` or ``TaskCompleted`` instances.
@@ -196,52 +264,65 @@ class SpawnPoolExecutor:
         in_flight: dict[str, int] = {}  # mutant_name -> worker pid
         synthesized: set[str] = set()
         handled_dead_pids: set[int] = set()
-        # WRK-001 startup watchdog: did ANY worker ever pull a task (a
-        # TaskStarted/TaskCompleted arrived)? A startup-time crash never does,
-        # and the liveness sweep below cannot resolve it — see the backstop.
-        start_monotonic = time.monotonic()
-        any_task_pulled = False
+        # WRK-001 progress watchdog.  The original global ``any_task_pulled``
+        # flag permanently disarmed the watchdog after one healthy worker made
+        # progress.  Track the last real state transition instead so a second,
+        # alive-but-bootstrap-wedged worker cannot strand queued tasks forever.
+        last_progress_monotonic = time.monotonic()
+        progress_observed = False
 
         while finished < self._num_tasks:
+            self._drain_containment_events(in_flight)
             try:
                 raw: dict[str, object] = self._event_queue.get(timeout=_EVENT_POLL_SECONDS)
             except queue_module.Empty:
                 # Idle tick: everything flushed so far has been consumed, so
                 # the in-flight map is current — sweep worker liveness now
                 # (drain-first ordering prevents double counting, JT-008).
-                for synthetic_event in self._sweep_dead_workers(in_flight, handled_dead_pids):
+                synthetic_events = self._sweep_dead_workers(in_flight, handled_dead_pids)
+                for synthetic_event in synthetic_events:
                     synthesized.add(synthetic_event.mutant_name)
                     finished += 1
                     yield synthetic_event
-                if not any(worker.is_alive() for worker in self._workers):
-                    remaining = self._num_tasks - finished
-                    if remaining > 0:
-                        # Issue #127 / 360°-A7: declare the collapse as run
-                        # state — the silent break used to read as success.
-                        self.aborted = True
-                        self.abort_reason = (
-                            f"all {len(self._workers)} workers died; "
-                            f"{remaining} task(s) were never started"
-                        )
-                        print(
-                            f"Error: {self.abort_reason} — aborting the run. "
-                            "Their mutants remain unchecked.",
-                            file=sys.stderr,
-                        )
-                        break
-                # WRK-001 backstop: if no worker has pulled a single task
-                # within the startup grace, the pool is collapsing at
-                # interpreter startup and the is_alive() sweep above cannot
-                # resolve it (the worker never reaches a clean dead state).
-                if _startup_grace_expired(any_task_pulled, time.monotonic() - start_monotonic):
-                    self._declare_startup_collapse()
+                if synthetic_events:
+                    progress_observed = True
+                    last_progress_monotonic = time.monotonic()
+
+                remaining = self._num_tasks - finished
+                if remaining > 0 and not any(worker.is_alive() for worker in self._workers):
+                    # Issue #127 / 360°-A7: declare the collapse as run
+                    # state — the silent break used to read as success.
+                    self.aborted = True
+                    self.abort_reason = (
+                        f"all {len(self._workers)} workers died; "
+                        f"{remaining} task(s) were never started"
+                    )
+                    print(
+                        f"Error: {self.abort_reason} — aborting the run. "
+                        "Their mutants remain unchecked.",
+                        file=sys.stderr,
+                    )
+                    break
+                # Bound both total startup failure and the mixed-pool variant:
+                # queued tasks, no in-flight task, and no progress for a full
+                # grace interval.  An in-flight task always disables this check
+                # and remains protected by its own worker-side timeout.
+                if _idle_grace_expired(
+                    remaining_tasks=remaining,
+                    in_flight_tasks=len(in_flight),
+                    idle_elapsed=time.monotonic() - last_progress_monotonic,
+                ):
+                    if progress_observed:
+                        self._declare_idle_collapse(remaining)
+                    else:
+                        self._declare_startup_collapse()
                     break
                 continue
 
             # Discriminate on the keys present in the dict.
+            fatal_completion = False
             if "exit_code" in raw:
                 event: TaskEvent = TaskCompleted.model_validate(raw)
-                any_task_pulled = True
                 if event.mutant_name in synthesized:
                     # Late flush from a worker we already declared dead —
                     # drop it to keep the finished-accounting single-counted.
@@ -249,10 +330,17 @@ class SpawnPoolExecutor:
                     in_flight.pop(event.mutant_name, None)
                     continue
                 in_flight.pop(event.mutant_name, None)
+                self._forget_posix_group(event.mutant_name, event.worker_pid)
                 finished += 1
+                if isinstance(event, TaskCompleted) and event.fatal:
+                    self.aborted = True
+                    self.abort_reason = (
+                        f"worker PID {event.worker_pid} reported a fatal execution-boundary "
+                        f"failure: {event.last_output or 'no diagnostic'}"
+                    )
+                    fatal_completion = True
             elif "timestamp" in raw:
                 event = TaskStarted.model_validate(raw)
-                any_task_pulled = True
                 in_flight[event.mutant_name] = event.worker_pid
             else:
                 # Fail fast on unknown shapes instead of misparsing them
@@ -260,7 +348,11 @@ class SpawnPoolExecutor:
                 msg = f"unknown event shape on the event queue: {sorted(raw)!r}"
                 raise WorkerError(msg)
 
+            progress_observed = True
+            last_progress_monotonic = time.monotonic()
             yield event
+            if fatal_completion:
+                break
 
     def _sweep_dead_workers(
         self, in_flight: dict[str, int], handled_dead_pids: set[int]
@@ -274,6 +366,8 @@ class SpawnPoolExecutor:
             if worker.is_alive() or pid in handled_dead_pids:
                 continue
             handled_dead_pids.add(pid)
+            self._kill_posix_worker_group(pid)
+            self._kill_posix_groups_for_worker(pid)
             orphaned = [name for name, owner in in_flight.items() if owner == pid]
             for name in orphaned:
                 in_flight.pop(name, None)
@@ -300,6 +394,67 @@ class SpawnPoolExecutor:
                 )
         return synthetic
 
+    def _drain_containment_events(self, in_flight: dict[str, int]) -> None:
+        """Consume synchronously-published POSIX task PGID evidence."""
+        if sys.platform == "win32":
+            return
+        reader = getattr(self._containment_queue, "_reader", None)
+        if reader is None:
+            return
+        while reader.poll():
+            raw = self._containment_queue.get()
+            if not isinstance(raw, dict):
+                raise WorkerError(f"invalid containment event: {raw!r}")
+            name = raw.get("mutant_name")
+            worker_pid = raw.get("worker_pid")
+            process_group = raw.get("process_group")
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(worker_pid, int)
+                or worker_pid <= 0
+                or not isinstance(process_group, int)
+                or process_group <= 0
+            ):
+                raise WorkerError(f"invalid containment event: {raw!r}")
+            in_flight[name] = worker_pid
+            self._posix_group_by_task[name] = process_group
+            self._posix_groups_by_worker.setdefault(worker_pid, set()).add(process_group)
+
+    def _forget_posix_group(self, mutant_name: str, worker_pid: int) -> None:
+        process_group = self._posix_group_by_task.pop(mutant_name, None)
+        if process_group is None:
+            return
+        worker_groups = self._posix_groups_by_worker.get(worker_pid)
+        if worker_groups is None:
+            return
+        worker_groups.discard(process_group)
+        if not worker_groups:
+            self._posix_groups_by_worker.pop(worker_pid, None)
+
+    def _kill_posix_groups_for_worker(self, worker_pid: int) -> None:
+        if sys.platform == "win32":
+            return
+        import os
+        import signal
+
+        for process_group in self._posix_groups_by_worker.pop(worker_pid, set()):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process_group, signal.SIGKILL)
+            for name, group in tuple(self._posix_group_by_task.items()):
+                if group == process_group:
+                    self._posix_group_by_task.pop(name, None)
+
+    @staticmethod
+    def _kill_posix_worker_group(worker_pid: int) -> None:
+        """Reap one worker session, including pre-worker_main descendants."""
+        if os.name != "posix" or worker_pid <= 0:
+            return
+        import signal
+
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(worker_pid, signal.SIGKILL)  # type: ignore[attr-defined]
+
     def _declare_startup_collapse(self) -> None:
         """Mark the pool collapsed at worker startup and report it (WRK-001)."""
         self.aborted = True
@@ -312,6 +467,20 @@ class SpawnPoolExecutor:
             "interpreter startup (a crashing sitecustomize/.pth/"
             "site-packages wedges every spawn). Aborting the run; "
             "their mutants remain unchecked.",
+            file=sys.stderr,
+        )
+
+    def _declare_idle_collapse(self, remaining: int) -> None:
+        """Mark a mixed pool stalled after earlier progress as collapsed."""
+        self.aborted = True
+        self.abort_reason = (
+            f"no worker pulled another task within {_STARTUP_GRACE_SECONDS:.0f}s; "
+            f"{remaining} task(s) were never started"
+        )
+        print(
+            f"Error: {self.abort_reason} — workers stopped pulling queued "
+            "tasks after earlier progress. Aborting the run; their mutants "
+            "remain unchecked.",
             file=sys.stderr,
         )
 
@@ -334,23 +503,85 @@ class SpawnPoolExecutor:
             return
         self._shutdown_done = True
 
-        deadline = time.monotonic() + timeout
-        for worker in self._workers:
-            worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        for worker in self._workers:
-            if worker.is_alive():
-                worker.kill()
-                worker.join()
+        cleanup_errors: list[tuple[str, BaseException]] = []
 
+        def attempt(label: str, operation: Any) -> None:
+            try:
+                operation()
+            except BaseException as exc:
+                cleanup_errors.append((label, exc))
+
+        # Capture every synchronously-published PGID before workers are
+        # touched.  A hard-killed worker cannot retract these records.
+        attempt("drain POSIX containment events", lambda: self._drain_containment_events({}))
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        for worker in tuple(self._workers):
+            attempt(
+                f"join worker {getattr(worker, 'pid', None)}",
+                lambda worker=worker: worker.join(timeout=max(0.0, deadline - time.monotonic())),
+            )
+
+        for worker in tuple(self._workers):
+            pid = getattr(worker, "pid", None)
+            if isinstance(pid, int):
+                attempt(
+                    f"kill POSIX groups for worker {pid}",
+                    lambda pid=pid: self._kill_posix_groups_for_worker(pid),
+                )
+                attempt(
+                    f"kill POSIX worker session {pid}",
+                    lambda pid=pid: self._kill_posix_worker_group(pid),
+                )
+            alive = True
+            try:
+                alive = bool(worker.is_alive())
+            except BaseException as exc:
+                cleanup_errors.append((f"inspect worker {pid}", exc))
+            if alive:
+                attempt(f"kill worker {pid}", worker.kill)
+
+        # The post-kill reap is independently bounded.  A failed/denied kill
+        # cannot block queue and Job cleanup indefinitely.
+        reap_deadline = time.monotonic() + min(2.0, max(0.1, max(0.0, timeout)))
+        for worker in tuple(self._workers):
+            attempt(
+                f"reap worker {getattr(worker, 'pid', None)}",
+                lambda worker=worker: worker.join(
+                    timeout=max(0.0, reap_deadline - time.monotonic())
+                ),
+            )
+
+        workers = tuple(self._workers)
         self._workers.clear()
 
-        for queue in (self._task_queue, self._event_queue):
-            queue.cancel_join_thread()
-            queue.close()
+        # Each resource is an independent cleanup stage.  Never let one broken
+        # queue mask the original run error or prevent the Job from closing.
+        for name, queue in (("task queue", self._task_queue), ("event queue", self._event_queue)):
+            attempt(f"cancel {name} feeder join", queue.cancel_join_thread)
+            attempt(f"close {name}", queue.close)
+        attempt("close containment queue", self._containment_queue.close)
 
-        # Release the Job Object handle (processes are already dead at this point).
-        if self._job_handle is not None:
-            from mutmut_win.process.job_object import close_job
+        handle = self._job_handle
+        self._job_handle = None
+        if handle is not None:
 
-            close_job(self._job_handle)
-            self._job_handle = None
+            def close_pool_job() -> None:
+                from mutmut_win.process.job_object import close_job
+
+                close_job(handle)
+
+            attempt("close worker-pool Job Object", close_pool_job)
+
+        for worker in workers:
+            try:
+                if not worker.is_alive():
+                    attempt(
+                        f"close worker {getattr(worker, 'pid', None)}",
+                        lambda worker=worker: worker.close(),
+                    )
+            except BaseException as exc:
+                cleanup_errors.append(("inspect worker before close", exc))
+
+        for label, cleanup_exc in cleanup_errors:
+            logger.error("executor shutdown cleanup failed (%s): %s", label, cleanup_exc)

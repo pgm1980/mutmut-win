@@ -62,9 +62,13 @@ def _pin_for_stable_cpu(pid: int) -> None:
         return
     # Dedicate the last logical core; the pytest runner itself sits elsewhere.
     with contextlib.suppress(Exception):
-        ncpu = psutil.cpu_count(logical=True) or 1
-        if ncpu > 1:
-            proc.cpu_affinity([ncpu - 1])
+        # Use the process's *allowed* affinity set, not system-wide cpu_count:
+        # containers/CI hosts can expose 32 logical CPUs while constraining the
+        # process to 0..23. Selecting global CPU 31 then failed silently and the
+        # canonical busy loop dropped below the threshold under suite load.
+        available_cpus = proc.cpu_affinity()
+        if len(available_cpus) > 1:
+            proc.cpu_affinity([available_cpus[-1]])
     if sys.platform == "win32":
         with contextlib.suppress(Exception):
             proc.nice(psutil.HIGH_PRIORITY_CLASS)

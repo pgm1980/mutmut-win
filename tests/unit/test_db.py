@@ -43,7 +43,7 @@ class TestCreateDb:
 
         db_path = tmp_path / "cache.db"
         create_db(db_path)
-        with sqlite3.connect(db_path) as conn:
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='mutant'"
             )

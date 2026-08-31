@@ -64,10 +64,11 @@ if [[ -z "$BACKLOG_EXISTS" ]]; then
   BLOCKERS="$BLOCKERS\n  - [ ] No sprint backlog document found for Sprint $SPRINT in '$BACKLOG_DIR/'"
 fi
 
-# Live check 4: Last semgrep scan?
-LAST_SEMGREP=$(git log --all --oneline --grep="semgrep\|security scan" 2>/dev/null | head -1 || true)
-if [[ -z "$LAST_SEMGREP" ]]; then
-  BLOCKERS="$BLOCKERS\n  - [ ] No evidence of Semgrep security scan for this sprint"
+# Live check 4: The current sprint state must truthfully confirm the canonical gate.
+# Historical commit messages are not evidence for the current release candidate.
+SEMGREP_PASSED=$(echo "$FRONTMATTER" | grep '^semgrep_passed:' | sed 's/semgrep_passed: *//' | tr -d '"' || true)
+if [[ "$SEMGREP_PASSED" != "true" ]]; then
+  BLOCKERS="$BLOCKERS\n  - [ ] Current sprint state does not confirm the canonical Semgrep release gate"
 fi
 
 if [[ -n "$BLOCKERS" ]]; then

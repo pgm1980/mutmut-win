@@ -27,6 +27,7 @@ from mutmut_win.models import MutationTask
 from mutmut_win.orchestrator import _apply_timeouts
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.process.worker import _maybe_start_loop_monitor, _read_last_lines, worker_main
+from tests.unit.phase_mock_util import frozen_worker_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,11 +45,11 @@ def _config_data(**overrides: Any) -> dict[str, Any]:
     data = MutmutConfig(timeout_multiplier=10.0).model_dump()
     data["infinite_loop_detection"] = False
     data.update(overrides)
-    return data
+    return frozen_worker_config(data)
 
 
 class TestWorkerUsesPerTaskTimeout:
-    def test_wait_uses_task_timeout_seconds(
+    def test_wait_uses_only_the_remaining_task_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -70,7 +71,12 @@ class TestWorkerUsesPerTaskTimeout:
         with patch.object(worker_module.subprocess, "Popen", return_value=fake_proc):
             worker_main(task_q, event_q, _config_data())  # type: ignore[arg-type]
 
-        fake_proc.wait.assert_called_once_with(timeout=123.0)
+        # The first wait enforces the task deadline.  A later bounded wait is
+        # part of the normal descendant-tree cleanup when no real Job Object
+        # is attached to this mocked process.
+        wait_call = fake_proc.wait.call_args_list[0]
+        remaining = wait_call.kwargs["timeout"]
+        assert 0.0 < remaining <= 123.0
 
 
 # Issue #105 / DOG-001: the budget gained an additive startup floor — the

@@ -5,16 +5,15 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 import mutmut_win.process.worker as worker_module
+from mutmut_win.exceptions import ProcessContainmentError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.worker import MUTANT_ENV_VAR, worker_main
 
@@ -25,6 +24,7 @@ def _no_real_task_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assigned to such a PID could capture a FOREIGN process (issue #82).
     Unit tests must never create real job objects."""
     monkeypatch.setattr(worker_module, "_create_task_job", lambda _pid: None)
+    monkeypatch.setattr(worker_module, "_kill_proc_tree", lambda _proc, _job=None: None)
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +69,13 @@ def _make_config(**overrides: Any) -> dict[str, Any]:
         "infinite_loop_detection": False,
     }
     base.update(overrides)
+    from mutmut_win.pytest_boundary import prepare_pytest_boundary
+
+    base["_pytest_boundary"] = prepare_pytest_boundary(
+        project_root=Path.cwd(),
+        staging_root=Path("mutants"),
+        tests_dir=list(base["tests_dir"]),
+    ).to_dict()
     return base
 
 
@@ -79,6 +86,23 @@ def _make_popen_mock(exit_code: int = 0) -> MagicMock:
     fake_proc.wait.return_value = exit_code
     fake_proc.poll.return_value = exit_code  # already exited
     return fake_proc
+
+
+def _popen_with_phase_proof(exit_code: int = 0) -> Any:
+    """Return a Popen side effect that emulates the real pytest guard hook."""
+
+    def fake_popen(*_args: object, **kwargs: object) -> MagicMock:
+        if exit_code == 0:
+            env = kwargs.get("env")
+            assert isinstance(env, dict)
+            marker = env["MUTMUT_PYTEST_PHASE_SENTINEL_PATH"]
+            token = env["MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"]
+            assert isinstance(marker, str)
+            assert isinstance(token, str)
+            Path(marker).write_text(token, encoding="utf-8")
+        return _make_popen_mock(exit_code)
+
+    return fake_popen
 
 
 def _simple_task(**overrides: Any) -> dict[str, Any]:
@@ -122,6 +146,84 @@ class TestWorkerMain:
         worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
         assert event_q.empty()
 
+    def test_containment_failure_emits_fatal_completion_and_stops_worker(self) -> None:
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker._process_task",
+            side_effect=ProcessContainmentError("Job Object unavailable"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.mutant_name == first["mutant_name"]
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "ProcessContainmentError" in (completed.last_output or "")
+        assert task_q.get() == second
+
+    def test_guard_publication_failure_is_fatal_and_stops_worker(self) -> None:
+        """A staging publisher outage is infrastructure, not a mutant verdict."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.ensure_atomic_bytes",
+            side_effect=PermissionError("guard publication denied"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert event_q.empty()
+        assert completed.mutant_name == first["mutant_name"]
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "PytestBoundaryError" in (completed.last_output or "")
+        assert "guard publication denied" in (completed.last_output or "")
+        # The second task was not consumed after the fatal boundary failure.
+        assert task_q.get() == second
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
+    def test_real_task_resume_failure_is_fatal_and_stops_worker(self) -> None:
+        """A kernel resume failure must not degrade into an ordinary exit 35."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+        fake_proc = _make_popen_mock(exit_code=0)
+
+        with (
+            patch("mutmut_win.process.worker.subprocess.Popen", return_value=fake_proc),
+            patch("mutmut_win.process.worker._REAL_POPEN_TYPE", object),
+            patch("mutmut_win.process.worker._create_task_job", return_value=77),
+            patch(
+                "mutmut_win.process.worker._resume_suspended_process",
+                side_effect=OSError("resume denied"),
+            ),
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "ProcessContainmentError" in (completed.last_output or "")
+        assert "resume" in (completed.last_output or "").lower()
+        close_job.assert_called_once_with(77)
+        # Fatal containment failure stops before consuming the sentinel.
+        assert task_q.get() is None
+
     def test_task_produces_started_and_completed_events(self) -> None:
         """One task + sentinel must produce TaskStarted then TaskCompleted."""
         task_q: _SimpleQueue = _SimpleQueue()
@@ -132,7 +234,7 @@ class TestWorkerMain:
 
         with patch(
             "mutmut_win.process.worker.subprocess.Popen",
-            return_value=_make_popen_mock(exit_code=0),
+            side_effect=_popen_with_phase_proof(exit_code=0),
         ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
@@ -148,6 +250,22 @@ class TestWorkerMain:
         assert completed.mutant_name == "src/foo.py::bar__mutmut_1"
         assert completed.exit_code == 0
         assert completed.duration >= 0.0
+
+    def test_task_started_is_published_only_after_popen_setup(self) -> None:
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        def fake_popen(*_args: object, **_kwargs: object) -> MagicMock:
+            assert event_q.empty(), "TaskStarted disabled the watchdog before Popen returned"
+            return _make_popen_mock(exit_code=1)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        assert isinstance(TaskStarted.model_validate(event_q.get()), TaskStarted)
+        assert isinstance(TaskCompleted.model_validate(event_q.get()), TaskCompleted)
 
     def test_non_zero_exit_code_forwarded(self) -> None:
         """Non-zero pytest exit code must be forwarded in TaskCompleted."""
@@ -435,7 +553,7 @@ def test_various_exit_codes_forwarded(exit_code: int, expected: int) -> None:
 
     with patch(
         "mutmut_win.process.worker.subprocess.Popen",
-        return_value=_make_popen_mock(exit_code=exit_code),
+        side_effect=_popen_with_phase_proof(exit_code=exit_code),
     ):
         worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 

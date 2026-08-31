@@ -13,6 +13,9 @@ These functions are ported from mutmut's ``__main__.py`` and adapted for:
 from __future__ import annotations
 
 import ast
+import contextlib
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -24,7 +27,9 @@ from typing import IO, TYPE_CHECKING
 
 import libcst as cst
 
-from mutmut_win.constants import SOURCE_ROOT_NAMES, Profile
+from mutmut_win.atomic_file import atomic_copy_file, atomic_write_bytes
+from mutmut_win.constants import SOURCE_ROOT_NAMES, WORKSPACE_EXCLUDED_DIR_NAMES, Profile
+from mutmut_win.exceptions import UnsafeStagingError
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
@@ -36,29 +41,76 @@ if TYPE_CHECKING:
 #: One list for both passes (issue #129 / 360°-C4): the two sites used to
 #: carry diverging literals, and tooling trees (node_modules, .claude, …)
 #: were mirrored into mutants/ on every first run.
-_STAGING_SKIP_DIRS: frozenset[str] = frozenset(
-    {
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".git",
-        ".hypothesis",
-        "mutants",
-        ".mutmut-cache",
-        # Tooling/cache trees that have no business inside the staging
-        # (issue #129 / 360°-C4).
-        "node_modules",
-        ".import_linter_cache",
-        ".benchmarks",
-        ".serena",
-        ".claude",
-        ".idea",
-        ".vscode",
-    }
+_STAGING_SKIP_DIRS: frozenset[str] = WORKSPACE_EXCLUDED_DIR_NAMES
+
+# Stable workspace coordination artifacts belong beside the project, never in
+# the import staging tree. The guard intentionally survives clean releases.
+_STAGING_SKIP_FILES: frozenset[str] = frozenset(
+    {".mutmut-win.run.lock", ".mutmut-win.run.lock.guard"}
 )
+
+
+def _skip_automatic_root_file(name: str) -> bool:
+    """Keep coordination files and dotenv secrets out of automatic staging."""
+    folded = name.casefold()
+    if folded in _STAGING_SKIP_FILES or (
+        folded.startswith(".mutmut-win-") and folded.endswith((".run.lock", ".run.lock.guard"))
+    ):
+        return True
+    return folded == ".env" or (
+        folded.startswith(".env.")
+        and folded not in {".env.example", ".env.sample", ".env.template"}
+    )
+
+
+def _is_staging_skip_dir(name: str) -> bool:
+    """Apply Windows' case-insensitive directory semantics consistently."""
+    return name.casefold() in _STAGING_SKIP_DIRS
+
+
+def _validated_mutants_root() -> Path:
+    """Return the canonical staging root, rejecting root redirection."""
+    project_root = Path.cwd().resolve()
+    expected = project_root / "mutants"
+    try:
+        resolved = Path("mutants").resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStagingError(f"Cannot resolve staging root {expected}: {exc}") from exc
+    if resolved != expected:
+        raise UnsafeStagingError(
+            f"Unsafe staging root {expected}: resolves through a symlink/junction to {resolved}"
+        )
+    return expected
+
+
+def validate_staging_root() -> Path:
+    """Return the canonical local staging root or fail closed if redirected."""
+    return _validated_mutants_root()
+
+
+def _validated_staging_destination(destination: Path, mutants_root: Path) -> Path:
+    """Return a lexical staging path only when no component redirects it."""
+    # ``absolute`` makes the path lexical-absolute without dereferencing
+    # symlinks/junctions; comparing it with ``resolve`` below is intentional.
+    lexical = destination.absolute()
+    try:
+        lexical.relative_to(mutants_root)
+    except ValueError as exc:
+        raise UnsafeStagingError(
+            f"Unsafe staging destination {destination}: path escapes {mutants_root}"
+        ) from exc
+    try:
+        resolved = destination.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStagingError(
+            f"Cannot resolve staging destination {destination}: {exc}"
+        ) from exc
+    if resolved != lexical:
+        raise UnsafeStagingError(
+            f"Unsafe staging destination {destination}: resolves through a "
+            f"symlink/junction to {resolved}"
+        )
+    return lexical
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +134,29 @@ def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
                 yield "", str(path)
                 continue
         else:
-            for root, _dirs, files in os.walk(path):
+            project_root = Path.cwd().resolve()
+            for root, dirs, files in os.walk(path):
+                # Never feed staging/cache/tool environments back into the
+                # mutation engine. Resolve children as a junction/symlink
+                # defence in addition to the fast name filter.
+                safe_dirs: list[str] = []
+                for directory in dirs:
+                    if _is_staging_skip_dir(directory):
+                        continue
+                    try:
+                        (Path(root) / directory).resolve().relative_to(project_root)
+                    except (OSError, ValueError):
+                        continue
+                    safe_dirs.append(directory)
+                dirs[:] = safe_dirs
                 for filename in files:
+                    try:
+                        (Path(root) / filename).resolve().relative_to(project_root)
+                    except (OSError, ValueError):
+                        # A file symlink can escape even when its containing
+                        # directory is inside the project. Never feed that
+                        # external target to staging/mutation implicitly.
+                        continue
                     yield root, filename
 
 
@@ -127,24 +200,44 @@ def _copy_with_retry(
         max_attempts: Maximum number of attempts before raising.
         **kwargs: Additional keyword arguments forwarded to the copy function.
     """
+
+    def copy_once() -> None:
+        if is_tree:
+            shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
+            return
+
+        # The destination is published through the still-private atomic
+        # sibling.  Never close and reopen its random pathname: a directory
+        # watcher could otherwise replace it with an external hardlink.
+        atomic_copy_file(src, dst)
+
     for attempt in range(max_attempts):
         try:
-            if is_tree:
-                shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
-            else:
-                shutil.copy2(src, dst)
+            copy_once()
             return
         except OSError:
             if attempt < max_attempts - 1:
                 time.sleep(0.1 * (2**attempt))
     # Final attempt — let the exception propagate if it still fails.
-    if is_tree:
-        shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
-    else:
-        shutil.copy2(src, dst)
+    copy_once()
 
 
-def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept for API compatibility; source dirs are auto-detected
+def _atomic_write_text(path: Path, content: str) -> str:
+    """Publish UTF-8 text and return the SHA-256 of the exact written bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Match TextIOWrapper's platform newline translation explicitly, then
+    # publish those immutable bytes.  Generation inputs were read in text
+    # mode, so they contain normalized LF rather than pre-existing CRLF.
+    payload = content.replace("\n", os.linesep).encode("utf-8")
+    atomic_write_bytes(path, payload)
+    return hashlib.sha256(payload).hexdigest()
+
+
+def copy_src_dir(
+    config: MutmutConfig,  # noqa: ARG001 — kept for API compatibility
+    *,
+    excluded_paths: Sequence[Path] = (),
+) -> None:
     """Copy the ENTIRE source tree to the mutants/ staging directory.
 
     Copies ALL files from standard source directories (the
@@ -156,16 +249,31 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
     ``paths_to_mutate`` only controls which files get **mutated**, not
     which files get **copied**.
 
-    Updates files whose source has been modified since the last copy —
-    equality fingerprint (mtime AND size) for plain mirror copies, strictly
-    newer for generator-owned files with a ``.meta`` sibling (see
-    :func:`_mirror_is_stale`, issue #129 / 360°-B6a).
+    Updates files whose exact content differs from the last copy.  Stat data
+    is only a cheap pre-check for plain mirrors; SHA-256 equality is the reuse
+    authority for both plain and generator-owned files (see
+    :func:`_mirror_is_stale`).
 
     Args:
         config: Active ``MutmutConfig`` instance.
+        excluded_paths: Exact project files owned by the caller that must not
+            enter staging. This is intentionally path-specific: broad suffix
+            exclusions would also drop legitimate test fixtures such as
+            ``tests/fixture.sqlite``.
     """
     expected_targets: set[Path] = set()
     synced_roots: list[Path] = []
+    project_root = Path.cwd().resolve()
+    mutants_root = _validated_mutants_root()
+    Path("mutants").mkdir(exist_ok=True)
+    excluded_resolved: set[Path] = set()
+    for excluded in excluded_paths:
+        try:
+            excluded_resolved.add(excluded.resolve())
+        except OSError:
+            # A missing or temporarily inaccessible caller-owned path cannot
+            # be encountered by the file walk below either.
+            continue
 
     for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
         source_root = Path(source_root_name)
@@ -180,17 +288,39 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
 
         for root_str, dirs, files in os.walk(source_root):
             # Skip cache/venv/tooling directories (issue #129 / 360°-C4).
-            dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+            safe_dirs: list[str] = []
+            for directory in dirs:
+                if _is_staging_skip_dir(directory):
+                    continue
+                try:
+                    (Path(root_str) / directory).resolve().relative_to(project_root)
+                except (OSError, ValueError):
+                    continue
+                safe_dirs.append(directory)
+            dirs[:] = safe_dirs
             if source_root_name == "." and root_str == ".":
                 # The explicit roots above already mirrored src/source —
                 # walking them again from "." doubled the largest trees
                 # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
                 # is not covered by the explicit roots and must stay.
-                dirs[:] = [d for d in dirs if d not in SOURCE_ROOT_NAMES]
+                source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
+                dirs[:] = [d for d in dirs if d.casefold() not in source_root_names]
 
             for name in files:
+                if _skip_automatic_root_file(name):
+                    continue
                 source_path = Path(root_str) / name
+                try:
+                    resolved_source = source_path.resolve(strict=True)
+                    resolved_source.relative_to(project_root)
+                except (OSError, ValueError):
+                    # Automatic staging must never dereference an external or
+                    # broken file symlink into the executable mirror.
+                    continue
+                if resolved_source in excluded_resolved:
+                    continue
                 target_path = Path("mutants") / root_str / name
+                _validated_staging_destination(target_path, mutants_root)
                 expected_targets.add(target_path)
 
                 if target_path.exists():
@@ -201,36 +331,18 @@ def copy_src_dir(config: MutmutConfig) -> None:  # noqa: ARG001 — config kept 
                         meta_path = Path(str(target_path) + ".meta")
                         if meta_path.exists():
                             meta_path.unlink()
-                        # conftest edits are invisible to verdict-reuse
-                        # fingerprinting (see _conftest_staleness_warning).
-                        warning = _conftest_staleness_warning(source_path)
-                        if warning is not None:
-                            print(warning)
                     continue
 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
                 _copy_with_retry(source_path, target_path)
 
     _sync_deleted_sources(expected_targets, synced_roots, set(_STAGING_SKIP_DIRS))
-
-
-def _conftest_staleness_warning(source_path: Path) -> str | None:
-    """Return a verdict-staleness warning for a changed conftest, else ``None``.
-
-    A conftest.py carries no mutants of its own (no ``.meta`` to drop) but its
-    fixtures drive what the covering tests actually exercise. Such an edit
-    changes no pytest node ID, so the test-file fingerprints that gate verdict
-    reuse (:mod:`mutmut_win.stats`) cannot see it — a plain re-run would reuse
-    stale verdicts. Surfacing a warning lets the user reach for ``--force``
-    instead of trusting a stale score (external QA: conftest-not-fingerprinted).
-    """
-    if source_path.name != "conftest.py":
-        return None
-    return (
-        f"     WARNING: {source_path} changed but is not fingerprinted for "
-        f"verdict reuse — cached results depending on its fixtures may be "
-        f"stale; re-run with --force for an authoritative score."
-    )
+    # Heal staging created before run-lock and dotenv files were excluded.
+    for candidate in Path("mutants").rglob("*"):
+        if _skip_automatic_root_file(candidate.name):
+            _validated_staging_destination(candidate, mutants_root)
+            with contextlib.suppress(OSError):
+                candidate.unlink()
 
 
 def _mirror_is_stale(source: Path, target: Path) -> bool:
@@ -241,46 +353,58 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
     * Files WITH a ``.meta`` sibling are (or were) mutation targets — their
       staged content is the trampolined GENERATOR output (newer and bigger
       than the source by construction) and the ``.meta`` source fingerprint
-      is the staleness truth there. The mirror refreshes them only when the
-      source is strictly NEWER (the pre-#129 rule): an equality rule would
-      overwrite the trampoline with the plain source on every run and break
-      the forced-fail gate.
+      is the staleness truth there. The mirror refreshes only when the live
+      source SHA-256 differs; legacy metadata without a hash is invalidated.
     * Plain mirror copies (no ``.meta``) were created by ``copy2`` and
-      therefore carry the SOURCE's mtime/size — any inequality means the
-      source changed, including a git restore with an OLDER timestamp,
-      which the previous ``>`` comparison silently served stale.
+      therefore normally carry the SOURCE's stat data. Any stat inequality
+      refreshes immediately, while stat equality is still verified by hash.
     """
     try:
         src_stat = source.stat()
         dst_stat = target.stat()
     except OSError:
         return True
-    if target.with_name(target.name + ".meta").exists():
-        return src_stat.st_mtime > dst_stat.st_mtime
-    return src_stat.st_mtime != dst_stat.st_mtime or src_stat.st_size != dst_stat.st_size
+    meta_path = target.with_name(target.name + ".meta")
+    if meta_path.exists():
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            recorded = raw.get("source_hash") if isinstance(raw, dict) else None
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return True
+        return not isinstance(recorded, str) or recorded != _content_hash(source)
+    if src_stat.st_mtime != dst_stat.st_mtime or src_stat.st_size != dst_stat.st_size:
+        return True
+    # Stat equality is a cheap early check, never proof of content identity.
+    return _content_hash(source) != _content_hash(target)
+
+
+def _content_hash(path: Path) -> str:
+    """Return the SHA-256 digest of a file's exact bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _sync_tree(source_root: Path, destination_root: Path) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
-    mtime-aware per-file sync replacing the previous ``copytree``:
+    content-aware per-file sync replacing the previous ``copytree``:
 
     * copy a file only when missing or stale (:func:`_mirror_is_stale`
-      equality regime — ``copy2`` preserves mtimes, so any inequality means
-      the source changed, including backdated restores);
+      hash-authoritative regime, including same-size/same-mtime edits and
+      backdated restores);
     * DELETE staged files whose source disappeared — under ``copytree`` a
       removed test file kept RUNNING inside the staging forever;
     * the deletion pass never leaves *destination_root* (containment of the
       root itself is guard 4's job in :func:`copy_also_copy_files`).
     """
-    import contextlib
-
+    mutants_root = _validated_mutants_root()
+    _validated_staging_destination(destination_root, mutants_root)
     for root_str, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+        dirs[:] = [d for d in dirs if not _is_staging_skip_dir(d)]
         rel_root = Path(root_str).relative_to(source_root)
         for name in files:
             src_file = Path(root_str) / name
             dst_file = destination_root / rel_root / name
+            _validated_staging_destination(dst_file, mutants_root)
             if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
                 continue
             dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -289,11 +413,18 @@ def _sync_tree(source_root: Path, destination_root: Path) -> None:
     if not destination_root.is_dir():
         return
     for root_str, dirs, files in os.walk(destination_root):
-        dirs[:] = [d for d in dirs if d not in _STAGING_SKIP_DIRS]
+        safe_dirs: list[str] = []
+        for directory in dirs:
+            if _is_staging_skip_dir(directory):
+                continue
+            _validated_staging_destination(Path(root_str) / directory, mutants_root)
+            safe_dirs.append(directory)
+        dirs[:] = safe_dirs
         rel_root = Path(root_str).relative_to(destination_root)
         for name in files:
             if (source_root / rel_root / name).exists():
                 continue
+            _validated_staging_destination(Path(root_str) / name, mutants_root)
             with contextlib.suppress(OSError):
                 (Path(root_str) / name).unlink()
 
@@ -318,16 +449,26 @@ def _sync_deleted_sources(
     import contextlib
 
     removed = 0
+    mutants_root = _validated_mutants_root()
+    folded_skip_dirs = {directory.casefold() for directory in skip_dirs}
     for source_root in synced_roots:
         staged_root = Path("mutants") / source_root
+        _validated_staging_destination(staged_root, mutants_root)
         if not staged_root.is_dir():
             continue
         for root_str, dirs, files in os.walk(staged_root):
-            dirs[:] = [d for d in dirs if d not in skip_dirs and d != "mutants"]
+            safe_dirs: list[str] = []
+            for directory in dirs:
+                if directory.casefold() in folded_skip_dirs or directory.casefold() == "mutants":
+                    continue
+                _validated_staging_destination(Path(root_str) / directory, mutants_root)
+                safe_dirs.append(directory)
+            dirs[:] = safe_dirs
             for name in files:
                 if not name.endswith(".py"):
                     continue
                 staged = Path(root_str) / name
+                _validated_staging_destination(staged, mutants_root)
                 if staged in expected_targets:
                     continue
                 with contextlib.suppress(OSError):
@@ -358,7 +499,7 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     # implemented in process/worker.py rather than here.
     paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
 
-    mutants_root = Path("mutants").resolve()
+    mutants_root = _validated_mutants_root()
     for path_str in paths_to_copy:
         path = Path(path_str)
         # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
@@ -367,7 +508,7 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         # top-level entry like ``also_copy = [".venv"]`` would otherwise be
         # mirrored wholesale — slow at best, broken on Windows because of
         # symlinked Scripts/python.exe.
-        if path.name in _STAGING_SKIP_DIRS:
+        if _is_staging_skip_dir(path.name):
             print("     skipping", path_str, "(matches venv/cache skip list)")
             continue
         # Guard 2 (issue #101 / A3-FD-005): "." and mutants/ itself defeat the
@@ -392,15 +533,12 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
         destination = Path("mutants") / (path.name if ".." in path.parts else path)
         # Guard 4 (containment, second line of defence): whatever the entry
         # looks like, the destination must stay inside mutants/.
-        try:
-            destination.resolve().relative_to(mutants_root)
-        except ValueError:
-            print(f"     skipping {path_str} (destination escapes the staging directory)")
-            continue
+        _validated_staging_destination(destination, mutants_root)
         if not path.exists():
             continue
         print("     also copying", path_str)
         if path.is_file():
+            _validated_staging_destination(destination, mutants_root)
             if not destination.exists() or _mirror_is_stale(path, destination):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
@@ -413,61 +551,70 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
     _sanitise_mutants_pyproject()
 
 
-def config_fingerprint_matches(config: MutmutConfig) -> bool:
-    """Check (and persist) the mutant-universe fingerprint of *config*.
-
-    The generation fast path reuses ``.meta`` mutant names when the source
-    is unchanged — but the UNIVERSE also depends on configuration:
-    ``paths_to_mutate``, ``do_not_mutate``, ``mutate_only_covered_lines``,
-    ``also_copy``/``extra_paths``, and the operator ``mutation_profile``.
-    Editing any of these used to leave a stale mutant universe in place
-    without warning (issue #101 / A3-OS-008). The orchestrator calls this
-    once per run and disables the fast path when the fingerprint changed.
-
-    Args:
-        config: Active ``MutmutConfig``.
-
-    Returns:
-        ``True`` if the persisted fingerprint matches *config* (fast path
-        allowed); ``False`` on first run or after a universe-relevant
-        change — the new fingerprint is persisted either way.
-    """
-    import hashlib
-    import json
-
+def _config_fingerprint(
+    config: MutmutConfig,
+    covered_lines_by_file: dict[str, set[int]] | None = None,
+) -> str:
+    """Return a digest for every input that selects the mutant universe."""
     import mutmut_win
 
+    coverage_basis = None
+    if covered_lines_by_file is not None:
+        coverage_basis = {
+            path: sorted(lines) for path, lines in sorted(covered_lines_by_file.items())
+        }
     payload = json.dumps(
         {
-            # Issue #129 / 360°-A8: an engine upgrade changes the mutant
-            # universe (new/changed operators) — without the version in the
-            # fingerprint the fast path kept the OLD universe and its reuse
-            # candidates alive until an unrelated source edit or --force.
             "engine_version": mutmut_win.__version__,
             "paths_to_mutate": sorted(config.paths_to_mutate),
             "do_not_mutate": sorted(config.do_not_mutate),
+            "do_not_mutate_patterns": sorted(config.do_not_mutate_patterns),
             "mutate_only_covered_lines": config.mutate_only_covered_lines,
+            "covered_lines_by_file": coverage_basis,
             "also_copy": sorted(config.also_copy),
             "extra_paths": sorted(config.extra_paths),
-            # The profile selects the operator set, so a profile switch on
-            # unchanged source changes the mutant universe exactly like an
-            # engine upgrade — it must regenerate, not reuse stale mutants.
             "mutation_profile": config.mutation_profile.to_name(),
         },
         sort_keys=True,
+        separators=(",", ":"),
     )
-    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    fingerprint_path = Path("mutants") / ".mutmut-config-fingerprint"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+
+def persist_config_fingerprint(
+    config: MutmutConfig,
+    covered_lines_by_file: dict[str, set[int]] | None = None,
+) -> None:
+    """Atomically publish a completely generated mutant universe."""
+    fingerprint_path = Path("mutants") / ".mutmut-config-fingerprint"
+    mutants_root = _validated_mutants_root()
+    _validated_staging_destination(fingerprint_path, mutants_root)
+    _atomic_write_text(fingerprint_path, _config_fingerprint(config, covered_lines_by_file))
+
+
+def config_fingerprint_matches(
+    config: MutmutConfig,
+    covered_lines_by_file: dict[str, set[int]] | None = None,
+    *,
+    persist: bool = True,
+) -> bool:
+    """Compare the universe fingerprint, optionally persisting a mismatch.
+
+    The default preserves the public helper's historical compare-and-store
+    behavior. The orchestrator uses persist=False and publishes only after
+    every file succeeded, preventing a failed partial generation from
+    authorizing the next run's fast path.
+    """
+    fingerprint = _config_fingerprint(config, covered_lines_by_file)
+    fingerprint_path = Path("mutants") / ".mutmut-config-fingerprint"
     try:
         stored = fingerprint_path.read_text(encoding="utf-8").strip()
     except OSError:
         stored = None
-
     if stored == fingerprint:
         return True
-    fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-    fingerprint_path.write_text(fingerprint, encoding="utf-8")
+    if persist:
+        persist_config_fingerprint(config, covered_lines_by_file)
     return False
 
 
@@ -487,6 +634,8 @@ def _sanitise_mutants_pyproject() -> None:
     is NOT covered — that would need parse-and-rewrite, not a regex.
     """
     pyproject_path = Path("mutants") / "pyproject.toml"
+    mutants_root = _validated_mutants_root()
+    _validated_staging_destination(pyproject_path, mutants_root)
     if not pyproject_path.exists():
         return
 
@@ -516,7 +665,7 @@ def _sanitise_mutants_pyproject() -> None:
     if cleaned != content:
         for attempt in range(5):
             try:
-                pyproject_path.write_text(cleaned, encoding="utf-8")
+                _atomic_write_text(pyproject_path, cleaned)
                 break
             except OSError:
                 if attempt < 4:
@@ -694,38 +843,58 @@ def create_mutants_for_file(
     """
     collected_warnings: list[warnings.WarningMessage] = []
 
+    if output_path.resolve() == filename.resolve():
+        msg = (
+            f"Refusing to write mutants into the source file itself "
+            f"({filename}) — paths_to_mutate must be relative to the project root."
+        )
+        raise ValueError(msg)
+
+    mutants_root = _validated_mutants_root()
+    safe_output_path = _validated_staging_destination(output_path, mutants_root)
+    meta_relative_path = safe_output_path.relative_to(mutants_root)
+
     # Write guard (issue #75 / A3-CM-001): with absolute paths_to_mutate,
     # ``Path("mutants") / <abs>`` collapses to ``<abs>`` and *output_path*
     # becomes the source file itself.  Refuse loudly instead of destroying
     # the user's code — this also defends callers that bypass the config
     # validator (e.g. CLI overrides via ``model_copy``).
-    if output_path.resolve() == filename.resolve():
-        msg = (
-            f"Refusing to write mutants into the source file itself "
-            f"({filename}) — paths_to_mutate must be relative to the project "
-            "root (issue #75)."
-        )
-        raise ValueError(msg)
-
     # Fast-path: if the source is unchanged since we last mutated it, reuse
     # the existing mutant names from the .meta file instead of re-generating.
     # This enables repeated runs: the orchestrator gets the task list even
     # though the mutated file already exists in mutants/.
-    # The comparison is against the SOURCE fingerprint recorded in .meta at
-    # generation time (mtime AND size, equality not ordering) — the old
-    # `source_mtime < target_mtime` check missed restores with OLD
-    # timestamps (issue #101 / A3-FD-004, sandbox-confirmed).
+    # The comparison is against the exact SOURCE hash recorded in .meta at
+    # generation time. Legacy stat-only metadata deliberately misses once;
+    # same-size/same-mtime edits and backdated restores cannot authorize reuse.
     # The orchestrator passes allow_fast_path=False when the config
     # fingerprint changed (issue #101 / A3-OS-008) — a different mutant
     # universe must be regenerated regardless of file timestamps.
+    source_bytes = filename.read_bytes()
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    # Text-mode read normalizes CRLF before the generated text is written in
+    # text mode again; decoding raw CRLF and then write_text would produce
+    # CRCRLF on Windows. The hash above remains byte-exact.
+    source = filename.read_text(encoding="utf-8")
+    generation_payload = json.dumps(
+        {
+            "profile": active_profile.to_name(),
+            "do_not_mutate_patterns": sorted(do_not_mutate_patterns),
+            "covered_lines": sorted(covered_lines) if covered_lines is not None else None,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    generation_fingerprint = hashlib.sha256(generation_payload.encode("utf-8")).hexdigest()
+
     try:
-        source_stat = filename.stat()
         if allow_fast_path and output_path.exists():
-            source_file_mutation_data = SourceFileMutationData(path=str(filename))
+            source_file_mutation_data = SourceFileMutationData(path=str(meta_relative_path))
             source_file_mutation_data.load()
             fingerprint_ok = (
-                source_file_mutation_data.source_mtime == source_stat.st_mtime
-                and source_file_mutation_data.source_size == source_stat.st_size
+                source_file_mutation_data.source_hash == source_hash
+                and source_file_mutation_data.generation_fingerprint == generation_fingerprint
+                and source_file_mutation_data.generated_hash is not None
+                and source_file_mutation_data.generated_hash == _content_hash(output_path)
             )
             if not fingerprint_ok:
                 raise _FastPathMissError
@@ -749,8 +918,6 @@ def create_mutants_for_file(
     except (OSError, _FastPathMissError):
         pass
 
-    source = filename.read_text(encoding="utf-8")
-
     mutant_names: list[str]
     generated: str
     try:
@@ -770,10 +937,11 @@ def create_mutants_for_file(
             )
         collected_warnings.extend(engine_warnings)
         generated = buf.getvalue()
-    except (cst.ParserSyntaxError, cst.CSTValidationError, ValueError) as exc:
-        # libcst cannot parse this file, or the engine hit an unmutatable
-        # construct (e.g. an identifier containing the U+01C1 mangling
-        # separator) — copy unchanged so tests still run (issue #78).
+    except (cst.ParserSyntaxError, cst.CSTValidationError) as exc:
+        # A source file LibCST cannot represent is an expected file-level
+        # limitation and stays importable in staging. Engine invariants such
+        # as ValueError must propagate to the orchestration transaction;
+        # swallowing them would silently publish a partial mutant universe.
         w = warnings.WarningMessage(
             message=SyntaxWarning(f"Unsupported syntax in {filename} ({exc!s}), skipping"),
             category=SyntaxWarning,
@@ -807,11 +975,11 @@ def create_mutants_for_file(
             generated = source
             mutant_names = []
 
-    output_path.write_text(generated, encoding="utf-8")
+    generated_hash = _atomic_write_text(output_path, generated)
 
     # Persist the mutation metadata for this file, including the source
     # fingerprint the fast path compares against (issue #101 / A3-FD-004).
-    source_file_mutation_data = SourceFileMutationData(path=str(filename))
+    source_file_mutation_data = SourceFileMutationData(path=str(meta_relative_path))
     source_file_mutation_data.exit_code_by_key = {
         get_mutant_name(filename, name): None for name in mutant_names
     }
@@ -821,6 +989,12 @@ def create_mutants_for_file(
         source_file_mutation_data.source_size = stat.st_size
     except OSError:
         pass
+    source_file_mutation_data.source_hash = source_hash
+    source_file_mutation_data.generation_fingerprint = generation_fingerprint
+    source_file_mutation_data.generated_hash = generated_hash
+    # Meta is the transaction commit marker and must be published last.  A
+    # crash after the Python file replace leaves missing/old generated_hash
+    # authority, so the next run regenerates rather than trusting partial state.
     source_file_mutation_data.save()
 
     return mutant_names, collected_warnings, False

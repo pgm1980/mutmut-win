@@ -20,7 +20,7 @@ from click.testing import CliRunner
 import mutmut_win.cli as cli_module
 import mutmut_win.constants as constants_module
 from mutmut_win.constants import emoji_by_status, status_by_exit_code
-from mutmut_win.db import create_db, save_result
+from mutmut_win.db import create_db, save_result, start_run
 from mutmut_win.models import MutationRunResult, TaskCompleted
 from mutmut_win.orchestrator import _increment_summary, _update_summary_and_persist
 from mutmut_win.stats import compute_cicd_stats
@@ -121,6 +121,7 @@ class TestThreeChannelSegfaultConsistency:
     ) -> None:
         db_path = tmp_path / "results.sqlite"
         create_db(db_path)
+        start_run(db_path, [f"pkg.x_f__mutmut_{index}" for index in range(1, 4)])
         summary = MutationRunResult(total_mutants=3)
         for name, code in [
             ("pkg.x_f__mutmut_1", 1),

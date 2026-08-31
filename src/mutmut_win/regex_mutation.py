@@ -24,6 +24,7 @@ survive per pattern.
 from __future__ import annotations
 
 import re
+import warnings
 
 #: Maximum mutations per single regex pattern (prevents combinatorial explosion
 #: on pathological patterns). Raised in Phase 3 (v2.18.0) from 5 so the full
@@ -372,10 +373,18 @@ def _mutate_anchors(pattern: str) -> list[str]:
 
 
 def _is_valid_regex(pattern: str) -> bool:
-    """Check if a pattern compiles as a valid regex."""
+    """Check if a pattern compiles without ambiguous-regex warnings.
+
+    Python emits ``FutureWarning`` for constructs such as possible nested
+    character sets.  Treating those as generated candidates would make the
+    mutation suite noisy today and potentially change its meaning under a
+    future regex parser.
+    """
     try:
-        re.compile(pattern)
-    except (re.error, OverflowError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            re.compile(pattern)
+    except (re.error, OverflowError, FutureWarning):
         # Repetition counts >= 2**32-1 (e.g. ``a{4294967295}`` produced by the
         # {n+1} mutation) raise OverflowError instead of re.error
         # (issue #78 / A1-RX-001).

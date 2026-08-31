@@ -11,6 +11,7 @@ clean slate).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import TYPE_CHECKING
@@ -224,7 +225,7 @@ class TestConfigFingerprint:
         assert names_first
         # Record exit codes the way a finished run would (keeps the source
         # fingerprint the generator wrote into the .meta).
-        sfd = SourceFileMutationData(path=str(source))
+        sfd = SourceFileMutationData(path="src/mod.py")
         sfd.load()
         sfd.exit_code_by_key = {f"src.mod.{n}": 1 for n in names_first}
         sfd.save()
@@ -466,7 +467,10 @@ class TestWave3StagingHygiene:
         copy_src_dir(cfg)
         staged = project / "mutants" / "src" / "mod.py"
         staged.write_text("# trampolined output\n", encoding="utf-8")
-        staged.with_name(staged.name + ".meta").write_text("{}", encoding="utf-8")
+        source_hash = hashlib.sha256((project / "src" / "mod.py").read_bytes()).hexdigest()
+        staged.with_name(staged.name + ".meta").write_text(
+            json.dumps({"source_hash": source_hash}), encoding="utf-8"
+        )
 
         copy_src_dir(cfg)  # source unchanged since the first mirror
 
@@ -555,17 +559,21 @@ class TestWave3StagingHygiene:
     def test_tooling_dirs_are_not_mirrored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 360°-C4: tooling/cache trees have no business in the staging.
+        # 360°-C4/MW220-044: Windows path names are case-insensitive, so
+        # mixed-case aliases of tooling/cache trees must be skipped too.
         project = _project(tmp_path, monkeypatch)
-        (project / "node_modules").mkdir()
-        (project / "node_modules" / "big.js").write_text("x", encoding="utf-8")
-        (project / ".claude").mkdir()
-        (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+        (project / "Node_Modules").mkdir()
+        (project / "Node_Modules" / "big.js").write_text("x", encoding="utf-8")
+        (project / ".ClAuDe").mkdir()
+        (project / ".ClAuDe" / "settings.json").write_text("{}", encoding="utf-8")
+        (project / ".VENV").mkdir()
+        (project / ".VENV" / "pyvenv.cfg").write_text("home=x", encoding="utf-8")
 
         copy_src_dir(MutmutConfig(paths_to_mutate=["src"]))
 
-        assert not (project / "mutants" / "node_modules").exists()
-        assert not (project / "mutants" / ".claude").exists()
+        assert not (project / "mutants" / "Node_Modules").exists()
+        assert not (project / "mutants" / ".ClAuDe").exists()
+        assert not (project / "mutants" / ".VENV").exists()
 
     def test_mirror_unstatable_target_is_stale(self, tmp_path: Path) -> None:
         # Mutation hardening: a missing/unstatable target must refresh.
@@ -575,16 +583,19 @@ class TestWave3StagingHygiene:
         src.write_text("x", encoding="utf-8")
         assert _mirror_is_stale(src, tmp_path / "missing.py") is True
 
-    def test_mirror_meta_owned_equal_mtime_is_not_stale(self, tmp_path: Path) -> None:
-        # Boundary pin: with a .meta sibling the rule is STRICTLY newer —
-        # an equal mtime (copy + immediate generation) must not refresh.
+    def test_mirror_meta_owned_equal_content_hash_is_not_stale(self, tmp_path: Path) -> None:
+        # Generated staging is preserved only when metadata proves the exact
+        # current source bytes; equal timestamps are not sufficient.
         from mutmut_win.file_setup import _mirror_is_stale
 
         src = tmp_path / "a.py"
         tgt = tmp_path / "staged.py"
         src.write_text("x", encoding="utf-8")
         tgt.write_text("trampolined", encoding="utf-8")
-        tgt.with_name(tgt.name + ".meta").write_text("{}", encoding="utf-8")
+        source_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+        tgt.with_name(tgt.name + ".meta").write_text(
+            json.dumps({"source_hash": source_hash}), encoding="utf-8"
+        )
         os.utime(src, (1_000, 1_000))
         os.utime(tgt, (1_000, 1_000))
         assert _mirror_is_stale(src, tgt) is False

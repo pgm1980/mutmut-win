@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from mutmut_win.runner import (
     MUTANT_ENV_VAR,
     MUTANT_FAIL_SENTINEL,
     PytestRunner,
+    _run_collection_process,
 )
 from tests.unit.phase_mock_util import phase_popen as _phase_popen
 
@@ -121,6 +123,23 @@ class TestRunCleanTest:
 
 
 class TestCollectTests:
+    def test_collection_timeout_reaps_the_process_tree(self) -> None:
+        process = MagicMock()
+        process.pid = 321
+        process.wait.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+
+        with (
+            patch("mutmut_win.runner.subprocess.Popen", return_value=process),
+            patch("mutmut_win.process.worker._create_task_job", return_value=77),
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+        ):
+            result = _run_collection_process(
+                [sys.executable, "-m", "pytest"], cwd=None, env=None, timeout=1
+            )
+
+        assert result.returncode == 36
+        kill_tree.assert_called_once_with(process, 77)
+
     def test_parses_test_node_ids(self) -> None:
         stdout = (
             "tests/unit/test_foo.py::test_alpha\n"
@@ -128,7 +147,10 @@ class TestCollectTests:
             "2 tests collected\n"
         )
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=stdout),
+        ):
             tests = runner.collect_tests()
         assert tests == [
             "tests/unit/test_foo.py::test_alpha",
@@ -138,7 +160,10 @@ class TestCollectTests:
     def test_returns_sorted_list(self) -> None:
         stdout = "tests/unit/test_b.py::test_z\ntests/unit/test_a.py::test_a\n"
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=stdout),
+        ):
             tests = runner.collect_tests()
         assert tests == sorted(tests)
 
@@ -147,21 +172,27 @@ class TestCollectTests:
             "tests/unit/test_foo.py::test_alpha\n== 1 test collected ==\nWARNING: some warning\n"
         )
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=stdout),
+        ):
             tests = runner.collect_tests()
         assert len(tests) == 1
         assert tests[0] == "tests/unit/test_foo.py::test_alpha"
 
     def test_returns_empty_list_when_no_tests(self) -> None:
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0, stdout="")):
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=""),
+        ):
             tests = runner.collect_tests()
         assert tests == []
 
     def test_collect_only_flag_in_command(self) -> None:
         runner = PytestRunner(_config())
         with patch(
-            "subprocess.run",
+            "mutmut_win.runner._run_collection_process",
             return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
@@ -171,7 +202,7 @@ class TestCollectTests:
     def test_selection_args_forwarded(self) -> None:
         runner = PytestRunner(_config(pytest_add_cli_args_test_selection=["tests/unit/"]))
         with patch(
-            "subprocess.run",
+            "mutmut_win.runner._run_collection_process",
             return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
@@ -189,7 +220,8 @@ class TestCollectTests:
         (tmp_path / "mutants").mkdir(exist_ok=True)
         runner = PytestRunner(_config(pytest_add_cli_args=["-m", "not slow"], tests_dir=["tests/"]))
         with patch(
-            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
 
@@ -199,7 +231,7 @@ class TestCollectTests:
         assert "not slow" in cmd
         assert "tests/" in cmd
         assert kwargs.get("cwd") == "mutants"
-        assert kwargs.get("errors") == "replace"
+        assert kwargs.get("timeout") == runner._config.clean_run_timeout
         env = kwargs.get("env")
         assert env is not None
         assert env.get("MUTANT_UNDER_TEST") == ""
@@ -215,7 +247,8 @@ class TestCollectTests:
         monkeypatch.chdir(isolated)  # no mutants/ here
         runner = PytestRunner(_config())
         with patch(
-            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
         assert mock_run.call_args[1].get("cwd") is None
@@ -230,16 +263,15 @@ class TestCollectTests:
         (tmp_path / "mutants").mkdir(exist_ok=True)
         runner = PytestRunner(_config())
         with patch(
-            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
         cmd = mock_run.call_args[0][0]
         index = cmd.index("--collect-only")
         assert cmd[index : index + 3] == ["--collect-only", "-q", "--no-header"]
         kwargs = mock_run.call_args[1]
-        assert kwargs["capture_output"] is True
-        assert kwargs["encoding"] == "utf-8"
-        assert kwargs["errors"] == "replace"
+        assert kwargs["timeout"] == runner._config.clean_run_timeout
         env = kwargs["env"]
         assert env["PYTHONIOENCODING"] == "utf-8"
         assert env["MUTANT_UNDER_TEST"] == ""
@@ -254,7 +286,8 @@ class TestCollectTests:
         monkeypatch.chdir(isolated)
         runner = PytestRunner(_config())
         with patch(
-            "subprocess.run", return_value=_make_completed_process(0, stdout="")
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=""),
         ) as mock_run:
             runner.collect_tests()
         assert mock_run.call_args[1].get("env") is None
@@ -270,7 +303,10 @@ class TestCollectTests:
             "warning: keep::this\n"
         )
         runner = PytestRunner(_config())
-        with patch("subprocess.run", return_value=_make_completed_process(0, stdout=stdout)):
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout=stdout),
+        ):
             tests = runner.collect_tests()
         assert tests == ["tests/a.py::t1", "warning: keep::this"]
 
@@ -305,8 +341,8 @@ class TestRunStats:
             runner.run_stats()
         cmd = mock_sub.call_args[0][0]
         assert "-p" in cmd
-        p_idx = cmd.index("-p")
-        assert cmd[p_idx + 1] == "_mutmut_stats_plugin"
+        plugin_idx = cmd.index("_mutmut_stats_plugin")
+        assert cmd[plugin_idx - 1] == "-p"
 
     def test_stats_plugin_file_written(self) -> None:
         """_write_stats_plugin must create the plugin file in mutants/."""

@@ -25,6 +25,8 @@ mutants/
 
 # Reference fixture projects from mutmut 3.5.0 — third-party style fixtures,
 # not our code (mirrors the ruff exclude and the pytest collect_ignore).
+# The release-gate wrapper scans a repository-root mirror and verifies this
+# policy skip against the exact Git-owned target manifest.
 tests/e2e_projects/
 
 # Gitignored scratchpad for one-off verification scripts

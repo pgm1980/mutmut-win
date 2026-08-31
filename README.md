@@ -11,11 +11,13 @@ Based on [mutmut 3.5.0](https://github.com/boxed/mutmut), rebuilt for
 Windows: upstream mutmut explicitly blocks Windows
 ([mutmut#397](https://github.com/boxed/mutmut/issues/397)).
 
-**Requirements:** Python ≥ 3.12, pytest ≥ 8.2 in the target project
+**Requirements:** CPython 3.12–3.14, pytest ≥ 8.2 and < 10 in the target project
 (the worker hands tests to pytest via the `@argfile` syntax, available
 since 8.2 — older versions abort with a clear error before the first
-mutant), Windows 10/11 (primary target; the POSIX code paths are kept
-functional for WSL/Linux CI).
+mutant), Windows 10/11 or Windows Server 2016+ (primary targets; the POSIX code
+paths are kept functional for WSL/Linux CI). The process-containment backends
+deliberately fail closed on other Python implementations and on unvalidated
+Python versions.
 
 ---
 
@@ -29,10 +31,12 @@ functional for WSL/Linux CI).
   conditional expressions, statement removal, collection methods, or-defaults)
   plus six Phase-2 operators — ROR full matrix, number-literal CRCR, condition
   negate/force, collection-literal emptying and match-guard.
-- **Runs only the tests that matter per mutant.** A stats run records
-  which tests execute which function; each mutant then runs exactly its
-  covering tests instead of the whole suite. Mutants no test covers are
-  reported as `no tests` without burning any runtime.
+- **Runs only a test basis it can prove safe.** A stats run records which tests
+  execute which function, but the current collector cannot prove that hits
+  from every subprocess, thread, or native launcher were observed. Its mapping
+  is therefore diagnostic only and every mutant runs the full selected suite.
+  Full-suite verdicts are still reused when the complete source/test/config/
+  dependency context digest is unchanged.
 - **Budgets time honestly.** Each task gets a self-calibrating timeout:
   a *measured* per-process startup floor (interpreter + imports +
   collection, derived from your own clean run) plus the scaled runtime of
@@ -54,9 +58,11 @@ functional for WSL/Linux CI).
   on stdout (prose goes to stderr), `--since-commit` for incremental
   runs, and a machine-readable stats export.
 - **Caches aggressively.** Results live in SQLite, per-file mutant
-  staging is fingerprinted (source + configuration) — unchanged files
-  are not regenerated, and verdicts of unchanged mutants (same source,
-  same covering tests) are reused instead of re-run
+  staging is fingerprinted by exact source/configuration content — unchanged
+  files are not regenerated, and verdicts are reused only when source, the
+  full selected test suite, helpers, external configured fixtures, the complete
+  staged project, and the readable installed-distribution bytes share the same
+  content digest. If that dependency inventory is incomplete, reuse is disabled
   (`--rerun-all` opts out).
 
 ## Why mutmut-win over other tools
@@ -82,13 +88,13 @@ not part of the release sequence (see *Release policy* below). Install
 a pinned release tag:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0" --dev
 ```
 
 ## Quick start
@@ -132,6 +138,14 @@ uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.20.0" --de
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
 
+`run` persists a new run attempt before staging or generation starts and
+finalizes its exact mutant plan only after successful generation. `results`,
+`browse`, and `export-cicd-stats` use that current run snapshot as their
+authority. Historical rows remain available only as explicitly validated
+reuse candidates; they cannot silently fill a failed, interrupted, or partial
+current run. CI export therefore refuses an incomplete current snapshot and
+removes a stale export rather than presenting it as fresh evidence.
+
 Mutant name matching is the same everywhere: an argument is either an
 exact mutant name or a glob pattern (`*`, `?`, `[...]`). `run` and
 `time-estimates` accept any number of matches; `show` and `apply`
@@ -147,7 +161,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
 | `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
-| `--min-score N` | Exit 1 if the score is below N percent (CI gate) |
+| `--min-score N` | Exit 1 if the score is below N percent or the execution basis is incomplete (CI gate) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
 | `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
@@ -184,10 +198,11 @@ max_children = 8                      # workers (default: CPU count)
 timeout_multiplier = 30               # scales the measured per-mutant test time
 clean_run_timeout = 300               # budget (s) for the clean baseline / stats runs
 forced_fail_timeout = 120             # budget (s) for the forced-fail verification
+generation_timeout = 300              # max seconds without generation progress
 
-# Test selection passthrough
-pytest_add_cli_args = []                  # extra pytest args for every run
-pytest_add_cli_args_test_selection = []   # extra args for test-selection runs
+# Test selection passthrough (put test paths/node IDs in tests_dir)
+pytest_add_cli_args = []                  # validated extra pytest options for every phase
+pytest_add_cli_args_test_selection = []   # validated -k/-m-style selection options
 
 # Operator profile (which operators run)
 mutation_profile = "advanced"         # advanced (default) = mutmut base + extras;
@@ -220,11 +235,14 @@ Notes:
   root `.`) minus a fixed skip list (`.venv`, `.git`, caches,
   `mutants/` itself, …) — not just `paths_to_mutate` + `also_copy`.
   Tests must be able to import and read everything they normally can.
-  Two consequences worth knowing: root-level files (e.g. `.env`,
-  `uv.lock`, scratch files) are copied into `mutants/`, and projects
+  Dotenv secrets, run-lock files, environments, build output and known
+  internal review/tooling trees are excluded. Other root-level files (for
+  example `uv.lock` and scratch files) are copied into `mutants/`, so projects
   with large root-level assets pay that copy on the first run
   (unchanged files are skipped afterwards). Keep secrets and bulk data
-  out of the project root or source roots. The `src.`/`source.` prefix is
+  out of the project root or source roots. A project that intentionally tests
+  a normally excluded file can name it explicitly in `also_copy`. The
+  `src.`/`source.` prefix is
   stripped from mutant names to match the import path — a project whose
   tests import a root *package* literally named `src`/`source`
   (`import src.foo`) is therefore not supported; the layout convention
@@ -233,6 +251,26 @@ Notes:
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of
   silently filtering every mutant.
+- Every phase uses one immutable pytest config/root boundary selected from the
+  staged `tests_dir` targets. `tests_dir` accepts paths or node IDs only;
+  `-c`, root/confcut overrides, `--`, user `@argfiles`, NULs and line breaks are
+  rejected. Test targets are placed after an internal end-of-options marker.
+  Collected tests and `conftest.py` files must stay inside `mutants/` or an
+  external directory explicitly named in `tests_dir` (whose complete bytes are
+  included in the run basis). Naming one external test file authorizes only
+  that file, not an adjacent or ancestor `conftest.py`; naming an external
+  directory authorizes its own `conftest.py` tree but not routing ancestors.
+  A staged pytest config cannot silently reach an undeclared external test tree
+  through `testpaths`. Pytest versions are constrained to the audited 8.2.x and
+  9.x config-discovery and collection semantics.
+- A non-empty `type_check_command` still runs and can classify mutants, but
+  its generic argv may reach executables, scripts, plugins, response files, or
+  configuration outside the project. mutmut-win therefore treats that
+  execution basis as conservatively incomplete: stats and verdict reuse are
+  disabled, `--min-score` and `export-cicd-stats` fail closed, and JSON plus
+  `results`/`browse` report the run as not release-ready. This applies equally
+  to commands resolved through `PATH`, `python script.py`, `python -m ...`,
+  `uv run ...`, and shell/npm wrappers.
 - On Windows the process-status signal does not exist (psutil reports
   almost everything as "running"), so infinite-loop verdicts rest on CPU
   plus progress evidence and are capped at `medium` confidence.
@@ -256,7 +294,7 @@ Notes:
 | `survived` | **No test noticed the change — this is your test gap** |
 | `timeout` | Budget exceeded without an infinite-loop verdict |
 | `suspicious` | Unexpected pytest exit code (diagnostic tail is captured) |
-| `no tests` | The test mapping covers this mutant with zero tests |
+| `no tests` | Reserved for a future runtime-authoritative mapper; the current collector never emits this verdict |
 | `skipped` | Excluded from this run |
 
 ```text
@@ -285,6 +323,12 @@ functions and top-level-class methods. The two kinds of nesting differ:
   top-level function's mutant set, so closure logic is covered.
 - A **method of a class nested inside another class** is genuinely not
   mutated and contributes no mutants rather than appearing as `survived`.
+
+Repeated same-named top-level functions or class methods remain distinct.
+The first occurrence keeps its historical mutant name; occurrence 2 and later
+use a reversible `ǁ<ordinal>` suffix before `__mutmut_…` (for example
+`pkg.x_fǁ2__mutmut_1`). This is intentionally identity-affecting: cached
+verdicts from the former colliding representation are not reused.
 
 ## Typical workflows
 
@@ -317,39 +361,59 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
 
 ## How it works
 
-1. **Generate**: libcst parses each source file and emits all mutants of
-   a function next to the original, behind a trampoline dispatcher, into
-   a `mutants/` staging copy. Unchanged files (source + config
-   fingerprint) are reused.
+1. **Attempt & generate**: a durable run attempt is created before staging.
+   libcst then parses each source file and emits all mutants of a function
+   next to the original, behind a trampoline dispatcher, into a `mutants/`
+   staging copy. Generation runs behind a dedicated supervisor with a hard
+   no-progress timeout and process-tree cleanup. Unchanged files are reused
+   only when exact source and mutation-universe content digests match; output,
+   metadata, and the generation fingerprint are published transactionally.
 2. **Validate**: the unmutated suite must pass inside `mutants/`; a
    forced-fail check proves the trampoline actually switches mutants —
    the failure must come from the trampoline's own exception, a hung or
    unrelated failure fails the gate.
-3. **Map & budget**: a stats run records per-test durations and the
-   test↔function mapping; every mutant gets its covering tests and a
-   wall-clock budget (measured startup floor + scaled test time).
-4. **Execute**: a pool of spawn-based workers activates one mutant at a
-   time via the `MUTANT_UNDER_TEST` environment variable and runs its
-   tests; Windows Job Objects guarantee no process tree ever outlives
-   the run. Results stream back over a queue and are persisted to
-   SQLite as they arrive.
+3. **Map & budget**: a stats run records per-test durations and a diagnostic
+   test↔function mapping. The current collector cannot prove completeness
+   across subprocesses, threads and native launchers, so on-disk mappings are
+   always loaded as non-authoritative: every mutant receives the full selected
+   suite and no cached flag can create selective or `no tests` verdicts. A
+   measured startup floor plus the full-suite time determines the budget.
+4. **Plan & execute**: the exact generated universe is committed as the
+   current run plan before dispatch. Spawn-based workers activate one mutant
+   at a time via `MUTANT_UNDER_TEST` and run its tests. Subprocess output is
+   drained continuously into a bounded in-memory tail, so a noisy or escaped
+   child cannot grow a log file without limit or block a full pipe. Windows Job
+   Objects provide mandatory kernel containment: ordinary subprocesses are born
+   atomically inside the Job, while pool-worker interpreters are born there
+   suspended, receive their bootstrap data through pre-populated seekable
+   storage, and resume only after containment succeeds. POSIX uses isolated
+   process sessions/groups; cleanup paths use tree termination and bounded
+   joins.
+   Results are accepted only for planned names and persisted atomically into
+   the current SQLite snapshot.
 
-Your original sources are never modified; everything happens in the
-`mutants/` staging directory (add `mutants/` and `.mutmut-cache/` to
-`.gitignore`).
+Normal mutation runs never modify original sources; execution happens in the
+`mutants/` staging directory. The explicit `apply` command is the exception: it
+backs up and atomically replaces the selected source file. Add `mutants/`,
+`.mutmut-cache/` and `.mutmut-win-*.run.lock*` to `.gitignore`.
 
 ## Development
 
 ```bash
 git clone https://github.com/pgm1980/mutmut-win.git
 cd mutmut-win
-uv sync --extra dev
+uv lock --check
+uv sync --locked --only-group build --no-install-project
+uv sync --locked --extra dev --group build --group security --no-build-isolation
 
-uv run pytest              # full suite (unit + integration + architecture)
-uv run ruff check .        # lint
-uv run ruff format .       # format
-uv run mypy src/           # type check
-uv run lint-imports        # layer contracts
+uv run --no-sync pytest              # full suite (unit + integration + architecture)
+uv run --no-sync ruff check .        # lint
+uv run --no-sync ruff format .       # format
+uv run --no-sync mypy src/ scripts/  # type check
+uv run --no-sync lint-imports        # layer contracts
+
+uv sync --locked --only-group security --no-install-project
+uv run --no-sync python -I scripts/semgrep_release_gate.py  # pinned, fail-closed security gate
 ```
 
 mutmut-win runs its own mutation testing on itself (dogfooding) as part
@@ -359,13 +423,16 @@ of its release gates.
 
 Releases are demand-driven — there is no calendar cadence. A release
 happens only on an explicit maintainer "Release" decision after all
-gates pass (tests, lint, format, types, semgrep, import-linter,
-dogfooding pilot), and follows one fixed sequence: merge to `main` →
-version bump (`pyproject.toml` + `uv.lock`) → annotated tag `vX.Y.Z` →
-GitHub release with notes. PyPI publishing is not part of that
+gates pass (tests and coverage, lint, format, types, lock and dependency
+audit, the tracked fail-closed Semgrep wrapper, import-linter, reproducible
+Wheel/sdist builds plus installed-artifact smoke tests, and a dogfooding
+pilot). The fixed sequence is: explicit version decision and version bump
+(`pyproject.toml` + `uv.lock`) on the release branch → final gates → merge to
+`main` → annotated tag `vX.Y.Z` → GitHub release with notes. PyPI publishing is not part of that
 sequence. Breaking changes wait for a major version; deprecations warn
 for at least one minor release first (current example:
 `--treat-timeout-as-kill`).
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->
 
 ## History and project status
 
@@ -395,24 +462,33 @@ removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 regex `fullmatch` equivalents). v2.19.1 is a robustness patch from an external
 360° re-test: a corrupt `.mutmut-cache` DB now surfaces a clean message instead
 of a raw traceback (recover with `run --force`), and `setup.cfg` now honours the
-`mutation_profile` / `do_not_mutate_patterns` keys. v2.20.0 continues that
-hardening from the same re-test: the mutant-staging worker pool moved from
-`multiprocessing.Pool` to `concurrent.futures.ProcessPoolExecutor`, which detects
-workers that die during interpreter bootstrap (a crashing `sitecustomize`/`.pth`
-that `os._exit`s before the child connects) and aborts with a clear, diagnosed
-error instead of hanging forever (WRK-002); and `do_not_mutate_patterns` now also
-matches the qualified `Class.method` name, not only the bare method name. Details:
+`mutation_profile` / `do_not_mutate_patterns` keys. v2.20.0 continued that
+hardening from the same re-test. Its initial switch from `multiprocessing.Pool`
+to `concurrent.futures.ProcessPoolExecutor` fixed bootstrap-worker collapse but
+did not bound every generation hang. The active adversarial hardening pass now
+runs that per-file executor behind a separate generation supervisor: a hard
+no-progress deadline, crash detection, worker/grandchild containment, and
+bounded cleanup cover submit, bootstrap, execution, callback, and abort paths.
+The same pass adds content-authoritative caches, current-run identity, bounded
+subprocess output, conservative mapping fallback, and distinct IDs for repeated
+same-named definitions. `do_not_mutate_patterns` also matches the qualified
+`Class.method` name, not only the bare method name. v2.21.0 completes this
+adversarial hardening pass, including the fail-closed release, dependency,
+artifact, and security contracts documented in the repository. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** v2.20.0 is the current release — the `all` profile strictly exceeds
-`advanced`. Active development is in a documented pause with a clean slate — zero
-open issues, zero known backlog entries. The issue tracker stays open; the
-resumption baseline (a full self-run over the tool's own codebase — 7231
-mutants, 69.2 % killed) is recorded in the repository docs.
+**Status:** the codebase identifies itself as v2.21.0. Release readiness follows
+only from the evidence regenerated on the final corrected tree; an older
+dogfooding score or historical green gate is not sufficient.
 
 ## License
 
-ISC License (same as mutmut).
+Original mutmut-win contributions are ISC-licensed; portions derived from
+mutmut 3.5.0 retain its BSD 3-Clause terms, and the process-containment
+backends adapted from CPython retain the Python Software Foundation License
+Version 2. See `LICENSE` for the required notices and change summary; package
+metadata uses the composite SPDX expression
+`ISC AND BSD-3-Clause AND PSF-2.0`.
 
 ## Credits
 

@@ -62,12 +62,15 @@ class TestTimeoutConfigFields:
         cfg = MutmutConfig()
         assert cfg.clean_run_timeout == 300
         assert cfg.forced_fail_timeout == 120
+        assert cfg.generation_timeout == 300.0
 
     def test_zero_and_negative_rejected(self) -> None:
         with pytest.raises(ValidationError):
             MutmutConfig(clean_run_timeout=0)
         with pytest.raises(ValidationError):
             MutmutConfig(forced_fail_timeout=-1)
+        with pytest.raises(ValidationError):
+            MutmutConfig(generation_timeout=float("nan"))
 
     def test_pyproject_roundtrip(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(

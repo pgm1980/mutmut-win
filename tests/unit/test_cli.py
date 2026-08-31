@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.constants import Profile
+from mutmut_win.db import MutationRunState
 from mutmut_win.models import (
     MutationResult,
     MutationRunResult,
@@ -36,6 +37,33 @@ def _make_result(
         status=status,
         exit_code=exit_code,
         duration=duration,
+    )
+
+
+_VERIFIED_BASIS = "a" * 64
+
+
+def _verified_snapshot(
+    rows: list[MutationResult],
+) -> tuple[MutationRunState, list[MutationResult]]:
+    """Return a complete modern run snapshot accepted by the CI gate."""
+    names = tuple(row.mutant_name for row in rows)
+    return (
+        MutationRunState(
+            run_id="verified-run",
+            status="completed",
+            started_at="2026-01-01T00:00:00+00:00",
+            finished_at="2026-01-01T00:01:00+00:00",
+            planned_names=names,
+            completed_results=(),
+            completed_names=names,
+            pending_names=(),
+            universe_fingerprint="b" * 64,
+            plan_digest="c" * 64,
+            basis_fingerprint=_VERIFIED_BASIS,
+            basis_config_json="{}",
+        ),
+        rows,
     )
 
 
@@ -71,7 +99,7 @@ class TestRunCommand:
 
         runner = CliRunner()
         mock_orchestrator = MagicMock()
-        mock_orchestrator.run.return_value = MutationRunResult()
+        mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
         captured: dict[str, int] = {}
 
         def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
@@ -95,7 +123,7 @@ class TestRunCommand:
 
         runner = CliRunner()
         mock_orchestrator = MagicMock()
-        mock_orchestrator.run.return_value = MutationRunResult()
+        mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
         captured: dict[str, Profile] = {}
 
         def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
@@ -118,7 +146,7 @@ class TestRunCommand:
 
         runner = CliRunner()
         mock_orchestrator = MagicMock()
-        mock_orchestrator.run.return_value = MutationRunResult()
+        mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
         captured: dict[str, Profile] = {}
 
         def capture_config(config: MutmutConfig, **_kwargs: object) -> MagicMock:
@@ -174,7 +202,7 @@ class TestRunCommand:
     def test_run_without_max_children_uses_config_default(self) -> None:
         runner = CliRunner()
         mock_orchestrator = MagicMock()
-        mock_orchestrator.run.return_value = MutationRunResult()
+        mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
         mock_config = MagicMock()
         mock_config.max_children = 2
 
@@ -204,7 +232,10 @@ class TestResultsCommand:
             _make_result("a__mutmut_2", "survived", 0, 0.2),
             _make_result("a__mutmut_3", "timeout", 36, 1.0),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=all_results):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, all_results),
+        ):
             result = runner.invoke(cli, ["results"])
 
         assert result.exit_code == 0
@@ -214,7 +245,10 @@ class TestResultsCommand:
 
     def test_results_shows_no_results_message(self) -> None:
         runner = CliRunner()
-        with patch("mutmut_win.cli.load_results", return_value=[]):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, []),
+        ):
             result = runner.invoke(cli, ["results"])
 
         assert result.exit_code == 0
@@ -226,7 +260,10 @@ class TestResultsCommand:
             _make_result("mod.fn__mutmut_1", "killed", 1, 0.1),
             _make_result("mod.fn__mutmut_2", "survived", 0, 0.2),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=all_results):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, all_results),
+        ):
             result = runner.invoke(cli, ["results", "--all"])
 
         assert result.exit_code == 0
@@ -241,7 +278,10 @@ class TestResultsCommand:
             _make_result("a__mutmut_3", "survived", 0, 0.3),
             _make_result("a__mutmut_4", "skipped", 34, 0.0),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=all_results):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, all_results),
+        ):
             result = runner.invoke(cli, ["results"])
 
         # 2 killed / (4 - 1 skipped) = 66.7%
@@ -253,7 +293,10 @@ class TestResultsCommand:
         all_results = [
             _make_result("mod.fn__mutmut_5", "survived", 0, 0.1),
         ]
-        with patch("mutmut_win.cli.load_results", return_value=all_results):
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, all_results),
+        ):
             result = runner.invoke(cli, ["results"])
 
         assert "mod.fn__mutmut_5" in result.output
@@ -265,41 +308,45 @@ class TestResultsCommand:
 
 
 class TestShowCommand:
-    def test_show_exits_nonzero_when_no_mutants_dir(self, tmp_path: Path) -> None:
+    def test_show_exits_nonzero_when_no_mutants_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["show", "some.fn__mutmut_1"])
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["show", "some.fn__mutmut_1"])
 
         assert result.exit_code != 0
 
-    def test_show_exits_nonzero_when_mutant_not_found(self, tmp_path: Path) -> None:
+    def test_show_exits_nonzero_when_mutant_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            mutants_dir = Path("mutants")
-            mutants_dir.mkdir()
-            (mutants_dir / "dummy.py").write_text("# no mutant here", encoding="utf-8")
-            result = runner.invoke(cli, ["show", "missing.fn__mutmut_99"])
+        monkeypatch.chdir(tmp_path)
+        mutants_dir = Path("mutants")
+        mutants_dir.mkdir()
+        (mutants_dir / "dummy.py").write_text("# no mutant here", encoding="utf-8")
+        result = runner.invoke(cli, ["show", "missing.fn__mutmut_99"])
 
         assert result.exit_code != 0
 
-    def test_show_prints_diff(self, tmp_path: Path) -> None:
+    def test_show_prints_diff(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = CliRunner()
         fake_diff = (
             "--- src/sample.py\n+++ src/sample.py\n@@ -1 +1 @@\n-    return 1\n+    return 2"
         )
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("mutants").mkdir()
-            with (
-                patch("mutmut_win.cli.load_config"),
-                # show resolves the pattern once and renders directly
-                # (issue #127 / 360°-A9) — the seam is resolve+render now.
-                patch(
-                    "mutmut_win.cli.resolve_mutant",
-                    return_value=("src.sample.x_foo__mutmut_1", MagicMock(path="src/sample.py")),
-                ),
-                patch("mutmut_win.cli.render_function_diff", return_value=fake_diff),
-            ):
-                result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir()
+        with (
+            patch("mutmut_win.cli.load_config"),
+            # show resolves the pattern once and renders directly
+            # (issue #127 / 360°-A9) — the seam is resolve+render now.
+            patch(
+                "mutmut_win.cli.resolve_mutant",
+                return_value=("src.sample.x_foo__mutmut_1", MagicMock(path="src/sample.py")),
+            ),
+            patch("mutmut_win.cli.render_function_diff", return_value=fake_diff),
+        ):
+            result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
 
         assert result.exit_code == 0
         # The output should contain diff markers
@@ -312,30 +359,36 @@ class TestShowCommand:
 
 
 class TestApplyCommand:
-    def test_apply_exits_nonzero_when_no_mutants_dir(self, tmp_path: Path) -> None:
+    def test_apply_exits_nonzero_when_no_mutants_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["apply", "some.fn__mutmut_1"])
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["apply", "some.fn__mutmut_1"])
 
         assert result.exit_code != 0
 
-    def test_apply_exits_nonzero_when_mutant_not_found(self, tmp_path: Path) -> None:
+    def test_apply_exits_nonzero_when_mutant_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("mutants").mkdir()
-            result = runner.invoke(cli, ["apply", "missing.fn__mutmut_99"])
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir()
+        result = runner.invoke(cli, ["apply", "missing.fn__mutmut_99"])
 
         assert result.exit_code != 0
 
-    def test_apply_writes_mutant_to_source(self, tmp_path: Path) -> None:
+    def test_apply_writes_mutant_to_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("mutants").mkdir()
-            with (
-                patch("mutmut_win.cli.load_config"),
-                patch("mutmut_win.cli.apply_mutant") as mock_apply,
-            ):
-                result = runner.invoke(cli, ["apply", "src.sample.x_foo__mutmut_1"])
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir()
+        with (
+            patch("mutmut_win.cli.load_config"),
+            patch("mutmut_win.cli.apply_mutant") as mock_apply,
+        ):
+            result = runner.invoke(cli, ["apply", "src.sample.x_foo__mutmut_1"])
 
         assert result.exit_code == 0
         mock_apply.assert_called_once()
@@ -414,12 +467,23 @@ class TestTestsForMutantCommand:
 
     def test_shows_message_when_no_tests_found(self) -> None:
         runner = CliRunner()
-        stats = MutmutStats()
+        stats = MutmutStats(mapping_is_authoritative=True)
         with patch("mutmut_win.cli.load_stats", return_value=stats):
             result = runner.invoke(cli, ["tests-for-mutant", "src.mod.x_unknown__mutmut_1"])
 
         assert result.exit_code == 0
         assert "No tests found" in result.output
+
+    def test_incomplete_mapping_reports_full_suite_not_no_tests(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats(mapping_is_authoritative=False)
+        with patch("mutmut_win.cli.load_stats", return_value=stats):
+            result = runner.invoke(cli, ["tests-for-mutant", "src.mod.x_unknown__mutmut_1"])
+
+        assert result.exit_code == 0
+        assert "mapping is incomplete" in result.output
+        assert "full test suite" in result.output
+        assert "No tests found" not in result.output
 
 
 class TestTimeEstimatesCommand:
@@ -432,7 +496,7 @@ class TestTimeEstimatesCommand:
         all_results = [_make_result("src.mod.x_foo__mutmut_1", "survived")]
         with (
             patch("mutmut_win.cli.load_stats", return_value=stats),
-            patch("mutmut_win.cli.load_results", return_value=all_results),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=all_results),
         ):
             result = runner.invoke(cli, ["time-estimates"])
 
@@ -448,16 +512,46 @@ class TestTimeEstimatesCommand:
 
     def test_shows_no_tests_for_uncovered_mutant(self) -> None:
         runner = CliRunner()
-        stats = MutmutStats()
+        stats = MutmutStats(mapping_is_authoritative=True)
         all_results = [_make_result("src.mod.x_bar__mutmut_2", "survived")]
         with (
             patch("mutmut_win.cli.load_stats", return_value=stats),
-            patch("mutmut_win.cli.load_results", return_value=all_results),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=all_results),
         ):
             result = runner.invoke(cli, ["time-estimates"])
 
         assert result.exit_code == 0
         assert "<no tests>" in result.output
+
+    def test_malformed_cached_mutant_name_degrades_to_zero_estimate(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats(mapping_is_authoritative=True)
+        all_results = [_make_result("historical-corrupt-name", "survived")]
+        with (
+            patch("mutmut_win.cli.load_stats", return_value=stats),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=all_results),
+        ):
+            result = runner.invoke(cli, ["time-estimates"])
+
+        assert result.exit_code == 0
+        assert "<no tests>  historical-corrupt-name" in result.output
+
+    def test_incomplete_mapping_estimates_full_suite(self) -> None:
+        runner = CliRunner()
+        stats = MutmutStats(
+            mapping_is_authoritative=False,
+            duration_by_test={"tests/t.py::one": 0.25, "tests/t.py::two": 0.75},
+        )
+        all_results = [_make_result("src.mod.x_bar__mutmut_2", "survived")]
+        with (
+            patch("mutmut_win.cli.load_stats", return_value=stats),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=all_results),
+        ):
+            result = runner.invoke(cli, ["time-estimates"])
+
+        assert result.exit_code == 0
+        assert "1000ms (full suite; mapping incomplete)" in result.output
+        assert "<no tests>" not in result.output
 
     def test_filters_to_given_mutant_names(self) -> None:
         runner = CliRunner()
@@ -468,7 +562,7 @@ class TestTimeEstimatesCommand:
         ]
         with (
             patch("mutmut_win.cli.load_stats", return_value=stats),
-            patch("mutmut_win.cli.load_results", return_value=all_results),
+            patch("mutmut_win.cli._load_results_or_exit", return_value=all_results),
         ):
             result = runner.invoke(cli, ["time-estimates", "src.a__mutmut_1"])
 
@@ -478,7 +572,26 @@ class TestTimeEstimatesCommand:
 
 
 class TestExportCicdStatsCommand:
-    def test_exports_stats_file(self, tmp_path: Path) -> None:
+    def test_incomplete_live_basis_message_names_generic_type_checker(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from mutmut_win.cli import _stable_live_basis
+        from mutmut_win.config import MutmutConfig
+        from mutmut_win.exceptions import MutmutWinError
+        from mutmut_win.stats import RunBasisEvidence
+
+        config = MutmutConfig(type_check_command=["mypy", "--output=json", "src"])
+        with (
+            patch(
+                "mutmut_win.cli.build_run_basis_evidence",
+                return_value=RunBasisEvidence("a" * 64, False),
+            ),
+            pytest.raises(MutmutWinError, match="generic type_check_command"),
+        ):
+            _stable_live_basis(config, tmp_path / "cache.db")
+
+    def test_exports_stats_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = CliRunner()
         all_results = [
             _make_result("a__mutmut_1", "killed"),
@@ -487,33 +600,52 @@ class TestExportCicdStatsCommand:
         mutants_dir = tmp_path / "mutants"
         mutants_dir.mkdir()
 
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("mutants").mkdir(exist_ok=True)
-            with patch("mutmut_win.cli.load_results", return_value=all_results):
-                result = runner.invoke(cli, ["export-cicd-stats"])
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir(exist_ok=True)
+        with (
+            patch(
+                "mutmut_win.cli._load_result_snapshot_or_exit",
+                return_value=_verified_snapshot(all_results),
+            ),
+            patch("mutmut_win.cli._stable_live_basis", return_value=_VERIFIED_BASIS),
+        ):
+            result = runner.invoke(cli, ["export-cicd-stats"])
 
         assert result.exit_code == 0
         assert "mutmut-cicd-stats.json" in result.output
 
-    def test_exits_nonzero_when_no_results(self) -> None:
+    def test_exits_nonzero_when_no_results(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         runner = CliRunner()
-        with patch("mutmut_win.cli.load_results", return_value=[]):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(None, []),
+        ):
             result = runner.invoke(cli, ["export-cicd-stats"])
 
         assert result.exit_code == 1
         assert "No results found" in result.output
 
-    def test_shows_score(self, tmp_path: Path) -> None:
+    def test_shows_score(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = CliRunner()
         all_results = [
             _make_result("a__mutmut_1", "killed"),
             _make_result("a__mutmut_2", "killed"),
             _make_result("a__mutmut_3", "survived"),
         ]
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("mutants").mkdir(exist_ok=True)
-            with patch("mutmut_win.cli.load_results", return_value=all_results):
-                result = runner.invoke(cli, ["export-cicd-stats"])
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir(exist_ok=True)
+        with (
+            patch(
+                "mutmut_win.cli._load_result_snapshot_or_exit",
+                return_value=_verified_snapshot(all_results),
+            ),
+            patch("mutmut_win.cli._stable_live_basis", return_value=_VERIFIED_BASIS),
+        ):
+            result = runner.invoke(cli, ["export-cicd-stats"])
 
         assert result.exit_code == 0
         assert "Score:" in result.output

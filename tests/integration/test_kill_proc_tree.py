@@ -21,6 +21,7 @@ import pytest
 from mutmut_win.config import MutmutConfig
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.process.worker import _create_task_job, _kill_proc_tree
+from mutmut_win.pytest_boundary import prepare_pytest_boundary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -126,7 +127,14 @@ class TestStartupSweepWiring:
         stale = mutants / "mutmut_out_stale.log"
         stale.write_text("leftover from an aborted run", encoding="utf-8")
 
-        executor = SpawnPoolExecutor(max_workers=1, config=MutmutConfig())
+        config = MutmutConfig()
+        executor = SpawnPoolExecutor(max_workers=1, config=config)
+        boundary = prepare_pytest_boundary(
+            project_root=tmp_path,
+            staging_root=mutants,
+            tests_dir=list(config.tests_dir),
+        )
+        executor.configure_pytest_boundary(boundary.to_dict())
         try:
             executor.start([])  # no tasks: workers drain their sentinel and exit
             assert not stale.exists()

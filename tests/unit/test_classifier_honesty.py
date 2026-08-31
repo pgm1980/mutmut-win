@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import time
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -192,6 +193,26 @@ class TestProcessMonitorMechanics:
         monitor = ProcessMonitor(pid=os.getpid(), log_path=tmp_path / "x.log")
         assert monitor.daemon is True
         assert "daemon" not in ProcessMonitor.__dict__
+
+    def test_sleeping_parent_with_running_child_reports_tree_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monitor = ProcessMonitor(pid=os.getpid(), output_counter=lambda: 7)
+        parent = MagicMock()
+        parent.status.return_value = "sleeping"
+        child = MagicMock()
+        child.pid = os.getpid() + 1
+        child.status.return_value = "running"
+        parent.children.return_value = [child]
+        monitor._proc = parent
+        monkeypatch.setattr(monitor, "_cached_cpu_percent", lambda _proc: 1.0)
+        monkeypatch.setattr(monitor, "_io_ops", lambda _proc: 0)
+
+        sample = monitor._take_sample()
+
+        assert sample is not None
+        assert sample.status == "running"
+        assert sample.output_bytes == 7
 
     def test_snapshot_window_is_relative_to_last_sample(self, tmp_path: Path) -> None:
         # JT-014: the cutoff used `now`, so kill + log-read latency between

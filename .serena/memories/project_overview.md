@@ -12,15 +12,22 @@ Repo: https://github.com/pgm1980/mutmut-win.git
 Distribution: install from a pinned git tag only
 (`uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@vX.Y.Z" --dev`).
 PyPI publishing is deliberately NOT part of the release sequence.
-Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
+Leading install doc: `_config/mutmut-win-install.md` (referenced from CLAUDE.md);
+the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 
-## Status — see memory `current_state` for the LIVE state (v2.17.0, 2026-06-14)
+<!-- LIVE_STATE_START -->
 
-> Current release is **v2.17.0**: Phase 1 (v2.16.0) added the basic/advanced/all
-> operator-profile system, Phase 2 (v2.17.0) the six advanced operators. The v2.14.0
-> baseline + Sprint-36 detail below is kept for history.
+## Status — see memory `current_state` for the LIVE v2.21.0 release-candidate state
 
-## Status (v2.14.0 baseline, 2026-06-13)
+> Release target is **v2.21.0** on `fix/360-review-hardening`. The active
+> adversarial review and release evidence live under `bug_reporting/`; the
+> older release baseline and sprint detail below are retained only as history.
+
+<!-- LIVE_STATE_END -->
+
+<!-- ARCHIVE_START -->
+
+## Historical status (v2.14.0 baseline, 2026-06-13)
 - Current release: **v2.14.0** (released 2026-06-13). Sprint 36 "Maintenance 4:
   Fable-5 360°" closed — all 28 findings of the 360° analysis (9 bugs A1–A9,
   13 anomalies B1–B13, 6 optimizations C1–C6; issues #124–#132). Merge `5ef27c1`,
@@ -49,23 +56,30 @@ Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
   (urllib3/idna/pip/pytest lifted past advisories). Runtime floor: pytest>=8.2
   (A2, @argfile).
 
+<!-- ARCHIVE_END -->
+
 ## Key capabilities (vs upstream mutmut)
 - Operator profiles (v2.16.0+): `basic` = mutmut 3.5.0's 15 base operators; `advanced`
   (default, 34 registry entries / 29 unique funcs) adds the extras (regex, math method
   swaps, return-value replacement, conditional expressions, statement removal, collection
   methods, or-defaults) + the six v2.17.0 Phase-2 operators (ROR matrix, number CRCR,
-  condition negate/force, collection-empty, match-guard); `all` reserved. See `current_state`.
-- Per-mutant test selection: a stats run records the test↔function mapping; each mutant
-  runs only its covering tests. Mutants with zero covering tests → `no tests`, no runtime.
+  condition negate/force, collection-empty, match-guard); `all` adds the deliberately
+  aggressive Phase-4 operators. See `current_state`.
+- A stats run records a diagnostic test↔function mapping, but the collector cannot prove
+  completeness across subprocesses, threads and native launchers. Every mutant therefore
+  runs the full selected suite; cached mapping flags cannot create selective or `no tests`
+  verdicts.
 - Self-calibrating wall-clock timeouts: measured per-process startup floor + scaled
-  runtime of assigned tests; the model is printed at run start.
+  full-suite runtime; the model is printed at run start.
 - psutil-based infinite-loop classifier (CPU / output growth / process-status evidence,
   confidence bands, persisted forensics). On Windows the process-status signal does not
   exist → verdicts capped at `medium` confidence.
 - Type checker as kill filter (`type_check_command`): mutants the checker rejects count
   as caught without running tests.
-- Result reuse (since v2.13.0): verdicts of unchanged mutants (source + config +
-  covering-tests fingerprints) are reused instead of re-run; `--rerun-all` opts out.
+- Result reuse is permitted only when source, full selected tests, helpers, external
+  configured fixtures, staged project, runtime and readable installed-distribution bytes
+  share a complete content-bound execution basis; incomplete evidence disables reuse.
+  `--rerun-all` opts out explicitly.
 - Honest scoring: disjoint buckets (killed, survived, timeout, suspicious, skipped,
   no tests, segfault, type-check-caught, killed_by_infinite_loop); one score formula
   shared by run gate, `results` and CI export; interrupted runs exit 130 with no fake score.
@@ -75,12 +89,13 @@ Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
 - SQLite result cache (.mutmut-cache/), fingerprinted per-file mutant staging (mutants/).
 
 ## Tech stack
-- Python >= 3.12 (classifiers 3.12/3.13/3.14; dev venv runs 3.14.3); package manager uv;
-  build backend hatchling.
+- Python >= 3.12,<3.15 (classifiers 3.12/3.13/3.14); package manager uv; build backend
+  hatchling. A developer's active virtual-environment patch version is not normative.
 - Runtime deps: click (CLI), libcst (mutation engine), pydantic v2 (config/models),
   psutil (loop monitor), textual (TUI browser), coverage, setproctitle, pytest.
 - Dev/QA: pytest, pytest-cov, pytest-asyncio, pytest-mock, pytest-benchmark, hypothesis,
-  import-linter, mypy (strict), ruff, pip-audit; semgrep via CLI (Pro since 2026-06-12).
+  import-linter, mypy (strict), ruff, pip-audit; pinned Semgrep Community rules run
+  through the tracked fail-closed offline release wrapper.
 - Entry points: script `mutmut-win` = mutmut_win.cli:cli; `python -m mutmut_win` also
   works (__main__.py wraps cli and carries BWC re-exports for pre-v2.11.0 staging trees).
 - 8 subcommands: run, results, show, apply, browse, tests-for-mutant, time-estimates,
@@ -89,19 +104,23 @@ Leading install doc: `_docs/mutmut-win-install.md` (referenced from CLAUDE.md).
   tests/unit/ — the tool mutation-tests itself as part of release gates.
 
 ## How a run works (pipeline)
-1. Generate: libcst emits all mutants of a function behind a trampoline dispatcher into
-   the mutants/ staging copy (staging mirrors the WHOLE project root minus a skip list;
-   unchanged files are fingerprint-skipped).
+1. Attempt & generate: a durable attempt precedes staging. libcst emits mutants behind a
+   trampoline dispatcher into `mutants/`; exact source, mutation-universe, output and
+   metadata digests govern transactional staging reuse.
 2. Validate: clean suite must pass inside mutants/; a forced-fail check proves the
    trampoline switches mutants.
-3. Map & budget: stats run → per-test durations + test↔function map → covering tests +
-   wall-clock budget per mutant.
-4. Execute: spawn worker pool activates one mutant at a time via the MUTANT_UNDER_TEST
-   env var; job objects guarantee no process tree survives; results stream to SQLite.
-Original sources are never modified.
+3. Map & budget: stats records per-test durations and a diagnostic map. Because mapping
+   completeness is not provable, every mutant receives the full selected suite and a
+   budget based on measured startup plus full-suite time.
+4. Plan & execute: the exact universe is committed before spawn workers activate one
+   mutant at a time via `MUTANT_UNDER_TEST`; mandatory Windows Job containment or POSIX
+   process groups prevent escaped trees, and only planned results enter SQLite.
+Normal runs never modify original sources. The explicit `apply` command is the documented
+exception: it backs up and atomically replaces the selected source file.
 
 ## Release policy
 Demand-driven, no calendar cadence. Only on an explicit maintainer "Release" decision
-after all gates pass: merge to main → version bump (pyproject.toml + uv.lock) →
+after all gates pass: version bump on the release branch → final gates → merge to main →
 annotated tag vX.Y.Z → GitHub release with notes. Breaking changes wait for a major;
 deprecations warn ≥ 1 minor first (current example: `--treat-timeout-as-kill`).
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->

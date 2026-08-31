@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mutmut_win import _state
@@ -93,6 +94,43 @@ class TestRecordTrampolineHit:
         with patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=1):
             record_trampoline_hit("x_should_be_discarded")
         # No pytest/unittest frame within 1 frame of the recorder itself.
+        assert "x_should_be_discarded" not in _state._stats
+        _reset_globals()
+
+    def test_discards_hit_when_real_stack_ends_before_depth_limit(self) -> None:
+        _reset_globals()
+        short_frame = SimpleNamespace(
+            # A user filename containing the substring "pytest" is not itself
+            # a pytest framework frame.
+            f_code=SimpleNamespace(co_filename="C:/project/pytest_helpers.py"),
+            f_back=None,
+        )
+        with (
+            patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=10),
+            patch("inspect.currentframe", return_value=short_frame),
+        ):
+            record_trampoline_hit("x_short_stack")
+
+        assert "x_short_stack" not in _state._stats
+        _reset_globals()
+
+    def test_records_hit_when_a_real_pytest_package_frame_is_found(self) -> None:
+        _reset_globals()
+        pytest_frame = SimpleNamespace(
+            f_code=SimpleNamespace(co_filename="C:/venv/Lib/site-packages/_pytest/runner.py"),
+            f_back=None,
+        )
+        source_frame = SimpleNamespace(
+            f_code=SimpleNamespace(co_filename="C:/project/service.py"),
+            f_back=pytest_frame,
+        )
+        with (
+            patch("mutmut_win.hit_recording._get_max_stack_depth", return_value=2),
+            patch("inspect.currentframe", return_value=source_frame),
+        ):
+            record_trampoline_hit("x_framework_stack")
+
+        assert "x_framework_stack" in _state._stats
         _reset_globals()
 
     def test_get_max_stack_depth_uses_the_state_cache(self) -> None:

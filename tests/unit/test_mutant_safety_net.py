@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import libcst as cst
+import pytest
 
 from mutmut_win.file_setup import create_mutants_for_file
 from mutmut_win.node_mutation import operator_dict_arguments, operator_number
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
 
 
 class TestValidateThenWrite:
+    @pytest.fixture(autouse=True)
+    def _isolated_staging(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
     def test_invalid_generated_output_falls_back_to_original(self, tmp_path: Path) -> None:
         """If the engine produces non-compiling output, the original source is
         written instead, no mutant names are returned, and a warning is
@@ -37,7 +42,7 @@ class TestValidateThenWrite:
         source = "def f():\n    return 1\n"
         src_file = tmp_path / "mod.py"
         src_file.write_text(source, encoding="utf-8")
-        out_file = tmp_path / "out.py"
+        out_file = tmp_path / "mutants" / "out.py"
 
         def _broken_writer(*, out, **_kwargs):  # type: ignore[no-untyped-def]  # mock matches kw-call shape
             out.write("def broken(:\n    pass\n")
@@ -58,7 +63,7 @@ class TestValidateThenWrite:
         source = "def f(a, b, c):\n    x = (a +\n         b or c)\n    return x\n"
         src_file = tmp_path / "mod.py"
         src_file.write_text(source, encoding="utf-8")
-        out_file = tmp_path / "out.py"
+        out_file = tmp_path / "mutants" / "out.py"
 
         create_mutants_for_file(src_file, out_file)
 
@@ -73,7 +78,7 @@ class TestValidateThenWrite:
         source = "def aǁb():\n    return 1\n"
         src_file = tmp_path / "mod.py"
         src_file.write_text(source, encoding="utf-8")
-        out_file = tmp_path / "out.py"
+        out_file = tmp_path / "mutants" / "out.py"
 
         names, warns, _ = create_mutants_for_file(src_file, out_file)
 

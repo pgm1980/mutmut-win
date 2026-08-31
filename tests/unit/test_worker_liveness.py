@@ -130,12 +130,12 @@ class TestDeadWorkerSynthesis:
         out = capsys.readouterr().err  # abort prose lives on stderr (#127/A6+A7)
         assert "never started" in out
 
-    def test_unknown_recovery_event_counts_but_is_not_persisted(
+    def test_unknown_recovery_event_remains_unchecked_and_is_not_persisted(
         self, tmp_path: object, capsys: pytest.CaptureFixture
     ) -> None:
         """A2-EW-012: recovery events without an extractable task name used to
         create a literal 'unknown' row in the DB while the real mutant stayed
-        unreported — now they count for progress but write nothing."""
+        unreported — now they remain unchecked and write nothing."""
         from pathlib import Path
 
         from mutmut_win.db import create_db, load_results
@@ -149,7 +149,7 @@ class TestDeadWorkerSynthesis:
 
         is_completion = _update_summary_and_persist(event, summary, db_path, {})
 
-        assert is_completion is True  # finished-accounting stays intact
+        assert is_completion is False  # no attributable mutant completion
         assert load_results(db_path) == []  # no ghost row
         assert summary.suspicious == 0  # no bucket pollution
         assert "unchecked" in capsys.readouterr().out

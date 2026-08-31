@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from pathlib import Path
 
 from pydantic import BaseModel, Field, computed_field
+
+from mutmut_win.atomic_file import atomic_write_bytes
 
 
 class MutationTask(BaseModel):
@@ -75,6 +78,14 @@ class TaskCompleted(BaseModel):
             "binding to loop_monitor types."
         ),
     )
+    fatal: bool = Field(
+        default=False,
+        description=(
+            "Whether this completion represents a process-containment or frozen-input "
+            "boundary failure that must abort the whole run rather than count as an "
+            "ordinary suspicious mutant verdict"
+        ),
+    )
 
 
 # Union type for all events that flow through the event queue.  Timeouts are
@@ -111,7 +122,7 @@ class MutationResult(BaseModel):
         default=None,
         description=(
             "Fingerprint of the test basis this verdict was produced under "
-            "(sorted node IDs + per-test-file mtime/size) — the result-reuse "
+            "(context digest + sorted node IDs + per-test-file SHA-256) — the result-reuse "
             "condition of issue #119. NULL for verdicts that are never "
             "reused (type-check kills, no tests) and for pre-v2.13 rows."
         ),
@@ -130,12 +141,19 @@ class SourceFileMutationData(BaseModel):
     durations_by_key: dict[str, float] = Field(default_factory=dict)
     estimated_time_of_tests_by_mutant: dict[str, float] = Field(default_factory=dict)
     type_check_error_by_key: dict[str, str] = Field(default_factory=dict)
-    # Source fingerprint at generation time (issue #101 / A3-FD-004): the
-    # fast path compares EQUALITY against the live source — a restore with
-    # an older timestamp is inequality and regenerates. Defaults keep
-    # pre-v2.10 meta files loadable (their None never matches → regenerate).
+    # Legacy stat fields remain readable for compatibility but never authorize
+    # reuse. ``source_hash`` below is the generation/apply authority.
     source_mtime: float | None = None
     source_size: int | None = None
+    # SHA-256 of the exact source bytes used for generation. The legacy stat
+    # fields stay readable, but never authorize reuse or apply by themselves.
+    source_hash: str | None = None
+    # Per-file mutation selector (profile, name exclusions, covered lines).
+    # This makes the helper safe even when called outside the orchestrator.
+    generation_fingerprint: str | None = None
+    # SHA-256 of the exact generated Python bytes published into staging.
+    # Missing legacy values deliberately disable generation fast-path reuse.
+    generated_hash: str | None = None
 
     @property
     def meta_path(self) -> Path:
@@ -156,7 +174,7 @@ class SourceFileMutationData(BaseModel):
         """
         try:
             with self.meta_path.open(encoding="utf-8") as f:
-                meta: dict[str, object] = json.load(f)
+                raw_meta: object = json.load(f)
         except FileNotFoundError:
             return
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -164,28 +182,58 @@ class SourceFileMutationData(BaseModel):
             return
 
         try:
+            if not isinstance(raw_meta, dict):
+                raise TypeError("meta root must be an object")
+            meta: dict[str, object] = raw_meta
             raw_exit = meta.pop("exit_code_by_key", {})
-            if isinstance(raw_exit, dict):
-                self.exit_code_by_key = {str(k): v for k, v in raw_exit.items()}
+            if not isinstance(raw_exit, dict):
+                raise TypeError("exit_code_by_key must be an object")
+            loaded_exit: dict[str, int | None] = {}
+            for key, value in raw_exit.items():
+                if not isinstance(key, str) or (
+                    value is not None and (not isinstance(value, int) or isinstance(value, bool))
+                ):
+                    raise TypeError("exit codes must map string keys to integers or null")
+                loaded_exit[key] = value
+            self.exit_code_by_key = loaded_exit
 
             raw_dur = meta.pop("durations_by_key", {})
-            if isinstance(raw_dur, dict):
-                self.durations_by_key = {str(k): float(v) for k, v in raw_dur.items()}
+            self.durations_by_key = _validated_nonnegative_float_map(raw_dur, "durations_by_key")
 
             raw_est = meta.pop("estimated_durations_by_key", {})
-            if isinstance(raw_est, dict):
-                self.estimated_time_of_tests_by_mutant = {
-                    str(k): float(v) for k, v in raw_est.items()
-                }
+            self.estimated_time_of_tests_by_mutant = _validated_nonnegative_float_map(
+                raw_est, "estimated_durations_by_key"
+            )
 
             raw_tc = meta.pop("type_check_error_by_key", {})
-            if isinstance(raw_tc, dict):
-                self.type_check_error_by_key = {str(k): str(v) for k, v in raw_tc.items()}
+            if not isinstance(raw_tc, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) for k, v in raw_tc.items()
+            ):
+                raise TypeError("type_check_error_by_key must map strings to strings")
+            self.type_check_error_by_key = dict(raw_tc)
 
             raw_mtime = meta.pop("source_mtime", None)
-            self.source_mtime = float(raw_mtime) if isinstance(raw_mtime, (int, float)) else None
+            if raw_mtime is not None and (
+                not isinstance(raw_mtime, (int, float))
+                or isinstance(raw_mtime, bool)
+                or not math.isfinite(raw_mtime)
+            ):
+                raise TypeError("source_mtime must be finite or null")
+            self.source_mtime = float(raw_mtime) if raw_mtime is not None else None
             raw_size = meta.pop("source_size", None)
-            self.source_size = int(raw_size) if isinstance(raw_size, int) else None
+            if raw_size is not None and (
+                not isinstance(raw_size, int) or isinstance(raw_size, bool) or raw_size < 0
+            ):
+                raise TypeError("source_size must be a non-negative integer or null")
+            self.source_size = raw_size
+            raw_hash = meta.pop("source_hash", None)
+            self.source_hash = _validated_optional_sha256(raw_hash, "source_hash")
+            raw_generation = meta.pop("generation_fingerprint", None)
+            self.generation_fingerprint = _validated_optional_sha256(
+                raw_generation, "generation_fingerprint"
+            )
+            raw_generated_hash = meta.pop("generated_hash", None)
+            self.generated_hash = _validated_optional_sha256(raw_generated_hash, "generated_hash")
         except (TypeError, ValueError):
             # Type-corrupt values inside structurally valid JSON (issue #124
             # / 360°-B10) heal exactly like decode corruption — partial
@@ -201,6 +249,9 @@ class SourceFileMutationData(BaseModel):
         self.type_check_error_by_key = {}
         self.source_mtime = None
         self.source_size = None
+        self.source_hash = None
+        self.generation_fingerprint = None
+        self.generated_hash = None
 
     def _discard_corrupt_meta(self) -> None:
         """Warn about and remove a corrupt ``.meta`` so the fast path rebuilds."""
@@ -219,26 +270,57 @@ class SourceFileMutationData(BaseModel):
     def save(self) -> None:
         """Save mutation metadata to the JSON meta file (atomically).
 
-        Writes to a sibling ``.tmp`` and swaps via ``Path.replace`` —
-        atomic on the same volume — so a crash mid-write (the A3-CM-009
-        scenario) can never leave a truncated ``.meta`` behind.
+        Writes to an exclusively-created random sibling and swaps via
+        ``os.replace``.  No predictable sidecar is opened, so a pre-existing
+        hardlink or symlink cannot redirect the write outside the workspace.
         """
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
-        with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "exit_code_by_key": self.exit_code_by_key,
-                    "durations_by_key": self.durations_by_key,
-                    "type_check_error_by_key": self.type_check_error_by_key,
-                    "estimated_durations_by_key": self.estimated_time_of_tests_by_mutant,
-                    "source_mtime": self.source_mtime,
-                    "source_size": self.source_size,
-                },
-                f,
-                indent=4,
-            )
-        tmp_path.replace(self.meta_path)
+        payload = json.dumps(
+            {
+                "exit_code_by_key": self.exit_code_by_key,
+                "durations_by_key": self.durations_by_key,
+                "type_check_error_by_key": self.type_check_error_by_key,
+                "estimated_durations_by_key": self.estimated_time_of_tests_by_mutant,
+                "source_mtime": self.source_mtime,
+                "source_size": self.source_size,
+                "source_hash": self.source_hash,
+                "generation_fingerprint": self.generation_fingerprint,
+                "generated_hash": self.generated_hash,
+            },
+            indent=4,
+        ).encode("utf-8")
+        atomic_write_bytes(self.meta_path, payload)
+
+
+def _validated_nonnegative_float_map(raw: object, field_name: str) -> dict[str, float]:
+    """Validate a persisted mapping without permissive JSON coercion."""
+    if not isinstance(raw, dict):
+        raise TypeError(f"{field_name} must be an object")
+    validated: dict[str, float] = {}
+    for key, value in raw.items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise TypeError(f"{field_name} must map strings to finite non-negative numbers")
+        validated[key] = float(value)
+    return validated
+
+
+def _validated_optional_sha256(raw: object, field_name: str) -> str | None:
+    """Validate a SHA-256 hex digest while allowing legacy missing values."""
+    if raw is None:
+        return None
+    if (
+        not isinstance(raw, str)
+        or len(raw) != 64
+        or any(char not in "0123456789abcdefABCDEF" for char in raw)
+    ):
+        raise TypeError(f"{field_name} must be a SHA-256 hex digest or null")
+    return raw.lower()
 
 
 class MutationRunResult(BaseModel):
@@ -269,6 +351,10 @@ class MutationRunResult(BaseModel):
     # remainder stays in `unchecked` (sum invariant as for interrupts).
     # Producer: the orchestrator reads the executor's collapse declaration.
     run_aborted: bool = False
+    # Authority is separate from technical completion: an incomplete execution
+    # basis may still produce useful local diagnostics, but it cannot authorize
+    # cache reuse, CI export, or a score gate.
+    execution_basis_complete: bool = False
     duration_seconds: float = 0.0
 
     # Serialized into model_dump()/JSON (issue #97 / A3-OS-014: the CI

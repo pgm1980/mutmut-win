@@ -545,7 +545,7 @@ MutmutWinError(Exception)               # Basis für alle mutmut-win-Ausnahmen
 | Subprocess ohne Shell | subprocess.run mit shell=False (S603) | Semgrep S603 |
 | Pickle-Sicherheit | Queue-Messages sind ausschließlich intern erzeugte Pydantic-Models | Code Review |
 | Dependency Audit | pip-audit vor jedem Release (CI) | CI-Pipeline |
-| Static Analysis | Semgrep --config auto vor jedem Release | CI-Pipeline |
+| Static Analysis | Gelockter `scripts/semgrep_release_gate.py` auf dem vollständigen Git-owned Scope vor jedem Release | CI-Pipeline + lokaler Release-Gate-Lauf |
 | Keine Netzwerkzugriffe | mutmut-win greift auf keine externen APIs zu | Code Review |
 
 ---

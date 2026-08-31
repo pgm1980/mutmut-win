@@ -28,7 +28,7 @@ class TestMangledNameFromMutantName:
         assert mangled_name_from_mutant_name(name) == f"src.module.x{sep}MyClass{sep}my_method"
 
     def test_missing_mutmut_marker_raises(self) -> None:
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="missing '__mutmut_'"):
             mangled_name_from_mutant_name("src.module.x_my_func")
 
     def test_strips_only_at_mutmut_boundary(self) -> None:
@@ -78,9 +78,14 @@ class TestOrigFunctionAndClassNamesFromKey:
         assert cls == "Svc"
 
     def test_bad_prefix_raises(self) -> None:
-        # Names that don't start with x_ or xǁ should raise AssertionError.
+        # User input errors are explicit and remain enforced under ``python -O``.
         name = "src.module.bad_func__mutmut_1"
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="Malformed mutant function prefix"):
+            orig_function_and_class_names_from_key(name)
+
+    def test_malformed_class_method_raises_value_error(self) -> None:
+        name = f"src.module.x{CLASS_NAME_SEPARATOR}OnlyClass__mutmut_1"
+        with pytest.raises(ValueError, match="Malformed class-method mutant name"):
             orig_function_and_class_names_from_key(name)
 
 
@@ -158,6 +163,44 @@ class TestTestsForMutantNames:
         mapping = {"pkg.x_a": {"tests/t.py::test_a"}}
         result = tests_for_mutant_names(["nonexistent.*"], mapping)
         assert result == set()
+
+    def test_star_pattern_with_mutant_suffix_matches_function_mapping(self) -> None:
+        mapping = {
+            "pkg.x_func_a": {"tests/t.py::test_a"},
+            "pkg.x_func_b": {"tests/t.py::test_b"},
+        }
+        result = tests_for_mutant_names(["pkg.x_func_*__mutmut_*"], mapping)
+
+        assert result == {"tests/t.py::test_a", "tests/t.py::test_b"}
+
+    def test_question_mark_pattern_is_supported(self) -> None:
+        mapping = {
+            "pkg.x_func_a": {"tests/t.py::test_a"},
+            "pkg.x_func_ab": {"tests/t.py::test_ab"},
+        }
+        result = tests_for_mutant_names(["pkg.x_func_?__mutmut_1"], mapping)
+
+        assert result == {"tests/t.py::test_a"}
+
+    def test_character_class_pattern_is_supported(self) -> None:
+        mapping = {
+            "pkg.x_func_a": {"tests/t.py::test_a"},
+            "pkg.x_func_b": {"tests/t.py::test_b"},
+            "pkg.x_func_c": {"tests/t.py::test_c"},
+        }
+        result = tests_for_mutant_names(["pkg.x_func_[ab]__mutmut_[12]"], mapping)
+
+        assert result == {"tests/t.py::test_a", "tests/t.py::test_b"}
+
+    def test_exact_mangled_function_name_without_suffix_is_accepted(self) -> None:
+        mapping = {"pkg.x_func": {"tests/t.py::test_func"}}
+
+        assert tests_for_mutant_names(["pkg.x_func"], mapping) == {"tests/t.py::test_func"}
+
+    def test_malformed_user_input_is_an_empty_match_not_an_assertion(self) -> None:
+        mapping = {"pkg.x_func": {"tests/t.py::test_func"}}
+
+        assert tests_for_mutant_names(["not-a-mutant"], mapping) == set()
 
     def test_returns_set_not_list(self) -> None:
         mapping = {"pkg.x_a": {"tests/t.py::test_a", "tests/t.py::test_b"}}

@@ -4,12 +4,13 @@ The README has long promised "unchanged mutants are not re-run"; until
 v2.13.0 the result DB was write-only for ``run``. A prior verdict is now
 reused iff the mutant's file took the staging fast path (source
 fingerprint unchanged), its currently assigned test set is unchanged
-(``tests_fingerprint``: sorted node IDs + per-test-file mtime/size), and
+(``tests_fingerprint``: context digest + node IDs + per-file SHA-256), and
 the stored status is reusable. ``--rerun-all`` opts out; reuse is loud.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,9 @@ class TestTestsFingerprint:
         before = _tests_fingerprint(["tests/test_a.py::test_x"])
         target = tmp_path / "tests" / "test_a.py"
         stat = target.stat()
-        os.utime(target, ns=(stat.st_mtime_ns + 1_000_000_000, stat.st_mtime_ns + 1_000_000_000))
+        target.write_text("def test_x(): assert True\n", encoding="utf-8")
+        # Restore the original timestamp: content hashing must still notice.
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         after = _tests_fingerprint(["tests/test_a.py::test_x"])
         assert before != after
 
@@ -84,14 +87,18 @@ class TestTestsFingerprint:
         b = _tests_fingerprint(["tests/nope.py::test_x"])
         assert a == b
 
-    def test_build_skips_tasks_without_tests(self) -> None:
+    def test_build_requires_context_before_fingerprinting_full_suite(self) -> None:
         tasks = [
             MutationTask(mutant_name="m1", tests=["tests/test_a.py::test_x"]),
             MutationTask(mutant_name="m2", tests=[]),
         ]
         fingerprints = _build_tests_fingerprints(tasks)
-        assert "m1" in fingerprints
-        assert "m2" not in fingerprints  # full-suite fallback: never reusable
+        assert fingerprints == {}
+
+        with_context = _build_tests_fingerprints(tasks, context_fingerprint="context-v1")
+        assert "m2" in with_context
+        assert with_context["m2"] != with_context["m1"]
+        assert all(len(fingerprint) == 64 for fingerprint in with_context.values())
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +197,7 @@ class TestDbFingerprintColumn:
         import sqlite3
 
         db = tmp_path / "old.sqlite"
-        with sqlite3.connect(db) as conn:
+        with contextlib.closing(sqlite3.connect(db)) as conn:
             conn.execute(
                 "CREATE TABLE mutant (mutant_name TEXT PRIMARY KEY, status TEXT NOT NULL, "
                 "exit_code INTEGER, duration REAL, last_output TEXT, forensics TEXT)"
@@ -215,6 +222,7 @@ def _project(tmp_path: Path) -> None:
     (tmp_path / "src" / "target.py").write_text(_SRC, encoding="utf-8")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_target.py").write_text("def test_add(): pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "fixture.sqlite").write_bytes(b"legitimate test fixture")
 
 
 def _stats() -> MutmutStats:
@@ -222,6 +230,7 @@ def _stats() -> MutmutStats:
         tests_by_mangled_function_name={"target.x_add": {"tests/test_target.py::test_add"}},
         duration_by_test={"tests/test_target.py::test_add": 0.05},
         stats_time=0.05,
+        mapping_is_authoritative=True,
     )
 
 
@@ -280,8 +289,25 @@ class TestReuseEndToEnd:
     @pytest.fixture
     def _stats_patch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import mutmut_win.orchestrator as orch_mod
+        import mutmut_win.stats as stats_mod
+        from mutmut_win.stats import RunBasisEvidence, _DependencyBasis
 
-        monkeypatch.setattr(orch_mod, "collect_or_load_stats", lambda _runner: _stats())
+        def collected_stats(_runner: object, **kwargs: object) -> MutmutStats:
+            result = _stats()
+            result.context_fingerprint = str(kwargs["context_fingerprint"])
+            return result
+
+        monkeypatch.setattr(orch_mod, "collect_or_load_stats", collected_stats)
+        monkeypatch.setattr(
+            orch_mod,
+            "build_run_basis_evidence",
+            lambda *_args, **_kwargs: RunBasisEvidence("a" * 64, True),
+        )
+        monkeypatch.setattr(
+            stats_mod,
+            "_installed_distribution_basis",
+            lambda _root, _seen: _DependencyBasis("test-environment", True),
+        )
 
     def test_unchanged_second_run_dispatches_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -292,6 +318,12 @@ class TestReuseEndToEnd:
         assert executor_a.start.call_count == 1
         dispatched_a = len(executor_a.captured)
         assert dispatched_a > 0
+        # The exact configured result DB is run-control state and must not be
+        # mirrored, while an unrelated SQLite test fixture remains available.
+        assert not (tmp_path / "mutants" / "reuse.sqlite").exists()
+        assert (tmp_path / "mutants" / "tests" / "fixture.sqlite").read_bytes() == (
+            b"legitimate test fixture"
+        )
 
         summary_b, executor_b = _orchestrate(tmp_path)
         assert executor_b.start.call_count == 0  # nothing dispatched
@@ -312,10 +344,8 @@ class TestReuseEndToEnd:
         _orchestrate(tmp_path)
         test_file = tmp_path / "tests" / "test_target.py"
         stat = test_file.stat()
-        os.utime(
-            test_file,
-            ns=(stat.st_mtime_ns + 2_000_000_000, stat.st_mtime_ns + 2_000_000_000),
-        )
+        test_file.write_text("def test_add(): assert True\n", encoding="utf-8")
+        os.utime(test_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         _summary, executor = _orchestrate(tmp_path)
         assert executor.start.call_count == 1  # fingerprints differ -> re-run
 
@@ -324,3 +354,42 @@ class TestReuseEndToEnd:
         _summary, executor = _orchestrate(tmp_path, rerun_all=True)
         assert executor.start.call_count == 1
         assert len(executor.captured) > 0
+
+    def test_non_authoritative_full_suite_verdicts_are_reused_safely(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import mutmut_win.orchestrator as orch_mod
+
+        def conservative_stats(_runner: object, **kwargs: object) -> MutmutStats:
+            return MutmutStats(
+                tests_by_mangled_function_name={"target.x_add": {"tests/test_target.py::test_add"}},
+                duration_by_test={"tests/test_target.py::test_add": 0.05},
+                stats_time=0.05,
+                # Preserve the production context, including the configured
+                # DB exclusions. Recomputing without them would fingerprint
+                # reuse.sqlite and correctly invalidate every second run.
+                context_fingerprint=str(kwargs["context_fingerprint"]),
+                mapping_is_authoritative=False,
+            )
+
+        monkeypatch.setattr(orch_mod, "collect_or_load_stats", conservative_stats)
+
+        first, executor_a = _orchestrate(tmp_path)
+        assert executor_a.start.call_count == 1
+        dispatched = len(executor_a.captured)
+        assert dispatched > 0
+        assert all(not task.tests for task in executor_a.captured)
+
+        second, executor_b = _orchestrate(tmp_path)
+        assert executor_b.start.call_count == 0
+        assert second.killed == first.killed
+        assert f"Reused {dispatched} cached verdicts" in capsys.readouterr().out
+
+        test_file = tmp_path / "tests" / "test_target.py"
+        test_file.write_text("def test_add(): assert True\n", encoding="utf-8")
+        _third, executor_c = _orchestrate(tmp_path)
+        assert executor_c.start.call_count == 1
+        assert len(executor_c.captured) == dispatched

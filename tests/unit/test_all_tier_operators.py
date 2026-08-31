@@ -267,11 +267,7 @@ def test_no_duplicate_mutants_across_overlapping_operators() -> None:
     from mutmut_win.mutation import create_mutations
 
     source = (
-        "def f(a, b):\n"
-        "    total = a + b\n"
-        "    if a < b:\n"
-        "        return a and b\n"
-        "    return 7\n"
+        "def f(a, b):\n    total = a + b\n    if a < b:\n        return a and b\n    return 7\n"
     )
     _module, mutations = create_mutations(source, active_profile=Profile.ALL)
     renderer = cst.Module(body=[])

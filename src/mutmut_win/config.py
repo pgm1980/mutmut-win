@@ -12,9 +12,10 @@ import re
 import sys
 import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
+from configparser import Error as ConfigParserError
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from mutmut_win.constants import Profile
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
@@ -116,7 +117,10 @@ class MutmutConfig(BaseModel):
     )
     tests_dir: list[str] = Field(
         default_factory=lambda: ["tests/"],
-        description="Directories containing tests",
+        description=(
+            "Test paths or node IDs only; pytest options and @argfiles belong in neither "
+            "this field nor the target tail"
+        ),
     )
     do_not_mutate: list[str] = Field(
         default_factory=list,
@@ -150,6 +154,7 @@ class MutmutConfig(BaseModel):
     timeout_multiplier: float = Field(
         default=30.0,
         gt=0.0,
+        allow_inf_nan=False,
         description="Multiplier for timeout calculation (mutmut default: 30x)",
     )
     clean_run_timeout: int = Field(
@@ -167,6 +172,15 @@ class MutmutConfig(BaseModel):
         gt=0,
         description=(
             "Timeout (seconds) for the forced-fail trampoline verification run. See issue #74."
+        ),
+    )
+    generation_timeout: float = Field(
+        default=300.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "Maximum seconds without a completed source file during parallel "
+            "mutant generation before the generation process tree is aborted."
         ),
     )
     max_stack_depth: int = Field(
@@ -187,7 +201,10 @@ class MutmutConfig(BaseModel):
     )
     pytest_add_cli_args_test_selection: list[str] = Field(
         default_factory=list,
-        description="Additional pytest CLI arguments for test selection",
+        description=(
+            "Additional pytest test-selection arguments; the frozen config is selected "
+            "from tests_dir, and external positional targets must be declared there"
+        ),
     )
     mutate_only_covered_lines: bool = Field(
         default=False,
@@ -220,6 +237,7 @@ class MutmutConfig(BaseModel):
         default=70.0,
         ge=0.0,
         le=10_000.0,
+        allow_inf_nan=False,
         description="Mean CPU%% in window required to classify as infinite loop.",
     )
     infinite_loop_output_threshold: int = Field(
@@ -236,6 +254,7 @@ class MutmutConfig(BaseModel):
         default=0.8,
         ge=0.0,
         le=1.0,
+        allow_inf_nan=False,
         description=(
             "Minimum fraction of samples where process status == 'running' "
             "required for an IL verdict. Filters out sleeping (network-wait) "
@@ -245,6 +264,7 @@ class MutmutConfig(BaseModel):
     infinite_loop_window_seconds: float = Field(
         default=10.0,
         gt=0.0,
+        allow_inf_nan=False,
         description="Rolling sample window (seconds) used by the classifier.",
     )
 
@@ -302,7 +322,7 @@ class MutmutConfig(BaseModel):
 
     @field_validator("paths_to_mutate", mode="after")
     @classmethod
-    def _reject_absolute_paths(cls, v: list[str]) -> list[str]:
+    def _reject_absolute_paths(cls, v: list[str], info: ValidationInfo) -> list[str]:
         """Reject absolute ``paths_to_mutate`` entries (issue #75 / A3-CM-001).
 
         ``Path("mutants") / <absolute path>`` discards the left operand, so an
@@ -310,22 +330,29 @@ class MutmutConfig(BaseModel):
         code INTO the original source file.  Entries under the current working
         directory are silently relativized; anything else is an error.
         """
+        context = info.context if isinstance(info.context, dict) else {}
+        configured_root = context.get("project_root")
+        project_root = (
+            configured_root.resolve() if isinstance(configured_root, Path) else Path.cwd().resolve()
+        )
         safe: list[str] = []
         for entry in v:
             path = Path(entry)
+            resolved = path.resolve() if path.is_absolute() else (project_root / path).resolve()
+            try:
+                relative = resolved.relative_to(project_root)
+            except ValueError as exc:
+                msg = (
+                    f"paths_to_mutate absolute/relative entry {entry!r} resolves outside "
+                    "the project root "
+                    f"({project_root}) — mutation sources must stay inside the project"
+                )
+                raise ValueError(msg) from exc
             if path.is_absolute():
-                try:
-                    path = path.relative_to(Path.cwd())
-                except ValueError as exc:
-                    msg = (
-                        f"paths_to_mutate entry {entry!r} is an absolute path "
-                        "outside the project root — use paths relative to the "
-                        "project root (absolute paths would let the mutants/ "
-                        "staging overwrite the original sources)"
-                    )
-                    raise ValueError(msg) from exc
-                safe.append(str(path))
+                safe.append("." if relative == Path() else str(relative))
             else:
+                # Preserve the user's harmless relative spelling (including a
+                # trailing separator); only resolved containment is normalized.
                 safe.append(entry)
         return safe
 
@@ -424,8 +451,14 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     if not setup_cfg_path.exists():
         return None
 
-    parser = ConfigParser()
-    parser.read(str(setup_cfg_path), encoding="utf-8")
+    # Percent signs are ordinary command/config characters here, not
+    # ConfigParser interpolation markers (MW220-036).
+    parser = ConfigParser(interpolation=None)
+    try:
+        parser.read(str(setup_cfg_path), encoding="utf-8")
+    except (ConfigParserError, OSError) as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
 
     def _get(key: str, default: object) -> object:
         try:
@@ -464,12 +497,15 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
         "clean_run_timeout": _get("clean_run_timeout", 300),
         "forced_fail_timeout": _get("forced_fail_timeout", 120),
+        "generation_timeout": _get("generation_timeout", 300.0),
         "max_stack_depth": _get("max_stack_depth", -1),
         "debug": _get("debug", False),
         "mutate_only_covered_lines": _get("mutate_only_covered_lines", False),
-        "pytest_add_cli_args": _get("pytest_add_cli_args", []),
-        "pytest_add_cli_args_test_selection": _get("pytest_add_cli_args_test_selection", []),
-        "type_check_command": _get("type_check_command", []),
+        # Keep command strings intact so the model's quote-aware tokenizer
+        # can turn '-m "not slow"' into two argv elements.
+        "pytest_add_cli_args": _get("pytest_add_cli_args", ""),
+        "pytest_add_cli_args_test_selection": _get("pytest_add_cli_args_test_selection", ""),
+        "type_check_command": _get("type_check_command", ""),
         "extra_paths": _get("extra_paths", []),
     }
     # Issue #132 / 360°-B9: setup.cfg parity for the IL options. A missing
@@ -493,7 +529,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         normalized["mutation_profile"] = profile_value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
-    return MutmutConfig.model_validate(normalized)
+    return MutmutConfig.model_validate(normalized, context={"project_root": project_dir.resolve()})
 
 
 def load_config(project_dir: Path | None = None) -> MutmutConfig:
@@ -564,7 +600,9 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}", file=sys.stderr)
 
     try:
-        config = MutmutConfig.model_validate(normalized)
+        config = MutmutConfig.model_validate(
+            normalized, context={"project_root": project_dir.resolve()}
+        )
     except Exception as e:
         msg = f"Invalid [tool.mutmut] configuration: {e}"
         # Value-level failure → the specific subclass (issue #114 /

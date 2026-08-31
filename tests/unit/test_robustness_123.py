@@ -31,6 +31,7 @@ from mutmut_win.config import MutmutConfig
 from mutmut_win.exceptions import MutmutWinError, StaleStagingError
 from mutmut_win.models import MutationTask
 from mutmut_win.process.worker import worker_main
+from tests.unit.phase_mock_util import frozen_worker_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -162,21 +163,23 @@ class _SimpleQueue:
 
 
 def _worker_config() -> dict[str, Any]:
-    return {
-        "paths_to_mutate": ["src/"],
-        "tests_dir": ["tests/"],
-        "do_not_mutate": [],
-        "also_copy": [],
-        "max_children": 1,
-        "timeout_multiplier": 10.0,
-        "max_stack_depth": -1,
-        "debug": False,
-        "pytest_add_cli_args": [],
-        "pytest_add_cli_args_test_selection": [],
-        "mutate_only_covered_lines": False,
-        "type_check_command": [],
-        "infinite_loop_detection": False,
-    }
+    return frozen_worker_config(
+        {
+            "paths_to_mutate": ["src/"],
+            "tests_dir": ["tests/"],
+            "do_not_mutate": [],
+            "also_copy": [],
+            "max_children": 1,
+            "timeout_multiplier": 10.0,
+            "max_stack_depth": -1,
+            "debug": False,
+            "pytest_add_cli_args": [],
+            "pytest_add_cli_args_test_selection": [],
+            "mutate_only_covered_lines": False,
+            "type_check_command": [],
+            "infinite_loop_detection": False,
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -221,9 +224,11 @@ class TestWerSuppression:
         suppress, _kwargs = self._run_one_task()
         suppress.assert_called_once()
 
-    def test_spawn_uses_no_window_creationflags(self) -> None:
+    def test_spawn_uses_no_window_and_precontainment_suspend_flags(self) -> None:
         _suppress, kwargs = self._run_one_task()
-        expected = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        expected = worker_module._contained_creationflags(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
         assert kwargs.get("creationflags", 0) == expected
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX no-op path")
