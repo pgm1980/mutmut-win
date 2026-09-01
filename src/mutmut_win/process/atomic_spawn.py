@@ -117,11 +117,21 @@ if sys.platform == "win32":
         ctypes.POINTER(_PROCESS_INFORMATION),
     ]
     _kernel32.CreateProcessW.restype = ctypes.wintypes.BOOL
+else:
+    # These bindings intentionally do not exist at runtime off Windows.  The
+    # public helpers reject that platform before dereferencing them, while the
+    # declarations keep cross-platform static analysis aware of those names.
+    _kernel32: Any = None
+    _STARTUPINFOEXW: Any = None
+    _PROCESS_INFORMATION: Any = None
 
 
 def _winerror(operation: str) -> OSError:
-    code = ctypes.get_last_error()
-    error = ctypes.WinError(code)
+    # ``ctypes`` exposes these helpers only on Windows in typeshed.  Runtime
+    # behavior remains the direct Win32 implementation; the targeted ignores
+    # cover only the opposite platform's typeshed view.
+    code = ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+    error: OSError = ctypes.WinError(code)  # type: ignore[attr-defined,unused-ignore]
     error.add_note(operation)
     return error
 
@@ -333,13 +343,17 @@ class AtomicJobPopen(subprocess.Popen[bytes]):
 
         if executable is not None:
             executable = os.fsdecode(executable)
-        startupinfo = subprocess.STARTUPINFO() if startupinfo is None else startupinfo.copy()
+        startupinfo = (
+            subprocess.STARTUPINFO()  # type: ignore[attr-defined,unused-ignore]
+            if startupinfo is None
+            else startupinfo.copy()
+        )
 
         use_std_handles = -1 not in (p2cread, c2pwrite, errwrite)
         if use_std_handles:
             import _winapi
 
-            startupinfo.dwFlags |= _winapi.STARTF_USESTDHANDLES
+            startupinfo.dwFlags |= _winapi.STARTF_USESTDHANDLES  # type: ignore[attr-defined,unused-ignore]
             startupinfo.hStdInput = p2cread
             startupinfo.hStdOutput = c2pwrite
             startupinfo.hStdError = errwrite
@@ -376,8 +390,8 @@ class AtomicJobPopen(subprocess.Popen[bytes]):
         if shell:
             import _winapi
 
-            startupinfo.dwFlags |= _winapi.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = _winapi.SW_HIDE
+            startupinfo.dwFlags |= _winapi.STARTF_USESHOWWINDOW  # type: ignore[attr-defined,unused-ignore]
+            startupinfo.wShowWindow = _winapi.SW_HIDE  # type: ignore[attr-defined,unused-ignore]
             if not executable:
                 comspec = os.environ.get("COMSPEC")
                 if not comspec:
@@ -421,9 +435,9 @@ class AtomicJobPopen(subprocess.Popen[bytes]):
         import _winapi
 
         self._child_created = True
-        self._handle = subprocess.Handle(process_handle)  # type: ignore[attr-defined]
+        self._handle = subprocess.Handle(process_handle)  # type: ignore[attr-defined,unused-ignore]
         self.pid = pid
-        _winapi.CloseHandle(thread_handle)
+        _winapi.CloseHandle(thread_handle)  # type: ignore[attr-defined,unused-ignore]
 
 
 __all__ = [

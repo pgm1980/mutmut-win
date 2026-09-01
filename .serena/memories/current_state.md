@@ -1,4 +1,4 @@
-# Current State — v2.21.0 release candidate
+# Current State — v2.21.0 release blockers
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
@@ -6,22 +6,28 @@ sprint_36_progress is archived.
 <!-- LIVE_STATE_START -->
 
 ## Release status
-- **Release target: v2.21.0.** The authoritative branch is
-  `fix/360-review-hardening`, based on `main@6cb727d`. The adversarial review,
+- **Release target: v2.21.0.** PR #134 was integrated as merge commit
+  `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` with unchanged candidate tree
+  `761e264a91a52bda4c284f3f36fe53954d7fff2b`. The authoritative repair branch is
+  `fix/v2.21.0-release-blockers`, based on that merge. The adversarial review,
   confirmed findings, fixes and release evidence are maintained in
   `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
   `bug_reporting/BUGFIXUNG_ROADMAP.md`.
-- Local tests, security, audit, reproducible-build and dogfood evidence must be
-  complete before PR integration and the annotated `v2.21.0` tag. GitHub CI is
-  skipped by explicit maintainer decision because of billing and is not a PASS.
+- GitHub CI did run and exposed MW220-112, MW220-113 and MW220-114; it is not a PASS.
+  Their focused fixes and the local final matrix are green. The final
+  report-contract audit additionally found and closed MW220-115. All artifacts
+  and final-gate claims predating those fixes remain invalidated. A premature
+  `v2.21.0` tag was removed before any GitHub release was published.
 
 ## Current next steps
 
-- Finish the quiescent post-review local gate matrix and freeze its evidence.
-- Commit and push the complete candidate, integrate it through a reviewed PR,
-  then validate the integrated `main` commit.
-- Create the annotated `v2.21.0` tag and GitHub release only from that integrated
-  commit. The local ZIP tree is not authoritative.
+- Finalize the evidence for MW220-112, MW220-113, MW220-114 and MW220-115 and
+  build reproducible artifacts from the integrated follow-up candidate.
+- Commit and push the repaired candidate and integrate it through a reviewed
+  follow-up PR, then validate the resulting `main` commit. Follow-up remote CI
+  may remain unavailable because of billing and must never be called a PASS.
+- Create the annotated `v2.21.0` tag and GitHub release only after those gates
+  pass. The local ZIP tree is not authoritative.
 
 <!-- LIVE_STATE_END -->
 

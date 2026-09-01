@@ -1,11 +1,11 @@
 # BUGFIXUNG ROADMAP – mutmut-win 2.20.0 → 2.21.0
 
-**Stand:** 2026-08-31
+**Stand:** 2026-09-01
 **Quelle:** [ANALYSE_MUTMUTWIN220.md](ANALYSE_MUTMUTWIN220.md)
 **Ziel:** False Greens und Daten-/Sourceintegrität zuerst schließen, dann Prozessrobustheit und Releasehygiene.
 
-**Arbeitsbaum:** frischer Clone unter `<repository root>`, Branch `fix/360-review-hardening`, abgezweigt von `main` bei `6cb727d`.
-**Aktueller Stand:** Drei adversariale Review-Wellen plus finaler Multi-Agenten-Diff-/Claim-Reaudit, unabhängiger pytest-/Execution-Basis-Reaudit und adversarialer Finalgate-/Dogfood-/Security-Reaudit haben 111 fortlaufende Befunde ergeben: 30 P0, 53 P1 und 28 P2. MW220-001 bis -111 sind lokal implementiert und gezielt beziehungsweise deterministisch belegt. MW220-090 bis -104 härten das Semgrep-/Releasegate, MW220-105 schließt den Ready-PID-Testharness-Race, MW220-106 normalisiert checkoutabhängige Textbytes, MW220-107 macht Audit-Hashprovenienz und Gatesnapshots reproduzierbar, MW220-108 korrigiert den vollständigen maschinen-gelesenen Live-State, MW220-109 synchronisiert die Installationsautoritäten, MW220-110 repariert den Standalone-Harness-Lock und MW220-111 entfernt die ausführbare Raw-/Teilscan-Semgrep-False-Green-Autorität aus Hooks und aktiven Entwicklerverträgen. Der vollständige Post-MW220-111-Kandidatenbaum bestand zweimal mit jeweils 2.000 Tests und 44 Skips; der warme `.venv`-Vor-/Nachdigest ist byteidentisch. Finaler Dogfood-Recheck, kanonisches Semgrep-Gate, reproduzierbarer Doppelbuild und Git-owned Inventar sind ebenfalls grün. GitHub-CI wird auf ausdrückliche Nutzeranweisung wegen des Billing-Problems übersprungen und nicht als PASS gewertet. Commit, Push, PR-Integration, Tag `v2.21.0` und GitHub-Release sind autorisiert, aber noch nicht erfolgt.
+**Arbeitsbaum:** PR #134 wurde als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit Tree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert; aktuelle Reparatur auf `fix/v2.21.0-release-blockers`.
+**Aktueller Stand:** 115 fortlaufende Befunde sind bestätigt: 30 P0, 56 P1 und 29 P2. MW220-001 bis -111 waren auf dem ersten integrierten Kandidatentree lokal belegt. Die tatsächlich ausgeführte GitHub-CI deckte danach MW220-112 (Linux-mypy-Portabilität), MW220-113 (nicht portable Same-byte-Identity-Tests, kein Produktions-TOCTOU) und MW220-114 (nicht deterministisches Windows-Semgrep-Gate) auf; es gibt keinen CI-PASS. Alle drei Fixes sind auf `fix/v2.21.0-release-blockers` implementiert und in der vollständigen lokalen Matrix verifiziert. Der abschließende Report-Vertragsaudit fand und schloss zusätzlich MW220-115. Alle Vorfix-Artefakte und Finalclaims bleiben ungültig; Follow-up-Integration und integrierter Rebuild stehen noch aus. Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder GitHub-Releasepublikation entfernt; Tag und Release sind absent.
 
 Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig in den Clone migriert und enthält keine exklusiven relevanten Dateien. Autoritativ und allein bearbeitet wird `<repository root>`; der Legacy-Baum ist keine zweite Source of Truth.
 
@@ -117,7 +117,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### C1. Paketinhalt
 
-**Status: implementiert; MW220-105-Arbeitsbaumsnapshot artefaktbelegt, Post-MW220-111- und integrierter Rebuild ausstehend.** Hatch verwendet eine Sdist-Allowlist. `LICENSE` enthält ISC, den übernommenen BSD-3-Clause-Text und für die CPython-abgeleiteten Spawnadapter den vollständigen PSF-2.0-Text samt Copyright-Hinweis und Änderungszusammenfassung; die Paketmetadaten verwenden `ISC AND BSD-3-Clause AND PSF-2.0` (MW220-035/-072). Wheel/Sdist werden nach der LF-/Testnachschärfung und nochmals vom integrierten Releasecommit gebaut, inventarisiert und bytegenau gegen die Lizenzdatei geprüft.
+**Status: implementiert; frühere Artefaktsnapshots durch MW220-112 bis -114 ungültig, reparierter Doppelbuild ausstehend.** Hatch verwendet eine Sdist-Allowlist. `LICENSE` enthält ISC, den übernommenen BSD-3-Clause-Text und für die CPython-abgeleiteten Spawnadapter den vollständigen PSF-2.0-Text samt Copyright-Hinweis und Änderungszusammenfassung; die Paketmetadaten verwenden `ISC AND BSD-3-Clause AND PSF-2.0` (MW220-035/-072). Wheel/Sdist werden erst vom reparierten, integrierten Follow-up-Commit gebaut, inventarisiert und bytegenau gegen die Lizenzdatei geprüft.
 
 - Hatch-Sdist allowlisten oder interne Verzeichnisse vollständig ausschließen.
 - Wheel-/Sdist-Inhaltstest ergänzen.
@@ -126,7 +126,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### C2. Tooling und Abhängigkeiten
 
-**Status: implementiert; finale Gesamtgates ausstehend.** Ruff verwendet `extend-exclude`; click/msgpack/pip und der Lock wurden auf die korrigierten Mindeststände aktualisiert. Fokussierte Prüfungen sind grün, doch Ruff, Format, mypy, Lockprüfung und Audit des finalen Gesamtbaums bleiben Abschnitt 12 vorbehalten.
+**Status: implementiert; lokale Gesamtgates grün.** Ruff verwendet `extend-exclude`; click/msgpack/pip und der Lock wurden auf die korrigierten Mindeststände aktualisiert. Ruff, Format, Cross-Platform-mypy, Lockprüfung und Audit des reparierten Gesamtbaums sind in Abschnitt 12 belegt.
 
 - Ruff exclude zu extend-exclude ändern.
 - Formatabweichungen korrigieren.
@@ -179,7 +179,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### E4. Mapping und Reuse
 
-**Status: umgesetzt.** Solange selektive Hit-Zuordnung nicht end-to-end beweisbar ist, bleibt Mapping nichtautoritativ und nutzt die Vollsuite. Vollsuite-Verdicts dürfen bei unverändertem Source-/Universe-Fast-Path und identischem vollständigem Kontextdigest sicher wiederverwendet werden (MW220-047).
+**Status: umgesetzt und am realen Consumer verifiziert.** Solange selektive Hit-Zuordnung nicht end-to-end beweisbar ist, bleibt Mapping nichtautoritativ und nutzt die Vollsuite. Das vorhandene #130/360-B3-Budget setzt dafür `max(60, clean_wall × timeout_multiplier)` an. Der isolierte GitHub-Issue-#133-Repro auf Consumer-Snapshot `8296cd9a…` beendete genau einen bekannten `x_verify`-Mutanten als killed: `completed 1/1`, `pending 0`, `reused 0`, 0 Timeout/Suspicious/Skipped/No-tests, Orchestrator-Exit 0 und 1,8833385 s DB-Taskdauer bei nominal rund 111 s Vollsuite-Budget. Der damalige uncommittete 227-Mutanten-Arbeitsbaum ist nicht bytegenau rekonstruierbar; der Canary bindet den letzten Commit vor Issue-Erstellung, die dokumentierte Ad-hoc-Konfiguration und den problematischen `\boxed{42}`-Node-ID. Es ist kein MW220-116 erforderlich. Vollsuite-Verdicts dürfen bei unverändertem Source-/Universe-Fast-Path und identischem vollständigem Kontextdigest sicher wiederverwendet werden (MW220-047).
 
 **Exit:** Die gezielten Regressionstests sind vorhanden; Welle E gilt erst nach der vollständigen Matrix in Abschnitt 12 als releaseverifiziert.
 
@@ -187,7 +187,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F1. Physische DB-Locks, Run-Basis und semantischer Cachezustand
 
-**Status MW220-050 bis -053 sowie -058 bis -060: implementiert und fokussiert verifiziert; Finalgate ausstehend.**
+**Status MW220-050 bis -053 sowie -058 bis -060: implementiert, fokussiert verifiziert und im lokalen Gesamtfinalgate grün.**
 
 - Workspace-Lock immer vor kanonischem DB-Pfadlock und, bei vorhandener Datei, DB-Identitätslock erwerben; Orchestrator, Apply und CI-Export teilen diese Reihenfolge.
 - gleiche absolute DB über verschiedene Workspaces und Hardlink-Identitäten prozessübergreifend koordinieren; laufende Fremd-Runs niemals invalidieren.
@@ -206,7 +206,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F2. Namespace-sichere Atomic-/Sidecar-/Staging-Autorität
 
-**Status MW220-054 bis -057, durch MW220-074 vervollständigt: implementiert und fokussiert verifiziert; Finalgate ausstehend.**
+**Status MW220-054 bis -057, durch MW220-074 vervollständigt: implementiert, fokussiert verifiziert und im lokalen Gesamtfinalgate grün.**
 
 - zentralen Atomic-Writer mit privater exklusiver Geschwisterdatei, Parent-/Identitätsprüfung, Replace und Fehlercleanup verwenden.
 - Meta-, Apply-/Backup-, Runner- und zentrale Statewriter auf diese Grenze migrieren.
@@ -218,7 +218,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F3. Windows-Containment vor erstem User Mode
 
-**Status MW220-061 bis -063: implementiert und fokussiert verifiziert; Finalgate ausstehend.**
+**Status MW220-061 bis -063: implementiert, fokussiert verifiziert und im lokalen Gesamtfinalgate grün.**
 
 - Job-Mitgliedschaft atomar über `PROC_THREAD_ATTRIBUTE_JOB_LIST` bereits in `CreateProcess` festlegen; kein suspendierter Create→Assign-Zwischenzustand.
 - Multiprocessing-Bootstrap vollständig vor Resume in seekbarem Speicher serialisieren, damit frühes `.pth`/`sitecustomize` die Parent-Startgrenze nicht blockiert.
@@ -228,7 +228,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F4. POSIX-Pre-Interpreter-Session, PGID-Evidenz, Hard-Parent-Liveness und Cleanup
 
-**Status MW220-064 bis -068, durch MW220-075 ergänzt: implementiert und laut Prozess-/Diff-Reaudit fokussiert verifiziert; Finalgate ausstehend.**
+**Status MW220-064 bis -068, durch MW220-075 ergänzt: implementiert, laut Prozess-/Diff-Reaudit fokussiert verifiziert und im lokalen Gesamtfinalgate grün.**
 
 - Multiprocessing-Generation bereits in `fork_exec` in eine eigene Session bringen, Bootstrap vor Kindstart seekbar serialisieren und Parent-Liveness über eine separate Pipe erhalten.
 - pytest hinter einem EOF-sicheren Pre-exec-Pipe-Gate starten, Worker-ID/PGID synchron an den Executor publizieren und erst danach Interpreter-/Nutzcode freigeben.
@@ -243,7 +243,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F5. Python-Metadaten, Composite-Lizenz, GitHub-CI und Artefakt-Supply-Chain
 
-**Status MW220-069 bis -072: lokal implementiert und fokussiert verifiziert; MW220-105-Snapshot artefaktbelegt, Post-MW220-111- und integrierter Rebuild ausstehend.** Der lokale Packaging-/Workflow-Handoff ist abgeschlossen. Remote-CI wird wegen des vom Nutzer akzeptierten GitHub-Billing-Problems übersprungen und ausdrücklich nicht als PASS gewertet.
+**Status MW220-069 bis -072: lokal implementiert und fokussiert verifiziert; Vorfix-Artefakte durch MW220-112 bis -114 ungültig, reparierter Rebuild ausstehend.** Die Remote-CI wurde tatsächlich ausgeführt und deckte drei weitere Blocker auf; der Workflow besitzt keinen Gesamt-PASS.
 
 - Runtimevertrag auf CPython 3.12–3.14 begrenzen und Klassifikatoren/README angleichen.
 - vollständigen PSF-2.0-Text, Copyright-Hinweis und Änderungszusammenfassung für die CPython-abgeleiteten Backends liefern und den Composite-Vertrag `ISC AND BSD-3-Clause AND PSF-2.0` in Metadaten und Artefakten pinnen.
@@ -251,11 +251,11 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 - Lock, Quality, Tests, matrixweites Audit, Build und installierte Artefakt-Smokes trennen; keine globale Frozen-Konfiguration darf `uv lock --check` neutralisieren.
 - ausschließlich allowgelistete Actions an vollständige Commit-SHAs pinnen; Wheel und Sdist zweimal offline aus dem gelockten Build-Environment bauen, vergleichen, übertragen, isoliert installieren und smoke-testen.
 
-**Exit:** Statische Verträge grün, Lizenzbytes und Inventar im reproduzierbaren finalen Wheel/Sdist nachgewiesen und Workflow-Handoff abgeschlossen. Für diesen Korrekturstand ersetzt die dokumentierte, vom Nutzer akzeptierte Billing-Ausnahme den Remote-Lauf nicht durch einen PASS; lokales GO und Remote-Evidenzlücke bleiben getrennt sichtbar.
+**Exit:** Statische Verträge, vollständige lokale Cross-Platform-Matrix, Lizenzbytes und Inventar im reproduzierbaren finalen Wheel/Sdist sind auf demselben reparierten Follow-up-Commit grün. Eine Billing-bedingt ausbleibende Remote-CI bleibt eine akzeptierte Evidenzlücke und kein PASS.
 
 ### F6. Vollständige Execution-Basis und finaler Reaudit
 
-**Status MW220-073 bis -075:** implementiert und fokussiert verifiziert; MW220-073 hat zusätzlich den unabhängigen fokussierten Abschluss-Reaudit bestanden. Das repositoryweite Finalgate ist ausstehend.
+**Status MW220-073 bis -075:** implementiert und fokussiert verifiziert; MW220-073 hat zusätzlich den unabhängigen fokussierten Abschluss-Reaudit bestanden. Das lokale repositoryweite Finalgate ist grün.
 
 - Dependency-Evidenz an lesbare Bytes installierter Distributionen und Editables binden; gleiche Versionsnamen ohne identische Bytes dürfen Reuse nicht autorisieren.
 - den geordneten effektiven `sys.path`, `.pth`-/unregistrierte Module, Runtime/ABI/Executable und ausnahmslos die vollständige geerbte Umgebung erfassen; vor dem Child-Start vorhandene Werte intern verwendeter Handshake-Namen bleiben Teil der Parentbasis.
@@ -267,7 +267,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### F7. Generische Typechecker und immutable pytest-Grenze
 
-**Status MW220-076 bis -078:** implementiert und durch fokussierte Regressionen sowie zwei unabhängige Boundary-Reaudits verifiziert; vollständige repositoryweite Post-MW220-111-Kandidatenmatrix grün; Remote-Matrix wegen Billing übersprungen, kein PASS.
+**Status MW220-076 bis -078:** implementiert und durch fokussierte Regressionen sowie zwei unabhängige Boundary-Reaudits verifiziert; die reale Remote-Matrix deckte mit MW220-113 zusätzlich einen nicht portablen Same-byte-Identity-Test auf. Dessen Linux-/Windows-Fokussierung ist grün, das Gesamtfinalgate bleibt offen.
 
 - jedes nicht leere generische `type_check_command` als nicht vollständig inventarisierbare Execution-Basis markieren; technische Klassifikation zulassen, aber Stats-/Verdict-Reuse, `--min-score` und CI-Export fail-closed sperren.
 - moderne und historische Runs über eine zentrale typisierte Incompleteness-Klassifikation auswerten; `results` und `browse` müssen unvollständige Basis sichtbar als `release-ready: no` kennzeichnen.
@@ -276,11 +276,11 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 - frühen Child-Guard vor pytest-Conftest-Preloading installieren: Exact-File-Autorität umfasst keine benachbarten/übergeordneten Conftests, Directory-Autorität nur den eigenen Baum und keine Routing-Vorfahren; externe `testpaths` ohne eingefrorene Identität scheitern.
 - pytest-Unterstützung fail-closed auf ≥ 8.2 und < 10 begrenzen, unbekannte/unparsebare Versionen vor Locks/DB/Stagingwrites ablehnen und die privaten Multi-Root-Conftest-Hooks mit echten pytest-8.2.2-/9.x-Prozessen sowie eigener Windows-/Ubuntu-CI-Stufe überwachen.
 
-**Exit:** Kein generischer Checker kann Releaseautorität vortäuschen; kein pytest-Target, Config-, Root- oder Conftest-Pfad kann die eingefrorene Execution-Basis statisch oder zwischen Parent- und Childprüfung umgehen; reale lokale pytest-8.2.2- und 9.x-Regressionsläufe sind grün. Der Remote-Kompatibilitätsjob bleibt wegen Billing eine dokumentierte, akzeptierte Evidenzlücke und ist kein PASS.
+**Exit:** Kein generischer Checker kann Releaseautorität vortäuschen; kein pytest-Target, Config-, Root- oder Conftest-Pfad kann die eingefrorene Execution-Basis statisch oder zwischen Parent- und Childprüfung umgehen; lokale pytest-8.2.2-/9.x-Regressionsläufe sind unter den Windows-/Linux-Grenzen grün. Tatsächlich verfügbare Remote-Läufe werden adjudiziert; eine Billing-bedingt ausbleibende Follow-up-CI bleibt Evidenzlücke und kein PASS.
 
 ### F8. Adversariale Finalgate-, Dogfood- und Releaseevidenz-Closure
 
-**Status MW220-079 bis -111:** vollständig lokal implementiert und fokussiert verifiziert; MW220-079 bis -089 zusätzlich im realen Dogfood-Workload beziehungsweise in einer leeren externen Buildumgebung belegt, MW220-090 bis -104 durch 74 fokussierte Tests und den realen Security-only-Wrapperlauf geschlossen, MW220-105 durch beide realen Cross-Process-Fälle und 50 Stresswiederholungen, MW220-106 bis -110 durch Byteforensik, zehn Supply-Chain-/State-Regressionen und einen realen Offline-Nested-Lockcheck sowie MW220-111 durch drei fail-closed Executor-Hooks, synchronisierte aktive Governance, 11/11 fokussierte Regressionen und Shell-Syntaxchecks. Die vollständige Post-MW220-111-Gesamtsuite, der stabile `.venv`-Digest, der finale Dogfood-Recheck, das kanonische Semgrep-Gate, der reproduzierbare Doppelbuild und das Kandidateninventar sind grün; Remote-CI ist wegen Billing ausdrücklich abgewählt.
+**Status MW220-079 bis -111:** auf dem ersten Kandidaten lokal implementiert und fokussiert verifiziert. Dessen vollständige Suite, stabiler `.venv`-Digest, Dogfood, Semgrep, Doppelbuild und Inventar bleiben historische Evidenz, besitzen nach MW220-112 bis -114 aber keine Finalgate-Autorität mehr.
 
 - Workflow-Shellvertrag mit actionlint/ShellCheck/Pyflakes und Zizmor prüfen; Command Substitution und `export` trennen, damit ein fehlgeschlagenes `git log` den reproduzierbaren Build stoppt.
 - alle Git-owned Dateien byteweit auf unsichtbare Unicode-/Bidi-/Control-/NUL-/Merge-Marker prüfen und das einzige U+00AD entfernen.
@@ -310,6 +310,18 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 - eigenständigen Acceptance-Harness auf eine ausdrücklich historische v2.20.0-Verhaltensbasis festlegen und Projekt, Lock, Paketversion, Gitquelle und Provenienz gemeinsam prüfen.
 
 **Exit:** actionlint/Security-/Unicode-Gates grün; deterministischer Fünf-Publisher-Race und fataler Pending-Vertrag grün; realer Vier-Worker-Dogfood-Run ohne Recovery, ohne suspicious/unchecked und mit Score ≥80; CI-Export scheitert bei Environment-Drift und gelingt bei exakt identischer Basis; ein leerer externer Runner kann den gepinnten Buildbootstrap und den vollständigen editierbaren CI-Sync reproduzieren; der gesamte CLI-Isolationscluster bleibt auch mit vorhandener realer Current-Run-DB deterministisch grün.
+
+### F9. Remote-CI-Releaseblocker und Report-Vertrag MW220-112 bis -115
+
+**Status:** Alle vier Befunde sind auf `fix/v2.21.0-release-blockers` implementiert und lokal vollständig verifiziert: MW220-112 unter den Windows-/Linux-Typansichten, MW220-113 als reiner Testportabilitätsfehler unter Linux und Windows, MW220-114 durch den seriellen Vollscanvertrag samt wiederholten realen Windows-Läufen und MW220-115 durch exakte Follow-up-IDs plus eigenen Report-Vertrag. Der Post-MW220-115-Strict-Lauf bestand mit 2.002 Tests und 44 Skips.
+
+- `mypy` explizit unter den Plattformansichten `linux` und `win32` ohne Incremental-Cache ausführen; plattformspezifische Prozessmodule müssen unter beiden Typeshed-Sichten fehlerfrei sein.
+- Same-byte-Identity-Negativtests müssen die alte Datei über einen Hardlink-Anker am Leben halten, damit OverlayFS die gerade freigegebene Geräte-/Inodeidentität nicht wiederverwenden kann; dies ist Testhärte und kein Produktions-TOCTOU-Fix.
+- Den finalen Semgrep-Bundlescan seriell mit `--jobs 1` ausführen, während die reine Regelmaterialisierung vier Shards behalten darf; `time.fixpoint_timeouts` bleibt vollständig fail-closed und muss die betroffene Diagnose sichtbar machen.
+- LIVE-State darf kein Finding über einen losen Zahlenteilstring vortäuschen; alle Follow-up-IDs, Gesamtzahlen, Prioritäten, Adjudikationen und Finalgate-/Remote-Ausnahmen werden explizit in Analyse und Roadmap gebunden.
+- Nach jedem Fix die fokussierten Linux-/Windows-Regressionen, die vollständige lokale Matrix, den kanonischen Semgrep-Wrapper, Dogfood, Inventar und Doppelbuild erneut ausführen; danach Follow-up-PR publizieren und jeden tatsächlich verfügbaren Remote-CI-Befund adjudizieren. Eine Billing-bedingt nicht verfügbare Remote-CI blockiert nach ausdrücklicher Nutzerfreigabe nicht, bleibt aber eine dokumentierte Evidenzlücke und niemals ein PASS.
+
+**Exit:** Linux- und Windows-mypy fehlerfrei; beide Same-byte-Identity-Cluster plattformübergreifend grün; wiederholter serieller Windows-Semgrep-Finalscan ohne Fixpoint-Timeout bei zuvor grünem Ubuntu-Vertrag; exakter Report-/Live-State-Vertrag; neue byteidentische Artefakte aus dem reparierten integrierten Commit. Eine nicht verfügbare Follow-up-CI wird dokumentiert und nie als PASS gewertet.
 
 ## 8. Beabsichtigte Breaking Changes
 
@@ -345,7 +357,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 | Prozess/Runstate | process/executor.py, type_checking.py, db.py, Prozesstests |
 | Releasehygiene | pyproject.toml, Lockfile, E2E-/Packagingtests, Dokumentation |
 
-Seit der zweiten Welle wird ausschließlich im Git-Clone unter `<repository root>` auf `fix/360-review-hardening` von `main@6cb727d` gearbeitet. Commit, Push, PR-Integration, Tag und GitHub-Release sind nach Abschluss der lokalen Gates autorisiert; sie sind zum Stand dieses Dokuments noch nicht erfolgt. Der lokale Legacy-ZIP-Baum ist nicht autoritativ. `v2.21.0` ist live als frei geprüft, verbindlich gewählt und in Projektmetadaten sowie Lock eingetragen.
+Seit der zweiten Welle wird ausschließlich im Git-Clone unter `<repository root>` gearbeitet. PR #134 ist als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit Tree `761e264a91a52bda4c284f3f36fe53954d7fff2b` integriert; die CI-Blocker werden auf `fix/v2.21.0-release-blockers` repariert. Follow-up-PR, endgültiger Tag und GitHub-Release sind noch nicht erfolgt. Der vorzeitige Tag wurde entfernt. Der Legacy-ZIP-Baum ist nicht autoritativ.
 
 ## 10. Verifikationsmatrix
 
@@ -369,7 +381,7 @@ Vor Abschluss:
     uv sync --locked --only-group security --no-install-project
     uv run --no-sync python -I scripts/semgrep_release_gate.py
 
-Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitleaks über vollständige Historie und Git-owned Worktree, Unicode-/Bidi-/NUL-/Control-/Merge-Marker-Inventar sowie `git diff --check`; vollständigen Lock exportieren und mit `pip-audit` prüfen; Wheel/Sdist zweimal aus identischen gelockten Inputs extern bauen, Byte-/SHA-/Inventargleichheit und Lizenzbytes vergleichen, mit gepinnten Twine-/Wheel-Content-Tools prüfen und isoliert installieren/smoke-testen; Projekt-.venv vor/nach Testlauf stabil inventarisieren; alle P0-Minimalrepros und die echte pytest-8.2.2-Grenze erneut ausführen; CI-Export auf identischer Basis akzeptieren und bei Environment-Drift fail-closed ablehnen; einen dokumentierten Vier-Worker-Dogfooding-Piloten auf genau dem danach eingefrorenen finalen Baum ausführen. Danach Branch/PR publizieren. GitHub-CI wird wegen Billing dokumentiert übersprungen und nicht als PASS gewertet.
+Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitleaks über vollständige Historie und Git-owned Worktree, Unicode-/Bidi-/NUL-/Control-/Merge-Marker-Inventar sowie `git diff --check`; vollständigen Lock exportieren und mit `pip-audit` prüfen; Wheel/Sdist zweimal aus identischen gelockten Inputs extern bauen, Byte-/SHA-/Inventargleichheit und Lizenzbytes vergleichen, mit gepinnten Twine-/Wheel-Content-Tools prüfen und isoliert installieren/smoke-testen; Projekt-.venv vor/nach Testlauf stabil inventarisieren; alle P0-Minimalrepros und die echte pytest-8.2.2-Grenze erneut ausführen; CI-Export auf identischer Basis akzeptieren und bei Environment-Drift fail-closed ablehnen; einen dokumentierten Vier-Worker-Dogfooding-Piloten auf genau dem danach eingefrorenen finalen Baum ausführen. Danach Follow-up-PR publizieren. Eine Billing-bedingt ausbleibende weitere GitHub-CI wird als Evidenzlücke dokumentiert und nie als PASS gewertet.
 
 ## 11. Fortschritt
 
@@ -411,29 +423,38 @@ Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitle
 | 2026-08-31 | Finaler Dogfood-Recheck | Post-MW220-111-Kandidat: 86/90 killed, vier äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/unchecked, 95,6 %, 105,4 s; CI-Export vor/nach Negativtest byteidentisch, Environment-Drift Exit 1 ohne stale Artefakt |
 | 2026-08-31 | Finales Semgrep-Gate | eingefrorener Post-MW220-111-Scope: 218 Manifestdateien, 168 Targets, 49 Policy-Skips, 1.074 Definitionen, 342 Regeln, 20/20 allowgelistete Testtreffer und jeweils 0 unerwartete Findings/Errors/Skipped-Rules/Fixpoint-Timeouts |
 | 2026-08-31 | Kandidatenbuild und Inventar | kanonischer 409-Dateien-Git-Index ohne Hygiene-/Secretbefund; zwei byteidentische Offline-Builds, Twine/Wheel-Content, CPython-3.12–3.14-Wheel-Smokes und 3.12-Sdist-Smoke grün |
+| 2026-08-31 | PR-Integration | PR #134 als Mergecommit `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit unverändertem Tree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert |
+| 2026-08-31 | Remote-CI-Reaudit | reale CI deckte MW220-112 bis -114 auf; kein PASS. Vorfix-Artefakte invalidiert, vorzeitiger `v2.21.0`-Tag vor Release entfernt |
+| 2026-08-31 | MW220-113-Adjudikation | kein Produktions-TOCTOU; OverlayFS-Inode-Reuse machte zwei Tests nicht portabel. Hardlink-Anker; Linux 42/5 und Windows 45/2 fokussiert grün |
+| 2026-09-01 | MW220-112/-114-Closure | Windows-/Linux-mypy jeweils 38 Dateien/0 Fehler; serieller Semgrep-Vollscan mit unverändertem Vier-Shard-Bootstrap, 70 Wrappertests und wiederholte reale Windows-Läufe ohne Fixpoint-Timeout; letzter exakter Kandidatenlauf mit 218 Manifestdateien, Manifest-SHA-256 `2915abda1e40304ac05145115cdf2feede0d8e956a665f049b0d5d7aa8a6dde1`, 49 Policy-Skips und Target-SHA-256 `d54286198b9fca7419b0db6728cd5a48e67269d5f8cf9c8f2fdda1e163a92f8e` |
+| 2026-09-01 | Reparierte lokale Matrix | vollständige Suite 2.001/44; Coverage 2.001/44 bei 85 % und 8.524/1.275; `.venv` 4.675 Dateien / 120.311.470 Bytes / SHA-256 `2ecc7ac4bebcbda560bcc06b230b5da92da9ccfd1d5be26cc62ba9d0851bddf8`; Ruff, Format, Import-Linter, Lock, Audit, Gitleaks und `git diff --check` grün |
+| 2026-09-01 | Reparierter Dogfood-Recheck | 90 total, 86 killed, vier äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/type-check-caught/segfault/unchecked, 95,6 %, 81,0 s |
+| 2026-09-01 | MW220-115 Report-Vertrag | loser `114`-Teilstring und fehlende Analyse-/Roadmap-Bindung gefunden; exakte Follow-up-IDs, 115er Gesamtzählung und stale-Claim-Verbote implementiert; 12 fokussierte Tests und vollständiger Strict-Lauf 2.002/44 grün |
+| 2026-09-01 | GitHub Issue #133 Closure-Repro | detached Consumer-Snapshot `8296cd9a…`, Kandidat 2.21.0, genau `math_matcher.x_verify__mutmut_1`: completed 1/1, killed, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; MW220-047 plus #130/360-B3 bestätigt, kein MW220-116 |
 
 ## 12. Finale Abschlussnachweise
 
 | Gate | Bisherige Evidenz / finaler Recheck |
 |---|---|
-| `uv run --no-sync pytest -q -W error::pytest.PytestUnhandledThreadExceptionWarning` | Post-MW220-111-Kandidatenbaum zweimal vollständig grün: jeweils 2.000 bestanden, 44 übersprungen; zusätzlich 20/20 frühere IL-Wiederholungen grün |
-| Coverage mit identischem striktem Warnungsgate | 1.994 bestanden, 44 übersprungen, 85 %, 8.513 Statements / 1.271 Missing; MW220-105 bis -111 ändern keine Produktionsstatements |
-| `uv run --no-sync ruff check .` | Post-MW220-111 repositoryweit ohne Befund grün |
-| `uv run --no-sync ruff format --check .` | Post-MW220-111 repositoryweit grün; 168 Python-Dateien formatiert |
-| `uv run --no-sync mypy src/ scripts/` | 38 Dateien grün |
+| `uv run --no-sync pytest -q -W error::pytest.PytestUnhandledThreadExceptionWarning` | reparierter Post-MW220-115-Baum 2.002/44 grün |
+| Coverage mit identischem striktem Warnungsgate | reparierter Baum 2.001/44, 85 %, 8.524 Statements / 1.275 Missing |
+| `uv run --no-sync ruff check src tests benchmarks scripts` | reparierter Baum ohne Befund |
+| `uv run --no-sync ruff format --check src tests benchmarks scripts` | 168 Python-Dateien bereits formatiert |
+| Cross-Platform-mypy | native Windows- und `--platform linux --no-incremental`-Läufe jeweils 38 Dateien/0 Fehler; Prozessmatrix 80 bestanden/10 übersprungen |
 | `uv run --no-sync lint-imports` | 37 Dateien / 123 Abhängigkeiten / 1 Vertrag grün |
 | `uv lock --check` | `2.21.0`, 115 Pakete, grün |
-| `uv build` plus Wheel-/Sdist-Inventar | gestagter Post-MW220-111-Git-Kandidat zweimal byteidentisch offline gebaut: Wheel 270.613 Bytes / SHA-256 `8a89f0f6243ff7775ddcd918965b86f3385adda25adf051b8e1f5254d1e26e89`, Sdist 683.043 Bytes / SHA-256 `07a5e86969eacd888aee30751643ee87e3a3f5740b58ae263df7a6c2ec0f38b4`; 44/224 Archivmember, Lizenz-/Wrapper-/Policybytes, Twine 7.0.0 und Check-Wheel-Contents 0.6.3 grün; Wheel-Smokes 3.12.13/3.13.13/3.14.7 und Sdist-Smoke 3.12.13 grün; integrierter Rebuild ausstehend |
-| vollständiger `uv export --frozen --all-extras --all-groups --no-hashes --no-emit-project` plus `uv run --no-sync pip-audit --requirement ... --progress-spinner off` | finaler pfadunabhängiger Dependency-Body: 7.345 Bytes / SHA-256 `7deef5fd17ec5e7aa60cb18c6be87e3d1a8478af3d7e1262d0bb2155bbd1fdd6`; frischer leerer HTTP-Cache, keine bekannten Advisories |
-| `uv sync --locked --only-group security --no-install-project` plus `uv run --no-sync python -I scripts/semgrep_release_gate.py` | finaler Post-MW220-111-Scope grün: 218 Manifestdateien / SHA-256 `45e0e74e02ef8d9fb9de4dd0a31455095890ce3d6c9ad7c11d3c5640e23a029c`, 168 Targets / SHA-256 `d54286198b9fca7419b0db6728cd5a48e67269d5f8cf9c8f2fdda1e163a92f8e`, 49 Policy-Skips, 1.074 Definitionen, 342 Rule-IDs, 20/20 allowgelistete Matches, 0 unerwartete Findings/Errors/Skipped-Rules/Fixpoint-Timeouts |
-| actionlint/ShellCheck/Pyflakes; Zizmor regular/pedantic | 1 Workflow, jeweils 0 Befunde |
-| Gitleaks Historie/Worktree und Unicode-/Bidi-/NUL-/Control-/Merge-Marker | 279 Commits und kanonischer 409-Dateien-Indexkandidat ohne Leak; Unicode-/Bidi-/NUL-/Control-/CR-/ungültige-UTF-8-/Symlink-/Reparse-/Pfad-/Case-/Artefakt-/Merge-Marker-Inventar ohne Befund |
-| `git diff --check` und P0-Minimalrepros | gestagter 152-Dateien-Diff ohne Whitespacefehler; P0-Regressionen durch fokussierte Cluster und beide vollständigen Kandidatenläufe grün |
+| `uv build` plus Wheel-/Sdist-Inventar | Vorfix-Artefakte ungültig; reparierter integrierter Doppelbuild, Inventar und Smokes ausstehend |
+| vollständiger `uv export --frozen --all-extras --all-groups --no-hashes --no-emit-project` plus Pip-Audit | Pip-Audit 2.10.0 über vollständigen reparierten Export ohne bekannte Advisories |
+| kanonischer Semgrep-Wrapper | serieller Finalscan (`--jobs 1`, Bootstrap vier Shards); 70 Wrappertests und wiederholte reale Windows-Läufe grün, Timeoutliste bleibt fatal; letzter exakter Kandidatenlauf: 218 Manifestdateien / 49 Policy-Skips / 168 Targets / 342 Regeln / 20 allowgelistete Findings / 0 Fehler oder Fixpoint-Timeouts |
+| actionlint/ShellCheck/Pyflakes; Zizmor regular/pedantic | unveränderter Workflow historisch jeweils ohne Befund; letzter Recheck lokal mangels Binärdateien/Images nicht ausführbar, statische Supply-Chain-Verträge und vollständige Suite grün |
+| Gitleaks Historie/Worktree und Unicode-/Bidi-/NUL-/Control-/Merge-Marker | reparierter Stand: 280 Commits und exakter 409-Dateien-Git-owned Worktree ohne Leak; frühere vollständige Zeichen-/Pfad-/Artefaktinventare bleiben für unveränderte Bereiche gültig |
+| `git diff --check` und P0-Minimalrepros | aktueller Diff ohne Whitespacefehler; P0-Regressionen durch fokussierte Cluster und vollständige reparierte Suite grün |
 | CI-Export identische Basis / Environment-Drift | Post-MW220-111-Kandidat: identische Basis 288 Bytes, SHA-256 `3a01ee2d05da06ac61c6fb3a0e4dc4bb9c5cf89c2b2daa46e5ab55080c40cc7f`; Drift: Exit 1 und stale Artefakt gelöscht; Restore erneut byteidentisch |
-| Projektumgebung vor/nach E2E | Post-MW220-111-Warmlauf vor/nach exakt identisch: 11.597 Dateien / 484.925.395 Bytes / SHA-256 `95c1fed54da9cbdfdd8ab7d7addec3b63deb11b88e92d85968d2cb42e3488d82` |
-| isolierte pytest-8.2.2-Boundary-/Conftest-Matrix | lokal fokussiert grün; Remote Windows/Ubuntu wegen Billing übersprungen, kein PASS |
-| dokumentierter Dogfooding-Pilot auf dem Post-MW220-111-Kandidaten | 90 total, 86 killed, 4 äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/unchecked, 95,6 %, 105,4 s |
-| Branch-/PR-Publikation | ausstehend |
-| GitHub-CI auf exakt dem publizierten finalen Commit | auf ausdrückliche Nutzeranweisung wegen Billing übersprungen; kein PASS |
+| Projektumgebung vor/nach E2E | reparierter Post-MW220-115-Lauf vor/nach exakt identisch: 5.119 Dateien / 126.091.419 Bytes / SHA-256 `8e5a29550f9f8a61811a63687c90c31aa962ddc8e8ab0f34af34334da9553268` |
+| isolierte pytest-8.2.2-Boundary-/Conftest-Matrix | MW220-113 fokussiert korrigiert: Linux 42 bestanden/5 übersprungen, Windows 45 bestanden/2 übersprungen; vollständige reparierte Suite grün |
+| dokumentierter Dogfooding-Pilot auf dem reparierten Kandidaten | 90 total, 86 killed, 4 äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/type-check-caught/segfault/unchecked, 95,6 %, 81,0 s |
+| realer GitHub-Issue-#133-Consumer-Repro | historischer Snapshot `8296cd9a…`, 1/1 completed und killed nach 1,8833385 s, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; Vollsuite-Budget nominal rund 111 s |
+| Branch-/PR-Publikation | PR #134 integriert; Reparaturbranch und Follow-up-PR ausstehend |
+| GitHub-CI | tatsächlich ausgeführt und an MW220-112 bis -114 blockiert; kein PASS |
 
-**Technisches Urteil: lokales Commit-/Publikations-GO, noch kein Release-Gesamt-GO.** Alle 111 Befunde sind implementiert und gezielt beziehungsweise deterministisch belegt; vollständige Post-MW220-111-Suite, Dependency-Audit, finaler Dogfood-Recheck, kanonisches Semgrep-Gate, reproduzierbarer Kandidatenbuild und Git-owned Inventar sind grün. Es folgen Commit, Push und PR-Integration; erst der verifizierte integrierte `main`-Commit wird erneut gebaut und darf den annotierten Tag `v2.21.0` und das GitHub-Release tragen. GitHub-CI wird wegen des Billing-Problems auf ausdrückliche Nutzeranweisung übersprungen; das verbleibt eine akzeptierte Evidenzlücke und ist kein CI-PASS.
+**Technisches Urteil: Release-NO-GO nur noch bis zur Veröffentlichungskette.** 115 Befunde sind bestätigt; MW220-112 bis -115 sind implementiert, und die vollständige lokale Cross-Platform-Matrix ist grün. PR #134 ist integriert, seine Artefakte sind jedoch nicht mehr releaseautoritativ. Der vorzeitige Tag wurde entfernt; `v2.21.0`-Tag und GitHub-Release bleiben absent. Erst Follow-up-Integration und integrierter Doppelbuild samt Smokes erlauben die Veröffentlichung. Eine Billing-bedingt ausbleibende Follow-up-CI bleibt akzeptierte Evidenzlücke und kein PASS.

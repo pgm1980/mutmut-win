@@ -83,7 +83,9 @@ def _resume_suspended_process(proc: subprocess.Popen[bytes]) -> None:
         raise OSError(f"suspended subprocess {proc.pid} has {len(threads)} primary threads")
 
     thread_suspend_resume = 0x0002
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined,unused-ignore]
+        "kernel32", use_last_error=True
+    )
     kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenThread.restype = wintypes.HANDLE
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
@@ -93,11 +95,15 @@ def _resume_suspended_process(proc: subprocess.Popen[bytes]) -> None:
 
     thread_handle = kernel32.OpenThread(thread_suspend_resume, False, threads[0].id)
     if not thread_handle:
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise ctypes.WinError(  # type: ignore[attr-defined,unused-ignore]
+            ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+        )
     try:
         previous_count = kernel32.ResumeThread(thread_handle)
         if previous_count == 0xFFFFFFFF:
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise ctypes.WinError(  # type: ignore[attr-defined,unused-ignore]
+                ctypes.get_last_error()  # type: ignore[attr-defined,unused-ignore]
+            )
     finally:
         kernel32.CloseHandle(thread_handle)
 
@@ -1300,7 +1306,10 @@ def _close_posix_gate_fd(fd: int | None) -> None:
 def _abort_posix_gated_process(proc: subprocess.Popen[bytes]) -> None:
     """Kill a failed gate session and bound direct-child reap time."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(proc.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+        os.killpg(  # type: ignore[attr-defined,unused-ignore]
+            proc.pid,
+            signal.SIGKILL,  # type: ignore[attr-defined,unused-ignore]
+        )
     with contextlib.suppress(OSError):
         proc.kill()
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):

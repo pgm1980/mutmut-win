@@ -17,11 +17,15 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 
 <!-- LIVE_STATE_START -->
 
-## Status — see memory `current_state` for the LIVE v2.21.0 release-candidate state
+## Status — see memory `current_state` for the LIVE v2.21.0 blocker-remediation state
 
-> Release target is **v2.21.0** on `fix/360-review-hardening`. The active
-> adversarial review and release evidence live under `bug_reporting/`; the
-> older release baseline and sprint detail below are retained only as history.
+> PR #134 is integrated as `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf`
+> with tree `761e264a91a52bda4c284f3f36fe53954d7fff2b`. Release target
+> **v2.21.0** has focused fixes for MW220-112, MW220-113 and MW220-114 on
+> `fix/v2.21.0-release-blockers`; GitHub CI exposed those blockers and is not a PASS.
+> The final report-contract audit also closed MW220-115, and the local
+> final matrix is green. Tag and release remain absent. The active evidence
+> lives under `bug_reporting/`; older detail below is history.
 
 <!-- LIVE_STATE_END -->
 

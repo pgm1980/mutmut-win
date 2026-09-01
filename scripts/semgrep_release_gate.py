@@ -31,6 +31,12 @@ from typing import Any, Final
 
 SEMGREP_VERSION: Final = "1.175.0"
 SEMGREP_ENGINE: Final = "OSS"
+SEMGREP_BOOTSTRAP_JOBS: Final = "4"
+# Semgrep 1.175 uses shared-memory parallelism for ``--jobs``.  On constrained
+# Windows CI runners, concurrent taint analyses can exceed the engine's
+# fixpoint budget even though the identical scan completes serially.  A
+# release gate values complete, deterministic analysis over throughput.
+SEMGREP_SCAN_JOBS: Final = "1"
 SEMGREP_RULE_COUNT: Final = 342
 SEMGREP_RULE_IDS_SHA256: Final = "90e5e07621bf32da358a4f056b15c1a14f48b8929a6a03099108fd5b12c198f6"
 RULE_DEFINITION_COUNT: Final = 1_074
@@ -963,7 +969,7 @@ def _semgrep_dump_command(semgrep: str) -> Command:
         "scan",
         "--oss-only",
         "--jobs",
-        "4",
+        SEMGREP_BOOTSTRAP_JOBS,
         "--config",
         "auto",
         "--error",
@@ -986,7 +992,7 @@ def _semgrep_bundle_command(semgrep: str, bundle: Path) -> Command:
         "scan",
         "--oss-only",
         "--jobs",
-        "4",
+        SEMGREP_SCAN_JOBS,
         "--config",
         str(bundle),
         "--no-rewrite-rule-ids",
@@ -1285,7 +1291,11 @@ def _parse_semgrep_json(
         raise GateError("semgrep-json", "Semgrep time must be an object")
     fixpoint_timeouts = time_payload.get("fixpoint_timeouts")
     if not isinstance(fixpoint_timeouts, list) or fixpoint_timeouts:
-        raise GateError("semgrep-json", "Semgrep time.fixpoint_timeouts must be an empty list")
+        observed = _canonical_json(fixpoint_timeouts)[:500]
+        raise GateError(
+            "semgrep-json",
+            f"Semgrep time.fixpoint_timeouts must be an empty list; observed={observed}",
+        )
     raw_rules = time_payload.get("rules")
     if not isinstance(raw_rules, list):
         raise GateError("semgrep-json", "Semgrep time.rules must be a list")
@@ -1369,26 +1379,7 @@ def _success_evidence(
             "skips": list(policy_skips),
         },
         "scanner": {
-            "bootstrap_command": [
-                "semgrep",
-                "scan",
-                "--oss-only",
-                "--jobs",
-                "4",
-                "--config",
-                "auto",
-                "--error",
-                "--timeout",
-                "120",
-                "--time",
-                "--json",
-                "--disable-version-check",
-                "--disable-nosem",
-                "--exclude",
-                SEMGREP_IGNORE_FILE,
-                "--dump-command-for-core",
-                ".",
-            ],
+            "bootstrap_command": list(_semgrep_dump_command("semgrep")),
             "bundle": {
                 "bytes": bundle_contract.bundle_size,
                 "definition_count": bundle_contract.definition_count,
@@ -1396,28 +1387,9 @@ def _success_evidence(
                 "sha256": bundle_contract.bundle_sha256,
                 "shard_count": len(bundle_contract.shards),
             },
-            "command": [
-                "semgrep",
-                "scan",
-                "--oss-only",
-                "--jobs",
-                "4",
-                "--config",
-                "<external-community-rules.bundle.json>",
-                "--no-rewrite-rule-ids",
-                "--error",
-                "--timeout",
-                "120",
-                "--time",
-                "--json",
-                "--disable-version-check",
-                "--disable-nosem",
-                "--metrics",
-                "off",
-                "--exclude",
-                SEMGREP_IGNORE_FILE,
-                ".",
-            ],
+            "command": list(
+                _semgrep_bundle_command("semgrep", Path("<external-community-rules.bundle.json>"))
+            ),
             "allowed_finding_count": len(findings),
             "engine": SEMGREP_ENGINE,
             "error_count": 0,

@@ -19,7 +19,9 @@ import pytest
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOW_PATH = _PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 _GITATTRIBUTES_PATH = _PROJECT_ROOT / ".gitattributes"
-_EXPECTED_BRANCH = "fix/360-review-hardening"
+_EXPECTED_BRANCH = "fix/v2.21.0-release-blockers"
+_INTEGRATED_COMMIT = "55d25dfff2225ffb3e4a2b56ead4a3c190d054cf"
+_INTEGRATED_TREE = "761e264a91a52bda4c284f3f36fe53954d7fff2b"
 _LIVE_START = "<!-- LIVE_STATE_START -->"
 _LIVE_END = "<!-- LIVE_STATE_END -->"
 _ARCHIVE_START = "<!-- ARCHIVE_START -->"
@@ -177,6 +179,12 @@ def test_live_repository_state_documents_match_release_version() -> None:
     assert current_sprint.isdecimal()
     assert state["branch"] == _EXPECTED_BRANCH
     assert expected in str(state["sprint_goal"])
+    assert state["semgrep_passed"] is True
+    assert state["tests_passed"] is True
+    assert state["documentation_updated"] is True
+    assert state["memory_updated"] is True
+    assert state["housekeeping_done"] is False
+    assert state["github_issues_closed"] is False
     boolean_keys = _STATE_KEYS - {"current_sprint", "sprint_goal", "branch", "started_at"}
     assert all(isinstance(state[key], bool) for key in boolean_keys)
 
@@ -207,6 +215,11 @@ def test_live_repository_state_documents_match_release_version() -> None:
         live = _marked_region(text, _LIVE_START, _LIVE_END)
         assert expected in live, f"{path.relative_to(_PROJECT_ROOT)} is stale: {expected} missing"
         assert _EXPECTED_BRANCH in live
+        assert _INTEGRATED_COMMIT in live
+        assert _INTEGRATED_TREE in live
+        for finding_id in ("MW220-112", "MW220-113", "MW220-114", "MW220-115"):
+            assert finding_id in live
+        assert "not a PASS" in live or "keinen CI-PASS" in live
         assert set(re.findall(r"\bv\d+\.\d+\.\d+\b", live)) == {expected}
         assert set(re.findall(r"\b(?:feature|fix)/[A-Za-z0-9._/-]+", live)) == {_EXPECTED_BRANCH}
         assert "development pause" not in live.lower()
@@ -229,6 +242,57 @@ def test_live_repository_state_documents_match_release_version() -> None:
     ):
         live = _marked_region(path.read_text(encoding="utf-8"), _LIVE_START, _LIVE_END)
         assert "bug_reporting/BUGFIXUNG_ROADMAP.md" in live
+
+
+def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
+    """The review contract must not hide a blocker behind a loose substring check."""
+
+    analysis = (_PROJECT_ROOT / "bug_reporting" / "ANALYSE_MUTMUTWIN220.md").read_text(
+        encoding="utf-8"
+    )
+    roadmap = (_PROJECT_ROOT / "bug_reporting" / "BUGFIXUNG_ROADMAP.md").read_text(encoding="utf-8")
+    expected_ids = {f"MW220-{number:03d}" for number in range(1, 116)}
+    assert expected_ids <= set(re.findall(r"MW220-\d{3}", analysis))
+    assert "115 Befunde (30 P0, 56 P1, 29 P2; MW220-001 bis -115)" in analysis
+    assert "115 fortlaufende Befunde sind bestätigt: 30 P0, 56 P1 und 29 P2" in roadmap
+
+    analysis_rows = {
+        match.group("id"): match.group(0)
+        for match in re.finditer(
+            r"^\| (?P<id>MW220-\d{3}) \| P[012] \|.*\|$",
+            analysis,
+            flags=re.MULTILINE,
+        )
+    }
+    assert "kein Produktions-TOCTOU-Befund" in analysis_rows["MW220-113"]
+    assert "`--jobs 1`" in analysis_rows["MW220-114"]
+    assert "wiederholte reale Windows-Läufe grün" in analysis_rows["MW220-114"]
+    assert "GitHub Issue #133" in analysis
+    assert "completed 1/1" in analysis
+    assert "kein zusätzlicher MW220-116-Produktionsfix erforderlich" in analysis
+    assert "GitHub-Issue-#133-Repro" in roadmap
+    assert "Es ist kein MW220-116 erforderlich" in roadmap
+    assert analysis_rows["MW220-115"].startswith("| MW220-115 | P2 |")
+    assert "Teilstring" in analysis_rows["MW220-115"]
+
+    for report in (analysis, roadmap):
+        assert "Follow-up-Integration" in report
+        assert "integrierter Rebuild" in report
+        assert "Tag und GitHub-Release" in report or "Tag und Release" in report
+        assert "Billing" in report
+        assert "kein PASS" in report or "kein CI-PASS" in report
+
+    assert "2.002 Tests und 44 Skips" in analysis
+    assert "2.002/44" in roadmap
+    assert "MW220-115 | implementiert und vollständig regressionstestverifiziert" in analysis
+
+    stale_claims = (
+        "Fix und erneute Cross-Platform-Typmatrix ausstehend",
+        "deterministische Ursache/Fix und wiederholte Windows-/Ubuntu-Gateevidenz ausstehend",
+        "verbleibende POSIX-Identitätslücke",
+        "vollständig neue lokale und Remote-Matrix",
+    )
+    assert all(claim not in analysis for claim in stale_claims)
 
 
 def test_install_guides_are_byte_identical_and_pin_the_release_version() -> None:

@@ -82,7 +82,10 @@ def _arm_linux_parent_death_signal(expected_parent_pid: int) -> None:
 def _kill_own_process_group(process_group: int) -> None:
     """Kill the complete contained session, then fail closed if killpg failed."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(process_group, _KILL_SIGNAL)  # type: ignore[attr-defined]
+        os.killpg(  # type: ignore[attr-defined,unused-ignore]
+            process_group,
+            _KILL_SIGNAL,
+        )
     os._exit(_CONTAINMENT_ABORT_EXIT_CODE)
 
 
@@ -244,17 +247,26 @@ def _close_fd(fd: int | None) -> None:
 def _abort_spawned_session(pid: int) -> None:
     """Kill and bounded-reap a partially constructed session child."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pid, signal.SIGKILL)  # type: ignore[attr-defined]
+        os.killpg(  # type: ignore[attr-defined,unused-ignore]
+            pid,
+            signal.SIGKILL,  # type: ignore[attr-defined,unused-ignore]
+        )
     # fork_exec may have returned immediately before the child completed
     # setsid().  Direct PID kill closes that tiny cleanup-only race without
     # weakening the process-group sweep for already-started descendants.
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
+        os.kill(  # type: ignore[attr-defined,unused-ignore]
+            pid,
+            signal.SIGKILL,  # type: ignore[attr-defined,unused-ignore]
+        )
 
     deadline = time.monotonic() + _SPAWN_ABORT_REAP_SECONDS
     while time.monotonic() < deadline:
         try:
-            waited_pid, _status = os.waitpid(pid, os.WNOHANG)  # type: ignore[attr-defined]
+            waited_pid, _status = os.waitpid(  # type: ignore[attr-defined,unused-ignore]
+                pid,
+                os.WNOHANG,  # type: ignore[attr-defined,unused-ignore]
+            )
         except ChildProcessError:
             return
         except OSError:

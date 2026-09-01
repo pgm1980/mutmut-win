@@ -453,7 +453,10 @@ class SpawnPoolExecutor:
         import signal
 
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(worker_pid, signal.SIGKILL)  # type: ignore[attr-defined]
+            os.killpg(  # type: ignore[attr-defined,unused-ignore]
+                worker_pid,
+                signal.SIGKILL,  # type: ignore[attr-defined,unused-ignore]
+            )
 
     def _declare_startup_collapse(self) -> None:
         """Mark the pool collapsed at worker startup and report it (WRK-001)."""
