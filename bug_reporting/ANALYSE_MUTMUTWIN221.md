@@ -7,8 +7,9 @@
 **Fixzweig:** `fix/v2.21.1-windows314`
 **Verbindlicher Product-Owner-Scope:** Windows und exakt CPython 3.14.7
 **Status:** v2.21.1 ist ein unveröffentlichter Arbeitsstand. Ein erster
-commit-genauer Kandidatenlauf deckte CX221-063 auf; dessen Korrektur und das
-vollständige Windows-/CPython-3.14.7-Finalgate sind erneut offen.
+commit-genauer Kandidatenlauf deckte CX221-063 auf; das anschließende
+Security-Gate deckte CX221-064 auf. Deren Korrektur und das vollständige
+Windows-/CPython-3.14.7-Finalgate sind erneut offen.
 
 ## 1. Executive Verdict
 
@@ -156,8 +157,8 @@ Die folgenden Befunde entstanden erst beim Reaudit und Bugfixing nach Claudes
 46er Register. Sie werden bewusst nicht als zusätzliche MW221-Nummern geführt
 und verändern weder Claudes ID-Menge noch deren Statussumme.
 
-Das getrennte Codex-Register umfasst damit exakt CX221-001 bis CX221-063. Die
-Prioritätsverteilung lautet 2 P0, 56 P1 und 5 P2; alle 63 stehen bis zum
+Das getrennte Codex-Register umfasst damit exakt CX221-001 bis CX221-064. Die
+Prioritätsverteilung lautet 2 P0, 57 P1 und 5 P2; alle 64 stehen bis zum
 erneuten lokalen Kandidatengesamtgate auf `IMPLEMENTED_PENDING_FINAL`.
 
 | ID | Prio | Status | Befund und aktueller Fixstand |
@@ -224,7 +225,8 @@ erneuten lokalen Kandidatengesamtgate auf `IMPLEMENTED_PENDING_FINAL`.
 | CX221-060 | P1 | IMPLEMENTED_PENDING_FINAL | Zizmor lief offline und in zwei Personas, konnte aber weiterhin Repositorykonfiguration und Inline-Ignores berücksichtigen. Native Wrapper und beide direkten Build-Prüfungen erzwingen jetzt zusätzlich `--no-config` und `--no-ignores`; globale Workflow-, Dokument-, Command- und Orchestrierungsregressionen verhindern ein stilles Zurückfallen. |
 | CX221-061 | P1 | IMPLEMENTED_PENDING_FINAL | Der native Releasewrapper nahm `git.exe` aus dem vom Aufrufer kontrollierten `PATH`; ein Fake-Git mit Exit 0 konnte Checkoutsauberkeit, Historienvollständigkeit und das Gitleaks-Inventar vortäuschen. Git for Windows wird nun fail-closed aus dem systemweiten HKLM-Installationsvertrag aufgelöst, auf dessen `cmd/git.exe` begrenzt und durch eine strikt einzeilige Git-for-Windows-Versionsausgabe validiert. Caller-PATH besitzt keine Auswahlhoheit mehr. |
 | CX221-062 | P2 | IMPLEMENTED_PENDING_FINAL | Der Native-Asset-Downloader validierte nur Start- und finale URL; ein erlaubtes Ziel konnte intern über einen fremden Host oder einen HTTP-Downgrade erreicht werden. Ein eigener Redirect-Handler prüft nun jeden bereits aufgelösten Hop vor dem Folgen gegen denselben HTTPS-/Host-/Credential-Vertrag. Zwei erlaubte Hops bleiben möglich; fremder Host, Downgrade und Userinfo brechen vor dem Download ab. |
-| CX221-063 | P1 | IMPLEMENTED_PENDING_FINAL | Die Release-Gate-Sequenz isolierte ihre Werkzeugzustände nicht vollständig: Import-Linter und Ruff erzeugten checkout-lokale Cacheverzeichnisse mit eigener `.gitignore`; eine projektlokale uv-Umgebung sowie pytest- und mypy-Caches hätten denselben Konflikt ausgelöst. Zusätzlich schreibt Hypothesis 6.151.9 dynamisch bestätigt checkout-lokale `.hypothesis`-Cachebytes, in dieser Version jedoch keine eigene `.gitignore`. Das später laufende Provenienz-Gate wies den vermeintlich sauberen Kandidaten bei 64 Prozent der Suite korrekt ab. Der In-Suite-Import-Linter deaktiviert seinen Cache nun programmatisch; CI und lokale Releaseverträge nutzen eine externe uv-Projektumgebung, ein ebenfalls externes `HYPOTHESIS_STORAGE_DIRECTORY`, cachelose Ruff-/Import-Linter-/pytest-Läufe und mypy mit deaktiviertem Windows-Cacheziel `nul`. Wheel- und Sdist-Smoke-Venvs liegen getrennt unterhalb von `RUNNER_TEMP`, niemals im Release-Checkout. Die Regressionen binden die exakten Workflowbefehle, den AST-Aufruf `lint_imports(no_cache=True)`, eine `lstat`-/Reparse-sichere Hidden-Ignore-Inventarisierung und die case-insensitive Windows-Identität verborgener `.gitignore`-Pfade. Damit verhindern Workflow-, Quell- und Hidden-Ignore-Verträge die Rückkehr checkout-lokaler Cachekontrollen; gezielte und vollständige Revalidierung bleiben offen. |
+| CX221-063 | P1 | IMPLEMENTED_PENDING_FINAL | Die Release-Gate-Sequenz isolierte ihre Werkzeugzustände nicht vollständig: Import-Linter und Ruff erzeugten checkout-lokale Cacheverzeichnisse mit eigener `.gitignore`; eine projektlokale uv-Umgebung sowie pytest- und mypy-Caches hätten denselben Konflikt ausgelöst. Zusätzlich schreibt Hypothesis 6.151.10 dynamisch bestätigt checkout-lokale `.hypothesis`-Cachebytes, in dieser Version jedoch keine eigene `.gitignore`. Das später laufende Provenienz-Gate wies den vermeintlich sauberen Kandidaten bei 64 Prozent der Suite korrekt ab. Der In-Suite-Import-Linter deaktiviert seinen Cache nun programmatisch; CI und lokale Releaseverträge nutzen eine externe uv-Projektumgebung, ein ebenfalls externes `HYPOTHESIS_STORAGE_DIRECTORY`, cachelose Ruff-/Import-Linter-/pytest-Läufe und mypy mit deaktiviertem Windows-Cacheziel `nul`. Wheel- und Sdist-Smoke-Venvs liegen getrennt unterhalb von `RUNNER_TEMP`, niemals im Release-Checkout. Die Regressionen binden die exakten Workflowbefehle, den AST-Aufruf `lint_imports(no_cache=True)`, eine `lstat`-/Reparse-sichere Hidden-Ignore-Inventarisierung und die case-insensitive Windows-Identität verborgener `.gitignore`-Pfade. Damit verhindern Workflow-, Quell- und Hidden-Ignore-Verträge die Rückkehr checkout-lokaler Cachekontrollen; gezielte und vollständige Revalidierung bleiben offen. |
+| CX221-064 | P1 | IMPLEMENTED_PENDING_FINAL | Das kanonische Semgrep-Gate band `sys.prefix` hart an `<Repository>/.venv` und war damit nach der CX221-063-Pflicht zu einer externen `UV_PROJECT_ENVIRONMENT` prinzipiell nicht mehr ausführbar; der echte Kandidatenlauf brach zweimal vor dem Scan mit `unsafe-filesystem` ab. Der Wrapper bindet Semgrep nun an die exakt deklarierte aktive absolute Projektumgebung, verlangt eine in beiden Richtungen disjunkte Lage zum Release-Checkout und validiert weiterhin `pyvenv.cfg`, Scripts-Verzeichnis und aufgelöste Executable-Identität. Dadurch bleibt ein Windows-Lang-/8.3-Alias derselben Umgebung zulässig. Direkte Positiv- sowie Alias-/Missing-/Relative-/Mismatch-/Checkout-child-/Checkout-ancestor-/Symlink-Negativtests schließen den Vertragswiderspruch. |
 
 Die zusätzliche Challenge, eine nach dem gelockten Sync lokal manipulierte
 Same-Version-Installation von Zizmor oder Pyflakes als eigenen Produktbug zu
@@ -301,6 +303,8 @@ Unit-Suite. Sie bleibt ein explizites Live-Gate unmittelbar vor Remote-Writes.
 | v2.21.1 historisches Native-Release-Gate | sauberer Commit `4daed987742d24b420285fec46fc91bc2e1189a4` in frisch gelockter CPython-3.14.7-Releaseumgebung: actionlint, ShellCheck, Pyflakes, Zizmor regular/pedantic und Gitleaks Worktree/History bestanden | commit-gebundene lokale Implementierungsevidenz für diesen früheren Commit; keine aktuelle Kandidatenautorität und auf dem späteren integrierten Commit zu wiederholen |
 | v2.21.1 CX221-059-Dogfood-Recheck | Windows/CPython 3.14.7, vier Worker: Exit 0; `completed` 91/91, 90 killed, 1 Windows-äquivalenter Survivor, 0 timeout/suspicious/skipped/no-tests/type-check/segfault/unchecked, Basis vollständig, 98,9 %, 99,9 s, 0 Runtimeartefakte im Staging | dynamischer Fix- und Testqualitätsbeweis auf dem Arbeitsbaum; integrierte Wiederholung bleibt offen |
 | v2.21.1 erster commit-genauer Finalgateversuch | auf Commit `56a94e38bb72f486895ac19f689c77e42b7f0503` bei 64 Prozent nach dem echten CX221-063-Provenienzfehler gestoppt | negative dynamische Evidenz; keine Kandidatenfreigabe und kein Produkt-PASS |
+| v2.21.1 CX221-063-Revalidierung | Commit `277821da25fbf791cea2ac3c30495984808c74e6`, Tree `6ae2d50f87978e1e63365429e7575b75a276a0c4`: 2.313 passed/43 skipped/0 failed; 9.727 Statements, 1.453 Missing, 85 %, 30:31 min; danach Git-/Hidden-Ignore-/Cachekontrollen sauber | positive commit-genaue Suite-/Coverage-Evidenz; das anschließende Semgrep-Gate deckte jedoch CX221-064 auf, daher keine Kandidatenfreigabe |
+| v2.21.1 erster Semgrep-Lauf mit externer Projektumgebung | zweimaliger Abbruch auf Commit `277821da25fbf791cea2ac3c30495984808c74e6` vor dem Scan mit `unsafe-filesystem`, weil der Wrapper widersprüchlich `<Repository>/.venv` verlangte | negative dynamische Evidenz für CX221-064; keine Rule-/Finding-Counts und kein Security-PASS |
 | v2.21.1 GitHub CI | kann billingbedingt nicht anlaufen; dann Status `NOT_EXECUTED` | akzeptierte Evidenzlücke; weder PASS noch FAIL |
 
 ## 8. Releaseentscheidung und offene Gates
@@ -308,8 +312,9 @@ Unit-Suite. Sie bleibt ein explizites Live-Gate unmittelbar vor Remote-Writes.
 v2.21.1 bleibt **NO-GO**. Der frühere Windows-/CPython-3.14.7-Arbeitsbaum hat
 die vollständige strikte Suite, Coverage, Ruff/Format, mypy, Import-Linter,
 Lock/Audit, das kanonische Semgrep-Gate und den Dogfood-Piloten bestanden. Der
-commit-genaue Kandidatenlauf deckte danach CX221-063 auf. Noch offen sind dessen
-gezielte und vollständige Revalidierung, der neue saubere Kandidatencommit,
+erste commit-genaue Kandidatenlauf deckte CX221-063 auf; dessen erfolgreiche
+Suite-Revalidierung deckte anschließend im Security-Gate CX221-064 auf. Noch
+offen sind dessen gezielte und vollständige Revalidierung, der neue saubere Kandidatencommit,
 Push und Review-Integration, die erneuten Gates und der Dogfood-Recheck auf dem
 integrierten Commit, reproduzierbarer Doppelbuild, echte Installed-Artifact-
 Smokes, annotiertes Tag und GitHub-Release in genau dieser Reihenfolge.

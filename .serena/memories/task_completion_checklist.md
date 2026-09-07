@@ -7,7 +7,7 @@ Before declaring any task "done" (CLAUDE.md gates, harness hooks verify some of 
 
 Set `UV_PROJECT_ENVIRONMENT` to a fresh absolute directory outside the checkout
 before every sync or gate below. Set `HYPOTHESIS_STORAGE_DIRECTORY` to a
-separate absolute directory outside the checkout; Hypothesis 6.151.9 writes
+separate absolute directory outside the checkout; Hypothesis 6.151.10 writes
 cache bytes but no `.gitignore` of its own. The checkout must contain neither
 `.venv`, tool-cache directories with their own `.gitignore`, nor `.hypothesis`
 cache bytes.

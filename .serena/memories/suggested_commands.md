@@ -3,7 +3,7 @@
 Release evidence is collected only on Windows with exactly CPython 3.14.7.
 Before any release-evidence command, set `UV_PROJECT_ENVIRONMENT` to a fresh
 absolute directory outside the checkout and set `HYPOTHESIS_STORAGE_DIRECTORY`
-to a separate absolute external directory. Hypothesis 6.151.9 writes cache
+to a separate absolute external directory. Hypothesis 6.151.10 writes cache
 bytes there but does not create its own `.gitignore`. The release checkout
 itself must not contain `.venv`, tool-cache directories with their own
 `.gitignore`, or `.hypothesis` cache bytes.

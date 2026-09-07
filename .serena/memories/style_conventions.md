@@ -27,7 +27,7 @@
 ## Testing
 - Release tests require both `UV_PROJECT_ENVIRONMENT` and
   `HYPOTHESIS_STORAGE_DIRECTORY` to point outside the checkout; Hypothesis
-  6.151.9 writes cache bytes but no `.gitignore` of its own.
+  6.151.10 writes cache bytes but no `.gitignore` of its own.
 - The release suite uses `uv run --no-sync pytest -q --cov=mutmut_win
   --cov-report=term-missing -p no:cacheprovider` so neither pytest nor Coverage
   adds checkout-local cache control files.

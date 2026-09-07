@@ -48,7 +48,7 @@
 Für sämtliche DoD-Syncs und -Gates MUSS `UV_PROJECT_ENVIRONMENT` auf ein frisch
 angelegtes absolutes Verzeichnis außerhalb des Release-Checkouts zeigen;
 `HYPOTHESIS_STORAGE_DIRECTORY` MUSS auf ein separates absolutes externes
-Verzeichnis zeigen. Hypothesis 6.151.9 schreibt Cachebytes, jedoch keine eigene
+Verzeichnis zeigen. Hypothesis 6.151.10 schreibt Cachebytes, jedoch keine eigene
 `.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
 `.gitignore` noch `.hypothesis`-Cachebytes enthalten.
 

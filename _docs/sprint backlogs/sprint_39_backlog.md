@@ -37,7 +37,7 @@ Product-Owner-Scope.
 Alle folgenden Syncs und Gates laufen mit einer frisch angelegten absoluten
 `UV_PROJECT_ENVIRONMENT` außerhalb des Release-Checkouts;
 `HYPOTHESIS_STORAGE_DIRECTORY` zeigt auf ein separates absolutes externes
-Verzeichnis. Hypothesis 6.151.9 schreibt Cachebytes, aber keine eigene
+Verzeichnis. Hypothesis 6.151.10 schreibt Cachebytes, aber keine eigene
 `.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
 `.gitignore` noch `.hypothesis`-Cachebytes enthalten.
 

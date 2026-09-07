@@ -249,7 +249,7 @@ Semgrep MUSS ausschließlich über den getrackten, fail-closed Release-Wrapper a
 Vor jedem Sync oder Gate mit Releaseevidenz MUSS `UV_PROJECT_ENVIRONMENT` auf
 ein frisches absolutes Verzeichnis außerhalb des Checkouts zeigen.
 `HYPOTHESIS_STORAGE_DIRECTORY` MUSS ebenfalls auf ein absolutes Verzeichnis
-außerhalb des Checkouts zeigen; Hypothesis 6.151.9 schreibt dort Cachebytes,
+außerhalb des Checkouts zeigen; Hypothesis 6.151.10 schreibt dort Cachebytes,
 ohne selbst eine `.gitignore` anzulegen. Im Release-Checkout sind `.venv` und
 Werkzeug-Caches mit eigener `.gitignore` oder `.hypothesis`-Cachebytes
 unzulässig.

@@ -836,7 +836,7 @@ Integrationsevidenz ersetzen:
 Für sämtliche Kandidaten- und Integrationsgates zeigt
 `UV_PROJECT_ENVIRONMENT` auf ein frisch angelegtes absolutes Verzeichnis
 außerhalb des Release-Checkouts. `HYPOTHESIS_STORAGE_DIRECTORY` zeigt auf ein
-separates absolutes externes Verzeichnis; Hypothesis 6.151.9 schreibt dort
+separates absolutes externes Verzeichnis; Hypothesis 6.151.10 schreibt dort
 Cachebytes, aber keine eigene `.gitignore`. Der Checkout darf weder `.venv`,
 Werkzeug-Caches mit eigener `.gitignore` noch `.hypothesis`-Cachebytes enthalten.
 

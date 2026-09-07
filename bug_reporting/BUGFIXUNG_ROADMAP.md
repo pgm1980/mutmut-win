@@ -15,13 +15,13 @@ Reparatur erfolgt auf `fix/v2.21.1-windows314`.
 **Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
 MW220-001 bis MW220-115 und bleibt historische
 Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
-klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-063
+klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-064
 erneut auf das vollständige lokale Finalgate;
 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
 sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
 außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
-63 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 56 P1 und 5 P2.
-Alle 63 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
+64 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 57 P1 und 5 P2.
+Alle 64 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
 integriert noch getaggt oder veröffentlicht.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
@@ -340,7 +340,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 - Workspace-Verzeichnisse, die nie in den Workerbaum gestaged werden, über eine gemeinsame Konstante ebenso aus dem Projekt-/Editable-Basishash ausschließen; Tool-/IDE-Cachechurn darf keine fachliche Inputdrift vortäuschen.
 - Semgrep nur noch über einen getrackten, versionierten, plattformneutralen Wrapper auf einem externen Git-owned Root-Mirror ausführen; Findings, Parserfehler, `skipped_rules`, Fixpoint-Timeouts, Rule-ID-/Target-/Skip-/Manifest- oder TOCTOU-Drift müssen trotz eines möglichen Semgrep-Exitcodes 0 fail-closed abbrechen.
 - Inline-`nosemgrep` zwingend deaktivieren und ausschließlich exakt adjudizierte Testcode-False-Positives über Rule-/Path-/Span-/Lines-/Full-file-Digest-Signaturen zulassen; Suppressionen selbst dürfen keine Gate-Autorität besitzen und jede Kontextdrift erzwingt Re-Review.
-- Semgrep-Childumgebung von allen geerbten `GIT_*`-, `PYTHON*`-, `SEMGREP_*`-, `UV_*`-, Credential-, Home-, Settings- und Temp-Autoritäten isolieren; Wrapper und Scanner exakt an die gelockte Repository-`.venv` binden.
+- Semgrep-Childumgebung von allen geerbten `GIT_*`-, `PYTHON*`-, `SEMGREP_*`-, `UV_*`-, Credential-, Home-, Settings- und Temp-Autoritäten isolieren; Wrapper und Scanner exakt an die deklarierte aktive externe `UV_PROJECT_ENVIRONMENT` binden.
 - den unauthentifizierten Community-Regelbestand einmal vollständig materialisieren und content-hashen und den eigentlichen Scan anschließend offline ausschließlich gegen dieses geprüfte Bundle ausführen; Pro-/Registry-/Rule-Content-Drift ist fatal.
 - Wrapper und `.semgrepignore` unter exakt kanonischen Sdistpfaden byteidentisch ausliefern; README, CI, Rootgruppe und Lock auf denselben minimalen Security-only-Vertrag binden.
 - statische Workflowtests dürfen keine Shell-Zusätze, allgemeines `uvx`, Ersatzarchivpfade oder gelöste Semgrep-Root-/Lockbindungen übersehen.
@@ -418,7 +418,7 @@ Vor Abschluss:
 Eine frisch angelegte absolute `UV_PROJECT_ENVIRONMENT` außerhalb des
 Release-Checkouts ist dabei Vorbedingung; ebenso zeigt
 `HYPOTHESIS_STORAGE_DIRECTORY` auf ein separates absolutes externes
-Verzeichnis. Hypothesis 6.151.9 schreibt Cachebytes, aber keine eigene
+Verzeichnis. Hypothesis 6.151.10 schreibt Cachebytes, aber keine eigene
 `.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
 `.gitignore` noch `.hypothesis`-Cachebytes enthalten. Wheel- und Sdist-Smoke-
 Venvs werden ausschließlich getrennt unterhalb von `RUNNER_TEMP` angelegt.
@@ -564,8 +564,8 @@ reine Ambient-Drift diagnostische Ergebnisse ohne Releaseautorität bewahren dar
 Diese eigene ID-Serie ergänzt Claudes unveränderte MW221-001-bis--046-Matrix
 und fließt nicht in deren Statussumme ein.
 
-Sie umfasst exakt CX221-001 bis CX221-063; ihre Prioritätsverteilung lautet
-2 P0, 56 P1 und 5 P2.
+Sie umfasst exakt CX221-001 bis CX221-064; ihre Prioritätsverteilung lautet
+2 P0, 57 P1 und 5 P2.
 
 | ID | Maßnahme | Stand |
 |---|---|---|
@@ -631,7 +631,8 @@ Sie umfasst exakt CX221-001 bis CX221-063; ihre Prioritätsverteilung lautet
 | CX221-060 | Zizmor-Konfiguration und Inline-Ignores in beiden Offline-Personas mechanisch deaktivieren | implementiert; Native Wrapper und direkte Build-Prüfungen verwenden `--no-config --no-ignores`, globaler Workflow-/Dokumentvertrag regressionsgebunden; Finalgate offen |
 | CX221-061 | Git for Windows aus dem systemweiten HKLM-Installationsvertrag statt Caller-PATH beziehen und seine Ausgabe strikt als einzeilige Windows-Version prüfen | implementiert; Registry-/Pfad-/Version-/Fake-PATH-Gegenproben vorhanden; Finalgate offen |
 | CX221-062 | Jeden urllib-Redirect-Hop vor dem Folgen gegen HTTPS-, Host- und Credential-Allowlist prüfen | implementiert; erlaubte Zweihop- sowie Host-/HTTP-/Userinfo-Negativtests grün; Finalgate offen |
-| CX221-063 | Sämtliche Release-Gate-Caches aus dem Checkout fernhalten: externe uv-Projektumgebung, externes `HYPOTHESIS_STORAGE_DIRECTORY`, Artefakt-Smoke-Venvs unter `RUNNER_TEMP`, In-Suite-Import-Linter ohne Cache, Ruff/Import-Linter/pytest cachelos, mypy nichtinkrementell mit Windows-Cacheziel `nul` sowie Workflow-, Quell- und Hidden-Ignore-Vertrag | implementiert; Hypothesis 6.151.9 schreibt bestätigt `.hypothesis`-Cachebytes, aber keine eigene `.gitignore`; exakte Befehle und `lint_imports(no_cache=True)` sind strukturell gebunden, Hidden-Ignore-Inventarisierung ist `lstat`-/Reparse-sicher und behandelt Windows-`.gitignore`-Pfade case-insensitiv; der zuvor bei 64 Prozent reproduzierte `.import_linter_cache/.gitignore`-Fehler und benachbarte Kontaminationen werden gezielt und in der vollständigen Suite erneut geprüft; Finalgate offen |
+| CX221-063 | Sämtliche Release-Gate-Caches aus dem Checkout fernhalten: externe uv-Projektumgebung, externes `HYPOTHESIS_STORAGE_DIRECTORY`, Artefakt-Smoke-Venvs unter `RUNNER_TEMP`, In-Suite-Import-Linter ohne Cache, Ruff/Import-Linter/pytest cachelos, mypy nichtinkrementell mit Windows-Cacheziel `nul` sowie Workflow-, Quell- und Hidden-Ignore-Vertrag | implementiert; Hypothesis 6.151.10 schreibt bestätigt `.hypothesis`-Cachebytes, aber keine eigene `.gitignore`; exakte Befehle und `lint_imports(no_cache=True)` sind strukturell gebunden, Hidden-Ignore-Inventarisierung ist `lstat`-/Reparse-sicher und behandelt Windows-`.gitignore`-Pfade case-insensitiv; der zuvor bei 64 Prozent reproduzierte `.import_linter_cache/.gitignore`-Fehler und benachbarte Kontaminationen werden gezielt und in der vollständigen Suite erneut geprüft; Finalgate offen |
+| CX221-064 | Semgrep aus der exakt deklarierten aktiven absoluten `UV_PROJECT_ENVIRONMENT` außerhalb des Release-Checkouts beziehen statt `<Repository>/.venv` vorauszusetzen | implementiert; Wrapper validiert externe Prefix-/pyvenv-/Scripts-/Executable-Identität, akzeptiert aufgelöste Windows-Pfadalias-Identität und lehnt fehlende, relative, abweichende sowie den Checkout enthaltende oder darin enthaltene Umgebungen ab; kanonische Wiederholung offen |
 
 CX221-044 bindet in `[dependency-groups].release`
 `check-wheel-contents==0.6.3`, `pyflakes==3.4.0`, `twine==7.0.0` und
@@ -673,8 +674,11 @@ Timeouts. Derselbe saubere Implementierungscommit bestand in einer frisch
 gelockten CPython-3.14.7-Releaseumgebung zusätzlich das Native-Gate aus
 actionlint, ShellCheck, Pyflakes, Zizmor regular/pedantic und Gitleaks
 Worktree/History. Der erste commit-genaue Kandidatenlauf deckte danach bei 64
-Prozent CX221-063 auf und war deshalb ausdrücklich kein PASS. Nach der
-Cachekorrektur werden die Kandidatengates vollständig erneut ausgeführt;
+Prozent CX221-063 auf und war deshalb ausdrücklich kein PASS. Die korrigierte
+Suite auf Commit `277821da25fbf791cea2ac3c30495984808c74e6` bestand mit
+2.313/43, 85 Prozent und sauberer Nachlaufprovenienz; das anschließend zweimal
+vor dem Scan abgebrochene Semgrep-Gate deckte jedoch CX221-064 auf. Nach dessen
+Korrektur werden die Kandidatengates vollständig erneut ausgeführt;
 anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
 
 ### 13.4 Noch ausstehende Abschlusssequenz
@@ -686,7 +690,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    `--tests-dir tests/unit/test_code_coverage.py`, `--max-children 4`,
    `--output json --no-progress` sind grün. Der bewusst nicht autoritative
    Subset-Pilot lief ohne `--min-score`, erreichte 90/1 bei 98,9 Prozent und
-   besitzt keine CI-Exportautorität. CX221-063 ist gezielt sowie im neuen
+   besitzt keine CI-Exportautorität. CX221-064 ist gezielt sowie im neuen
    vollständigen Kandidatengate erneut zu beweisen.
 2. Implementierungscommit erzeugen, auf dem sauberen Commit das kanonische
    Native-Release-Gate sowie die Kandidatengates wiederholen und erst danach
@@ -709,7 +713,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    Eine billingbedingt nicht gestartete CI wird im Releasehinweis als
    Evidenzlücke benannt, niemals als bestanden.
 
-**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-063 ist implementiert,
+**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-064 ist implementiert,
 aber sein gezieltes und vollständiges Kandidatengate ist noch offen; danach
 stehen Review-Integration, integrierte Wiederholung, Rebuild, Installed-Smokes,
 Tag und Release aus.

@@ -454,40 +454,55 @@ def _bind_semgrep_to_project_environment(
     repository: Path,
     python_prefix: Path,
     python_base_prefix: Path,
+    declared_project_environment: str | None,
 ) -> None:
     prefix = python_prefix.absolute()
     base_prefix = python_base_prefix.absolute()
-    expected_prefix = repository / ".venv"
     if os.path.normcase(str(prefix)) == os.path.normcase(str(base_prefix)):
         raise GateError("unsafe-executable", "Semgrep gate requires an active virtual environment")
+    if not declared_project_environment:
+        raise GateError(
+            "unsafe-executable",
+            "UV_PROJECT_ENVIRONMENT must name the active external release environment",
+        )
+    expected_prefix = Path(declared_project_environment)
+    if not expected_prefix.is_absolute():
+        raise GateError("unsafe-executable", "UV_PROJECT_ENVIRONMENT must be absolute")
+    expected_prefix = expected_prefix.absolute()
     _validate_repository_directory(prefix)
     _validate_repository_directory(expected_prefix)
-    pyvenv_stat = _lstat(expected_prefix / "pyvenv.cfg", label="project pyvenv.cfg")
+    pyvenv_stat = _lstat(expected_prefix / "pyvenv.cfg", label="external project pyvenv.cfg")
     if not stat.S_ISREG(pyvenv_stat.st_mode):
-        raise GateError("unsafe-executable", "Project pyvenv.cfg is not a regular file")
+        raise GateError("unsafe-executable", "External project pyvenv.cfg is not a regular file")
     executable_path = Path(executable).absolute()
     try:
         resolved_prefix = prefix.resolve(strict=True)
         resolved_expected_prefix = expected_prefix.resolve(strict=True)
+        resolved_repository = repository.resolve(strict=True)
         resolved_executable = executable_path.resolve(strict=True)
     except OSError as exc:
         raise GateError("unsafe-executable", f"Cannot resolve Python tool boundary: {exc}") from exc
     if os.path.normcase(str(resolved_prefix)) != os.path.normcase(str(resolved_expected_prefix)):
         raise GateError(
-            "unsafe-executable", "Active Python environment is not the repository .venv"
+            "unsafe-executable",
+            "Active Python environment does not match UV_PROJECT_ENVIRONMENT",
+        )
+    if _is_within(resolved_expected_prefix, resolved_repository) or _is_within(
+        resolved_repository, resolved_expected_prefix
+    ):
+        raise GateError(
+            "unsafe-executable",
+            "UV_PROJECT_ENVIRONMENT and the release checkout must be disjoint",
         )
     scripts_directory = prefix / ("Scripts" if os.name == "nt" else "bin")
-    scripts_stat = _lstat(scripts_directory, label="project virtualenv scripts directory")
+    scripts_stat = _lstat(scripts_directory, label="external virtualenv scripts directory")
     if not stat.S_ISDIR(scripts_stat.st_mode):
         raise GateError("unsafe-executable", "Virtualenv scripts path is not a directory")
     try:
         resolved_scripts = scripts_directory.resolve(strict=True)
     except OSError as exc:
         raise GateError("unsafe-executable", f"Cannot resolve scripts directory: {exc}") from exc
-    if (
-        executable_path.parent != scripts_directory
-        or resolved_executable.parent != resolved_scripts
-    ):
+    if resolved_executable.parent != resolved_scripts:
         raise GateError(
             "unsafe-executable",
             "Semgrep executable is not in the project virtualenv scripts directory",
@@ -1542,6 +1557,7 @@ def run_release_gate(
         candidate,
         Path(sys.prefix) if python_prefix is None else python_prefix,
         Path(sys.base_prefix) if python_base_prefix is None else python_base_prefix,
+        parent_environment.get("UV_PROJECT_ENVIRONMENT"),
     )
     semgrep_parent, semgrep_record = _snapshot_absolute_artifact(Path(semgrep))
     root_output = _run_checked(

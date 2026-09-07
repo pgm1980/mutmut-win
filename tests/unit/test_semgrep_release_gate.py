@@ -248,7 +248,7 @@ def project(tmp_path: Path) -> Project:
         path.write_bytes(content)
     tools_directory = tmp_path / "tools"
     tools_directory.mkdir()
-    python_prefix = repository / ".venv"
+    python_prefix = tmp_path / "external-project-environment"
     scripts_directory = python_prefix / ("Scripts" if os.name == "nt" else "bin")
     scripts_directory.mkdir(parents=True)
     (python_prefix / "pyvenv.cfg").write_text("home = controlled\n")
@@ -317,6 +317,8 @@ def _run(
         if environment is None
         else environment
     )
+    parent_environment = dict(parent_environment)
+    parent_environment.setdefault("UV_PROJECT_ENVIRONMENT", str(project.python_prefix))
     return gate.run_release_gate(
         project.repository,
         runner=runner,
@@ -1143,7 +1145,7 @@ def test_symlink_and_reparse_sources_are_rejected(
 
 
 def test_missing_relative_nonregular_and_linked_executables_are_rejected(
-    project: Project, tmp_path: Path
+    project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(project.repository, project.inventory, _payload(project.targets))
     with pytest.raises(gate.GateError) as missing:
@@ -1178,29 +1180,71 @@ def test_missing_relative_nonregular_and_linked_executables_are_rejected(
     try:
         link.symlink_to(project.tools["semgrep"])
     except OSError:
-        return
+        link.write_bytes(b"placeholder\n")
+        regular_stat = link.lstat()
+        values = list(regular_stat)
+        values[0] = stat.S_IFLNK | 0o777
+        symlink_stat = os.stat_result(values)
+        original_lstat = Path.lstat
+
+        def controlled_lstat(path: Path) -> os.stat_result:
+            if os.path.normcase(str(path)) == os.path.normcase(str(link)):
+                return symlink_stat
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", controlled_lstat)
     with pytest.raises(gate.GateError) as linked:
         gate._find_executable("semgrep", lambda _name: str(link))
     assert linked.value.code == "link-or-reparse"
 
     outside_prefix = tmp_path / "outside-prefix"
-    outside_prefix.mkdir()
+    outside_scripts = outside_prefix / ("Scripts" if os.name == "nt" else "bin")
+    outside_scripts.mkdir(parents=True)
+    (outside_prefix / "pyvenv.cfg").write_text("home = outside\n")
     with pytest.raises(gate.GateError) as outside:
         gate._bind_semgrep_to_project_environment(
             project.tools["semgrep"],
             project.repository,
             outside_prefix,
             project.python_base_prefix,
+            str(outside_prefix),
         )
     assert outside.value.code == "unsafe-executable"
 
 
-def test_semgrep_is_bound_to_active_exact_repository_virtualenv(project: Project) -> None:
+def test_semgrep_binding_accepts_resolved_executable_alias_identity(
+    project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alias_scripts = tmp_path / "alias-scripts"
+    alias_scripts.mkdir()
+    alias_executable = alias_scripts / Path(project.tools["semgrep"]).name
+    alias_executable.write_bytes(b"alias placeholder\n")
+    alias_key = os.path.normcase(str(alias_executable.absolute()))
+    real_executable = Path(project.tools["semgrep"]).resolve(strict=True)
+    original_resolve = Path.resolve
+
+    def controlled_resolve(path: Path, strict: bool = False) -> Path:
+        if os.path.normcase(str(path.absolute())) == alias_key:
+            return real_executable
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", controlled_resolve)
+    gate._bind_semgrep_to_project_environment(
+        str(alias_executable),
+        project.repository,
+        project.python_prefix,
+        project.python_base_prefix,
+        str(project.python_prefix),
+    )
+
+
+def test_semgrep_is_bound_to_declared_external_virtualenv(project: Project) -> None:
     gate._bind_semgrep_to_project_environment(
         project.tools["semgrep"],
         project.repository,
         project.python_prefix,
         project.python_base_prefix,
+        str(project.python_prefix),
     )
     with pytest.raises(gate.GateError, match="active virtual environment"):
         gate._bind_semgrep_to_project_environment(
@@ -1208,18 +1252,85 @@ def test_semgrep_is_bound_to_active_exact_repository_virtualenv(project: Project
             project.repository,
             project.python_prefix,
             project.python_prefix,
+            str(project.python_prefix),
         )
 
     sibling_prefix = project.repository.parent / "sibling-venv"
     sibling_scripts = sibling_prefix / ("Scripts" if os.name == "nt" else "bin")
     sibling_scripts.mkdir(parents=True)
     (sibling_prefix / "pyvenv.cfg").write_text("home = sibling\n")
-    with pytest.raises(gate.GateError, match=r"repository \.venv"):
+    with pytest.raises(gate.GateError, match="does not match UV_PROJECT_ENVIRONMENT"):
         gate._bind_semgrep_to_project_environment(
             project.tools["semgrep"],
             project.repository,
-            sibling_prefix,
+            project.python_prefix,
             project.python_base_prefix,
+            str(sibling_prefix),
+        )
+
+    repository_prefix = project.repository / ".venv"
+    repository_scripts = repository_prefix / ("Scripts" if os.name == "nt" else "bin")
+    repository_scripts.mkdir(parents=True)
+    (repository_prefix / "pyvenv.cfg").write_text("home = checkout-local\n")
+    repository_semgrep = repository_scripts / Path(project.tools["semgrep"]).name
+    repository_semgrep.write_bytes(b"checkout-local semgrep")
+    with pytest.raises(gate.GateError, match="must be disjoint"):
+        gate._bind_semgrep_to_project_environment(
+            str(repository_semgrep),
+            project.repository,
+            repository_prefix,
+            project.python_base_prefix,
+            str(repository_prefix),
+        )
+
+    ancestor_prefix = project.repository.parent
+    ancestor_scripts = ancestor_prefix / ("Scripts" if os.name == "nt" else "bin")
+    ancestor_scripts.mkdir(exist_ok=True)
+    (ancestor_prefix / "pyvenv.cfg").write_text("home = checkout-ancestor\n")
+    ancestor_semgrep = ancestor_scripts / Path(project.tools["semgrep"]).name
+    ancestor_semgrep.write_bytes(b"checkout-ancestor semgrep")
+    with pytest.raises(gate.GateError, match="must be disjoint"):
+        gate._bind_semgrep_to_project_environment(
+            str(ancestor_semgrep),
+            project.repository,
+            ancestor_prefix,
+            project.python_base_prefix,
+            str(ancestor_prefix),
+        )
+
+    with pytest.raises(gate.GateError, match="must name the active external"):
+        gate._bind_semgrep_to_project_environment(
+            project.tools["semgrep"],
+            project.repository,
+            project.python_prefix,
+            project.python_base_prefix,
+            None,
+        )
+
+    with pytest.raises(gate.GateError, match="must be absolute"):
+        gate._bind_semgrep_to_project_environment(
+            project.tools["semgrep"],
+            project.repository,
+            project.python_prefix,
+            project.python_base_prefix,
+            "relative-environment",
+        )
+
+
+def test_release_gate_requires_the_declared_external_virtualenv(project: Project) -> None:
+    runner = FakeRunner(project.repository, project.inventory, _payload(project.targets))
+
+    with pytest.raises(gate.GateError, match="must name the active external"):
+        gate.run_release_gate(
+            project.repository,
+            runner=runner,
+            executable_finder=project.finder,
+            rule_contract=TEST_RULE_CONTRACT,
+            bundle_contract=TEST_BUNDLE_CONTRACT,
+            finding_allowlist=(TEST_FINDING,),
+            environment={"PATH": str(Path(project.tools["semgrep"]).parent)},
+            python_prefix=project.python_prefix,
+            python_base_prefix=project.python_base_prefix,
         )
 
 
