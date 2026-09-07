@@ -1928,7 +1928,7 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     assert {match.group("status") for match in follow_up_rows} <= _MW221_STATUSES
     mw_statuses = {match.group("id"): match.group("status") for match in follow_up_rows}
 
-    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 66)}
+    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 67)}
     codex_rows = list(
         re.finditer(
             r"^\| (?P<id>CX221-\d{3}) \| (?P<priority>P[012]) \| "
@@ -1971,11 +1971,11 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     )
     assert set(roadmap_ids) == expected_codex_ids
     assert len(roadmap_ids) == len(expected_codex_ids)
-    assert "65 getrennt geführten Codex-Follow-up-Findings" in roadmap
+    assert "66 getrennt geführten Codex-Follow-up-Findings" in roadmap
     assert "ANALYSE_MUTMUTWIN221.md" in roadmap
     assert "Windows und exakt CPython 3.14.7" in follow_up
-    assert "2 P0, 58 P1 und 5 P2" in follow_up
-    assert "2 P0, 58 P1 und 5 P2" in roadmap
+    assert "2 P0, 59 P1 und 5 P2" in follow_up
+    assert "2 P0, 59 P1 und 5 P2" in roadmap
     assert "gelockte Repository-`.venv` binden" not in roadmap
 
     expected_provenance = _expected_release_tool_provenance()
@@ -2769,6 +2769,28 @@ def test_ci_uses_only_full_sha_pinned_allowlisted_actions() -> None:
     assert action_references
     assert all(_PINNED_ACTION.fullmatch(reference) for reference in action_references)
     assert {reference.split("@", 1)[0] for reference in action_references} <= _ALLOWED_ACTIONS
+
+
+def test_real_cli_unit_surfaces_use_an_external_workspace_fixture() -> None:
+    fixture_source = (_PROJECT_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "def isolated_cli_workspace(" in fixture_source
+    assert 'workspace = tmp_path / "cli-workspace"' in fixture_source
+    assert "monkeypatch.chdir(workspace)" in fixture_source
+
+    marker = 'pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")'
+    for relative_path in (
+        "tests/unit/test_ci_output_discipline.py",
+        "tests/unit/test_cli.py",
+        "tests/unit/test_closure_117.py",
+        "tests/unit/test_contract_120.py",
+        "tests/unit/test_db_purge.py",
+        "tests/unit/test_exception_hygiene_114.py",
+        "tests/unit/test_interrupt_honesty.py",
+        "tests/unit/test_pool_collapse_127.py",
+        "tests/unit/test_surface_hardening_220.py",
+    ):
+        source = (_PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert marker in source, relative_path
 
 
 def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:

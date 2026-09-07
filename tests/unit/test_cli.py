@@ -24,6 +24,8 @@ from mutmut_win.models import (
 )
 from mutmut_win.stats import MutmutStats
 
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

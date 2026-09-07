@@ -41,6 +41,8 @@ from mutmut_win.mutant_diff import read_mutants_module, read_orig_module
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.type_checking import run_type_checker
 
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
 if TYPE_CHECKING:
     from pathlib import Path
 

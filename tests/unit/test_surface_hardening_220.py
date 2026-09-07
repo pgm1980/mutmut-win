@@ -37,6 +37,8 @@ from mutmut_win.pytest_boundary import prepare_pytest_boundary
 from mutmut_win.runner import PytestRunner
 from tests.unit.phase_mock_util import phase_popen
 
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
 _VERIFIED_BASIS = "a" * 64
 
 

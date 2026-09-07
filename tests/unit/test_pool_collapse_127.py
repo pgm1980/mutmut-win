@@ -29,6 +29,8 @@ from mutmut_win.orchestrator import MutationOrchestrator, _print_summary
 from mutmut_win.process.executor import SpawnPoolExecutor
 from tests.unit.phase_mock_util import frozen_worker_config
 
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
 if TYPE_CHECKING:
     from pathlib import Path
 

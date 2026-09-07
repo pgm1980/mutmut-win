@@ -27,6 +27,8 @@ from click.testing import CliRunner
 from mutmut_win.cli import cli
 from mutmut_win.models import MutationRunResult
 
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
 if TYPE_CHECKING:
     from pathlib import Path
 

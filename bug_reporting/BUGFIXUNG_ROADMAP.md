@@ -15,13 +15,13 @@ Reparatur erfolgt auf `fix/v2.21.1-windows314`.
 **Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
 MW220-001 bis MW220-115 und bleibt historische
 Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
-klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-065
+klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-066
 erneut auf das vollständige lokale Finalgate;
 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
 sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
 außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
-65 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 58 P1 und 5 P2.
-Alle 65 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
+66 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 59 P1 und 5 P2.
+Alle 66 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
 integriert noch getaggt oder veröffentlicht.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
@@ -564,8 +564,8 @@ reine Ambient-Drift diagnostische Ergebnisse ohne Releaseautorität bewahren dar
 Diese eigene ID-Serie ergänzt Claudes unveränderte MW221-001-bis--046-Matrix
 und fließt nicht in deren Statussumme ein.
 
-Sie umfasst exakt CX221-001 bis CX221-065; ihre Prioritätsverteilung lautet
-2 P0, 58 P1 und 5 P2.
+Sie umfasst exakt CX221-001 bis CX221-066; ihre Prioritätsverteilung lautet
+2 P0, 59 P1 und 5 P2.
 
 | ID | Maßnahme | Stand |
 |---|---|---|
@@ -634,6 +634,7 @@ Sie umfasst exakt CX221-001 bis CX221-065; ihre Prioritätsverteilung lautet
 | CX221-063 | Sämtliche Release-Gate-Caches aus dem Checkout fernhalten: externe uv-Projektumgebung, externes `HYPOTHESIS_STORAGE_DIRECTORY`, Artefakt-Smoke-Venvs unter `RUNNER_TEMP`, In-Suite-Import-Linter ohne Cache, Ruff/Import-Linter/pytest cachelos, mypy nichtinkrementell mit Windows-Cacheziel `nul` sowie Workflow-, Quell- und Hidden-Ignore-Vertrag | implementiert; Hypothesis 6.151.10 schreibt bestätigt `.hypothesis`-Cachebytes, aber keine eigene `.gitignore`; exakte Befehle und `lint_imports(no_cache=True)` sind strukturell gebunden, Hidden-Ignore-Inventarisierung ist `lstat`-/Reparse-sicher und behandelt Windows-`.gitignore`-Pfade case-insensitiv; der zuvor bei 64 Prozent reproduzierte `.import_linter_cache/.gitignore`-Fehler und benachbarte Kontaminationen werden gezielt und in der vollständigen Suite erneut geprüft; Finalgate offen |
 | CX221-064 | Semgrep aus der exakt deklarierten aktiven absoluten `UV_PROJECT_ENVIRONMENT` außerhalb des Release-Checkouts beziehen statt `<Repository>/.venv` vorauszusetzen | implementiert; Wrapper validiert externe Prefix-/pyvenv-/Scripts-/Executable-Identität, akzeptiert aufgelöste Windows-Pfadalias-Identität und lehnt fehlende, relative, abweichende sowie den Checkout enthaltende oder darin enthaltene Umgebungen ab; kanonische Wiederholung offen |
 | CX221-065 | Die nach CX221-063 verschobene, unverändert legitime Architekturtest-Importstelle erneut vollständig an Span, Zeilen- und normalisierten Dateihash binden | implementiert; kanonisches Gate brach mit exaktem Missing-/Extra-Paar fail-closed ab, unabhängige Adjudikation bestätigte die nur verschobene literale Eigenmodulliste, source-grounded Contracttest ergänzt; kanonische Wiederholung offen |
+| CX221-066 | Reale CLI-Unit-Surfaces aus dem Repository-CWD isolieren, ohne die sicherheitsbedingt persistente Produkt-Guard-Inode zu löschen | implementiert; gemeinsame opt-in-`tmp_path`-Workspace-Fixture für neun Module, vorhandene testlokale CWDs bleiben maßgeblich, echte CLI-Gegenprobe erwartet den Guard nur extern, statischer Modulvertrag und fokussierter Cluster 235/235 bei unverändert null Root-Lock-Artefakten; vollständige Wiederholung offen |
 
 CX221-044 bindet in `[dependency-groups].release`
 `check-wheel-contents==0.6.3`, `pyflakes==3.4.0`, `twine==7.0.0` und
@@ -680,8 +681,9 @@ Suite auf Commit `277821da25fbf791cea2ac3c30495984808c74e6` bestand mit
 2.313/43, 85 Prozent und sauberer Nachlaufprovenienz; das anschließend zweimal
 vor dem Scan abgebrochene Semgrep-Gate deckte CX221-064 auf; der erste danach
 erreichte Scan deckte mit einem exakten Missing-/Extra-Paar die stale
-Allowlist-Signatur CX221-065 auf. Nach deren Korrektur werden die
-Kandidatengates vollständig erneut ausgeführt;
+Allowlist-Signatur CX221-065 auf. Die danach inhaltlich grüne vollständige
+Suite deckte im Nachlauf den ignorierten Checkout-Guard CX221-066 auf. Nach
+dessen Korrektur werden die Kandidatengates vollständig erneut ausgeführt;
 anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
 
 ### 13.4 Noch ausstehende Abschlusssequenz
@@ -693,7 +695,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    `--tests-dir tests/unit/test_code_coverage.py`, `--max-children 4`,
    `--output json --no-progress` sind grün. Der bewusst nicht autoritative
    Subset-Pilot lief ohne `--min-score`, erreichte 90/1 bei 98,9 Prozent und
-   besitzt keine CI-Exportautorität. CX221-065 ist gezielt sowie im neuen
+   besitzt keine CI-Exportautorität. CX221-066 ist gezielt sowie im neuen
    vollständigen Kandidatengate erneut zu beweisen.
 2. Implementierungscommit erzeugen, auf dem sauberen Commit das kanonische
    Native-Release-Gate sowie die Kandidatengates wiederholen und erst danach
@@ -716,7 +718,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    Eine billingbedingt nicht gestartete CI wird im Releasehinweis als
    Evidenzlücke benannt, niemals als bestanden.
 
-**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-065 ist implementiert,
+**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-066 ist implementiert,
 aber sein gezieltes und vollständiges Kandidatengate ist noch offen; danach
 stehen Review-Integration, integrierte Wiederholung, Rebuild, Installed-Smokes,
 Tag und Release aus.
