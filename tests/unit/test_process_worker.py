@@ -11,9 +11,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _pytest.config.argparsing import Parser
 
 import mutmut_win.process.worker as worker_module
-from mutmut_win.exceptions import ProcessContainmentError
+from mutmut_win.exceptions import BadTestExecutionCommandsException, ProcessContainmentError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.worker import MUTANT_ENV_VAR, _kill_proc_tree, worker_main
 
@@ -510,18 +511,26 @@ class TestWorkerMain:
         assert "--no-header" in captured_cmds[0]
         assert "-x" in captured_cmds[0]
 
-    def test_non_authoritative_full_suite_uses_ordered_argfile_below_windows_limit(
+    @pytest.mark.parametrize("authoritative", [False, True])
+    def test_worker_uses_ordered_argfile_below_windows_limit(
         self,
+        authoritative: bool,
     ) -> None:
         staged_test = Path("mutants/test_long.py")
         staged_test.write_text("def test_placeholder():\n    pass\n", encoding="utf-8")
         targets = [f"test_long.py::test_{index:04d}_{'x' * 80}" for index in range(500)]
+        targets.insert(137, "test_long.py::test_placeholder[東京 café]")
         direct_cmd = [sys.executable, "-m", "pytest", "--", *targets]
         assert len(subprocess.list2cmdline(direct_cmd)) > 32_767
 
         task_q: _SimpleQueue = _SimpleQueue()
         event_q: _SimpleQueue = _SimpleQueue()
-        task_q.put(_simple_task(test_selection_is_authoritative=False))
+        task_q.put(
+            _simple_task(
+                tests=targets if authoritative else ["test_long.py::test_placeholder"],
+                test_selection_is_authoritative=authoritative,
+            )
+        )
         task_q.put(None)
         captured: dict[str, object] = {}
 
@@ -531,9 +540,11 @@ class TestWorkerMain:
             target_args = cmd[separator + 1 :]
             assert len(target_args) == 1
             assert target_args[0].startswith("@")
-            captured["argfile_targets"] = (
-                Path(target_args[0][1:]).read_text(encoding="utf-8").splitlines()
-            )
+            argument_file = Path(target_args[0][1:])
+            expected_bytes = "".join(f"{target}\n" for target in targets).encode("utf-8")
+            assert argument_file.read_bytes() == expected_bytes
+            parsed = Parser(_ispytest=True).parse_known_args(["--", *target_args])
+            captured["argfile_targets"] = parsed.file_or_dir
             env = kwargs["env"]
             assert isinstance(env, dict)
             captured["has_preferred_order"] = "MUTMUT_PYTEST_PREFERRED_TESTS_PATH" in env
@@ -552,6 +563,32 @@ class TestWorkerMain:
         assert len(subprocess.list2cmdline(cmd)) < 32_767
         assert captured["argfile_targets"] == targets
         assert captured["has_preferred_order"] is False
+
+    @pytest.mark.parametrize("target_origin", ["config", "authoritative-task"])
+    def test_worker_targets_reject_parser_line_breaks_before_process_start(
+        self, target_origin: str
+    ) -> None:
+        target = "tests/test_example.py::test_value[first\x85second]"
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task(tests=[target], test_selection_is_authoritative=True))
+        task_q.put(None)
+        config = _make_config(tests_dir=[target] if target_origin == "config" else ["tests/"])
+
+        with patch("mutmut_win.process.worker.subprocess.Popen") as popen:
+            if target_origin == "config":
+                with pytest.raises(BadTestExecutionCommandsException, match="NUL or line breaks"):
+                    worker_main(task_q, event_q, config)  # type: ignore[arg-type]
+                assert event_q.empty()
+            else:
+                worker_main(task_q, event_q, config)  # type: ignore[arg-type]
+                completed = TaskCompleted.model_validate(event_q.get())
+                assert completed.exit_code == 35
+                assert "BadTestExecutionCommandsException" in (completed.last_output or "")
+                assert "NUL or line breaks" in (completed.last_output or "")
+                assert event_q.empty()
+
+        popen.assert_not_called()
 
     def test_real_pytest_keeps_native_order_with_non_authoritative_hint(
         self,

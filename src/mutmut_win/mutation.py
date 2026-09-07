@@ -84,6 +84,25 @@ def mutate_file_contents(
     return combine_mutations_to_source(module, mutations)
 
 
+def parse_module_preserving_newlines(source: str) -> cst.Module:
+    """Parse source without losing a final bare CR during later code generation.
+
+    LibCST recognises CR line endings but marks a module ending in bare CR as
+    having no trailing newline. Correct that flag before replacing any nodes;
+    the original newline spelling is already present in the CST.
+
+    Args:
+        source: Decoded Python source with its original physical newlines.
+
+    Returns:
+        Parsed module with an accurate trailing-newline flag.
+    """
+    module = cst.parse_module(source)
+    if source.endswith("\r") and not module.has_trailing_newline:
+        module = module.with_changes(has_trailing_newline=True)
+    return module
+
+
 def create_mutations(
     code: str,
     covered_lines: set[int] | None = None,
@@ -99,7 +118,7 @@ def create_mutations(
     """
     ignored_lines = pragma_no_mutate_lines(code)
 
-    module = cst.parse_module(code)
+    module = parse_module_preserving_newlines(code)
 
     metadata_wrapper = MetadataWrapper(module)
     visitor = MutationVisitor(
@@ -1082,7 +1101,10 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     - ``# pragma: no mutate start`` … ``# pragma: no mutate end`` — the inclusive
       range between the two markers; a dangling ``start`` skips to end-of-file.
     """
-    lines = source.split("\n")
+    # Tokenize follows Python's universal-newline view; the CST input remains
+    # untouched so comments, string literals and continuations retain bytes.
+    scanner_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    lines = scanner_source.split("\n")
     ignored: set[int] = set()
     open_start: int | None = None
     # Tokenization is essential here: scanning raw source text mistakes pragma
@@ -1093,7 +1115,7 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     try:
         comment_tokens = [
             token
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            for token in tokenize.generate_tokens(io.StringIO(scanner_source).readline)
             if token.type == tokenize.COMMENT
         ]
     except (

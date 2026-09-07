@@ -22,6 +22,7 @@ from mutmut_win.constants import SOURCE_ROOT_NAMES, configured_staging_relative_
 from mutmut_win.exceptions import OrchestratorError
 from mutmut_win.process.worker import (
     PYTEST_PHASE_GUARD_PLUGIN,
+    _write_pytest_argfile,
     apply_pytest_boundary_environment,
     configure_ephemeral_pytest_environment,
     consume_pytest_phase_guard,
@@ -90,6 +91,24 @@ def _with_isolated_pytest_cache(cmd: list[str], cache_dir: str) -> list[str]:
         f"cache_dir={cache_dir}",
         *cmd[separator:],
     ]
+
+
+def _with_pytest_target_argfile(cmd: list[str], runtime_dir: Path) -> list[str]:
+    """Move the internal target tail into one invocation-owned argument file.
+
+    Every parent phase uses the same ordered target transport as workers,
+    avoiding Windows' command-line limit before mutation tasks even begin.
+    The enclosing runtime context owns cleanup on success and every failure;
+    no argument-file bytes enter the executable staging basis (CX221-070).
+    """
+    if "--" not in cmd:
+        return cmd
+    separator = cmd.index("--")
+    targets = validated_pytest_targets(cmd[separator + 1 :], field_name="pytest target tail")
+    if not targets:
+        return cmd
+    argument_file = _write_pytest_argfile(targets, runtime_dir)
+    return [*cmd[: separator + 1], f"@{argument_file.absolute()}"]
 
 
 def _run_collection_process(
@@ -280,6 +299,7 @@ class PytestRunner:
             cache_dir = configure_ephemeral_pytest_environment(isolated_env, runtime_dir)
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
+            isolated_cmd = _with_pytest_target_argfile(isolated_cmd, runtime_dir)
             return self._run_phase_process(
                 phase_name,
                 isolated_cmd,
@@ -446,8 +466,10 @@ class PytestRunner:
                 cache_dir = runtime_dir / "pytest-cache"
                 cache_dir.mkdir()
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
+            isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
+            isolated_cmd = _with_pytest_target_argfile(isolated_cmd, runtime_dir)
             result = _run_collection_process(
-                _with_isolated_pytest_cache(isolated_cmd, str(cache_dir)),
+                isolated_cmd,
                 cwd="mutants" if staging_exists else None,
                 env=env,
                 timeout=self._config.clean_run_timeout,

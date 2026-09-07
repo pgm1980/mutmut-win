@@ -219,9 +219,20 @@ class TestCollectTests:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir(exist_ok=True)
         runner = PytestRunner(_config(pytest_add_cli_args=["-m", "not slow"], tests_dir=["tests/"]))
+        captured_targets: list[str] = []
+
+        def collect(cmd: list[str], **_kwargs: Any) -> MagicMock:
+            target_tail = cmd[cmd.index("--") + 1 :]
+            assert len(target_tail) == 1
+            assert target_tail[0].startswith("@")
+            captured_targets.extend(
+                Path(target_tail[0][1:]).read_text(encoding="utf-8").splitlines()
+            )
+            return _make_completed_process(0, stdout="")
+
         with patch(
             "mutmut_win.runner._run_collection_process",
-            return_value=_make_completed_process(0, stdout=""),
+            side_effect=collect,
         ) as mock_run:
             runner.collect_tests()
 
@@ -229,7 +240,7 @@ class TestCollectTests:
         kwargs = mock_run.call_args[1]
         assert "-m" in cmd
         assert "not slow" in cmd
-        assert "tests/" in cmd
+        assert captured_targets == ["tests/"]
         assert kwargs.get("cwd") == "mutants"
         assert kwargs.get("timeout") == runner._config.clean_run_timeout
         env = kwargs.get("env")
@@ -371,12 +382,22 @@ class TestRunStats:
         assert os.environ.get(MUTANT_ENV_VAR) == before
 
     def test_tests_dir_forwarded(self) -> None:
-        """tests_dir config should be included in the pytest command."""
+        """tests_dir config must reach pytest through the private argument file."""
         runner = PytestRunner(_config(tests_dir=["tests/unit/"]))
-        with _phase_popen(0) as mock_sub:
+        captured_targets: list[str] = []
+
+        def run_phase(_phase: str, cmd: list[str], _env: dict[str, str], **_kwargs: Any) -> int:
+            target_tail = cmd[cmd.index("--") + 1 :]
+            assert len(target_tail) == 1
+            assert target_tail[0].startswith("@")
+            captured_targets.extend(
+                Path(target_tail[0][1:]).read_text(encoding="utf-8").splitlines()
+            )
+            return 0
+
+        with patch.object(runner, "_run_phase_process", side_effect=run_phase):
             runner.run_stats()
-        cmd = mock_sub.call_args[0][0]
-        assert "tests/unit/" in cmd
+        assert captured_targets == ["tests/unit/"]
 
 
 # ---------------------------------------------------------------------------

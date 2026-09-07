@@ -584,6 +584,7 @@ def _helper_owner_for_target(
     *,
     active_helpers: dict[str, str],
     import_roots: Sequence[Path],
+    is_directory: bool = False,
 ) -> str | None:
     """Return the internal owner shadowed by one planned import target."""
 
@@ -596,7 +597,11 @@ def _helper_owner_for_target(
         first = remainder[0]
         for module_name, owner in active_helpers.items():
             folded_module = module_name.casefold()
-            if len(remainder) > 1 and first == folded_module:
+            # An empty directory is already a PEP 420 namespace. Publishing
+            # the helper would replace its import identity even without any
+            # descendant files. A same-named extensionless regular file is
+            # ordinary user data and must remain allowed (CX221-068).
+            if first == folded_module and (len(remainder) > 1 or is_directory):
                 return owner
             if len(remainder) == 1 and any(
                 first == f"{folded_module}{suffix.casefold()}"
@@ -783,6 +788,7 @@ def validate_staging_namespace(
                 target,
                 active_helpers=active_helpers,
                 import_roots=import_roots,
+                is_directory=source.is_dir(),
             )
         if owner is not None:
             collisions.add((str(target), str(source), owner))
@@ -975,13 +981,20 @@ def _copy_with_retry(
         copy_once()
 
 
-def _atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> str:
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    translate_newlines: bool = True,
+) -> str:
     """Publish encoded text and return the SHA-256 of the exact written bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Match TextIOWrapper's platform newline translation explicitly, then
-    # publish those immutable bytes.  Generation inputs were read in text
-    # mode, so they contain normalized LF rather than pre-existing CRLF.
-    payload = content.replace("\n", os.linesep).encode(encoding)
+    # Keep text-file callers' platform newline behavior. Generated Python opts
+    # out because the CST already contains the source's physical newlines.
+    if translate_newlines:
+        content = content.replace("\n", os.linesep)
+    payload = content.encode(encoding)
     with _temporarily_writable_staging_leaf(path):
         atomic_write_bytes(path, payload)
     return hashlib.sha256(payload).hexdigest()
@@ -993,9 +1006,9 @@ _CODING_COOKIE = re.compile(
 
 
 def _decode_python_source(payload: bytes) -> tuple[str, str]:
-    """Decode Python bytes according to PEP 263 and normalize physical newlines."""
+    """Decode PEP 263 source without changing its physical newline bytes."""
     encoding, _consumed = tokenize.detect_encoding(BytesIO(payload).readline)
-    with TextIOWrapper(BytesIO(payload), encoding=encoding, newline=None) as source_file:
+    with TextIOWrapper(BytesIO(payload), encoding=encoding, newline="") as source_file:
         return source_file.read(), encoding
 
 
@@ -1028,14 +1041,14 @@ def _atomic_write_generated_python(
 ) -> str:
     """Publish generated Python without contradicting its PEP 263 cookie."""
     try:
-        return _atomic_write_text(path, content, encoding=source_encoding)
+        return _atomic_write_text(path, content, encoding=source_encoding, translate_newlines=False)
     except UnicodeEncodeError:
         # Generated private method identifiers can contain the Unicode scope
         # separator even when the user source is cp1252/latin-1.  Staging is an
         # internal derivative, so normalize it to UTF-8 and update the cookie;
         # ``apply`` still writes the public source in its original encoding.
         utf8_content = _rewrite_coding_cookie(content, "utf-8")
-        return _atomic_write_text(path, utf8_content, encoding="utf-8")
+        return _atomic_write_text(path, utf8_content, encoding="utf-8", translate_newlines=False)
 
 
 def copy_src_dir(
@@ -1484,10 +1497,10 @@ def _sync_deleted_sources(
                         continue
                 _unlink_staging_file(staged)
                 removed += 1
-                if name.casefold().endswith(".py"):
-                    meta = Path(str(staged) + ".meta")
-                    if meta.exists():
-                        _unlink_staging_file(meta)
+                # Every companion is visited independently through the same
+                # expected-input and configured-owner checks. Deleting a
+                # *.py file must not also erase a live user *.py.meta fixture
+                # or another mirror's independently owned input (CX221-067).
 
         # Files are synchronized first; then remove only directory shells
         # whose corresponding live directory disappeared.  Leaving one such
@@ -1965,12 +1978,13 @@ def create_mutants_for_file(
     # universe must be regenerated regardless of file timestamps.
     source_bytes = filename.read_bytes()
     source_hash = hashlib.sha256(source_bytes).hexdigest()
-    # PEP 263 is part of Python's source contract. Text-style universal-newline
-    # decoding avoids CRCRLF when the generated text is published on Windows;
-    # the hash above remains byte-exact.
+    # Preserve physical newlines throughout the CST roundtrip, including those
+    # inside multiline strings and explicit continuations. The generated writer
+    # likewise bypasses Windows newline translation.
     source, source_encoding = _decode_python_source(source_bytes)
     generation_payload = json.dumps(
         {
+            "source_newline_policy": "preserve-v1",
             "profile": active_profile.to_name(),
             "do_not_mutate_patterns": sorted(do_not_mutate_patterns),
             "covered_lines": sorted(covered_lines) if covered_lines is not None else None,

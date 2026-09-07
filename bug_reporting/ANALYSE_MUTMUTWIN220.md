@@ -773,11 +773,15 @@ v2.21.0-Release als Historie.
 
 ### 19.5 Aktueller Nachfolger
 
-Die vollständige neue Adjudikation steht in
-`bug_reporting/ANALYSE_MUTMUTWIN221.md`. Die Korrekturen werden auf
-`fix/v2.21.1-windows314` entwickelt. v2.21.1 ist noch nicht veröffentlicht und
-besitzt noch kein vollständiges lokales Finalgate oder autoritative Artefakte.
-Eine billingbedingt nicht verfügbare neue GitHub-CI ist ausdrücklich weder PASS
-noch FAIL.
+Die vollständige Nachfolger-Adjudikation, die konkreten Commit-/Tree-Belege
+und der jeweilige Abschlussstand stehen in
+`bug_reporting/ANALYSE_MUTMUTWIN221.md`, der zugehörigen Roadmap und
+`.sprint/state.md`. Dieses historische MW220-Addendum behauptet keinen
+unveränderlichen aktuellen Publikationszustand des Nachfolgers. Vor dessen
+Verwendung sind das annotierte Tag und der zugehörige GitHub-Release samt
+Artefakten live zu prüfen. Neue Reauditbefunde ändern weder die historische
+115er-ID-Menge noch die oben zeitgebunden dokumentierten Ergebnisse.
+Eine billingbedingt nicht ausgeführte neue GitHub-CI trägt ausschließlich
+den Status `NOT_EXECUTED`; sie ist weder PASS noch FAIL.
 
 <!-- MW221_SCOPE_ADDENDUM_END -->

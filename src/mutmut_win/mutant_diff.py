@@ -26,6 +26,7 @@ from mutmut_win.exceptions import (
 )
 from mutmut_win.file_setup import read_verified_generated_bytes, walk_source_files
 from mutmut_win.models import SourceFileMutationData
+from mutmut_win.mutation import parse_module_preserving_newlines
 from mutmut_win.test_mapping import (
     function_definition_location_from_key,
     mangled_name_from_mutant_name,
@@ -164,7 +165,7 @@ def read_mutants_module(
     )
     source, _encoding = _decode_python_bytes(payload, target)
     try:
-        return cst.parse_module(source)
+        return parse_module_preserving_newlines(source)
     except cst.ParserSyntaxError as exc:
         msg = f"cannot parse staged file {target}: {exc}"
         raise MutationParseError(msg) from exc
@@ -185,7 +186,7 @@ def read_orig_module(path: Path | str) -> cst.Module:
     """
     source, _encoding = _decode_python_bytes(Path(path).read_bytes(), path)
     try:
-        return cst.parse_module(source)
+        return parse_module_preserving_newlines(source)
     except cst.ParserSyntaxError as exc:
         msg = f"cannot parse source file {path}: {exc}"
         raise MutationParseError(msg) from exc
@@ -318,6 +319,7 @@ def read_mutant_function(module: cst.Module, mutant_name: str) -> cst.FunctionDe
 
 
 def _public_mutant_function(
+    original_module: cst.Module,
     original_function: cst.FunctionDef,
     mutants_module: cst.Module,
     mutant_name: str,
@@ -332,6 +334,22 @@ def _public_mutant_function(
     mutant; the public declaration remains byte-for-byte CST-equivalent to the
     current source definition.
     """
+    # Older Windows generation normalized whole bodies, including string and
+    # continuation newlines. Valid source/staging hashes alone cannot certify
+    # that such a body is safe to transplant. Render both originals under the
+    # public module's defaults so compatible legacy staging remains usable.
+    stale_message = (
+        f"Staged original body for {mutant_name} does not match the source; "
+        "re-run 'mutmut-win run' to regenerate mutants before show or apply."
+    )
+    try:
+        staged_original = read_original_function(mutants_module, mutant_name)
+    except FileNotFoundError as exc:
+        raise StaleStagingError(stale_message) from exc
+    if original_module.code_for_node(original_function.body) != original_module.code_for_node(
+        staged_original.body
+    ):
+        raise StaleStagingError(stale_message)
     private_mutant = read_mutant_function(mutants_module, mutant_name)
     return original_function.with_changes(body=private_mutant.body)
 
@@ -345,7 +363,7 @@ def _source_modules_for_mutant(
     """Return a verified source module and its one-function mutant variant."""
     source, encoding = _decode_python_bytes(source_bytes, path)
     try:
-        original_module = cst.parse_module(source)
+        original_module = parse_module_preserving_newlines(source)
     except cst.ParserSyntaxError as exc:
         msg = f"cannot parse source file {path}: {exc}"
         raise MutationParseError(msg) from exc
@@ -368,6 +386,7 @@ def _source_modules_for_mutant(
         )
 
     public_mutant = _public_mutant_function(
+        original_module,
         original_function,
         mutants_module,
         mutant_name,
@@ -566,8 +585,8 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     source, source_encoding = _decode_python_bytes(source_bytes, source_path)
     staged_bytes = read_verified_generated_bytes(path, data.generated_hash)
     staged_source, _staged_encoding = _decode_python_bytes(staged_bytes, mutants_path)
-    orig_module = cst.parse_module(source)
-    mutants_module = cst.parse_module(staged_source)
+    orig_module = parse_module_preserving_newlines(source)
+    mutants_module = parse_module_preserving_newlines(staged_source)
 
     original_function = _find_function_in_scope(
         orig_module,
@@ -579,6 +598,7 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
         raise FileNotFoundError(f"Could not apply mutant {mutant_name}")
 
     mutant_function = _public_mutant_function(
+        orig_module,
         original_function,
         mutants_module,
         mutant_name,

@@ -1,6 +1,6 @@
 # BUGFIXUNG ROADMAP – mutmut-win 2.20.0 → 2.21.0 → 2.21.1
 
-**Stand:** 2026-09-07
+**Stand:** 2026-09-08
 **Quellen:** [ANALYSE_MUTMUTWIN220.md](ANALYSE_MUTMUTWIN220.md) und
 [ANALYSE_MUTMUTWIN221.md](ANALYSE_MUTMUTWIN221.md)
 
@@ -15,13 +15,13 @@ Reparatur erfolgt auf `fix/v2.21.1-windows314`.
 **Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
 MW220-001 bis MW220-115 und bleibt historische
 Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
-klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-066
+klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-067 bis CX221-070
 erneut auf das vollständige lokale Finalgate;
 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
 sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
 außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
-66 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 59 P1 und 5 P2.
-Alle 66 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
+70 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 63 P1 und 5 P2.
+Alle 70 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
 integriert noch getaggt oder veröffentlicht.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
@@ -564,8 +564,8 @@ reine Ambient-Drift diagnostische Ergebnisse ohne Releaseautorität bewahren dar
 Diese eigene ID-Serie ergänzt Claudes unveränderte MW221-001-bis--046-Matrix
 und fließt nicht in deren Statussumme ein.
 
-Sie umfasst exakt CX221-001 bis CX221-066; ihre Prioritätsverteilung lautet
-2 P0, 59 P1 und 5 P2.
+Sie umfasst exakt CX221-001 bis CX221-070; ihre Prioritätsverteilung lautet
+2 P0, 63 P1 und 5 P2.
 
 | ID | Maßnahme | Stand |
 |---|---|---|
@@ -635,6 +635,10 @@ Sie umfasst exakt CX221-001 bis CX221-066; ihre Prioritätsverteilung lautet
 | CX221-064 | Semgrep aus der exakt deklarierten aktiven absoluten `UV_PROJECT_ENVIRONMENT` außerhalb des Release-Checkouts beziehen statt `<Repository>/.venv` vorauszusetzen | implementiert; Wrapper validiert externe Prefix-/pyvenv-/Scripts-/Executable-Identität, akzeptiert aufgelöste Windows-Pfadalias-Identität und lehnt fehlende, relative, abweichende sowie den Checkout enthaltende oder darin enthaltene Umgebungen ab; kanonische Wiederholung offen |
 | CX221-065 | Die nach CX221-063 verschobene, unverändert legitime Architekturtest-Importstelle erneut vollständig an Span, Zeilen- und normalisierten Dateihash binden | implementiert; kanonisches Gate brach mit exaktem Missing-/Extra-Paar fail-closed ab, unabhängige Adjudikation bestätigte die nur verschobene literale Eigenmodulliste, source-grounded Contracttest ergänzt; kanonische Wiederholung offen |
 | CX221-066 | Reale CLI-Unit-Surfaces aus dem Repository-CWD isolieren, ohne die sicherheitsbedingt persistente Produkt-Guard-Inode zu löschen | implementiert; gemeinsame opt-in-`tmp_path`-Workspace-Fixture für neun Module, vorhandene testlokale CWDs bleiben maßgeblich, echte CLI-Gegenprobe erwartet den Guard nur extern, statischer Modulvertrag und fokussierter Cluster 235/235 bei unverändert null Root-Lock-Artefakten; vollständige Wiederholung offen |
+| CX221-067 | Jede verbliebene `.py.meta`-Userfixture anhand ihrer eigenen Expected-/Mirror-Ownership erhalten, auch nach alleiniger Löschung der Python-Begleitdatei | implementiert; vier negative Übergangsregressionen einschließlich Windows-Großschreibung sowie `also_copy`/`extra_paths`; Finalgate offen |
+| CX221-068 | Leere reservierte Helper-Namespaces vor Materialisierung ablehnen, reguläre extensionlose Datendateien weiter erlauben | implementiert; 15 Namespace-Gegenproben und neun positive Datendatei-Kontrollen; Finalgate offen |
+| CX221-069 | Physische Python-Zeilenenden durch Generation, Show und Apply erhalten; nicht treues Altstaging vor Writes ablehnen und Generationspolicy erneuern | implementiert; 20 neue Generation-/Patch-/Apply-/Backup-/Legacy-/Pragmafälle, fokussierter Verbund 319/3; Finalgate offen |
+| CX221-070 | Geordnete interne Argfiles auch für sämtliche Elternphasen verwenden und deren Lifetime an externe Runtime-Kontexte binden; alle argparse-Zeilentrenner gemeinsam ablehnen | implementiert; 36 neue Transporttests mit 601 realen Targets sowie 34 weitere Parser-/Eltern-/Workerfälle mit echtem Unicode-Parserroundtrip; Finalgate offen |
 
 CX221-044 bindet in `[dependency-groups].release`
 `check-wheel-contents==0.6.3`, `pyflakes==3.4.0`, `twine==7.0.0` und
@@ -662,14 +666,15 @@ wiederholt und erst dann als Kandidatenevidenz gewertet.
 Das Native-Manifest umfasst bewusst nur die ersten drei GitHub-Assets. Zizmor
 kommt aus `uv.lock`; das manylinux-Wheel belegt nur den Buildhost und keine
 unterstützte Linux-Runtime.
-Der aktuelle Windows-/CPython-3.14.7-Arbeitsbaum bestand vor dem
+Der damalige Windows-/CPython-3.14.7-Arbeitsbaum bestand vor dem
 Implementierungscommit die vollständige strikte Suite mit 2.303 passed,
 43 skipped und 0 failed in 40:34 Minuten sowie auf dem sauberen Commit
 `4daed987742d24b420285fec46fc91bc2e1189a4` die Coverage-Suite mit denselben
 Testzahlen, 9.727 Statements, 1.450 Missing und 85 Prozent in 43:51 Minuten.
 Ruff Check, Format (172 Dateien), mypy (39 Dateien), Import-Linter, Lockprüfung
-und der vollständige Dependency-Export/Pip-Audit sind grün; Pip-Audit meldet
-0 bekannte Schwachstellen. Das kanonische Semgrep-Gate bestand mit 225
+und der vollständige Dependency-Export/Pip-Audit waren auf diesem damaligen
+Commit grün; Pip-Audit meldete 0 bekannte Schwachstellen. Das kanonische
+Semgrep-Gate bestand mit 225
 Manifestdateien, 224 Targets, 346 Regeln, exakt 22 allowgelisteten Treffern und
 jeweils 0 unerwarteten Findings, Errors, übersprungenen Regeln und Fixpoint-
 Timeouts. Derselbe saubere Implementierungscommit bestand in einer frisch
@@ -686,6 +691,18 @@ Suite deckte im Nachlauf den ignorierten Checkout-Guard CX221-066 auf. Nach
 dessen Korrektur werden die Kandidatengates vollständig erneut ausgeführt;
 anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
 
+Der unabhängige Reaudit vom 2026-09-07/08 bestätigte danach CX221-067 bis
+CX221-070. Der noch laufende Vollsuiteversuch auf `04089557` wurde deshalb
+kontrolliert beendet und ist ABORTED, kein PASS. Die vier Korrekturen
+besitzen getrennte Rot-/Grünbelege: 19/9 vor den Stagingfixes, 15/5 vor
+dem Sourcefidelity-Fix und 24/12 vor dem Argfile-Fix; danach bestanden
+sämtliche 84 ursprünglichen neuen Fälle in den jeweiligen fokussierten Verbünden.
+Der Crossreview ergänzte 34 Parser-/Eltern-/Workerfälle zur Ablehnung aller
+argparse-Zeilentrenner und zum bytegetreuen Unicode-Roundtrip. Der abschließende
+Root-Verbund bestand mit 494 passed/3 skipped in 35,59 s; Ruff check/format
+aller 13 geänderten Pythondateien blieb ohne Befund. Der neue Gesamtbaum
+benötigt sämtliche commit-genauen Kandidatengates.
+
 ### 13.4 Noch ausstehende Abschlusssequenz
 
 1. Der frühere Arbeitsbaum-Nachweis umfasste alle Regressionen, vollständige
@@ -695,7 +712,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    `--tests-dir tests/unit/test_code_coverage.py`, `--max-children 4`,
    `--output json --no-progress` sind grün. Der bewusst nicht autoritative
    Subset-Pilot lief ohne `--min-score`, erreichte 90/1 bei 98,9 Prozent und
-   besitzt keine CI-Exportautorität. CX221-066 ist gezielt sowie im neuen
+   besitzt keine CI-Exportautorität. CX221-067 bis CX221-070 sind gezielt belegt; der neue Gesamtbaum ist im
    vollständigen Kandidatengate erneut zu beweisen.
 2. Implementierungscommit erzeugen, auf dem sauberen Commit das kanonische
    Native-Release-Gate sowie die Kandidatengates wiederholen und erst danach
@@ -718,7 +735,8 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    Eine billingbedingt nicht gestartete CI wird im Releasehinweis als
    Evidenzlücke benannt, niemals als bestanden.
 
-**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-066 ist implementiert,
-aber sein gezieltes und vollständiges Kandidatengate ist noch offen; danach
-stehen Review-Integration, integrierte Wiederholung, Rebuild, Installed-Smokes,
-Tag und Release aus.
+**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-067 bis CX221-070
+sind implementiert und fokussiert regressionsgetestet. Vollständige
+commit-genaue Implementierungs-/Kandidatengates, reviewed Integration,
+integrierte Wiederholung, Doppelbuild, Installed-Smokes, Tag, Release und
+dessen Live-/Downloadverifikation stehen noch aus.

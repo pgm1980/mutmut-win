@@ -389,6 +389,95 @@ class TestCopySrcDir:
         assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
         assert not (tmp_path / "mutants").exists()
 
+    @pytest.mark.parametrize("import_root", [".", "src", "source"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_empty_helper_namespace_is_rejected_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        import_root: str,
+        helper_name: str,
+    ) -> None:
+        """CX221-068: an empty namespace still has an import-visible identity."""
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        namespace = tmp_path / import_root / helper_name
+        namespace.mkdir(parents=True)
+
+        with pytest.raises(StagingNamespaceCollisionError, match="reserved staging namespace"):
+            copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert namespace.is_dir()
+        assert list(namespace.iterdir()) == []
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("mirror_field", ["also_copy", "extra_paths"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_empty_configured_helper_namespace_is_rejected_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mirror_field: str,
+        helper_name: str,
+    ) -> None:
+        project = tmp_path / "project"
+        selected = project / "src" / "selected.py"
+        selected.parent.mkdir(parents=True)
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        namespace = tmp_path / "external" / helper_name
+        namespace.mkdir(parents=True)
+        configured_path = (
+            f"../external/{helper_name}" if mirror_field == "also_copy" else "../external"
+        )
+        staging = project / "mutants"
+        staging.mkdir()
+        sentinel = staging / "sentinel.bin"
+        sentinel.write_bytes(b"PREEXISTING-STAGING")
+        monkeypatch.chdir(project)
+
+        with pytest.raises(StagingNamespaceCollisionError, match="reserved staging namespace"):
+            copy_src_dir(
+                _config(paths_to_mutate=["src/selected.py"], **{mirror_field: [configured_path]})
+            )
+
+        assert namespace.is_dir()
+        assert list(namespace.iterdir()) == []
+        assert sentinel.read_bytes() == b"PREEXISTING-STAGING"
+        assert list(staging.iterdir()) == [sentinel]
+
+    @pytest.mark.parametrize("import_root", [".", "src", "source"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_extensionless_helper_data_file_remains_a_normal_fixture(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        import_root: str,
+        helper_name: str,
+    ) -> None:
+        """A regular file without an importable suffix is not a namespace."""
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        fixture = tmp_path / import_root / helper_name
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(b"EXTENSIONLESS-USER-DATA")
+
+        copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert fixture.read_bytes() == b"EXTENSIONLESS-USER-DATA"
+        assert (
+            tmp_path / "mutants" / import_root / helper_name
+        ).read_bytes() == b"EXTENSIONLESS-USER-DATA"
+
     def test_unselected_source_metadata_name_remains_a_normal_fixture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

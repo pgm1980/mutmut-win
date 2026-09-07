@@ -1928,7 +1928,7 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     assert {match.group("status") for match in follow_up_rows} <= _MW221_STATUSES
     mw_statuses = {match.group("id"): match.group("status") for match in follow_up_rows}
 
-    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 67)}
+    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 71)}
     codex_rows = list(
         re.finditer(
             r"^\| (?P<id>CX221-\d{3}) \| (?P<priority>P[012]) \| "
@@ -1971,17 +1971,17 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     )
     assert set(roadmap_ids) == expected_codex_ids
     assert len(roadmap_ids) == len(expected_codex_ids)
-    assert "66 getrennt geführten Codex-Follow-up-Findings" in roadmap
+    assert "70 getrennt geführten Codex-Follow-up-Findings" in roadmap
     assert "ANALYSE_MUTMUTWIN221.md" in roadmap
     assert "Windows und exakt CPython 3.14.7" in follow_up
-    assert "2 P0, 59 P1 und 5 P2" in follow_up
-    assert "2 P0, 59 P1 und 5 P2" in roadmap
+    assert "2 P0, 63 P1 und 5 P2" in follow_up
+    assert "2 P0, 63 P1 und 5 P2" in roadmap
     assert "gelockte Repository-`.venv` binden" not in roadmap
 
     expected_provenance = _expected_release_tool_provenance()
     for report in (follow_up, roadmap):
         dates = re.findall(r"^\*\*Stand:\*\* (\d{4}-\d{2}-\d{2})$", report, re.MULTILINE)
-        assert dates == ["2026-09-07"]
+        assert len(dates) == 1
         assert date.fromisoformat(dates[0]) >= date(2026, 9, 7)
         assert _release_tool_provenance(report) == expected_provenance
         assert "a2fcf298b84d3d8498a3d718bb63f0abe26823bf68a11f0f439620f8f2f878f0" not in report

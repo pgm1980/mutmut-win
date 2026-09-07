@@ -789,6 +789,69 @@ class TestWave3StagingHygiene:
 
         assert not staged_meta.exists()
 
+    @pytest.mark.parametrize("source_name", ["other.py", "OTHER.PY"])
+    def test_retained_meta_fixture_survives_deleted_unselected_python_companion(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source_name: str,
+    ) -> None:
+        """CX221-067: expected user metadata owns its bytes independently."""
+        project = _project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.mkdir()
+        live_source = fixtures / source_name
+        live_source.write_text("VALUE = 1\n", encoding="utf-8")
+        live_meta = fixtures / f"{source_name}.meta"
+        live_meta.write_bytes(b"LEGITIMATE-USER-FIXTURE")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged_source = project / "mutants" / "fixtures" / source_name
+        staged_meta = staged_source.with_name(f"{source_name}.meta")
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+        live_source.unlink()
+        copy_src_dir(cfg)
+
+        assert not staged_source.exists()
+        assert live_meta.read_bytes() == b"LEGITIMATE-USER-FIXTURE"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+    @pytest.mark.parametrize("mirror_field", ["also_copy", "extra_paths"])
+    def test_configured_meta_fixture_survives_automatic_python_companion_cleanup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mirror_field: str,
+    ) -> None:
+        """The automatic mirror must not delete another mirror's metadata."""
+        project = tmp_path / "project"
+        project.mkdir()
+        _project(project, monkeypatch)
+        live_source = project / "other.py"
+        live_source.write_text("VALUE = 1\n", encoding="utf-8")
+        external = tmp_path / "external"
+        external.mkdir()
+        live_meta = external / "other.py.meta"
+        live_meta.write_bytes(b"CONFIGURED-USER-FIXTURE")
+        cfg = MutmutConfig(
+            paths_to_mutate=["src"],
+            **{mirror_field: ["../external/other.py.meta"]},
+        )
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged_meta = project / "mutants" / "other.py.meta"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+        live_source.unlink()
+        copy_src_dir(cfg)
+
+        assert not (project / "mutants" / "other.py").exists()
+        assert live_meta.read_bytes() == b"CONFIGURED-USER-FIXTURE"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+        copy_also_copy_files(cfg)
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
     def test_missing_extra_path_removes_owned_non_python_staging(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

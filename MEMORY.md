@@ -5,7 +5,7 @@
 Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
-> Last refresh: 2026-09-07. Source of truth for sprint state is `.sprint/state.md`;
+> Last refresh: 2026-09-08. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 

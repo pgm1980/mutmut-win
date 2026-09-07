@@ -718,7 +718,9 @@ def validated_pytest_targets(raw_targets: object, *, field_name: str) -> list[st
                     "the -- separator, and user @argfiles are not allowed."
                 ),
             )
-        if any(character in target for character in ("\0", "\r", "\n")):
+        # argparse expands pytest argument files with str.splitlines(), which
+        # also recognizes these ASCII and Unicode line boundaries beyond CR/LF.
+        if any(character in target for character in "\0\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
             raise BadTestExecutionCommandsException(
                 targets,
                 detail=(
@@ -856,6 +858,7 @@ def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
 
 def _write_pytest_argfile(tests: list[str], output_dir: Path = Path("mutants")) -> Path:
     """Publish one private pytest argument file in a caller-owned directory."""
+    tests = validated_pytest_targets(tests, field_name="pytest argument file targets")
     argfile = output_dir / f"mutmut_tests_{secrets.token_hex(16)}.txt"
     payload = "".join(f"{test}\n" for test in tests).encode("utf-8")
     atomic_write_bytes(argfile, payload)

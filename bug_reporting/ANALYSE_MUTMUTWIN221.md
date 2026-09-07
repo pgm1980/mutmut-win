@@ -1,16 +1,17 @@
 # Adversariales Vier-Augen-Review: mutmut-win v2.21.0 → v2.21.1
 
-**Stand:** 2026-09-07
+**Stand:** 2026-09-08
 **Autoritative Basis:** annotiertes Tag `v2.21.0`, Commit
 `40b6af31da66f3544ab9d1a38d34511e7e02c79a`, Tree
 `9fe800a9849fe35cf87f57b2f098ee02a08cd76a`
 **Fixzweig:** `fix/v2.21.1-windows314`
 **Verbindlicher Product-Owner-Scope:** Windows und exakt CPython 3.14.7
-**Status:** v2.21.1 ist ein unveröffentlichter Arbeitsstand. Ein erster
-commit-genauer Kandidatenlauf deckte CX221-063 auf; die anschließenden
-Security-Gates deckten CX221-064 und CX221-065 auf, die erneute vollständige
-Suite im Nachlauf CX221-066. Deren Korrektur und das vollständige
-Windows-/CPython-3.14.7-Finalgate sind erneut offen.
+**Status:** v2.21.1 bleibt in Arbeit. Der unabhängige Abschluss-Reaudit auf
+`04089557f3025cacfd874b9189f89bd539d525e8` bestätigte zusätzlich
+CX221-067 bis CX221-070. Alle vier Korrekturen sind mit roten Gegenproben
+und anschließenden erfolgreichen Regressionstests implementiert. Der
+dadurch überholte Vollsuiteversuch wurde ohne PASS abgebrochen. Die vollständigen
+quieszenten Gates des neu eingefrorenen Implementierungsstands stehen aus.
 
 ## 1. Executive Verdict
 
@@ -71,7 +72,7 @@ genannte Verteilung war rechnerisch inkonsistent:
 `CLAIM_MISFRAMED_OR_NOT_APPLICABLE` und 1
 `UNVERIFIABLE_EVIDENCE_GAP` ergeben 115.
 
-Nach Anwendung des verbindlichen Zielscopes lautet die Arbeitsklassifikation:
+Die historische Arbeitsklassifikation nach Anwendung des verbindlichen Zielscopes lautet:
 
 | Status | Anzahl | Einordnung |
 |---|---:|---|
@@ -158,8 +159,8 @@ Die folgenden Befunde entstanden erst beim Reaudit und Bugfixing nach Claudes
 46er Register. Sie werden bewusst nicht als zusätzliche MW221-Nummern geführt
 und verändern weder Claudes ID-Menge noch deren Statussumme.
 
-Das getrennte Codex-Register umfasst damit exakt CX221-001 bis CX221-066. Die
-Prioritätsverteilung lautet 2 P0, 59 P1 und 5 P2; alle 66 stehen bis zum
+Das getrennte Codex-Register umfasst damit exakt CX221-001 bis CX221-070. Die
+Prioritätsverteilung lautet 2 P0, 63 P1 und 5 P2; alle 70 stehen bis zum
 erneuten lokalen Kandidatengesamtgate auf `IMPLEMENTED_PENDING_FINAL`.
 
 | ID | Prio | Status | Befund und aktueller Fixstand |
@@ -230,6 +231,10 @@ erneuten lokalen Kandidatengesamtgate auf `IMPLEMENTED_PENDING_FINAL`.
 | CX221-064 | P1 | IMPLEMENTED_PENDING_FINAL | Das kanonische Semgrep-Gate band `sys.prefix` hart an `<Repository>/.venv` und war damit nach der CX221-063-Pflicht zu einer externen `UV_PROJECT_ENVIRONMENT` prinzipiell nicht mehr ausführbar; der echte Kandidatenlauf brach zweimal vor dem Scan mit `unsafe-filesystem` ab. Der Wrapper bindet Semgrep nun an die exakt deklarierte aktive absolute Projektumgebung, verlangt eine in beiden Richtungen disjunkte Lage zum Release-Checkout und validiert weiterhin `pyvenv.cfg`, Scripts-Verzeichnis und aufgelöste Executable-Identität. Dadurch bleibt ein Windows-Lang-/8.3-Alias derselben Umgebung zulässig. Direkte Positiv- sowie Alias-/Missing-/Relative-/Mismatch-/Checkout-child-/Checkout-ancestor-/Symlink-Negativtests schließen den Vertragswiderspruch. |
 | CX221-065 | P1 | IMPLEMENTED_PENDING_FINAL | Nach der CX221-063-Cacheisolation verschob eine neue Architekturtest-Fixture die unveränderte, bereits adjudizierte interne `import_module(module_name)`-Stelle von Zeile 40 auf 100. Das erste bis zum Scanner gelangte Kandidatengate brach deshalb korrekt fail-closed mit exakt einem fehlenden und einem zusätzlichen Allowlist-Eintrag bei identischem Zeilenhash ab. Blame, Quellliste und eine unabhängige Gegenprüfung bestätigen: ausschließlich literale eigene `mutmut_win.*`-Module werden importiert; es liegt kein neuer Securityfund vor. Die vollständige Finding-Signatur wurde auf Span und normalisierten Dateihash des neuen Kontexts aktualisiert und wird nun source-grounded durch die Produktions-Signaturfunktion gegen die aktuelle Datei gebunden. |
 | CX221-066 | P1 | IMPLEMENTED_PENDING_FINAL | Die commit-genaue Suite auf `5922d8f3990d9988be1ffd683808b2c75bc06201` bestand inhaltlich vollständig, hinterließ aber den ignorierten Root-Guard `.mutmut-win-50ff80d9812db9d4.run.lock.guard`. Der Namensdigest bindet exakt den Release-Checkout-CWD; dynamische Traces identifizierten mehrere gemockte CLI-Tests, die den echten `WorkspaceRunLock` im Repository erwarben. Der NUL-Guard ist sicherheitsbedingt ein absichtlich persistenter stabiler Lock-Inode, daher bleibt der Produktcode unverändert. Eine gemeinsame opt-in-Fixture verschiebt diese neun CLI-Surface-Module in ein externes `tmp_path`-Workspace, respektiert vorhandene testlokale CWD-Fixtures und wird statisch für die vollständige Modulmenge gebunden. Die reale CLI-Gegenprobe verlangt weiterhin genau einen persistierenden Guard im isolierten Workspace; der fokussierte Cluster bestand mit 235/235 und unverändert null Root-Lock-Artefakten. |
+| CX221-067 | P1 | IMPLEMENTED_PENDING_FINAL | Beim Pruning einer gelöschten unselektierten Pythondatei entfernte der Companion-Shortcut auch eine weiterhin vorhandene `.py.meta`-Userfixture oder einen separat konfigurierten Mirror. Jede Datei durchläuft jetzt unabhängig die vollständige Expected-Input-/Ownership-Prüfung. Vier Regressionen belegen Byteerhalt nach alleiniger `.py`-Löschung einschließlich Windows-Großschreibung und `also_copy`-/`extra_paths`-Ownership. |
+| CX221-068 | P1 | IMPLEMENTED_PENDING_FINAL | Leere reservierte Helperverzeichnisse passierten die Kollisionsprüfung, obwohl sie bereits PEP-420-Namespaces bilden. Der Preflight berücksichtigt den Directorytyp auch ohne Nachfahren und verweigert vor jeder Materialisierung. Fünfzehn automatische/konfigurierte Namespace-Gegenproben und neun positive Kontrollen für erlaubte extensionlose reguläre Datendateien sichern die Grenze. |
+| CX221-069 | P1 | IMPLEMENTED_PENDING_FINAL | Universal-Newline-Decoding und anschließende Windows-Übersetzung im generierten Python veränderten bei einem einzelnen Bool-Mutanten zusätzlich Mixed-EOL, mehrzeilige Stringtokens und Backslash-Fortsetzungen. Python-CST und generierte Bytes bewahren jetzt physische Zeilenenden; `preserve-v1` invalidiert alte Generationsfingerprints. Show/Apply vergleichen den gespeicherten Originalbody im Quellkontext und verweigern abweichendes Altstaging vor Backup/Schreiben. Bare-CR-EOF und Pragma-Scanning sind berücksichtigt. Zwanzig echte Generation-/Git-Patch-/Apply-/Backup-/Legacy-Regressionsfälle bestanden. |
+| CX221-070 | P1 | IMPLEMENTED_PENDING_FINAL | Die Elternphasen transportierten akzeptierte `tests_dir`-Node-IDs weiterhin direkt in `argv`, obwohl nur der Worker bereits eine Argfile verwendete. Ein regulärer 600-Target-Commandbau maß 47.138 bis 47.561 UTF-16-Einheiten und überschritt die Windows-Grenze vor jedem Worker. Clean, Stats, Coverage, Forced-fail und beide Collectionpfade verwenden jetzt denselben atomaren Argfile-Writer in ihren externen Runtime-Kontexten. 36 Regressionen prüfen exakte Reihenfolge/UTF-8, kurze Befehlszeilen, unveränderten Stagingdigest sowie Cleanup bei Erfolg, Fehler und Vorbereitungsausnahme; lange Prozessaufrufe werden ersetzt. Der Crossreview ergänzte die gemeinsame Ablehnung aller argparse-Zeilentrenner vor Publikation und 34 weitere Parser-/Eltern-/Workerfälle. Gewöhnliche Unicode-/Leerzeichen-Targets werden durch den tatsächlichen pytest-Parser byte- und reihenfolgegetreu zurückgewonnen. |
 
 Die zusätzliche Challenge, eine nach dem gelockten Sync lokal manipulierte
 Same-Version-Installation von Zizmor oder Pyflakes als eigenen Produktbug zu
@@ -310,21 +315,25 @@ Unit-Suite. Sie bleibt ein explizites Live-Gate unmittelbar vor Remote-Writes.
 | v2.21.1 erster Semgrep-Lauf mit externer Projektumgebung | zweimaliger Abbruch auf Commit `277821da25fbf791cea2ac3c30495984808c74e6` vor dem Scan mit `unsafe-filesystem`, weil der Wrapper widersprüchlich `<Repository>/.venv` verlangte | negative dynamische Evidenz für CX221-064; keine Rule-/Finding-Counts und kein Security-PASS |
 | v2.21.1 erster Semgrep-Scan nach externer Umgebungsbindung | Commit `896a245a888f986b675ca55e260904281d614091`: Scan erreicht, danach fail-closed wegen exakt einer von Zeile 40 auf 100 verschobenen adjudizierten Architekturtest-Signatur bei identischem Zeilenhash | negative dynamische Evidenz für CX221-065; kein neuer Securityfund und kein Security-PASS |
 | v2.21.1 Suite nach CX221-064/-065 | Commit `5922d8f3990d9988be1ffd683808b2c75bc06201`, Tree `b784a132179d03066b50865eab1ef87af9e1b27c`: 2.315 passed/43 skipped/0 failed; 9.727 Statements, 1.455 Missing, 85 %, 36:50 min; Nachlauf fand exakt einen ignorierten Root-Guard mit Checkout-CWD-Digest | positive inhaltliche Suite-Evidenz, aber negative Hygiene-Evidenz für CX221-066; keine Kandidatenfreigabe |
+| v2.21.1 neuer Vollsuiteversuch auf `04089557` | Nach bestätigten neuen Reauditbefunden kontrolliert abgebrochen; anschließend keine zugehörigen Test-/Workerprozesse und tracked/untracked/ignored sauber | ABORTED, ausdrücklich kein PASS; die neuen Fixes benötigen eigene commit-genaue Gates |
+| v2.21.1 CX221-067/-068 Regressionen | vor Fix 19 failed/9 passed; nach Fix 95 passed/4 bewusst deselected, alle 28 neuen Fälle ausgeführt; Ruff/Format ohne Befund | fokussierte Implementierungsevidenz, keine Kandidaten- oder Integrationsautorität |
+| v2.21.1 CX221-069 Regressionen | vor Fix 15 failed/5 passed; danach 20 neue Fälle bestanden, breiter Verbund 319 passed/3 skipped; Ruff/Format ohne Befund | fokussierte Implementierungsevidenz unter Windows/CPython 3.14.7 |
+| v2.21.1 CX221-070 Regressionen | vor Fix 24 failed/12 passed; danach Runner-/Argfile-/Coverage-Verbund 83 passed; Ruff/Format und Import-Linter 1/1 ohne Befund | funktionale Tests mit ersetzten Prozessgrenzen, keine Ausführung überlanger Befehle |
+| v2.21.1 CX221-070 Unicode-Crossreview | korrigierte rote Gegenprobe 20 failed/5 passed; nach gemeinsamer Validierungs-/Schreibgrenze alle 34 zusätzlichen Parser-/Eltern-/Workerfälle bestanden | tatsächlicher pytest-Parser bestätigt gewöhnliche Unicode-Targets; alle zehn Zeilentrenner und NUL werden vor Argfile-Publikation abgelehnt |
+| v2.21.1 abschließender Root-Regressionsverbund | 494 passed/3 skipped in 35,59 s einschließlich aller vier Korrekturen und Unicode-Crossreview; Ruff check/format aller 13 geänderten Pythondateien ohne Befund | vollständige fokussierte Arbeitsbaumevidenz; keine commit-genaue Vollsuite- oder Kandidatenautorität |
 | v2.21.1 GitHub CI | kann billingbedingt nicht anlaufen; dann Status `NOT_EXECUTED` | akzeptierte Evidenzlücke; weder PASS noch FAIL |
 
 ## 8. Releaseentscheidung und offene Gates
 
-v2.21.1 bleibt **NO-GO**. Der frühere Windows-/CPython-3.14.7-Arbeitsbaum hat
-die vollständige strikte Suite, Coverage, Ruff/Format, mypy, Import-Linter,
-Lock/Audit, das kanonische Semgrep-Gate und den Dogfood-Piloten bestanden. Der
-erste commit-genaue Kandidatenlauf deckte CX221-063 auf; dessen erfolgreiche
-Suite-Revalidierung deckte anschließend in den Security-Gates CX221-064 und
-CX221-065 sowie im erneuten Suite-Nachlauf CX221-066 auf. Noch offen sind deren
-gezielte und vollständige Revalidierung,
-der neue saubere Kandidatencommit,
-Push und Review-Integration, die erneuten Gates und der Dogfood-Recheck auf dem
-integrierten Commit, reproduzierbarer Doppelbuild, echte Installed-Artifact-
-Smokes, annotiertes Tag und GitHub-Release in genau dieser Reihenfolge.
+v2.21.1 bleibt **NO-GO**. Die historischen Gates bis `04089557` ersetzen
+keine Prüfung der vier neu bestätigten und korrigierten Reauditbefunde
+CX221-067 bis CX221-070. Ihre positiven Regressionen belegen die konkreten
+Korrekturen. Offen sind die vollständigen Gates des neu eingefrorenen
+Implementierungsstands, die geprüfte Kandidatenattestierung, Push und reviewed
+Zwei-Eltern-Integration, alle integrierten Gates einschließlich Dogfood,
+reproduzierbarer Doppelbuild, Installed-Artifact-Smokes, annotiertes Tag
+und verifizierter GitHub-Release. Erst die tatsächlich abgeschlossene
+Publikationskette erlaubt den Prozessabschluss von MW221-003.
 
 Eine aus finanziellen Gründen nicht verfügbare neue GitHub-CI blockiert nach der
 ausdrücklichen Product-Owner-Entscheidung nicht. Sie darf jedoch an keiner Stelle
