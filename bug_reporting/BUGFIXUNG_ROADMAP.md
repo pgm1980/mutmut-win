@@ -703,6 +703,22 @@ Root-Verbund bestand mit 494 passed/3 skipped in 35,59 s; Ruff check/format
 aller 13 geänderten Pythondateien blieb ohne Befund. Der neue Gesamtbaum
 benötigt sämtliche commit-genauen Kandidatengates.
 
+Die vollständige Implementierungssuite auf `19f8d3a` endete anschließend mit
+4 failed/2.430 passed/43 skipped in 2.109,49 s (9.752 Statements, 1.453 Missing,
+85 %). Die vier Parameterfälle eines bestehenden Oberflächentests erwarteten
+noch direkte Targets in argv; ihre Anpassung prüft die mit CX221-070 eingeführte
+Argfile an der Prozessgrenze samt Inhalt und Cleanup. Dieser FAIL bleibt
+erhalten; er autorisiert keine Candidate-Attestierung. Der kanonische separate
+Dogfood auf demselben Commit bestand vollständig mit 91/91 autorisierten
+Ergebnissen, 90 Kills, einem Windows-äquivalenten Survivor und keinen
+Problem-Buckets. Eine falsche Standardannahme im externen Nachprüfer wurde
+quellenbelegt korrigiert und derselbe abgeschlossene Lauf erneut ausgewertet.
+Die angepasste Oberflächenregression behält sämtliche bisherigen Selektions-,
+Config- und Rootprüfungen bei. Ihr Verbund bestand mit 158 Tests in 30,26 s;
+der unabhängige Root-Verbund einschließlich Supply Chain mit 61 Tests in 3,39 s.
+Ruff und Format blieben ohne Befund. Produktbytes wurden dabei nicht geändert;
+der neue Commit benötigt seine vollständige Revalidierung.
+
 ### 13.4 Noch ausstehende Abschlusssequenz
 
 1. Der frühere Arbeitsbaum-Nachweis umfasste alle Regressionen, vollständige

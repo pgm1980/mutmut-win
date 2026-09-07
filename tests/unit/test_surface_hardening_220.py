@@ -92,8 +92,26 @@ def test_test_selection_args_reach_every_parent_phase(
             pytest_add_cli_args_test_selection=["-k", "surface and not slow"],
         )
     )
+    observed_argfiles: list[Path] = []
 
     with phase_popen(0) as popen:
+        publish_phase_proof = popen.side_effect
+        assert callable(publish_phase_proof)
+
+        def inspect_popen(*args: object, **kwargs: object) -> MagicMock:
+            live_cmd = args[0]
+            assert isinstance(live_cmd, list)
+            target_tail = live_cmd[live_cmd.index("--") + 1 :]
+            assert len(target_tail) == 1
+            assert target_tail[0].startswith("@")
+            argfile = Path(target_tail[0][1:])
+            assert argfile.is_absolute()
+            assert not argfile.is_relative_to(staged_project)
+            assert argfile.read_bytes() == b"tests/\n"
+            observed_argfiles.append(argfile)
+            return publish_phase_proof(*args, **kwargs)
+
+        popen.side_effect = inspect_popen
         if phase == "clean":
             runner.run_clean_test()
         elif phase == "stats":
@@ -103,6 +121,8 @@ def test_test_selection_args_reach_every_parent_phase(
         else:
             runner.run_forced_fail("pkg.x_f__mutmut_1")
 
+    popen.assert_called_once()
+    assert len(observed_argfiles) == 1
     cmd: list[str] = popen.call_args.args[0]
     assert "--strict-markers" in cmd
     selection_index = cmd.index("-k")
@@ -114,7 +134,9 @@ def test_test_selection_args_reach_every_parent_phase(
     assert f"--confcutdir={staged_project}" in cmd
     separator_index = cmd.index("--")
     assert separator_index > config_index
-    assert cmd[separator_index + 1 :] == ["tests/"]
+    assert cmd[separator_index + 1 :] == [f"@{observed_argfiles[0]}"]
+    assert not observed_argfiles[0].exists()
+    assert not observed_argfiles[0].parent.exists()
 
 
 class _Queue:
