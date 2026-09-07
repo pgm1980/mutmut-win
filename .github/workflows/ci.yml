@@ -16,8 +16,10 @@ concurrency:
 
 env:
   CI: "true"
+  HYPOTHESIS_STORAGE_DIRECTORY: "${{ github.workspace }}/../mutmut-win-hypothesis"
   MUTMUT_GITHUB_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
   PYTHONUTF8: "1"
+  UV_PROJECT_ENVIRONMENT: "${{ github.workspace }}/../mutmut-win-ci-environment"
   UV_NO_PROGRESS: "1"
 
 jobs:
@@ -63,13 +65,13 @@ jobs:
       - name: Sync locked development environment
         run: uv sync --locked --extra dev --group build --no-build-isolation
       - name: Lint
-        run: uv run --no-sync ruff check .
+        run: uv run --no-sync ruff check --no-cache .
       - name: Check formatting
-        run: uv run --no-sync ruff format --check .
+        run: uv run --no-sync ruff format --no-cache --check .
       - name: Type check
-        run: uv run --no-sync mypy src/ scripts/
+        run: uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/
       - name: Check architecture contracts
-        run: uv run --no-sync lint-imports
+        run: uv run --no-sync lint-imports --no-cache
 
   security:
     name: Security gate (Windows, CPython 3.14.7)
@@ -133,6 +135,7 @@ jobs:
       - name: Run test suite
         run: >-
           uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing
+          -p no:cacheprovider
           -W error::pytest.PytestUnhandledThreadExceptionWarning
 
   pytest-compat:
@@ -387,16 +390,22 @@ jobs:
               }
           }
 
-          uv venv --python "3.14.7" .artifact-wheel
-          uv pip install --python .artifact-wheel\Scripts\python.exe $wheelPath
-          uv pip check --python .artifact-wheel\Scripts\python.exe
-          Assert-MutmutVersion ".artifact-wheel\Scripts\mutmut-win.exe"
+          $wheelEnvironment = Join-Path $env:RUNNER_TEMP "mutmut-win-artifact-wheel"
+          $wheelPython = Join-Path $wheelEnvironment "Scripts\python.exe"
+          $wheelExecutable = Join-Path $wheelEnvironment "Scripts\mutmut-win.exe"
+          uv venv --python "3.14.7" $wheelEnvironment
+          uv pip install --python $wheelPython $wheelPath
+          uv pip check --python $wheelPython
+          Assert-MutmutVersion $wheelExecutable
 
           $requirements = Join-Path $env:RUNNER_TEMP "sdist-build-requirements.txt"
+          $sdistEnvironment = Join-Path $env:RUNNER_TEMP "mutmut-win-artifact-sdist"
+          $sdistPython = Join-Path $sdistEnvironment "Scripts\python.exe"
+          $sdistExecutable = Join-Path $sdistEnvironment "Scripts\mutmut-win.exe"
           uv export --frozen --group build --no-emit-project --output-file $requirements
-          uv venv --python "3.14.7" .artifact-sdist
-          uv pip sync --python .artifact-sdist\Scripts\python.exe $requirements
-          uv pip install --offline --no-build-isolation --no-deps --python .artifact-sdist\Scripts\python.exe $sdistPath
-          uv pip check --python .artifact-sdist\Scripts\python.exe
-          Assert-MutmutVersion ".artifact-sdist\Scripts\mutmut-win.exe"
-          & .artifact-sdist\Scripts\mutmut-win.exe --help | Out-Null
+          uv venv --python "3.14.7" $sdistEnvironment
+          uv pip sync --python $sdistPython $requirements
+          uv pip install --offline --no-build-isolation --no-deps --python $sdistPython $sdistPath
+          uv pip check --python $sdistPython
+          Assert-MutmutVersion $sdistExecutable
+          & $sdistExecutable --help | Out-Null

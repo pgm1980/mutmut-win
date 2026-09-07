@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -653,8 +654,8 @@ def _assert_release_worktree_is_clean() -> None:
         "--ignored",
         "--exclude-per-directory=.gitignore",
         "--",
-        ":(glob).gitignore",
-        ":(glob)**/.gitignore",
+        ":(icase,glob).gitignore",
+        ":(icase,glob)**/.gitignore",
     )
     assert not _git(*hidden_ignore_query), (
         "final release checkout contains an untracked .gitignore that can conceal inputs"
@@ -1622,7 +1623,21 @@ def test_final_release_checkout_rejects_git_relevant_dirty_bytes(
         _assert_release_worktree_is_clean()
 
 
+@pytest.mark.parametrize(
+    "hidden_ignore",
+    [
+        b"src/.gitignore\0",
+        b".hypothesis/.gitignore\0",
+        b".import_linter_cache/.gitignore\0",
+        b".mypy_cache/.gitignore\0",
+        b".pytest_cache/.gitignore\0",
+        b".ruff_cache/.gitignore\0",
+        b".venv/.gitignore\0",
+        b".venv/.GITIGNORE\0",
+    ],
+)
 def test_final_release_checkout_rejects_untracked_ignore_control(
+    hidden_ignore: bytes,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hidden_ignore_query = (
@@ -1632,17 +1647,105 @@ def test_final_release_checkout_rejects_untracked_ignore_control(
         "--ignored",
         "--exclude-per-directory=.gitignore",
         "--",
-        ":(glob).gitignore",
-        ":(glob)**/.gitignore",
+        ":(icase,glob).gitignore",
+        ":(icase,glob)**/.gitignore",
     )
 
     def fake_git(*args: str) -> bytes:
-        return b"src/.gitignore\0" if args == hidden_ignore_query else b""
+        return hidden_ignore if args == hidden_ignore_query else b""
 
     monkeypatch.setattr(sys.modules[__name__], "_git", fake_git)
 
     with pytest.raises(AssertionError, match=r"untracked \.gitignore"):
         _assert_release_worktree_is_clean()
+
+
+def test_hidden_ignore_query_matches_case_variants(tmp_path: Path) -> None:
+    git = shutil.which("git")
+    assert git is not None, "release-contract tests require Git"
+    repository = tmp_path / "case-insensitive-ignore-query"
+    repository.mkdir()
+    subprocess.run(  # noqa: S603 - shutil.which resolves the trusted Git executable
+        [git, "init", "--quiet"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    (repository / ".gitignore").write_text("cache/.GITIGNORE\n", encoding="utf-8")
+    cache = repository / "cache"
+    cache.mkdir()
+    (cache / ".GITIGNORE").write_text("*.hidden\n", encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - shutil.which resolves the trusted Git executable
+        [
+            git,
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-per-directory=.gitignore",
+            "--",
+            ":(icase,glob).gitignore",
+            ":(icase,glob)**/.gitignore",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == b"cache/.GITIGNORE\0"
+
+
+def test_in_suite_import_linter_disables_checkout_local_cache() -> None:
+    source = (_PROJECT_ROOT / "tests" / "test_architecture.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "test_import_linter_contracts_hold"
+    )
+    script_assignments = [
+        node
+        for node in function.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "script" for target in node.targets)
+    ]
+    assert len(script_assignments) == 1
+    script_names = [
+        node for node in ast.walk(function) if isinstance(node, ast.Name) and node.id == "script"
+    ]
+    assert len(script_names) == 2
+    assert sum(isinstance(node.ctx, ast.Store) for node in script_names) == 1
+    assert sum(isinstance(node.ctx, ast.Load) for node in script_names) == 1
+    script_assignment = script_assignments[0]
+    embedded = ast.parse(ast.literal_eval(script_assignment.value))
+    expected_embedded = ast.parse(
+        "from importlinter.cli import lint_imports\n"
+        "import sys\n"
+        "sys.exit(lint_imports(no_cache=True))"
+    )
+    assert ast.dump(embedded, include_attributes=False) == ast.dump(
+        expected_embedded, include_attributes=False
+    )
+
+    result_assignment = next(
+        node
+        for node in function.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "result" for target in node.targets)
+    )
+    assert isinstance(result_assignment.value, ast.Call)
+    invocation = result_assignment.value
+    assert isinstance(invocation.func, ast.Attribute)
+    assert isinstance(invocation.func.value, ast.Name)
+    assert (invocation.func.value.id, invocation.func.attr) == ("subprocess", "run")
+    assert len(invocation.args) == 1
+    argv = invocation.args[0]
+    assert isinstance(argv, ast.List)
+    expected_argv = ast.parse("[sys.executable, '-c', script]", mode="eval").body
+    assert ast.dump(argv, include_attributes=False) == ast.dump(
+        expected_argv, include_attributes=False
+    )
 
 
 def test_final_release_checkout_accepts_only_ignored_untracked_state(
@@ -1666,8 +1769,8 @@ def test_final_release_checkout_accepts_only_ignored_untracked_state(
             "--ignored",
             "--exclude-per-directory=.gitignore",
             "--",
-            ":(glob).gitignore",
-            ":(glob)**/.gitignore",
+            ":(icase,glob).gitignore",
+            ":(icase,glob)**/.gitignore",
         ),
         ("diff", "--name-only", "-z", "--"),
         ("diff", "--cached", "--name-only", "-z", "--"),
@@ -1825,7 +1928,7 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     assert {match.group("status") for match in follow_up_rows} <= _MW221_STATUSES
     mw_statuses = {match.group("id"): match.group("status") for match in follow_up_rows}
 
-    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 63)}
+    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 64)}
     codex_rows = list(
         re.finditer(
             r"^\| (?P<id>CX221-\d{3}) \| (?P<priority>P[012]) \| "
@@ -1868,11 +1971,11 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     )
     assert set(roadmap_ids) == expected_codex_ids
     assert len(roadmap_ids) == len(expected_codex_ids)
-    assert "62 getrennt geführten Codex-Follow-up-Findings" in roadmap
+    assert "63 getrennt geführten Codex-Follow-up-Findings" in roadmap
     assert "ANALYSE_MUTMUTWIN221.md" in roadmap
     assert "Windows und exakt CPython 3.14.7" in follow_up
-    assert "2 P0, 55 P1 und 5 P2" in follow_up
-    assert "2 P0, 55 P1 und 5 P2" in roadmap
+    assert "2 P0, 56 P1 und 5 P2" in follow_up
+    assert "2 P0, 56 P1 und 5 P2" in roadmap
 
     expected_provenance = _expected_release_tool_provenance()
     for report in (follow_up, roadmap):
@@ -2711,6 +2814,14 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     assert "permissions:\n  contents: read" in workflow
     assert "persist-credentials: false" in workflow
     assert 'MUTMUT_GITHUB_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"' in workflow
+    external_project_environment = (
+        'UV_PROJECT_ENVIRONMENT: "${{ github.workspace }}/../mutmut-win-ci-environment"'
+    )
+    assert workflow.count(external_project_environment) == 1
+    external_hypothesis_storage = (
+        'HYPOTHESIS_STORAGE_DIRECTORY: "${{ github.workspace }}/../mutmut-win-hypothesis"'
+    )
+    assert workflow.count(external_hypothesis_storage) == 1
     tests_job = workflow[workflow.index("  tests:\n") : workflow.index("\n  pytest-compat:")]
     assert tests_job.count("fetch-depth: 0") == 1
     assert "pull_request_target" not in workflow
@@ -2735,11 +2846,74 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     assert security_job.count("fetch-depth: 0") == 1
     assert not re.search(r"\buvx\b", workflow)
     assert "semgrep scan --config auto" not in workflow
-    assert "uv run --no-sync mypy src/ scripts/" in quality_job
+    quality_run_commands = re.findall(r"^        run: ([^\r\n]+)$", quality_job, re.MULTILINE)
+    expected_quality_gate_commands = [
+        "uv run --no-sync ruff check --no-cache .",
+        "uv run --no-sync ruff format --no-cache --check .",
+        "uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/",
+        "uv run --no-sync lint-imports --no-cache",
+    ]
+    assert [
+        command for command in quality_run_commands if command.startswith("uv run --no-sync")
+    ] == expected_quality_gate_commands
+    architecture_test = (_PROJECT_ROOT / "tests" / "test_architecture.py").read_text(
+        encoding="utf-8"
+    )
+    assert "lint_imports(no_cache=True)" in architecture_test
+    assert "lint_imports())" not in architecture_test
+    for relative_path in (
+        "README.md",
+        "CLAUDE.md",
+        ".serena/memories/style_conventions.md",
+        ".serena/memories/task_completion_checklist.md",
+        ".serena/memories/suggested_commands.md",
+        "_docs/architecture spec/architecture_specification.md",
+        "_docs/product backlog/product_backlog.md",
+        "_docs/sprint backlogs/sprint_39_backlog.md",
+        "bug_reporting/BUGFIXUNG_ROADMAP.md",
+    ):
+        active_contract = (_PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "UV_PROJECT_ENVIRONMENT" in active_contract, relative_path
+        assert "HYPOTHESIS_STORAGE_DIRECTORY" in active_contract, relative_path
+        for cacheless_contract in (
+            "ruff check --no-cache",
+            "ruff format --no-cache",
+            "mypy --no-incremental --cache-dir=nul",
+            "lint-imports --no-cache",
+        ):
+            assert cacheless_contract in active_contract, (relative_path, cacheless_contract)
+        if relative_path != "bug_reporting/BUGFIXUNG_ROADMAP.md":
+            operational_commands = re.findall(
+                r"`(uv run --no-sync (?:pytest|ruff check|ruff format|mypy|lint-imports)[^`]*)`",
+                active_contract,
+            )
+            operational_commands.extend(
+                re.findall(
+                    r"(?m)^\s*(uv run --no-sync "
+                    r"(?:pytest|ruff check|ruff format|mypy|lint-imports)[^\r\n]*)\s*$",
+                    active_contract,
+                )
+            )
+            assert operational_commands, relative_path
+            for command in operational_commands:
+                normalized = " ".join(command.split())
+                if normalized.startswith("uv run --no-sync pytest"):
+                    assert "-p no:cacheprovider" in normalized, (relative_path, normalized)
+                elif normalized.startswith("uv run --no-sync ruff"):
+                    assert "--no-cache" in normalized, (relative_path, normalized)
+                elif normalized.startswith("uv run --no-sync mypy"):
+                    assert "--no-incremental" in normalized, (relative_path, normalized)
+                    assert "--cache-dir=nul" in normalized, (relative_path, normalized)
+                else:
+                    assert normalized.startswith("uv run --no-sync lint-imports --no-cache"), (
+                        relative_path,
+                        normalized,
+                    )
     assert "name: Tests and coverage (Windows, CPython 3.14.7)" in tests_job
     assert "timeout-minutes: 120" in tests_job
     assert (
         "uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing\n"
+        "          -p no:cacheprovider\n"
         "          -W error::pytest.PytestUnhandledThreadExceptionWarning"
     ) in tests_job
     pytest_floor_command = "uv run --isolated --frozen --no-dev --no-cache"
@@ -2813,7 +2987,13 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     hash_verify = (
         "Get-FileHash -LiteralPath $artifactsByName[$artifactName].FullName -Algorithm SHA256"
     )
-    first_install = 'uv venv --python "3.14.7" .artifact-wheel'
+    wheel_environment = '$wheelEnvironment = Join-Path $env:RUNNER_TEMP "mutmut-win-artifact-wheel"'
+    wheel_python = '$wheelPython = Join-Path $wheelEnvironment "Scripts\\python.exe"'
+    wheel_executable = '$wheelExecutable = Join-Path $wheelEnvironment "Scripts\\mutmut-win.exe"'
+    sdist_environment = '$sdistEnvironment = Join-Path $env:RUNNER_TEMP "mutmut-win-artifact-sdist"'
+    sdist_python = '$sdistPython = Join-Path $sdistEnvironment "Scripts\\python.exe"'
+    sdist_executable = '$sdistExecutable = Join-Path $sdistEnvironment "Scripts\\mutmut-win.exe"'
+    first_install = 'uv venv --python "3.14.7" $wheelEnvironment'
     assert hash_read in artifacts_job
     assert "Missing SHA256SUMS release evidence" in artifacts_job
     assert "$hashLines.Count -ne $artifactsByName.Count" in artifacts_job
@@ -2829,11 +3009,24 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     assert 'if ($observedVersion -cne "mutmut-win, version 2.21.1")' in artifacts_job
     assert 'throw "Unexpected installed version: $observedVersion"' in artifacts_job
     assert artifacts_job.count('"mutmut-win, version 2.21.1"') == 1
-    assert artifacts_job.count('Assert-MutmutVersion "') == 2
-    wheel_version_check = 'Assert-MutmutVersion ".artifact-wheel\\Scripts\\mutmut-win.exe"'
-    sdist_install = 'uv venv --python "3.14.7" .artifact-sdist'
-    sdist_version_check = 'Assert-MutmutVersion ".artifact-sdist\\Scripts\\mutmut-win.exe"'
+    for external_smoke_path in (
+        wheel_environment,
+        wheel_python,
+        wheel_executable,
+        sdist_environment,
+        sdist_python,
+        sdist_executable,
+    ):
+        assert artifacts_job.count(external_smoke_path) == 1
+    assert ".artifact-wheel" not in artifacts_job
+    assert ".artifact-sdist" not in artifacts_job
+    assert artifacts_job.count("Assert-MutmutVersion $") == 2
+    wheel_version_check = "Assert-MutmutVersion $wheelExecutable"
+    sdist_install = 'uv venv --python "3.14.7" $sdistEnvironment'
+    sdist_version_check = "Assert-MutmutVersion $sdistExecutable"
+    assert artifacts_job.index(wheel_environment) < artifacts_job.index(first_install)
     assert artifacts_job.index(first_install) < artifacts_job.index(wheel_version_check)
+    assert artifacts_job.index(sdist_environment) < artifacts_job.index(sdist_install)
     assert artifacts_job.index(wheel_version_check) < artifacts_job.index(sdist_install)
     assert artifacts_job.index(sdist_install) < artifacts_job.index(sdist_version_check)
     assert "uv pip install --offline --no-build-isolation --no-deps" in workflow

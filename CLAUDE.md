@@ -63,9 +63,9 @@ PROJEKT-STANDARDS (NICHT VERHANDELBAR):
 
 Auch wenn Subagenten MCP-Zugriff haben, MUSS die Hauptsession nach jeder Subagent-Rückkehr stichprobenartig verifizieren:
 
-- [ ] Ruff: 0 Lint-Findings? (`uv run ruff check .` selbst ausführen)
-- [ ] mypy: 0 Errors? (`uv run mypy src/` selbst ausführen)
-- [ ] Alle Tests grün? (`uv run pytest` selbst ausführen)
+- [ ] Ruff: 0 Lint-Findings? (`uv run ruff check --no-cache .` selbst ausführen)
+- [ ] mypy: 0 Errors? (`uv run mypy --no-incremental --cache-dir=nul src/` selbst ausführen)
+- [ ] Alle Tests grün? (`uv run --no-sync pytest -p no:cacheprovider` selbst ausführen)
 - [ ] Serena `get_symbols_overview` auf neue Dateien — Strukturcheck
 - [ ] Bei Security-relevantem Code: das kanonische Semgrep-Releasegate selbst bestätigen
 - [ ] Bei Release-/Workflowarbeit: den kanonischen nativen Release-Wrapper selbst bestätigen
@@ -208,8 +208,8 @@ Wenn ein Subagent fehlschlägt oder ein unvollständiges Ergebnis liefert:
 1. **Nie manuell fixen nach Agent-Failure** ohne den Fehler zu verstehen — Kontext-Pollution vermeiden
 2. **Fix-Agent** bekommt: Original-Prompt + Fehlermeldung + relevante Teile des Agent-Transcripts
 3. **Max 2 Retries** — nach 2 gescheiterten Fix-Agents eskaliert die Hauptsession und löst selbst
-4. **Bei Lint/Type-Fehlern**: Erst `uv run ruff check .` und `uv run mypy src/` Output analysieren, dann gezielten Fix-Agent mit exakter Fehlermeldung dispatchen
-5. **Bei Test-Fehlern**: Erst `uv run pytest` Output analysieren, dann Fix-Agent mit Failed-Test-Namen + Stack Trace dispatchen
+4. **Bei Lint/Type-Fehlern**: Erst `uv run ruff check --no-cache .` und `uv run mypy --no-incremental --cache-dir=nul src/` Output analysieren, dann gezielten Fix-Agent mit exakter Fehlermeldung dispatchen
+5. **Bei Test-Fehlern**: Erst `uv run --no-sync pytest -p no:cacheprovider` Output analysieren, dann Fix-Agent mit Failed-Test-Namen + Stack Trace dispatchen
 
 ### Serena — Symbolbasierte Code-Analyse
 
@@ -245,6 +245,14 @@ Serena ist als MCP-Server verfügbar und bietet präzise, symbolbasierte Code-Na
 ### Semgrep — Security-Scanning
 
 Semgrep MUSS ausschließlich über den getrackten, fail-closed Release-Wrapper ausgeführt werden. Der Wrapper bindet Semgrep 1.175.0 aus `uv.lock`, spiegelt den vollständigen Git-owned Release-Scope in ein externes Root, verwendet das content-gepinnte Offline-Regelbundle und validiert Findings, Parserfehler, übersprungene Regeln, Fixpoint-Timeouts sowie Manifest-/Target-/Policy-/TOCTOU-Drift.
+
+Vor jedem Sync oder Gate mit Releaseevidenz MUSS `UV_PROJECT_ENVIRONMENT` auf
+ein frisches absolutes Verzeichnis außerhalb des Checkouts zeigen.
+`HYPOTHESIS_STORAGE_DIRECTORY` MUSS ebenfalls auf ein absolutes Verzeichnis
+außerhalb des Checkouts zeigen; Hypothesis 6.151.9 schreibt dort Cachebytes,
+ohne selbst eine `.gitignore` anzulegen. Im Release-Checkout sind `.venv` und
+Werkzeug-Caches mit eigener `.gitignore` oder `.hypothesis`-Cachebytes
+unzulässig.
 
 ```bash
 uv sync --locked --only-group security --no-install-project
@@ -591,7 +599,7 @@ Er MUSS bevorzugt vor Built-In Tools (Read, Write, Edit, Glob, Grep) verwendet w
 | **Tier 3: Built-In BLEIBT (mit Einschränkungen)** | Siehe Tier-3-Klarstellung unten                                                                                | Read, Edit, Glob, Grep nur unter den definierten Bedingungen        |
 | **Tier 4: EINZIGARTIG**                           | Pipelines, Auto-Versioning, Tagging, Snapshots, Templates, Use Cases, Security Scan                            | `execute_workflow` mit Steps, `sensitive_scan`, `project_overview`  |
 
-**Bash bleibt ERLAUBT für:** `uv run pytest`, `uv run ruff`, `uv run mypy`, `uv run mutmut-win`, `uv run lint-imports`, `uv run --no-sync python -I scripts/semgrep_release_gate.py`, `uv run pip-audit` — Build/Test/Lint-Befehle die KEINE Filesystem-Operationen sind.
+**Bash bleibt ERLAUBT für:** `uv run --no-sync pytest ... -p no:cacheprovider`, `uv run --no-sync ruff ... --no-cache`, `uv run --no-sync mypy --no-incremental --cache-dir=nul ...`, `uv run --no-sync mutmut-win`, `uv run --no-sync lint-imports --no-cache`, `uv run --no-sync python -I scripts/semgrep_release_gate.py`, `uv run --no-sync pip-audit` — Build/Test/Lint-Befehle mit den verpflichtenden cachelosen Formen. Für Releaseevidenz bleiben zusätzlich externe `UV_PROJECT_ENVIRONMENT` und `HYPOTHESIS_STORAGE_DIRECTORY` vorgeschrieben.
 
 **VERBOTEN UND HART GESPERRT (settings.json `deny`):**
 - `cat`, `head`, `tail`, `cp`, `mv`, `rm`, `find`, `grep`, `rg`, `diff`, `tar`, `du`, `stat`, `ls`, `tree`, `sort`, `uniq`, `sed`, `awk`, `wc`, `base64`, `sha256sum`, `mkdir`, `touch` — **werden vom Harness blockiert**
@@ -621,22 +629,27 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 
 ## Commands
 
+Für Kandidaten- und integrierte Finalgates ist vor jedem der folgenden Befehle
+eine frische absolute `UV_PROJECT_ENVIRONMENT` außerhalb des Checkouts Pflicht;
+auch `HYPOTHESIS_STORAGE_DIRECTORY` zeigt auf ein absolutes externes
+Verzeichnis. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
+`.gitignore` noch `.hypothesis`-Cachebytes enthalten.
+
 | Command                                              | Beschreibung                              |
 |------------------------------------------------------|-------------------------------------------|
-| `uv sync`                                            | Dependencies installieren/synchronisieren |
-| `uv run pytest`                                      | Alle Tests ausführen                      |
-| `uv run pytest tests/unit/`                          | Nur Unit Tests                            |
-| `uv run pytest tests/integration/`                   | Nur Integration Tests                     |
-| `uv run pytest -m "not slow"`                        | Schnelle Tests (ohne Model-Training etc.) |
-| `uv run pytest --cov=src --cov-report=html`          | Tests mit Coverage + HTML-Report          |
-| `uv run pytest --benchmark-only`                     | Nur Benchmarks ausführen                  |
-| `uv run ruff check .`                                | Linting (alle Regeln)                     | 
-| `uv run ruff format .`                               | Code formatieren                          |
-| `uv run ruff check --fix .`                          | Auto-fixbare Lint-Fehler beheben          |
-| `uv run mypy src/`                                   | Statische Typ-Prüfung                     |
-| `uv run lint-imports`                                | Architektur-Contracts prüfen              |
-| `uv run mutmut-win run --paths-to-mutate src/<package>/` | Mutation Testing                      |
-| `uv run mutmut-win results`                              | Mutation Testing Ergebnisse           |
+| `uv sync`                                            | Nur mit gesetzter externer Projektumgebung synchronisieren |
+| `uv run --no-sync pytest -p no:cacheprovider`        | Alle Tests ohne Checkout-Cache ausführen  |
+| `uv run --no-sync pytest -p no:cacheprovider tests/unit/` | Nur Unit Tests                       |
+| `uv run --no-sync pytest -p no:cacheprovider tests/integration/` | Nur Integration Tests          |
+| `uv run --no-sync pytest -p no:cacheprovider -m "not slow"` | Schnelle Tests                     |
+| `uv run --no-sync pytest --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider` | Release-Coverage ohne HTML-/pytest-Cache |
+| `uv run --no-sync ruff check --no-cache .`           | Linting (alle Regeln, ohne Checkout-Cache) |
+| `uv run --no-sync ruff format --no-cache .`          | Code ohne Checkout-Cache formatieren      |
+| `uv run --no-sync ruff check --no-cache --fix .`     | Auto-fixbare Lint-Fehler beheben          |
+| `uv run --no-sync mypy --no-incremental --cache-dir=nul src/` | Statische Typ-Prüfung ohne Modulcache |
+| `uv run --no-sync lint-imports --no-cache`           | Architektur-Contracts ohne Checkout-Cache prüfen |
+| `uv run --no-sync mutmut-win run --paths-to-mutate src/<package>/` | Mutation Testing              |
+| `uv run --no-sync mutmut-win results`                | Mutation Testing Ergebnisse               |
 | `uv sync --locked --only-group security --no-install-project` | Gelockte Security-only-Umgebung herstellen |
 | `uv run --no-sync python -I scripts/semgrep_release_gate.py` | Kanonisches fail-closed Semgrep-Releasegate |
 | `uv sync --locked --only-group release --no-install-project` | Gelockte Release-Gate-Umgebung herstellen |

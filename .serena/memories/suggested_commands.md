@@ -1,10 +1,18 @@
 # Suggested Commands (v2.21.1 / Sprint 39 contract)
 
 Release evidence is collected only on Windows with exactly CPython 3.14.7.
+Before any release-evidence command, set `UV_PROJECT_ENVIRONMENT` to a fresh
+absolute directory outside the checkout and set `HYPOTHESIS_STORAGE_DIRECTORY`
+to a separate absolute external directory. Hypothesis 6.151.9 writes cache
+bytes there but does not create its own `.gitignore`. The release checkout
+itself must not contain `.venv`, tool-cache directories with their own
+`.gitignore`, or `.hypothesis` cache bytes.
 
 ## Setup
-- `uv sync --locked --all-extras --all-groups --no-build-isolation` — install the
-  complete locked development environment.
+- With the external `UV_PROJECT_ENVIRONMENT` already set,
+  `uv sync --locked --all-extras --all-groups --no-build-isolation` installs the
+  complete locked development environment without creating checkout-local
+  environment control files.
 
 ## Run the tool
 - `uv run mutmut-win <subcommand>` — canonical entry point.
@@ -13,16 +21,24 @@ Release evidence is collected only on Windows with exactly CPython 3.14.7.
   export-cicd-stats. There is NO `html` report command (that was upstream mutmut).
 
 ## Testing
-- `uv run pytest` — full suite: unit + integration + architecture.
-- `uv run pytest tests/unit/` | `tests/integration/` — partial runs.
-- `uv run pytest -m "not slow"` — skip long-running tests.
-- `uv run pytest --cov=src --cov-report=html` — coverage (pytest alone measures none).
-- `uv run pytest --benchmark-only` — benchmarks only.
+- `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`
+  — complete strict release suite with coverage and without checkout-local
+  pytest cache controls.
+- `uv run --no-sync pytest -p no:cacheprovider tests/unit/` or
+  `tests/integration/` — partial runs.
+- `uv run --no-sync pytest -p no:cacheprovider -m "not slow"` — skip
+  long-running tests.
+- Benchmark and HTML-report commands are development-only and must run in a
+  disposable non-candidate checkout with their storage/output outside the
+  release checkout.
 
 ## Lint / Types / Architecture / Security
-- `uv run ruff check .` (+ `--fix`) — lint; `uv run ruff format .` — format.
-- `uv run mypy src/ scripts/` — strict, zero-error gate.
-- `uv run lint-imports` — layer contracts (also enforced in the test suite).
+- `uv run --no-sync ruff check --no-cache .` (+ `--fix`) — lint;
+  `uv run --no-sync ruff format --no-cache .` — format without checkout-local cache.
+- `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/` — strict,
+  zero-error gate without reading or writing a checkout-local cache.
+- `uv run --no-sync lint-imports --no-cache` — layer contracts without a checkout-local
+  cache (also enforced in the test suite).
 - `uv sync --locked --only-group security --no-install-project` followed by
   `uv run --no-sync python -I scripts/semgrep_release_gate.py` — canonical pinned,
   two-phase fail-closed gate over the full Git-owned release scope: isolated rule

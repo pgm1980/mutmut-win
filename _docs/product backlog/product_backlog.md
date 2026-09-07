@@ -45,15 +45,22 @@
 
 ### Quality-Gates
 
-- [ ] **Locked Setup**: `uv sync --locked --extra dev --group build --no-build-isolation` — 0 Errors unter Windows und exakt CPython 3.14.7
-- [ ] **Tests + Coverage**: `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -W error::pytest.PytestUnhandledThreadExceptionWarning` — vollständige Zielsystemsuite grün und Coverage ≥ 80 %
-- [ ] **Linting**: `uv run --no-sync ruff check .` — 0 Findings
-- [ ] **Formatting**: `uv run --no-sync ruff format --check .` — keine Drift
-- [ ] **Type Check**: `uv run --no-sync mypy src/ scripts/` — 0 Errors (strict)
+Für sämtliche DoD-Syncs und -Gates MUSS `UV_PROJECT_ENVIRONMENT` auf ein frisch
+angelegtes absolutes Verzeichnis außerhalb des Release-Checkouts zeigen;
+`HYPOTHESIS_STORAGE_DIRECTORY` MUSS auf ein separates absolutes externes
+Verzeichnis zeigen. Hypothesis 6.151.9 schreibt Cachebytes, jedoch keine eigene
+`.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
+`.gitignore` noch `.hypothesis`-Cachebytes enthalten.
+
+- [ ] **Locked Setup**: `uv sync --locked --extra dev --group build --no-build-isolation` in der externen Projektumgebung — 0 Errors unter Windows und exakt CPython 3.14.7
+- [ ] **Tests + Coverage**: externe Projektumgebung; `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning` — vollständige Zielsystemsuite grün, Coverage ≥ 80 % und keine Checkout-Cachekontamination
+- [ ] **Linting**: `uv run --no-sync ruff check --no-cache .` — 0 Findings
+- [ ] **Formatting**: `uv run --no-sync ruff format --no-cache --check .` — keine Drift
+- [ ] **Type Check**: `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/` — 0 Errors (strict), kein Checkout-Cache
 - [ ] **Security**: `uv sync --locked --only-group security --no-install-project`, danach `uv run --no-sync python -I scripts/semgrep_release_gate.py` — 0 unerwartete Findings, Errors, übersprungene Regeln und Fixpoint-Timeouts; exakte Allowlisttreffer bleiben diagnostisch sichtbar
 - [ ] **Native Release Gate**: frische Umgebung mit `uv sync --locked --only-group release --no-install-project`, danach `uv run --no-sync python -I scripts/release_native_gate.py` — die exakt drei manifestgebundenen nativen ZIP-Werkzeuge actionlint 1.7.12, ShellCheck 0.11.0 und Gitleaks 8.30.1 sowie das getrennt aus `uv.lock` gebundene Zizmor 1.30.0 offline mit `--strict-collection --no-config --no-ignores` in den Personas `regular` und `pedantic` bestanden; Git for Windows stammt aus dem systemweiten HKLM-Vertrag, Zizmor ist kein viertes Manifestasset
 - [ ] **Dependency Audit**: vollständiger gelockter Export und Pip-Audit — 0 bekannte Advisories
-- [ ] **Architecture**: `uv run --no-sync lint-imports` — 0 Verletzungen
+- [ ] **Architecture**: `uv run --no-sync lint-imports --no-cache` — 0 Verletzungen und keine Cachebytes im Release-Checkout
 - [ ] **Property Tests**: hypothesis-basierte Roundtrip/Invarianten-Tests vorhanden
 - [ ] **Mutation Testing**: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80% auf neuem Code
 - [ ] **E2E-Validierung**: `uv run mutmut-win run` auf simple_lib Testprojekt — erfolgreich
@@ -65,7 +72,7 @@
 - [ ] **GitHub Issues**: Alle Sprint-Issues geschlossen
 - [ ] **Commit, Push**: Conventional Commit, Branch pushed
 - [ ] **Integration**: Reviewed Zwei-Parent-Merge mit byteidentischem Kandidatentree; vollständige Gates auf dem integrierten Commit wiederholen
-- [ ] **Artefakte**: reproduzierbarer Doppelbuild, identische Inventare/Hashes sowie installierte Wheel-/Sdist-Smokes unter Windows und exakt CPython 3.14.7
+- [ ] **Artefakte**: reproduzierbarer Doppelbuild, identische Inventare/Hashes sowie installierte Wheel-/Sdist-Smokes in getrennten Umgebungen unterhalb von `RUNNER_TEMP` unter Windows und exakt CPython 3.14.7; keine Smoke-Umgebung im Release-Checkout
 - [ ] **Publikation**: erst danach annotiertes Tag und GitHub-Release; billingbedingt nicht ausgeführte CI heißt `NOT_EXECUTED` und niemals PASS
 
 ---

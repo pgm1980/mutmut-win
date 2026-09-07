@@ -833,11 +833,22 @@ Hierarchie: CLI-Flags > pyproject.toml > Defaults
 Die Releasekette ist strikt geordnet und darf keine Kandidaten- durch
 Integrationsevidenz ersetzen:
 
+Für sämtliche Kandidaten- und Integrationsgates zeigt
+`UV_PROJECT_ENVIRONMENT` auf ein frisch angelegtes absolutes Verzeichnis
+außerhalb des Release-Checkouts. `HYPOTHESIS_STORAGE_DIRECTORY` zeigt auf ein
+separates absolutes externes Verzeichnis; Hypothesis 6.151.9 schreibt dort
+Cachebytes, aber keine eigene `.gitignore`. Der Checkout darf weder `.venv`,
+Werkzeug-Caches mit eigener `.gitignore` noch `.hypothesis`-Cachebytes enthalten.
+
 1. **Kandidat einfrieren:** Unter Windows und exakt CPython 3.14.7 wird die
    Entwicklungsumgebung mit
    `uv sync --locked --extra dev --group build --no-build-isolation`
-   hergestellt. Die vollständige strikte Suite läuft mit `uv run --no-sync`;
-   Ruff Check/Format, mypy, Import-Linter, `uv lock --check`, vollständiger
+   in dieser externen Projektumgebung hergestellt. Die vollständige strikte
+   Suite läuft mit `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`;
+   die übrigen Befehle sind exakt `uv run --no-sync ruff check --no-cache .`,
+   `uv run --no-sync ruff format --no-cache --check .`,
+   `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/` und
+   `uv run --no-sync lint-imports --no-cache`. `uv lock --check`, vollständiger
    Dependency-Export/Pip-Audit, das kanonische Semgrep-Gate, der kanonische
    native Release-Wrapper und der Dogfood-Pilot gehören zu denselben
    Kandidatengates. Der native Wrapper prüft die drei manifestgebundenen ZIP-
@@ -857,8 +868,9 @@ Integrationsevidenz ersetzen:
    erzeugt. Bytes, SHA-256, `SHA256SUMS` und sortierte Artefaktinventare beider
    Builds müssen exakt übereinstimmen.
 5. **Installierte Artefakte prüfen:** Wheel und Sdist werden getrennt in
-   frischen Windows-/CPython-3.14.7-Umgebungen installiert. Beide Smokes müssen
-   exakt die Paketversion des Releasekandidaten sowie einen funktionsfähigen
+   frischen Windows-/CPython-3.14.7-Umgebungen unterhalb von `RUNNER_TEMP`
+   installiert, niemals im Release-Checkout. Beide Smokes müssen exakt die
+   Paketversion des Releasekandidaten sowie einen funktionsfähigen
    `mutmut-win`-Entry-Point nachweisen.
 6. **Erst danach publizieren:** Ein annotiertes Tag verweist auf den
    integrierten Commit; ausschließlich dessen geprüfte Artefakte und

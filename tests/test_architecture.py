@@ -6,10 +6,70 @@ and that the import-linter layer contracts are satisfied.
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
+
+
+def _snapshot_kind(metadata: os.stat_result) -> str:
+    """Classify an lstat result without following links or reparse points."""
+
+    mode = metadata.st_mode
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if getattr(metadata, "st_file_attributes", 0) & reparse_flag:
+        return "reparse"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return "file"
+    return "other"
+
+
+def _directory_snapshot(root: Path) -> tuple[str, tuple[tuple[str, str, bytes], ...]]:
+    """Capture root/entry kinds and file bytes without traversing indirections."""
+
+    try:
+        root_kind = _snapshot_kind(root.lstat())
+    except FileNotFoundError:
+        return "missing", ()
+    if root_kind != "directory":
+        return root_kind, ()
+
+    entries: list[tuple[str, str, bytes]] = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as iterator:
+            children = sorted(iterator, key=lambda entry: entry.name)
+        for child in children:
+            path = Path(child.path)
+            kind = _snapshot_kind(child.stat(follow_symlinks=False))
+            payload = path.read_bytes() if kind == "file" else b""
+            entries.append((path.relative_to(root).as_posix(), kind, payload))
+            if kind == "directory":
+                pending.append(path)
+    return root_kind, tuple(sorted(entries))
+
+
+def test_directory_snapshot_preserves_root_and_entry_kinds(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-cache"
+    regular = tmp_path / "regular-cache"
+    regular.write_bytes(b"root bytes")
+    directory = tmp_path / "directory-cache"
+    directory.mkdir()
+    (directory / "state").write_bytes(b"entry bytes")
+
+    assert _directory_snapshot(missing) == ("missing", ())
+    assert _directory_snapshot(regular) == ("file", ())
+    assert _directory_snapshot(directory) == (
+        "directory",
+        (("state", "file", b"entry bytes"),),
+    )
 
 
 def test_all_modules_importable() -> None:
@@ -81,13 +141,21 @@ def test_import_linter_contracts_hold() -> None:
     imports only the bottom-band kernel (hit_recording / exceptions).
     """
     project_root = Path(__file__).resolve().parent.parent
-    script = "from importlinter.cli import lint_imports;import sys; sys.exit(lint_imports())"
+    repository_cache = project_root / ".import_linter_cache"
+    cache_before = _directory_snapshot(repository_cache)
+    script = (
+        "from importlinter.cli import lint_imports;"
+        "import sys; sys.exit(lint_imports(no_cache=True))"
+    )
     result = subprocess.run(  # noqa: S603 — fully controlled command
         [sys.executable, "-c", script],
         capture_output=True,
         encoding="utf-8",
         cwd=project_root,
         timeout=120,
+    )
+    assert _directory_snapshot(repository_cache) == cache_before, (
+        "the in-suite import-linter gate modified checkout-local cache state"
     )
     assert result.returncode == 0, (
         "import-linter layer contract broken "

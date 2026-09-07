@@ -1,9 +1,9 @@
 ---
 current_sprint: "39"
-sprint_goal: "v2.21.1: candidate validated"
+sprint_goal: "v2.21.1: in progress"
 branch: "fix/v2.21.1-windows314"
 started_at: "2026-09-02"
-phase: "candidate_validated"
+phase: "in_progress"
 candidate_commit: ""
 candidate_tree: ""
 integrated_commit: ""
@@ -13,8 +13,8 @@ housekeeping_done: false
 memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
+semgrep_passed: false
+tests_passed: false
 documentation_updated: true
 ---
 
@@ -27,8 +27,8 @@ Publication status for v2.21.1 is external mutable state. These immutable bytes 
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: candidate_validated -->
-<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
 <!-- RELEASE_TARGET: v2.21.1 -->
 <!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
 <!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->

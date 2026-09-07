@@ -5,12 +5,22 @@ Python versions, implementations, and operating systems are not release gates.
 
 Before declaring any task "done" (CLAUDE.md gates, harness hooks verify some of these):
 
-1. `uv run --no-sync ruff check .` → 0 findings;
-   `uv run --no-sync ruff format --check .` → no drift.
-2. `uv run --no-sync mypy src/ scripts/` → zero errors.
-3. The complete Windows/CPython-3.14.7 strict suite with coverage passes; no new
-   skips or thread warnings without a documented reason.
-4. `uv run --no-sync lint-imports` → 0 violations (also runs inside the suite via
+Set `UV_PROJECT_ENVIRONMENT` to a fresh absolute directory outside the checkout
+before every sync or gate below. Set `HYPOTHESIS_STORAGE_DIRECTORY` to a
+separate absolute directory outside the checkout; Hypothesis 6.151.9 writes
+cache bytes but no `.gitignore` of its own. The checkout must contain neither
+`.venv`, tool-cache directories with their own `.gitignore`, nor `.hypothesis`
+cache bytes.
+
+1. `uv run --no-sync ruff check --no-cache .` → 0 findings;
+   `uv run --no-sync ruff format --no-cache --check .` → no drift.
+2. `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/` →
+   zero errors without reading or writing a checkout-local cache.
+3. `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning` passes from the
+   external project environment; no new skips, thread warnings or checkout-local
+   cache controls.
+4. `uv run --no-sync lint-imports --no-cache` → 0 violations (also runs without
+   a checkout-local cache inside the suite via
    tests/test_architecture.py).
 5. `uv sync --locked --only-group security --no-install-project`, then
    `uv run --no-sync python -I scripts/semgrep_release_gate.py` → canonical pinned,
@@ -46,6 +56,7 @@ dogfooding pilot: version bump on the release branch → final gates → merge t
 integrated final gates → reproducible double-build and installed-artifact smokes →
 annotated tag `vX.Y.Z` → GitHub release with notes. NO PyPI publishing. A billing-
 blocked CI run is `NOT_EXECUTED`, never PASS. Deprecations warn ≥ 1 minor release
-before removal.
+before removal. Wheel- and sdist-smoke virtual environments must live beneath
+`RUNNER_TEMP`, never in the release checkout.
 
 <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->

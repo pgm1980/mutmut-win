@@ -34,12 +34,22 @@ Product-Owner-Scope.
 
 ## Integrations- und Releasegates
 
+Alle folgenden Syncs und Gates laufen mit einer frisch angelegten absoluten
+`UV_PROJECT_ENVIRONMENT` außerhalb des Release-Checkouts;
+`HYPOTHESIS_STORAGE_DIRECTORY` zeigt auf ein separates absolutes externes
+Verzeichnis. Hypothesis 6.151.9 schreibt Cachebytes, aber keine eigene
+`.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
+`.gitignore` noch `.hypothesis`-Cachebytes enthalten.
+
 - [ ] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
   `main`.
 - [ ] Vollständige strikte Suite mit Coverage auf dem integrierten `main`-Commit
-  unter Windows und exakt CPython 3.14.7 wiederholen; keine unerklärten Fehler,
-  Threadwarnungen oder Skips akzeptieren.
-- [ ] Ruff Check/Format, mypy, Import-Linter und `uv lock --check` auf dem
+  unter Windows und exakt CPython 3.14.7 mit `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning` wiederholen; keine
+  unerklärten Fehler, Threadwarnungen oder Skips akzeptieren.
+- [ ] `uv run --no-sync ruff check --no-cache .`,
+  `uv run --no-sync ruff format --no-cache --check .`,
+  `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/`,
+  `uv run --no-sync lint-imports --no-cache` sowie `uv lock --check` auf dem
   quieszenten integrierten `main`-Commit wiederholen.
 - [ ] Vollständigen gelockten Dependency-Export und Pip-Audit auf dem
   integrierten Commit ohne bekannte Advisories wiederholen.
@@ -58,7 +68,8 @@ Product-Owner-Scope.
 - [ ] Dokumentierten Dogfood-Piloten auf dem integrierten Commit ohne Recovery-/
   Problem-Buckets und mit mindestens 80 Prozent Pilot-Score wiederholen.
 - [ ] Reproduzierbarer Doppelbuild, identische Artefaktinventare und SHA-256
-  sowie installierte Wheel-/Sdist-Smokes auf dem Zielsystem.
+  sowie installierte Wheel-/Sdist-Smokes auf dem Zielsystem; beide Smoke-Venvs
+  liegen getrennt unterhalb von `RUNNER_TEMP`, niemals im Release-Checkout.
 - [ ] Annotiertes Tag und GitHub-Release erst nach allen lokalen Belegen.
 
 Publikation erfolgt ausschließlich über das annotierte Git-Tag und die

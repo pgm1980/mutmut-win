@@ -15,12 +15,13 @@ Reparatur erfolgt auf `fix/v2.21.1-windows314`.
 **Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
 MW220-001 bis MW220-115 und bleibt historische
 Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
-klassifiziert. 27 Zielsystemfixes sind auf dem lokalen Kandidaten verifiziert;
+klassifiziert. 27 Zielsystemfixes sind implementiert und warten nach CX221-063
+erneut auf das vollständige lokale Finalgate;
 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
 sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
 außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
-62 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 55 P1 und 5 P2.
-Alle 62 sind auf dem lokalen Kandidaten verifiziert. v2.21.1 ist weder
+63 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 56 P1 und 5 P2.
+Alle 63 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
 integriert noch getaggt oder veröffentlicht.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
@@ -406,25 +407,33 @@ Seit der zweiten Welle wird ausschließlich im Git-Clone unter `<repository root
 
 Nach jeder Welle:
 
-    uv run --no-sync pytest -q <fokussierte Tests>
-    uv run --no-sync ruff check <geänderte Dateien>
-    uv run --no-sync ruff format --check <geänderte Dateien>
-    uv run --no-sync mypy <geänderte Produktionsmodule>
-    uv run --no-sync lint-imports
+    uv run --no-sync pytest -q -p no:cacheprovider <fokussierte Tests>
+    uv run --no-sync ruff check --no-cache <geänderte Dateien>
+    uv run --no-sync ruff format --no-cache --check <geänderte Dateien>
+    uv run --no-sync mypy --no-incremental --cache-dir=nul <geänderte Produktionsmodule>
+    uv run --no-sync lint-imports --no-cache
 
 Vor Abschluss:
 
-    uv run --no-sync pytest -q -W error::pytest.PytestUnhandledThreadExceptionWarning
-    uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -W error::pytest.PytestUnhandledThreadExceptionWarning
-    uv run --no-sync ruff check .
-    uv run --no-sync ruff format --check .
-    uv run --no-sync mypy src/ scripts/
-    uv run --no-sync lint-imports
+Eine frisch angelegte absolute `UV_PROJECT_ENVIRONMENT` außerhalb des
+Release-Checkouts ist dabei Vorbedingung; ebenso zeigt
+`HYPOTHESIS_STORAGE_DIRECTORY` auf ein separates absolutes externes
+Verzeichnis. Hypothesis 6.151.9 schreibt Cachebytes, aber keine eigene
+`.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
+`.gitignore` noch `.hypothesis`-Cachebytes enthalten. Wheel- und Sdist-Smoke-
+Venvs werden ausschließlich getrennt unterhalb von `RUNNER_TEMP` angelegt.
+
+    uv run --no-sync pytest -q -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning
+    uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning
+    uv run --no-sync ruff check --no-cache .
+    uv run --no-sync ruff format --no-cache --check .
+    uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/
+    uv run --no-sync lint-imports --no-cache
     uv lock --check
     uv sync --locked --only-group security --no-install-project
     uv run --no-sync python -I scripts/semgrep_release_gate.py
 
-Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitleaks über vollständige Historie und Git-owned Worktree, Unicode-/Bidi-/NUL-/Control-/Merge-Marker-Inventar sowie `git diff --check`; vollständigen Lock exportieren und mit `pip-audit` prüfen; Wheel/Sdist zweimal aus identischen gelockten Inputs extern bauen, Byte-/SHA-/Inventargleichheit und Lizenzbytes vergleichen, mit gepinnten Twine-/Wheel-Content-Tools prüfen und isoliert installieren/smoke-testen; Projekt-.venv vor/nach Testlauf stabil inventarisieren; alle P0-Minimalrepros und die echte pytest-8.2.2-Grenze erneut ausführen; CI-Export auf identischer Basis akzeptieren und bei Environment-Drift fail-closed ablehnen; einen dokumentierten Vier-Worker-Dogfooding-Piloten auf genau dem danach eingefrorenen finalen Baum ausführen. Danach Follow-up-PR publizieren. Eine Billing-bedingt ausbleibende weitere GitHub-CI wird als Evidenzlücke dokumentiert und nie als PASS gewertet.
+Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitleaks über vollständige Historie und Git-owned Worktree, Unicode-/Bidi-/NUL-/Control-/Merge-Marker-Inventar sowie `git diff --check`; vollständigen Lock exportieren und mit `pip-audit` prüfen; Wheel/Sdist zweimal aus identischen gelockten Inputs extern bauen, Byte-/SHA-/Inventargleichheit und Lizenzbytes vergleichen, mit gepinnten Twine-/Wheel-Content-Tools prüfen und isoliert installieren/smoke-testen; die externe uv-Projektumgebung vor/nach dem Testlauf stabil inventarisieren und beide Artefakt-Smoke-Venvs ausschließlich getrennt unterhalb von `RUNNER_TEMP` anlegen; alle P0-Minimalrepros und die echte pytest-8.2.2-Grenze erneut ausführen; CI-Export auf identischer Basis akzeptieren und bei Environment-Drift fail-closed ablehnen; einen dokumentierten Vier-Worker-Dogfooding-Piloten auf genau dem danach eingefrorenen finalen Baum ausführen. Danach Follow-up-PR publizieren. Eine Billing-bedingt ausbleibende weitere GitHub-CI wird als Evidenzlücke dokumentiert und nie als PASS gewertet.
 
 ## 11. Fortschritt
 
@@ -555,8 +564,8 @@ reine Ambient-Drift diagnostische Ergebnisse ohne Releaseautorität bewahren dar
 Diese eigene ID-Serie ergänzt Claudes unveränderte MW221-001-bis--046-Matrix
 und fließt nicht in deren Statussumme ein.
 
-Sie umfasst exakt CX221-001 bis CX221-062; ihre Prioritätsverteilung lautet
-2 P0, 55 P1 und 5 P2.
+Sie umfasst exakt CX221-001 bis CX221-063; ihre Prioritätsverteilung lautet
+2 P0, 56 P1 und 5 P2.
 
 | ID | Maßnahme | Stand |
 |---|---|---|
@@ -622,6 +631,7 @@ Sie umfasst exakt CX221-001 bis CX221-062; ihre Prioritätsverteilung lautet
 | CX221-060 | Zizmor-Konfiguration und Inline-Ignores in beiden Offline-Personas mechanisch deaktivieren | implementiert; Native Wrapper und direkte Build-Prüfungen verwenden `--no-config --no-ignores`, globaler Workflow-/Dokumentvertrag regressionsgebunden; Finalgate offen |
 | CX221-061 | Git for Windows aus dem systemweiten HKLM-Installationsvertrag statt Caller-PATH beziehen und seine Ausgabe strikt als einzeilige Windows-Version prüfen | implementiert; Registry-/Pfad-/Version-/Fake-PATH-Gegenproben vorhanden; Finalgate offen |
 | CX221-062 | Jeden urllib-Redirect-Hop vor dem Folgen gegen HTTPS-, Host- und Credential-Allowlist prüfen | implementiert; erlaubte Zweihop- sowie Host-/HTTP-/Userinfo-Negativtests grün; Finalgate offen |
+| CX221-063 | Sämtliche Release-Gate-Caches aus dem Checkout fernhalten: externe uv-Projektumgebung, externes `HYPOTHESIS_STORAGE_DIRECTORY`, Artefakt-Smoke-Venvs unter `RUNNER_TEMP`, In-Suite-Import-Linter ohne Cache, Ruff/Import-Linter/pytest cachelos, mypy nichtinkrementell mit Windows-Cacheziel `nul` sowie Workflow-, Quell- und Hidden-Ignore-Vertrag | implementiert; Hypothesis 6.151.9 schreibt bestätigt `.hypothesis`-Cachebytes, aber keine eigene `.gitignore`; exakte Befehle und `lint_imports(no_cache=True)` sind strukturell gebunden, Hidden-Ignore-Inventarisierung ist `lstat`-/Reparse-sicher und behandelt Windows-`.gitignore`-Pfade case-insensitiv; der zuvor bei 64 Prozent reproduzierte `.import_linter_cache/.gitignore`-Fehler und benachbarte Kontaminationen werden gezielt und in der vollständigen Suite erneut geprüft; Finalgate offen |
 
 CX221-044 bindet in `[dependency-groups].release`
 `check-wheel-contents==0.6.3`, `pyflakes==3.4.0`, `twine==7.0.0` und
@@ -662,19 +672,22 @@ jeweils 0 unerwarteten Findings, Errors, übersprungenen Regeln und Fixpoint-
 Timeouts. Derselbe saubere Implementierungscommit bestand in einer frisch
 gelockten CPython-3.14.7-Releaseumgebung zusätzlich das Native-Gate aus
 actionlint, ShellCheck, Pyflakes, Zizmor regular/pedantic und Gitleaks
-Worktree/History. Die Governance-only-Kandidatenbytes werden erneut geprüft;
+Worktree/History. Der erste commit-genaue Kandidatenlauf deckte danach bei 64
+Prozent CX221-063 auf und war deshalb ausdrücklich kein PASS. Nach der
+Cachekorrektur werden die Kandidatengates vollständig erneut ausgeführt;
 anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
 
 ### 13.4 Noch ausstehende Abschlusssequenz
 
-1. Der Arbeitsbaum-Nachweis ist abgeschlossen: alle Regressionen, vollständige
-   strikte Suite, Coverage, Quality-/Dependency-/Semgrep-Gates und der frische
+1. Der frühere Arbeitsbaum-Nachweis umfasste alle Regressionen, vollständige
+   strikte Suite, Coverage, Quality-/Dependency-/Semgrep-Gates und den frischen
    Dogfood-Pilot mit `--force --rerun-all --profile advanced`,
    `--paths-to-mutate src/mutmut_win/code_coverage.py`,
    `--tests-dir tests/unit/test_code_coverage.py`, `--max-children 4`,
    `--output json --no-progress` sind grün. Der bewusst nicht autoritative
    Subset-Pilot lief ohne `--min-score`, erreichte 90/1 bei 98,9 Prozent und
-   besitzt keine CI-Exportautorität.
+   besitzt keine CI-Exportautorität. CX221-063 ist gezielt sowie im neuen
+   vollständigen Kandidatengate erneut zu beweisen.
 2. Implementierungscommit erzeugen, auf dem sauberen Commit das kanonische
    Native-Release-Gate sowie die Kandidatengates wiederholen und erst danach
    State, Reports und Sprintbacklog auf `candidate_validated` umstellen. Alle
@@ -696,6 +709,7 @@ anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
    Eine billingbedingt nicht gestartete CI wird im Releasehinweis als
    Evidenzlücke benannt, niemals als bestanden.
 
-**Aktuelles Urteil für v2.21.1:** Release-NO-GO. Die Arbeitsbaumgates sind grün;
-sauberer Kandidatencommit und Native-Gate, Review-Integration, integrierte
-Wiederholung, Rebuild, Installed-Smokes, Tag und Release stehen noch aus.
+**Aktuelles Urteil für v2.21.1:** Release-NO-GO. CX221-063 ist implementiert,
+aber sein gezieltes und vollständiges Kandidatengate ist noch offen; danach
+stehen Review-Integration, integrierte Wiederholung, Rebuild, Installed-Smokes,
+Tag und Release aus.

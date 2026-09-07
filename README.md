@@ -450,11 +450,11 @@ uv lock --check
 uv sync --locked --only-group build --no-install-project
 uv sync --locked --extra dev --group build --group security --no-build-isolation
 
-uv run --no-sync pytest              # full suite (unit + integration + architecture)
-uv run --no-sync ruff check .        # lint
-uv run --no-sync ruff format .       # format
-uv run --no-sync mypy src/ scripts/  # type check
-uv run --no-sync lint-imports        # layer contracts
+uv run --no-sync pytest -p no:cacheprovider      # full suite, no checkout cache
+uv run --no-sync ruff check --no-cache .         # lint
+uv run --no-sync ruff format --no-cache .        # format
+uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/  # type check
+uv run --no-sync lint-imports --no-cache  # layer contracts, no checkout-local cache
 
 uv sync --locked --only-group security --no-install-project
 uv run --no-sync python -I scripts/semgrep_release_gate.py  # pinned, fail-closed security gate
@@ -474,7 +474,11 @@ pilot). The fixed sequence is: explicit version decision and version bump
 (`pyproject.toml` + `uv.lock`) on the release branch → final gates → merge to
 `main` → repeat the final gates on the integrated commit → build and verify the
 reproducible release artifacts → annotated tag `vX.Y.Z` → GitHub release with
-notes. PyPI publishing is not part of that sequence. Breaking changes wait for a major version; deprecations warn
+notes. Final and integrated gates use a fresh absolute
+`UV_PROJECT_ENVIRONMENT` and `HYPOTHESIS_STORAGE_DIRECTORY`, both outside the
+checkout, plus the cacheless command forms above, so generated tool state cannot
+conceal or perturb release inputs. PyPI
+publishing is not part of that sequence. Breaking changes wait for a major version; deprecations warn
 for at least one minor release first (current example:
 `--treat-timeout-as-kill`).
 <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
