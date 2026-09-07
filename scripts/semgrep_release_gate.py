@@ -137,7 +137,7 @@ _IMPORT_RULE: Final = "python.lang.security.audit.non-literal-import.non-literal
 _EXEC_RULE: Final = "python.lang.security.audit.exec-detected.exec-detected"
 _PICKLE_RULE: Final = "python.lang.security.deserialization.pickle.avoid-pickle"
 _KILL_PROC_FILE_SHA: Final = "aff81671be553a2da9ef0a006baec1bdc8b01133601d3834da9a90fa72a2cb32"
-_ARCHITECTURE_FILE_SHA: Final = "9ad23a3d71a02756b65dfba018d80d651aa4fa3681b207cb07c92c94aa08542c"
+_ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
 _CLASS_BODY_FILE_SHA: Final = "81ce773253c18c42ce5ace134f08c6a3290b05666709c43cc620686106c30706"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
     "874635fc0f8b82ef1d8ba4cac975e4bffc7f7712ad7f37d4191c21a7cd40637b"
@@ -181,9 +181,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/test_architecture.py",
         _IMPORT_RULE,
-        40,
+        100,
         20,
-        40,
+        100,
         46,
         "d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         _ARCHITECTURE_FILE_SHA,

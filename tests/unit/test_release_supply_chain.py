@@ -1928,7 +1928,7 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     assert {match.group("status") for match in follow_up_rows} <= _MW221_STATUSES
     mw_statuses = {match.group("id"): match.group("status") for match in follow_up_rows}
 
-    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 65)}
+    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 66)}
     codex_rows = list(
         re.finditer(
             r"^\| (?P<id>CX221-\d{3}) \| (?P<priority>P[012]) \| "
@@ -1971,11 +1971,11 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     )
     assert set(roadmap_ids) == expected_codex_ids
     assert len(roadmap_ids) == len(expected_codex_ids)
-    assert "64 getrennt geführten Codex-Follow-up-Findings" in roadmap
+    assert "65 getrennt geführten Codex-Follow-up-Findings" in roadmap
     assert "ANALYSE_MUTMUTWIN221.md" in roadmap
     assert "Windows und exakt CPython 3.14.7" in follow_up
-    assert "2 P0, 57 P1 und 5 P2" in follow_up
-    assert "2 P0, 57 P1 und 5 P2" in roadmap
+    assert "2 P0, 58 P1 und 5 P2" in follow_up
+    assert "2 P0, 58 P1 und 5 P2" in roadmap
     assert "gelockte Repository-`.venv` binden" not in roadmap
 
     expected_provenance = _expected_release_tool_provenance()

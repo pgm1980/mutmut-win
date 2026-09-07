@@ -381,6 +381,35 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c"
     )
+    architecture_finding = gate.FindingSignature(
+        path="tests/test_architecture.py",
+        check_id="python.lang.security.audit.non-literal-import.non-literal-import",
+        start_line=100,
+        start_col=20,
+        end_line=100,
+        end_col=46,
+        lines_sha256="d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
+        file_sha256="04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09",
+    )
+    assert [
+        finding
+        for finding in gate.DEFAULT_FINDING_ALLOWLIST
+        if finding.path == "tests/test_architecture.py"
+    ] == [architecture_finding]
+    repository = Path(__file__).resolve().parents[2]
+    assert (
+        gate._finding_signature(
+            {
+                "path": "tests/test_architecture.py",
+                "check_id": "python.lang.security.audit.non-literal-import.non-literal-import",
+                "start": {"line": 100, "col": 20},
+                "end": {"line": 100, "col": 46},
+                "extra": {},
+            },
+            repository,
+        )
+        == architecture_finding
+    )
 
 
 def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Project) -> None:
