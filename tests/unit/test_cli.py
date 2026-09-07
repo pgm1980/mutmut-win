@@ -6,6 +6,8 @@ mutations or subprocesses are triggered during the test run.
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +17,7 @@ from click.testing import CliRunner
 from mutmut_win.cli import cli
 from mutmut_win.constants import Profile
 from mutmut_win.db import MutationRunState
+from mutmut_win.exceptions import StaleStagingError
 from mutmut_win.models import (
     MutationResult,
     MutationRunResult,
@@ -62,6 +65,7 @@ def _verified_snapshot(
             plan_digest="c" * 64,
             basis_fingerprint=_VERIFIED_BASIS,
             basis_config_json="{}",
+            is_full_run=True,
         ),
         rows,
     )
@@ -177,6 +181,46 @@ class TestRunCommand:
 
         assert result.exit_code == 2
 
+    @pytest.mark.parametrize("json_output", [False, True])
+    def test_force_rejects_staging_collision_before_deleting_state(self, json_output: bool) -> None:
+        from mutmut_win.config import MutmutConfig
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            source = Path("src/mod.py")
+            source.parent.mkdir()
+            source.write_text("def value():\n    return 1\n", encoding="utf-8")
+            Path("src/mod.py.meta").write_bytes(b"PROJECT-FIXTURE-METADATA")
+            Path("mutants").mkdir()
+            Path("mutants/keep.txt").write_text("old evidence", encoding="utf-8")
+            Path(".mutmut-cache").mkdir()
+            Path(".mutmut-cache/keep.txt").write_text("old evidence", encoding="utf-8")
+            config = MutmutConfig(paths_to_mutate=["src/mod.py"])
+            lock = MagicMock()
+            lock.__enter__.return_value = lock
+
+            args = ["run", "--force"]
+            if json_output:
+                args.extend(["--output", "json"])
+            with (
+                patch("mutmut_win.cli.load_config", return_value=config),
+                patch("mutmut_win.cli._require_safe_workspace_roots"),
+                patch("mutmut_win.cli.validate_cache_path"),
+                patch("mutmut_win.cli.WorkspaceRunLock", return_value=lock),
+                patch("mutmut_win.cli.SpawnPoolExecutor") as executor,
+            ):
+                result = runner.invoke(cli, args)
+
+            assert result.exit_code == 2
+            assert "reserved staging namespace" in result.output
+            if json_output:
+                payload = json.loads(result.stdout)
+                assert payload["exit_code"] == 2
+                assert "reserved staging namespace" in payload["error"]
+            assert Path("mutants/keep.txt").read_text(encoding="utf-8") == "old evidence"
+            assert Path(".mutmut-cache/keep.txt").read_text(encoding="utf-8") == "old evidence"
+            executor.assert_not_called()
+
     def test_run_exits_nonzero_on_domain_error(self) -> None:
         """Domain errors render as a one-liner; foreign exceptions propagate
         as real bugs instead (issue #114 / A4-QX-006 — the dedicated
@@ -242,6 +286,23 @@ class TestResultsCommand:
         assert "Total:      3" in result.output
         assert "Killed:     1" in result.output
         assert "Survived:   1" in result.output
+
+    def test_results_marks_subset_score_not_release_ready(self) -> None:
+        runner = CliRunner()
+        rows = [_make_result("a__mutmut_1", "killed")]
+        current, persisted_rows = _verified_snapshot(rows)
+        subset = replace(current, is_full_run=False)
+
+        with patch(
+            "mutmut_win.cli._load_result_snapshot_or_exit",
+            return_value=(subset, persisted_rows),
+        ):
+            result = runner.invoke(cli, ["results"])
+
+        assert result.exit_code == 0
+        assert "subset selection" in result.output
+        assert "release-ready: no" in result.output
+        assert "Displayed totals and score cover only this subset" in result.output
 
     def test_results_shows_no_results_message(self) -> None:
         runner = CliRunner()
@@ -344,13 +405,42 @@ class TestShowCommand:
                 "mutmut_win.cli.resolve_mutant",
                 return_value=("src.sample.x_foo__mutmut_1", MagicMock(path="src/sample.py")),
             ),
-            patch("mutmut_win.cli.render_function_diff", return_value=fake_diff),
+            patch("mutmut_win.cli.render_function_diff_bytes", return_value=fake_diff.encode()),
         ):
             result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
 
         assert result.exit_code == 0
         # The output should contain diff markers
         assert "---" in result.output or "+++" in result.output or "src.sample" in result.output
+        assert fake_diff.encode("utf-8") in result.stdout_bytes
+        assert b"\r\n" not in result.stdout_bytes
+
+    def test_show_refuses_stale_source_without_printing_a_diff(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = CliRunner()
+        monkeypatch.chdir(tmp_path)
+        Path("mutants").mkdir()
+        with (
+            patch("mutmut_win.cli.load_config"),
+            patch(
+                "mutmut_win.cli.resolve_mutant",
+                return_value=("src.sample.x_foo__mutmut_1", MagicMock(path="src/sample.py")),
+            ),
+            patch(
+                "mutmut_win.cli.render_function_diff_bytes",
+                side_effect=StaleStagingError(
+                    "src/sample.py content cannot be proven to match the source used for "
+                    "mutant generation — re-run 'mutmut-win run' before showing or "
+                    "applying mutants."
+                ),
+            ),
+        ):
+            result = runner.invoke(cli, ["show", "src.sample.x_foo__mutmut_1"])
+
+        assert result.exit_code == 1
+        assert "before showing or applying" in result.output
+        assert "--- a/" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +476,10 @@ class TestApplyCommand:
         Path("mutants").mkdir()
         with (
             patch("mutmut_win.cli.load_config"),
+            patch(
+                "mutmut_win.cli.resolve_mutant",
+                return_value=("src.sample.x_foo__mutmut_1", MagicMock()),
+            ),
             patch("mutmut_win.cli.apply_mutant") as mock_apply,
         ):
             result = runner.invoke(cli, ["apply", "src.sample.x_foo__mutmut_1"])
@@ -649,6 +743,33 @@ class TestExportCicdStatsCommand:
 
         assert result.exit_code == 0
         assert "Score:" in result.output
+
+    def test_subset_run_cannot_replace_full_run_export_authority(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = CliRunner()
+        all_results = [_make_result("a__mutmut_1", "killed")]
+        current, rows = _verified_snapshot(all_results)
+        subset = replace(current, is_full_run=False)
+        monkeypatch.chdir(tmp_path)
+        artifact = tmp_path / "mutants" / "mutmut-cicd-stats.json"
+        artifact.parent.mkdir()
+        artifact.write_text('{"score": 100.0}\n', encoding="utf-8")
+
+        with (
+            patch(
+                "mutmut_win.cli._load_result_snapshot_or_exit",
+                return_value=(subset, rows),
+            ),
+            patch("mutmut_win.cli._stable_live_basis") as live_basis,
+        ):
+            result = runner.invoke(cli, ["export-cicd-stats"])
+
+        assert result.exit_code == 1
+        assert "subset selection" in result.output
+        assert "cannot authorize a full-run CI/CD score" in result.output
+        assert not artifact.exists()
+        live_basis.assert_not_called()
 
 
 class TestMainEntryPoint:

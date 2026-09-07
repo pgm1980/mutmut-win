@@ -1,7 +1,7 @@
 # Product Backlog — mutmut-win
 
-**Version:** 2.2.0
-**Datum:** 2026-06-11
+**Version:** 3.0.0
+**Datum:** 2026-09-07
 **Status:** Active
 
 ---
@@ -32,6 +32,12 @@
 | v2.11.0 | Maintenance 1: Runtime & Self-Run | Sprint 33 | Done | Maintenance-Pool-Auswahl: Startup-Sockel (#105), no-tests-Producer (#106), Trampolin-Entkopplung (#107), Browser-Diff (#108), Robustheit (#109), Kleinkram (#110) — released 2026-06-11; **Pilot 24,2 % → 86,9 % brutto, 0 Timeouts statt 175; Architektur-Skip im Artefakt entfernt** |
 | v2.12.0 | Maintenance 2: Final Sweep | Sprint 34 | Done | VOLLSTÄNDIGER Pool-Rest (13 Einträge) + Entscheidungsregister: Runner-Wahrheit (#111), Arg-Koerzierung (#112), Sanitiser-Subtables (#113), Exception-Hygiene (#114), CLI-Konsistenz (#115), sitecustomize (#116), Abschluss-Dossier (#117) — released 2026-06-12; **Pool 13 → 0, Register 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten, Vollvermessung 68,3 % als Pausen-Baseline; danach ENTWICKLUNGSPAUSE** |
 | v2.13.0 | Maintenance 3: External QA | Sprint 35 | Done | Pausen-Unterbrechung auf User-Entscheid: alle 15 Findings des externen 360°-QA-Reports (6 Medium, 9 Low, alle verifiziert) — Intake/DOC-001 (#118), **Result-Reuse-Feature** (#119), CLI/Config-Vertrag (#120), Mutationsoberfläche/f-Strings (#121), skipped-Producer + Score-Darstellung (#122), Robustheit/WER (#123) — released 2026-06-12; **15/15 geschlossen, Reuse-Demo: Lauf C dispatcht 0, Pilot settled 82,8 %; danach zurück in die ENTWICKLUNGSPAUSE** |
+| v2.14.0 | Maintenance 4: Fable-5 360° | Sprint 36 | Done | 28 Findings geschlossen; released 2026-06-13 |
+| v2.15.0 | Maintenance 5: External 360° QA | Sprint 37 | Done | Sechs Follow-up-Findings geschlossen; released 2026-06-13 |
+| v2.16.0–v2.19.0 | Operatorprofile und Erweiterungen | Phasen 1–4 | Done | Profile, Advanced-/All-Operatoren, Regex-Suite und Backports |
+| v2.19.1–v2.20.0 | External-QA-Follow-ups | zwischen Sprints | Done | Cache-/Config-/Dedupe- sowie Worker-/Qualified-name-Härtung |
+| v2.21.0 | Adversariales 360°-Hardening | Sprint 38 | Done | MW220-Reviewwelle; annotiertes Tag und GitHub-Release, reale CI blieb rot und ist kein PASS |
+| v2.21.1 | Windows-/CPython-3.14.7-Follow-up | Sprint 39 | Live-State extern prüfen | MW221-/CX221-Adjudikation und Zielsystemkorrekturen; autoritativer Status in `.sprint/state.md` und auf GitHub |
 
 ---
 
@@ -39,15 +45,15 @@
 
 ### Quality-Gates
 
-- [ ] **Build**: `uv sync` — 0 Errors
-- [ ] **Tests**: `uv run pytest` — alle grün
-- [ ] **Coverage**: `uv run pytest --cov=src` — ≥ 80% Line Coverage
-- [ ] **Linting**: `uv run ruff check .` — 0 Findings
-- [ ] **Formatting**: `uv run ruff format .` — formatiert
-- [ ] **Type Check**: `uv run mypy src/` — 0 Errors (strict)
-- [ ] **Security**: `uv sync --locked --only-group security --no-install-project`, danach `uv run --no-sync python -I scripts/semgrep_release_gate.py` — kanonisches Gate grün
-- [ ] **Dependency Audit**: `uv run pip-audit` — 0 Advisories
-- [ ] **Architecture**: `uv run lint-imports` — 0 Verletzungen
+- [ ] **Locked Setup**: `uv sync --locked --extra dev --group build --no-build-isolation` — 0 Errors unter Windows und exakt CPython 3.14.7
+- [ ] **Tests + Coverage**: `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -W error::pytest.PytestUnhandledThreadExceptionWarning` — vollständige Zielsystemsuite grün und Coverage ≥ 80 %
+- [ ] **Linting**: `uv run --no-sync ruff check .` — 0 Findings
+- [ ] **Formatting**: `uv run --no-sync ruff format --check .` — keine Drift
+- [ ] **Type Check**: `uv run --no-sync mypy src/ scripts/` — 0 Errors (strict)
+- [ ] **Security**: `uv sync --locked --only-group security --no-install-project`, danach `uv run --no-sync python -I scripts/semgrep_release_gate.py` — 0 unerwartete Findings, Errors, übersprungene Regeln und Fixpoint-Timeouts; exakte Allowlisttreffer bleiben diagnostisch sichtbar
+- [ ] **Native Release Gate**: frische Umgebung mit `uv sync --locked --only-group release --no-install-project`, danach `uv run --no-sync python -I scripts/release_native_gate.py` — die exakt drei manifestgebundenen nativen ZIP-Werkzeuge actionlint 1.7.12, ShellCheck 0.11.0 und Gitleaks 8.30.1 sowie das getrennt aus `uv.lock` gebundene Zizmor 1.30.0 offline mit `--strict-collection --no-config --no-ignores` in den Personas `regular` und `pedantic` bestanden; Git for Windows stammt aus dem systemweiten HKLM-Vertrag, Zizmor ist kein viertes Manifestasset
+- [ ] **Dependency Audit**: vollständiger gelockter Export und Pip-Audit — 0 bekannte Advisories
+- [ ] **Architecture**: `uv run --no-sync lint-imports` — 0 Verletzungen
 - [ ] **Property Tests**: hypothesis-basierte Roundtrip/Invarianten-Tests vorhanden
 - [ ] **Mutation Testing**: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80% auf neuem Code
 - [ ] **E2E-Validierung**: `uv run mutmut-win run` auf simple_lib Testprojekt — erfolgreich
@@ -58,6 +64,9 @@
 - [ ] **MEMORY.md**: Projektgedächtnis aktualisiert
 - [ ] **GitHub Issues**: Alle Sprint-Issues geschlossen
 - [ ] **Commit, Push**: Conventional Commit, Branch pushed
+- [ ] **Integration**: Reviewed Zwei-Parent-Merge mit byteidentischem Kandidatentree; vollständige Gates auf dem integrierten Commit wiederholen
+- [ ] **Artefakte**: reproduzierbarer Doppelbuild, identische Inventare/Hashes sowie installierte Wheel-/Sdist-Smokes unter Windows und exakt CPython 3.14.7
+- [ ] **Publikation**: erst danach annotiertes Tag und GitHub-Release; billingbedingt nicht ausgeführte CI heißt `NOT_EXECUTED` und niemals PASS
 
 ---
 
@@ -194,7 +203,7 @@
 
 ### Epic 7: File Setup Pipeline
 
-**Beschreibung:** Port der File-Setup-Pipeline aus mutmut's __main__.py — kopiert Quelldateien nach mutants/, schreibt mutierte Trampoline-Dateien, richtet sys.path ein
+**Beschreibung:** Port der File-Setup-Pipeline aus mutmut's __main__.py — kopiert Quelldateien nach mutants/, schreibt mutierte Trampoline-Dateien und richtet den Staging-Import ausschließlich für isolierte pytest-Kinder ein
 **Sprint:** 8
 **Release:** v0.2.0
 
@@ -202,14 +211,14 @@
 |-------|-----|-------|-----------|-----|--------|
 | #24 | Story | Als Entwickler will ich walk_source_files + walk_all_files, damit Quelldateien navigierbar sind | Must | 3 | Done |
 | #25 | Story | Als Entwickler will ich copy_src_dir + copy_also_copy_files, damit mutants/ befüllt wird | Must | 5 | Done |
-| #26 | Story | Als Entwickler will ich setup_source_paths (sys.path-Manipulation), damit pytest aus mutants/ importiert | Must | 5 | Done |
+| #26 | Story | Als Entwickler will ich einen isolierten pytest-Kindimportpfad, damit pytest aus mutants/ importiert, ohne dass Orchestrator oder Spawn-Worker Staging erben | Must | 5 | Done |
 | #27 | Story | Als Entwickler will ich write_all_mutants_to_file + create_mutants_for_file, damit mutierte Dateien auf Disk geschrieben werden | Must | 8 | Done |
 | #28 | Task | Orchestrator-Integration: _generate_mutants delegiert an file_setup | Must | 3 | Done |
 
 **Acceptance Criteria:**
 - [x] `file_setup.py` im Domain Layer implementiert
 - [x] Quelldateien werden korrekt nach mutants/ kopiert (Pfad-Struktur erhalten)
-- [x] sys.path wird für mutants/-Import eingerichtet und nach dem Lauf wiederhergestellt
+- [x] pytest-Kinder erhalten mutants/-Imports explizit; Eltern- und Generation-`sys.path` bleiben unverändert
 - [x] Mutierte Trampoline-Dateien werden korrekt auf Disk geschrieben
 - [x] also_copy-Dateien werden kopiert
 - [x] Unit-Tests mit tmp_path-Fixture, hypothesis für Pfad-Invarianten
@@ -728,6 +737,25 @@ als echtes Result-Reuse implementiert (User-Option b). Detail:
 - [x] Nach Release: Pausenzustand wiederhergestellt (v2.13.0 released 2026-06-12)
 
 ---
+
+### Epic 27: MW221-/CX221-Follow-up (Sprint 39)
+
+**Beschreibung:** Adversariale Revalidierung des veröffentlichten v2.21.0-Stands
+gegen `bug_reporting/ANALYSE_MUTMUTWIN221.md` und Umsetzung der bestätigten
+Zielsystembefunde nach `bug_reporting/BUGFIXUNG_ROADMAP.md`. Verbindlicher
+Product-Owner-Scope ist Windows und exakt CPython 3.14.7. Andere Interpreter,
+Implementierungen und Betriebssysteme sind kein Produkt- oder Releasevertrag.
+
+**Sprint:** 39
+**Ziel:** v2.21.1
+**Status:** ausschließlich aus `.sprint/state.md` und dem externen GitHub-Zustand ableiten
+
+Der detaillierte, unveränderlich geplante Arbeitsumfang steht in
+`_docs/sprint backlogs/sprint_39_backlog.md`. Eine billingbedingt nicht
+ausgeführte GitHub-CI wird als `NOT_EXECUTED` ausgewiesen und nicht als PASS
+umgedeutet.
+
+---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
 
 > Ergebnis der C9-Rest-Triage (#104, Sprint 32): Die nach fünf
@@ -757,7 +785,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | `--treat-timeout-as-kill`-Deprecation | **Deprecate-now, remove-in-v3**: Warnung bei Nutzung (run + results), Help/README markiert, funktional in 2.x — echte IL-Detection (v2.5.0/v2.8.0) ersetzt den Stopgap |
 | Hypothesis „Shrink-Storm" | **Monitor-only bestätigt**: seit Sprint 26 nie beobachtet (kein Issue, kein Dogfooding-Fund); Schwellen-Tuning nur bei realem Auftreten |
 | `_bug_reporting/BUG_REPORT_9.md` | **Gegenstandslos**: Datei existiert nicht mehr im Working Tree (verifiziert 2026-06-11); dokumentierte Bugs #1–#5 sind seit v2.2.0–v2.4.0 behoben |
-| Release-Policy | **Dokumentiert** (README „Release policy"): bedarfsgetrieben, fester Ablauf Gates → Merge → Bump → Tag → GitHub-Release, nur auf explizites User-„Release"; kein PyPI-Schritt |
+| Release-Policy (historischer Sprint-34-Stand) | **Abgelöst**: Der damalige Ablauf Gates → Merge → Bump → Tag → GitHub-Release wurde durch den v2.21.1-Vertrag ersetzt: Versionsbump → Finalgates → Merge → integrierte Finalgates → reproduzierbare Artefakte → annotiertes Tag → GitHub-Release; weiterhin nur auf explizites User-„Release" und ohne PyPI-Schritt |
 
 ---
 
@@ -795,6 +823,7 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
 | Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Done |
 | Maintenance 3 v2.13.0 | v2.13.0 | Epic 26 | #118–#123 | Done |
+| MW221-/CX221-Follow-up | v2.21.1 | Epic 27 | Reviewregister statt selbstzertifizierter Issues | Live-State extern prüfen |
 
 ---
 
@@ -836,20 +865,27 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Sprint 33 | 31 | 31 | 100% | v2.11.0 Maintenance 1 (#105–#110) — Pilot 24,2 % → 86,9 % brutto |
 | Sprint 34 | 27 | 27 | 100% | v2.12.0 Maintenance 2: Final Sweep (#111–#117) — Pool 13 → 0, Entscheidungsregister 4 → 0, mypy-Baseline 20 → 14, Pilot 85,1 % gehalten |
 | Sprint 35 | 29 | 29 | 100% | v2.13.0 Maintenance 3: External QA (#118–#123) — 15/15 Findings geschlossen, Result-Reuse-Feature (Lauf C: 0 dispatcht), Pilot settled 82,8 % |
+| Sprint 36 | 47 | 47 | 100% | v2.14.0 Maintenance 4: Fable-5 360° — 28/28 Findings geschlossen |
+| Sprint 37 | — | — | — | v2.15.0 Maintenance 5: External 360° QA; separater Bericht als Spezifikation |
+| Sprint 38 | — | — | — | v2.21.0 adversariales 360°-Hardening; MW220-Register |
+| Sprint 39 | — | — | — | v2.21.1 MW221-/CX221-Follow-up; Status aus `.sprint/state.md` |
 
-**Total geplant:** 364 SP — **Total erledigt:** 339 SP (93%)
+**Historische numerisch erfasste Summe bis einschließlich Sprint 36:** 650 SP
+geplant — 625 SP erledigt (96 %).
 
 > Hinweis: Die 25 SP Carryover-Differenz aus den Sprints 3–21 wurde in Sprint 24/25
 > erneut eingeplant und dort erledigt — diese SP erscheinen daher in beiden Zeilen.
 
 ---
 
-## Carryover (Stand 2026-06-11)
+## Carryover (historischer Snapshot, Stand 2026-09-07)
 
-**Keine offenen Issues.** Alle sieben Carryover-Items des 2026-05-22-Housekeepings
-(#12, #23, #38, #49, #54, #65, #67) wurden in Sprint 24 (v2.3.0) und Sprint 25
+Alle sieben dokumentierten Carryover-Items des 2026-05-22-Housekeepings (#12,
+#23, #38, #49, #54, #65, #67) wurden in Sprint 24 (v2.3.0) und Sprint 25
 (v2.4.0) geliefert; die Downstream-Bugs #68–#71 in Sprint 23 (v2.2.0) und
-Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
+Sprint 26 (v2.5.0). Dieser Snapshot behauptet keinen aktuellen GitHub-Issue-
+Stand. Offene Issues und Milestones sind vor Sprint- oder Releaseabschluss
+extern live neu zu prüfen.
 
 ---
 
@@ -880,3 +916,4 @@ Sprint 26 (v2.5.0). GitHub-Issue-Count: 0 open (verifiziert 2026-06-11).
 | 2.7.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geplant (Pausen-Unterbrechung auf User-Entscheid): Epic 26 (Maintenance 3: External QA, #118–#123, 29 SP) per 10-Schritt-CoT — alle 15 Findings des externen QA-Reports (verifiziert, 0 Falschmeldungen); Entscheidungen: RUN-001 als Result-Reuse-FEATURE, skipped-Producer, Report-Intake nach _docs/audit/; Reihenfolge 118→120→119→122→121→123 (Purge vor Reuse vor Producer). |
 | 2.8.0 | 2026-06-12 | Claude Code Agent | Sprint 35 implementiert (Epic 26 Done, Velocity 29/29): **15/15 externe QA-Findings geschlossen**; Result-Reuse live (Lauf B: 244 reused/12 dispatcht, Lauf C: 256 reused/**0 dispatcht**); skipped erreichbar; f-Strings in der Mutationsoberfläche (+15 Pilot-Mutanten, Verschiebung dokumentiert); Gates: 1016 passed (+65), ruff/format 0, mypy 14, semgrep 0; Pilot settled 82,8 %. Release v2.13.0 ausstehend; danach zurück in die Pause. |
 | 2.9.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geschlossen (v2.13.0 released, Merge schloss #118–#123 automatisch): annotated Tag + GitHub-Release (Result-Reuse als Headline, Score-Verschiebung ausgewiesen); Versionspins (README/Install-Guide/CLAUDE.md) im Bump-Commit; **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Backlog-Einträge, externes QA-Archiv unter _docs/audit/. |
+| 3.0.0 | 2026-09-07 | Codex | Releaseübersicht bis v2.21.1, Sprint-39-Verweis, historische Velocitysumme und verbindliche Windows-/CPython-3.14.7-, lokale Gate-, Integrations-, Artefakt- und GitHub-Releaseverträge synchronisiert |

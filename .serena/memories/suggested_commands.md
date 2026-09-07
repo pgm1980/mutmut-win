@@ -1,4 +1,6 @@
-# Suggested Commands (as of v2.21.0)
+# Suggested Commands (v2.21.1 / Sprint 39 contract)
+
+Release evidence is collected only on Windows with exactly CPython 3.14.7.
 
 ## Setup
 - `uv sync --locked --all-extras --all-groups --no-build-isolation` — install the
@@ -25,7 +27,15 @@
   `uv run --no-sync python -I scripts/semgrep_release_gate.py` — canonical pinned,
   two-phase fail-closed gate over the full Git-owned release scope: isolated rule
   materialization followed by a content-verified offline bundle scan.
-- `uv run pip-audit` — dependency vulnerability audit.
+- `uv sync --locked --only-group release --no-install-project` followed by
+  `uv run --no-sync python -I scripts/release_native_gate.py` — canonical wrapper
+  for the exactly three manifest-bound native ZIP tools actionlint 1.7.12,
+  ShellCheck 0.11.0, and Gitleaks 8.30.1 plus separately `uv.lock`-bound
+  Zizmor 1.30.0 offline with `--strict-collection --no-config --no-ignores` in
+  both `regular` and `pedantic` personas. Git for Windows comes from the
+  system-wide HKLM installation contract rather than caller PATH. Zizmor is not a fourth native manifest asset; use a freshly locked/synced bootstrap environment.
+- Export the complete locked dependency set, then run pip-audit against that exact
+  export — dependency vulnerability audit.
 
 ## Mutation testing (dogfooding — the tool tests itself)
 - `uv run mutmut-win run --paths-to-mutate src/mutmut_win/<module>.py` — targeted;
@@ -44,6 +54,8 @@
 - GitHub Flow; Conventional Commits (`type(scope): description`); branches
   `feature/[ISSUE-NR]-kurzbeschreibung`; annotated SemVer tags `vX.Y.Z`; `gh` CLI for
   GitHub operations.
+- Publish only an annotated Git tag plus matching GitHub-release artifacts;
+  PyPI publishing is outside the product and release contract.
 
 ## Session tooling policy (from CLAUDE.md, harness-enforced)
 - FS MCP server (`execute_workflow`) for filesystem operations; Serena for code

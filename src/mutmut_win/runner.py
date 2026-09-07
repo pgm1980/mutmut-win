@@ -10,21 +10,24 @@ import contextlib
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mutmut_win.atomic_file import atomic_write_bytes
+from mutmut_win.atomic_file import atomic_write_bytes, ensure_atomic_bytes
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
-from mutmut_win.constants import SOURCE_ROOT_NAMES
+from mutmut_win.constants import SOURCE_ROOT_NAMES, configured_staging_relative_path
 from mutmut_win.exceptions import OrchestratorError
 from mutmut_win.process.worker import (
     PYTEST_PHASE_GUARD_PLUGIN,
     apply_pytest_boundary_environment,
+    configure_ephemeral_pytest_environment,
     consume_pytest_phase_guard,
     prepare_pytest_collection_guard,
     prepare_pytest_phase_guard,
+    redirect_pytest_output_args,
     validated_pytest_args,
     validated_pytest_targets,
 )
@@ -38,6 +41,10 @@ MUTANT_FAIL_SENTINEL = "fail"
 
 #: Sentinel value that triggers stats recording in the trampoline.
 MUTANT_STATS_SENTINEL = "stats"
+
+#: Absolute output path consumed by the generated stats plugin.  The parent
+#: always points it at a fresh directory outside executable staging.
+MUTMUT_STATS_OUTPUT_PATH_ENV = "MUTMUT_STATS_OUTPUT_PATH"
 
 #: The one string the trampoline guarantees in any rendering of its forced
 #: fail (the -rfE short summary, conftest tracebacks, collection errors).
@@ -71,6 +78,18 @@ def decode_pytest_exit(exit_code: int) -> str:
         A non-empty explanation string.
     """
     return _EXIT_EXPLANATIONS.get(exit_code, f"unrecognised exit code {exit_code}")
+
+
+def _with_isolated_pytest_cache(cmd: list[str], cache_dir: str) -> list[str]:
+    """Insert mutmut's cache override before the internal target separator."""
+
+    separator = cmd.index("--") if "--" in cmd else len(cmd)
+    return [
+        *cmd[:separator],
+        "-o",
+        f"cache_dir={cache_dir}",
+        *cmd[separator:],
+    ]
 
 
 def _run_collection_process(
@@ -250,6 +269,35 @@ class PytestRunner:
         timeout: int | None = None,
         timeout_hint: str = "clean_run_timeout",
     ) -> int:
+        """Run one pytest phase with a fresh process-local cache directory."""
+
+        with tempfile.TemporaryDirectory(
+            prefix="mutmut-win-pytest-runtime-",
+            ignore_cleanup_errors=True,
+        ) as runtime_name:
+            runtime_dir = Path(runtime_name)
+            isolated_env = env.copy()
+            cache_dir = configure_ephemeral_pytest_environment(isolated_env, runtime_dir)
+            isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
+            isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
+            return self._run_phase_process(
+                phase_name,
+                isolated_cmd,
+                isolated_env,
+                timeout=timeout,
+                timeout_hint=timeout_hint,
+                runtime_dir=runtime_dir,
+            )
+
+    def _run_phase_process(
+        self,
+        phase_name: str,
+        cmd: list[str],
+        env: dict[str, str],
+        timeout: int | None = None,
+        timeout_hint: str = "clean_run_timeout",
+        runtime_dir: Path | None = None,
+    ) -> int:
         """Run one pytest phase with tail capture and full-tree reaping.
 
         Drains stdout+stderr concurrently into a bounded in-memory tail. This
@@ -283,7 +331,10 @@ class PytestRunner:
 
         budget = timeout if timeout is not None else self._config.clean_run_timeout
         self._last_diagnostic_output = None
-        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
+        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
+            env,
+            runtime_dir=runtime_dir,
+        )
         capture = BoundedOutputCapture()
         proc: subprocess.Popen[bytes] | None = None
         job_handle: int | None = None
@@ -383,12 +434,24 @@ class PytestRunner:
             env["PYTHONIOENCODING"] = "utf-8"
             prepare_pytest_collection_guard()
 
-        result = _run_collection_process(
-            cmd,
-            cwd="mutants" if staging_exists else None,
-            env=env,
-            timeout=self._config.clean_run_timeout,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix="mutmut-win-pytest-runtime-",
+            ignore_cleanup_errors=True,
+        ) as runtime_name:
+            runtime_dir = Path(runtime_name)
+            if env is not None:
+                env = env.copy()
+                cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+            else:
+                cache_dir = runtime_dir / "pytest-cache"
+                cache_dir.mkdir()
+            isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
+            result = _run_collection_process(
+                _with_isolated_pytest_cache(isolated_cmd, str(cache_dir)),
+                cwd="mutants" if staging_exists else None,
+                env=env,
+                timeout=self._config.clean_run_timeout,
+            )
         if result.returncode != 0:
             diagnostic = "\n".join(
                 part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
@@ -411,14 +474,15 @@ class PytestRunner:
                 tests.append(line)
         return sorted(tests)
 
-    def run_stats(self) -> int:
+    def run_stats(self, output_file: Path | None = None) -> int:
         """Run pytest as a subprocess with MUTANT_UNDER_TEST=stats.
 
         Injects a pytest plugin (``_mutmut_stats_plugin.py``) into
         ``mutants/`` that captures per-test trampoline hits and durations.
-        The plugin writes the mapping to ``mutants/mutmut-stats.json``
-        at session end; the parent reads that file after the subprocess
-        exits — the plugin JSON is the single source of truth (issue #99 /
+        The plugin writes the mapping to a fresh parent-owned temporary file
+        outside ``mutants/``; the parent reads that file after the subprocess
+        exits and optionally publishes it to *output_file*.  The plugin JSON
+        is the single source of truth (issue #99 /
         A2-RN-009: pre-rewrite "in-process" docs survived here for a while).
 
         Returns:
@@ -439,7 +503,9 @@ class PytestRunner:
         # merge the process-local trampoline hit set authoritatively.
         stats_args = self._configured_pytest_args(stats_phase=True)
 
-        # Inject the stats-collection pytest plugin into mutants/.
+        # The deterministic plugin is part of the frozen staging basis.  This
+        # idempotent ensure is also safe for direct/ad-hoc callers that did not
+        # invoke write_pth_blocker first.
         mutants_abs = Path("mutants").absolute()
         self._write_stats_plugin(mutants_abs)
 
@@ -448,16 +514,25 @@ class PytestRunner:
         cmd.extend(stats_args)
         cmd.extend(self._pytest_target_args())
 
-        exit_code = self._run_phase("stats collection", cmd, env)
-        if exit_code != 0:
-            print(
-                f"Warning: stats collection failed — "
-                f"{decode_pytest_exit(exit_code)} (exit {exit_code})"
-            )
-            return exit_code
+        with tempfile.TemporaryDirectory(
+            prefix="mutmut-win-stats-output-",
+            ignore_cleanup_errors=True,
+        ) as output_name:
+            transient_dir = Path(output_name)
+            transient_file = (transient_dir / "mutmut-stats.json").absolute()
+            env[MUTMUT_STATS_OUTPUT_PATH_ENV] = str(transient_file)
+            exit_code = self._run_phase("stats collection", cmd, env)
+            if exit_code != 0:
+                print(
+                    f"Warning: stats collection failed — "
+                    f"{decode_pytest_exit(exit_code)} (exit {exit_code})"
+                )
+                return exit_code
 
-        # Read the JSON file written by the plugin in the subprocess.
-        stats = load_stats(mutants_abs)
+            # Read the JSON file written by the plugin in the subprocess.
+            stats = load_stats(transient_dir)
+            if stats is not None and output_file is not None:
+                atomic_write_bytes(output_file, transient_file.read_bytes())
         if stats is not None:
             _state.tests_by_mangled_function_name.update(stats.tests_by_mangled_function_name)
             _state.duration_by_test.update(stats.duration_by_test)
@@ -501,62 +576,7 @@ class PytestRunner:
         cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
-        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
-        # Issue #132 / 360°-B5: same full-tree reaping as _run_phase — a
-        # plain run(timeout=) left pytest's grandchildren alive on expiry.
-        from mutmut_win.process.worker import (
-            _contained_creationflags,
-            _kill_proc_tree,
-            _popen_contained,
-        )
-
-        proc, job_handle = _popen_contained(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd="mutants",
-            env=env,
-            start_new_session=sys.platform != "win32",
-            creationflags=_contained_creationflags(),
-        )
-        tree_cleanup_done = False
-        try:
-            exit_code = proc.wait(timeout=self._config.clean_run_timeout)
-            if exit_code == 0 and not consume_pytest_phase_guard(
-                phase_marker_path, phase_marker_token
-            ):
-                raise OrchestratorError(
-                    "coverage collection exited 0 without executing a pytest test call; "
-                    "the phase was neutralized by pytest arguments/configuration "
-                    "or every selected test was skipped"
-                )
-            return exit_code
-        except subprocess.TimeoutExpired:
-            print(
-                f"Warning: coverage collection timed out after "
-                f"{self._config.clean_run_timeout}s "
-                "(configure [tool.mutmut].clean_run_timeout)"
-            )
-            _kill_proc_tree(proc, job_handle)
-            job_handle = None  # the sweep closed it
-            tree_cleanup_done = True
-            return 36  # timeout exit code
-        except BaseException:
-            # Keep Ctrl-C and unexpected failures honest with the same tree
-            # cleanup as the timeout path (Job on Windows, group/sweep on POSIX).
-            _kill_proc_tree(proc, job_handle)
-            job_handle = None
-            tree_cleanup_done = True
-            raise
-        finally:
-            consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
-            if job_handle is not None:
-                with contextlib.suppress(Exception):
-                    from mutmut_win.process.job_object import close_job
-
-                    close_job(job_handle)
-            elif not tree_cleanup_done:
-                _kill_proc_tree(proc)
+        return self._run_phase("coverage collection", cmd, env)
 
     def run_forced_fail(
         self,
@@ -683,6 +703,8 @@ class PytestRunner:
         target = Path("mutants").absolute() if mutants_dir is None else mutants_dir
         self.prepare_pytest_boundary(target)
         self._write_sitecustomize_pth_blocker(target)
+        self._write_stats_plugin(target)
+        prepare_pytest_collection_guard(target)
 
     def _mutants_env(self) -> dict[str, str]:
         """Build env dict for subprocess runs inside ``mutants/``.
@@ -709,34 +731,36 @@ class PytestRunner:
         # pytest prepend it again could place ``--`` or a config override ahead
         # of the internal staged boundary.
         env.pop("PYTEST_ADDOPTS", None)
+        # Tests execute only against the frozen staging universe.  An inherited
+        # PYTHONPATH could otherwise reintroduce live, unmirrored source bytes;
+        # projects needing such imports must declare them through extra_paths.
+        env.pop("PYTHONPATH", None)
         self.prepare_pytest_boundary()
         boundary = self._pytest_boundary
         if boundary is None:  # pragma: no cover - prepare either returns or raises
             raise OrchestratorError("pytest boundary was not prepared")
         apply_pytest_boundary_environment(boundary, env)
         mutants_abs = Path("mutants").absolute()
-        # Same paths as setup_source_paths: src, source, . — PLUS the
-        # configured extra_paths (Bug #69). Only the worker had them before
-        # (issue #99 / A2-RN-002): affected projects failed the clean gate
-        # with an ImportError nobody could see.
+        # The isolated pytest child receives src, source, . and configured
+        # extra_paths.  Never add these staging roots to the orchestration
+        # parent: Windows spawn workers inherit its import path (CX221-059).
+        # Before issue #99 / A2-RN-002 only the worker had extra_paths, so
+        # affected projects failed the clean gate with a hidden ImportError.
         extra_paths = []
         configured = []
         for entry in self._config.extra_paths:
-            entry_as_path = Path(entry)
-            # Issue #132 / 360°-B7: ".."-siblings are staged under their
-            # basename (file_setup.copy_also_copy_files) — "mutants_abs /
-            # ../x" would resolve to the UNSTAGED original. Same rule as
-            # the worker's PYTHONPATH mapping.
-            if ".." in entry_as_path.parts:
-                entry_as_path = Path(entry_as_path.name)
-            configured.append(entry_as_path)
+            entry_as_path = configured_staging_relative_path(
+                entry,
+                project_root=self._project_root,
+            )
+            if entry_as_path is not None:
+                configured.append(entry_as_path)
         for subdir in [*map(Path, SOURCE_ROOT_NAMES), Path(), *configured]:
             candidate = mutants_abs / subdir
             if candidate.exists():
                 extra_paths.append(str(candidate))
         if extra_paths:
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+            env["PYTHONPATH"] = os.pathsep.join(extra_paths)
 
         # Prevent uv from auto-creating a .venv in mutants/.
         # uv detects the copied pyproject.toml and would create an empty
@@ -764,8 +788,10 @@ class PytestRunner:
         trampoline functions each test exercises. Hits produced while test
         modules are imported during collection are conservatively assigned to
         every collected test instead of being erased before the first item.
-        The complete mapping is atomically written to ``mutmut-stats.json``
-        only after a successful, single-process session.
+        The complete mapping is atomically written to the absolute path in
+        ``MUTMUT_STATS_OUTPUT_PATH`` only after a successful, single-process
+        session.  That target is a fresh parent-owned directory outside
+        executable staging.
 
         This bridges the subprocess isolation gap: trampoline hits
         accumulate in ``_state._stats`` inside the subprocess, the plugin
@@ -776,6 +802,7 @@ class PytestRunner:
         plugin_source = '''\
 # Auto-generated by mutmut-win — pytest plugin for per-test trampoline hit collection
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -852,9 +879,15 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         "stats_time": sum(_duration_by_test.values()),
     }
     payload_bytes = json.dumps(payload, indent=4).encode("utf-8")
-    atomic_write_bytes(Path("mutmut-stats.json"), payload_bytes)
+    raw_output = os.environ.get("MUTMUT_STATS_OUTPUT_PATH")
+    if not raw_output:
+        raise RuntimeError("MUTMUT_STATS_OUTPUT_PATH is required")
+    output_path = Path(raw_output)
+    if not output_path.is_absolute():
+        raise RuntimeError("MUTMUT_STATS_OUTPUT_PATH must be absolute")
+    atomic_write_bytes(output_path, payload_bytes)
 '''
-        atomic_write_bytes(plugin_path, plugin_source.encode("utf-8"))
+        ensure_atomic_bytes(plugin_path, plugin_source.encode("utf-8"))
 
     def _write_sitecustomize_pth_blocker(self, mutants_abs: Path) -> None:
         """Write a sitecustomize.py that removes the real src/ from sys.path.

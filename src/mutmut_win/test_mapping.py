@@ -15,7 +15,7 @@ import fnmatch
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mutmut_win.trampoline import CLASS_NAME_SEPARATOR
+from mutmut_win.trampoline import CLASS_NAME_SEPARATOR, COLLISION_SAFE_NAME_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -28,6 +28,36 @@ class FunctionDefinitionLocation:
     function_name: str
     class_name: str | None
     definition_ordinal: int
+
+
+def _decode_collision_safe_component(encoded: str, mutant_name: str) -> str:
+    """Decode one UTF-8 hex identifier from the collision-safe namespace."""
+    if not encoded or len(encoded) % 2:
+        raise ValueError(f"Malformed collision-safe mutant name: {mutant_name!r}")
+    try:
+        decoded = bytes.fromhex(encoded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Malformed collision-safe mutant name: {mutant_name!r}") from exc
+    if not decoded.isidentifier() or CLASS_NAME_SEPARATOR in decoded:
+        raise ValueError(f"Malformed collision-safe mutant name: {mutant_name!r}")
+    return decoded
+
+
+def _split_definition_ordinal(component: str, mutant_name: str) -> tuple[str, int]:
+    """Split and validate the optional canonical ``ǁ<ordinal>`` suffix."""
+    function_name, separator, ordinal_text = component.rpartition(CLASS_NAME_SEPARATOR)
+    if not separator:
+        return component, 1
+    if (
+        not function_name
+        or CLASS_NAME_SEPARATOR in function_name
+        or not ordinal_text.isascii()
+        or not ordinal_text.isdecimal()
+        or int(ordinal_text) < 2
+        or str(int(ordinal_text)) != ordinal_text
+    ):
+        raise ValueError(f"Malformed definition ordinal in mutant name: {mutant_name!r}")
+    return function_name, int(ordinal_text)
 
 
 def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> list[str]:
@@ -55,6 +85,11 @@ def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> li
     ]
 
 
+def _is_numeric_mutant_suffix(value: str) -> bool:
+    """Return whether *value* is a non-empty ASCII decimal suffix."""
+    return value.isascii() and value.isdecimal()
+
+
 def mangled_name_from_mutant_name(mutant_name: str) -> str:
     """Extract the mangled function name before the ``__mutmut_`` suffix.
 
@@ -65,12 +100,20 @@ def mangled_name_from_mutant_name(mutant_name: str) -> str:
         The portion of the mutant name up to (and not including) ``__mutmut_``.
 
     Raises:
-        ValueError: If ``__mutmut_`` is not present in *mutant_name*.
+        ValueError: If the final dotted name segment has no numeric
+            ``__mutmut_`` suffix.
     """
-    if "__mutmut_" not in mutant_name:
-        msg = f"Not a mutant name (missing '__mutmut_'): {mutant_name!r}"
+    marker = "__mutmut_"
+    marker_index = mutant_name.rfind(marker)
+    last_dot = mutant_name.rfind(".")
+    if marker_index <= last_dot:
+        msg = f"Not a mutant name (missing local '__mutmut_' suffix): {mutant_name!r}"
         raise ValueError(msg)
-    return mutant_name.partition("__mutmut_")[0]
+    mangled_name, separator, suffix = mutant_name.rpartition(marker)
+    if not separator or not _is_numeric_mutant_suffix(suffix):
+        msg = f"Not a mutant name (malformed '__mutmut_' suffix): {mutant_name!r}"
+        raise ValueError(msg)
+    return mangled_name
 
 
 def function_definition_location_from_key(mutant_name: str) -> FunctionDefinitionLocation:
@@ -98,8 +141,24 @@ def function_definition_location_from_key(mutant_name: str) -> FunctionDefinitio
     r = mangled_name_from_mutant_name(mutant_name)
     _, _, r = r.rpartition(".")
     class_name: str | None = None
+    collision_safe = False
     class_prefix = f"x{CLASS_NAME_SEPARATOR}"
-    if r.startswith(class_prefix):
+    encoded_class_prefix = f"{COLLISION_SAFE_NAME_PREFIX}{CLASS_NAME_SEPARATOR}"
+    if r.startswith(encoded_class_prefix):
+        encoded_class_and_function = r[len(encoded_class_prefix) :]
+        encoded_class, separator, r = encoded_class_and_function.partition(CLASS_NAME_SEPARATOR)
+        if not separator or not encoded_class or not r:
+            msg = f"Malformed collision-safe class-method mutant name: {mutant_name!r}"
+            raise ValueError(msg)
+        class_name = _decode_collision_safe_component(encoded_class, mutant_name)
+        collision_safe = True
+    elif r.startswith(f"{COLLISION_SAFE_NAME_PREFIX}_"):
+        r = r[len(COLLISION_SAFE_NAME_PREFIX) + 1 :]
+        if not r:
+            msg = f"Malformed collision-safe mutant function prefix: {mutant_name!r}"
+            raise ValueError(msg)
+        collision_safe = True
+    elif r.startswith(class_prefix):
         class_and_function = r[len(class_prefix) :]
         class_name, separator, r = class_and_function.partition(CLASS_NAME_SEPARATOR)
         if not separator or not class_name or not r:
@@ -110,22 +169,9 @@ def function_definition_location_from_key(mutant_name: str) -> FunctionDefinitio
     else:
         msg = f"Malformed mutant function prefix: {mutant_name!r}"
         raise ValueError(msg)
-    function_name, separator, ordinal_text = r.rpartition(CLASS_NAME_SEPARATOR)
-    if separator:
-        if (
-            not function_name
-            or CLASS_NAME_SEPARATOR in function_name
-            or not ordinal_text.isascii()
-            or not ordinal_text.isdecimal()
-            or int(ordinal_text) < 2
-            or str(int(ordinal_text)) != ordinal_text
-        ):
-            msg = f"Malformed definition ordinal in mutant name: {mutant_name!r}"
-            raise ValueError(msg)
-        definition_ordinal = int(ordinal_text)
-        r = function_name
-    else:
-        definition_ordinal = 1
+    r, definition_ordinal = _split_definition_ordinal(r, mutant_name)
+    if collision_safe:
+        r = _decode_collision_safe_component(r, mutant_name)
     return FunctionDefinitionLocation(
         function_name=r,
         class_name=class_name,
@@ -163,7 +209,17 @@ def is_mutated_method_name(name: str) -> bool:
     Returns:
         ``True`` if *name* matches a trampoline-generated pattern.
     """
-    return name.startswith(("x_", f"x{CLASS_NAME_SEPARATOR}")) and "__mutmut" in name
+    return (
+        name.startswith(
+            (
+                "x_",
+                f"x{CLASS_NAME_SEPARATOR}",
+                f"{COLLISION_SAFE_NAME_PREFIX}_",
+                f"{COLLISION_SAFE_NAME_PREFIX}{CLASS_NAME_SEPARATOR}",
+            )
+        )
+        and "__mutmut" in name
+    )
 
 
 def tests_for_mutant_names(
@@ -189,11 +245,16 @@ def tests_for_mutant_names(
     """
     tests: set[str] = set()
     for mutant_name in mutant_names:
-        # ``partition`` is deliberately tolerant: exact mangled function keys
-        # without a mutant suffix are useful API input too, while a suffix glob
-        # such as ``pkg.x_f__mutmut_[12]`` maps to the same function-level stats.
-        mangled_pattern, separator, _suffix = mutant_name.partition("__mutmut_")
-        if not separator:
+        # Exact mangled function keys without a mutant suffix are useful API
+        # input too.  Split only a valid selector in the final dotted segment:
+        # package/module components may legally contain the reserved text.
+        marker = "__mutmut_"
+        marker_index = mutant_name.rfind(marker)
+        last_dot = mutant_name.rfind(".")
+        mangled_pattern, separator, suffix = mutant_name.rpartition(marker)
+        suffix_is_selector = _is_numeric_mutant_suffix(suffix)
+        suffix_is_selector = suffix_is_selector or any(magic in suffix for magic in "*?[")
+        if marker_index <= last_dot or not separator or not suffix_is_selector:
             mangled_pattern = mutant_name
 
         if any(magic in mangled_pattern for magic in "*?["):

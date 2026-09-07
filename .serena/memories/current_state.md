@@ -1,33 +1,21 @@
-# Current State — v2.21.0 release blockers
+# Current State — Sprint 39, Windows/CPython-3.14.7 follow-up
+
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
 
 <!-- LIVE_STATE_START -->
 
-## Release status
-- **Release target: v2.21.0.** PR #134 was integrated as merge commit
-  `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` with unchanged candidate tree
-  `761e264a91a52bda4c284f3f36fe53954d7fff2b`. The authoritative repair branch is
-  `fix/v2.21.0-release-blockers`, based on that merge. The adversarial review,
-  confirmed findings, fixes and release evidence are maintained in
-  `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
-  `bug_reporting/BUGFIXUNG_ROADMAP.md`.
-- GitHub CI did run and exposed MW220-112, MW220-113 and MW220-114; it is not a PASS.
-  Their focused fixes and the local final matrix are green. The final
-  report-contract audit additionally found and closed MW220-115. All artifacts
-  and final-gate claims predating those fixes remain invalidated. A premature
-  `v2.21.0` tag was removed before any GitHub release was published.
-
-## Current next steps
-
-- Finalize the evidence for MW220-112, MW220-113, MW220-114 and MW220-115 and
-  build reproducible artifacts from the integrated follow-up candidate.
-- Commit and push the repaired candidate and integrate it through a reviewed
-  follow-up PR, then validate the resulting `main` commit. Follow-up remote CI
-  may remain unavailable because of billing and must never be called a PASS.
-- Create the annotated `v2.21.0` tag and GitHub release only after those gates
-  pass. The local ZIP tree is not authoritative.
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.1 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
+<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 

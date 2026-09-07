@@ -88,15 +88,15 @@ class TestEmptyDbExitCodeConvention:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        mutants_dir = tmp_path / "mutants"
-        mutants_dir.mkdir()
+        stats_dir = tmp_path / ".mutmut-cache"
+        stats_dir.mkdir()
         save_stats(
             MutmutStats(
                 tests_by_mangled_function_name={},
                 duration_by_test={"tests/test_x.py::test_one": 0.5},
                 stats_time=1.0,
             ),
-            mutants_dir,
+            stats_dir,
         )
         result = CliRunner().invoke(cli, ["time-estimates"])
         assert result.exit_code == 0

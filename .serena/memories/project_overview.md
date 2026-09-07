@@ -1,12 +1,18 @@
 # mutmut-win — Project Overview
 
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
+
 ## Purpose
 Windows-native mutation testing for Python, based on mutmut 3.5.0 (upstream explicitly
 blocks Windows, mutmut#397). Replaces the Unix-only process layer (os.fork, RLIMIT_CPU,
 SIGXCPU) with a spawn-based worker pool, Windows Job Objects (orphan protection: if the
 parent dies, the kernel reaps every worker and pytest child) and a wall-clock timeout
-model. Windows 10/11 is the primary target; POSIX code paths are kept functional for
-WSL/Linux CI. Mutation engine, config format and workflow stay mutmut-compatible.
+model. The supported runtime is Windows with exactly CPython 3.14.7. Internal POSIX
+paths carry no WSL/Linux runtime or CI-support commitment. Mutation engine, config
+format and workflow stay mutmut-compatible.
 
 Repo: https://github.com/pgm1980/mutmut-win.git
 Distribution: install from a pinned git tag only
@@ -17,15 +23,12 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 
 <!-- LIVE_STATE_START -->
 
-## Status — see memory `current_state` for the LIVE v2.21.0 blocker-remediation state
-
-> PR #134 is integrated as `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf`
-> with tree `761e264a91a52bda4c284f3f36fe53954d7fff2b`. Release target
-> **v2.21.0** has focused fixes for MW220-112, MW220-113 and MW220-114 on
-> `fix/v2.21.0-release-blockers`; GitHub CI exposed those blockers and is not a PASS.
-> The final report-contract audit also closed MW220-115, and the local
-> final matrix is green. Tag and release remain absent. The active evidence
-> lives under `bug_reporting/`; older detail below is history.
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.1 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
+<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 
@@ -93,8 +96,8 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 - SQLite result cache (.mutmut-cache/), fingerprinted per-file mutant staging (mutants/).
 
 ## Tech stack
-- Python >= 3.12,<3.15 (classifiers 3.12/3.13/3.14); package manager uv; build backend
-  hatchling. A developer's active virtual-environment patch version is not normative.
+- Exactly CPython 3.14.7 on Windows; earlier Python versions and POSIX runtimes
+  are unsupported. Package manager: uv; build backend: hatchling.
 - Runtime deps: click (CLI), libcst (mutation engine), pydantic v2 (config/models),
   psutil (loop monitor), textual (TUI browser), coverage, setproctitle, pytest.
 - Dev/QA: pytest, pytest-cov, pytest-asyncio, pytest-mock, pytest-benchmark, hypothesis,
@@ -117,14 +120,16 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
    completeness is not provable, every mutant receives the full selected suite and a
    budget based on measured startup plus full-suite time.
 4. Plan & execute: the exact universe is committed before spawn workers activate one
-   mutant at a time via `MUTANT_UNDER_TEST`; mandatory Windows Job containment or POSIX
-   process groups prevent escaped trees, and only planned results enter SQLite.
+   mutant at a time via `MUTANT_UNDER_TEST`; mandatory Windows Job containment prevents
+   escaped trees, and only planned results enter SQLite. Retained POSIX implementation
+   paths are outside the supported runtime and carry no release-gate commitment.
 Normal runs never modify original sources. The explicit `apply` command is the documented
 exception: it backs up and atomically replaces the selected source file.
 
 ## Release policy
 Demand-driven, no calendar cadence. Only on an explicit maintainer "Release" decision
 after all gates pass: version bump on the release branch → final gates → merge to main →
-annotated tag vX.Y.Z → GitHub release with notes. Breaking changes wait for a major;
-deprecations warn ≥ 1 minor first (current example: `--treat-timeout-as-kill`).
-<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->
+integrated final gates → reproducible artifacts → annotated tag vX.Y.Z → GitHub
+release with notes. Breaking changes wait for a major; deprecations warn ≥ 1 minor
+first (current example: `--treat-timeout-as-kill`).
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->

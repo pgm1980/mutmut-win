@@ -172,7 +172,10 @@ def _parent_connection_closed(connection: Connection) -> bool:
         if not connection.poll():
             return False
         unexpected = connection.recv()
-    except (EOFError, OSError):
+    except (
+        EOFError,
+        OSError,
+    ):
         return True
     msg = f"unexpected parent control message after start: {unexpected!r}"
     raise RuntimeError(msg)

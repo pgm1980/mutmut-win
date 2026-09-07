@@ -24,6 +24,7 @@ from mutmut_win.process.worker import (
     prepare_pytest_phase_guard,
 )
 from mutmut_win.runner import PytestRunner
+from mutmut_win.stats import build_staging_context_evidence
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -84,9 +85,13 @@ def test_generated_plugin_never_opens_the_predictable_stats_tmp_link(
     staging.mkdir()
     PytestRunner._write_stats_plugin(staging)
     finish = _load_session_finish(staging / "_mutmut_stats_plugin.py")
+    output_dir = tmp_path / "stats-output"
+    output_dir.mkdir()
+    stats_path = output_dir / "mutmut-stats.json"
+    monkeypatch.setenv("MUTMUT_STATS_OUTPUT_PATH", str(stats_path))
     sentinel = tmp_path / "outside-stats-sentinel.json"
     sentinel.write_bytes(b"EXTERNAL-STATS-SENTINEL")
-    predictable_tmp = staging / "mutmut-stats.json.tmp"
+    predictable_tmp = output_dir / "mutmut-stats.json.tmp"
     os.link(sentinel, predictable_tmp)
     monkeypatch.chdir(staging)
 
@@ -94,8 +99,9 @@ def test_generated_plugin_never_opens_the_predictable_stats_tmp_link(
 
     assert sentinel.read_bytes() == b"EXTERNAL-STATS-SENTINEL"
     assert predictable_tmp.samefile(sentinel)
-    assert (staging / "mutmut-stats.json").is_file()
-    assert list(staging.glob(".mutmut-stats.json.mutmut-atomic-*.tmp")) == []
+    assert stats_path.is_file()
+    assert not (staging / "mutmut-stats.json").exists()
+    assert list(output_dir.glob(".mutmut-stats.json.mutmut-atomic-*.tmp")) == []
 
 
 def test_generated_plugin_detects_private_sibling_substitution_before_publish(
@@ -106,7 +112,10 @@ def test_generated_plugin_detects_private_sibling_substitution_before_publish(
     staging.mkdir()
     PytestRunner._write_stats_plugin(staging)
     finish = _load_session_finish(staging / "_mutmut_stats_plugin.py")
-    stats_path = staging / "mutmut-stats.json"
+    output_dir = tmp_path / "stats-output"
+    output_dir.mkdir()
+    stats_path = output_dir / "mutmut-stats.json"
+    monkeypatch.setenv("MUTMUT_STATS_OUTPUT_PATH", str(stats_path))
     stats_path.write_bytes(b"PREVIOUS-GOOD-STATS")
     sentinel = tmp_path / "outside-substitution-sentinel.json"
     sentinel.write_bytes(b"EXTERNAL-SUBSTITUTION-SENTINEL")
@@ -117,7 +126,7 @@ def test_generated_plugin_detects_private_sibling_substitution_before_publish(
         real_close(fd)
         if substituted:
             return
-        candidates = list(staging.glob(".mutmut-stats.json.mutmut-atomic-*.tmp"))
+        candidates = list(output_dir.glob(".mutmut-stats.json.mutmut-atomic-*.tmp"))
         if not candidates:
             return
         candidate = candidates[0]
@@ -261,7 +270,42 @@ def test_generated_phase_proof_detects_parent_swap_before_outside_write(
     monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PROOF_ENV, env[_PYTEST_PHASE_SENTINEL_PROOF_ENV])
 
     with pytest.raises(UnsafeAtomicWriteError, match="parent must be a real directory"):
-        hook(SimpleNamespace(when="call"))
+        hook(SimpleNamespace(when="call", skipped=False))
 
     assert marker_path.parent == staging.absolute()
     assert list(outside.iterdir()) == []
+
+
+def test_real_benchmark_save_stays_outside_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real pytest-benchmark save must not change executable staging."""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    test_path = staging / "test_benchmark_output.py"
+    test_path.write_text(
+        "def test_benchmark_output(benchmark):\n    assert benchmark(lambda: 42) == 42\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(
+        MutmutConfig(
+            tests_dir=[test_path.name],
+            pytest_add_cli_args=["--benchmark-save=mutmut-sidecar-regression"],
+            clean_run_timeout=60,
+        )
+    )
+    runner.write_pth_blocker(staging)
+    before = build_staging_context_evidence(tmp_path)
+
+    assert before.complete
+    assert runner.run_clean_test() == 0
+    after = build_staging_context_evidence(tmp_path)
+
+    assert after == before
+    assert not any(path.name.casefold() == ".benchmarks" for path in tmp_path.rglob("*"))
+    assert not (staging / "Users").exists()
+    assert not (tmp_path / "Users").exists()

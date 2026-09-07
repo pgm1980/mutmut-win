@@ -7,13 +7,16 @@ Queue-transmitted models must be pickle-able.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import math
+import stat
 from pathlib import Path
 
 from pydantic import BaseModel, Field, computed_field
 
-from mutmut_win.atomic_file import atomic_write_bytes
+from mutmut_win.atomic_file import ensure_atomic_bytes
+from mutmut_win.constants import SOURCE_METADATA_SCHEMA
 
 
 class MutationTask(BaseModel):
@@ -27,7 +30,14 @@ class MutationTask(BaseModel):
     )
     tests: list[str] = Field(
         default_factory=list,
-        description="Test names to run for this mutant",
+        description="Authoritative selection or non-authoritative scheduling hints",
+    )
+    test_selection_is_authoritative: bool = Field(
+        default=True,
+        description=(
+            "Whether tests may narrow pytest collection. False keeps the full suite "
+            "and uses observed node IDs only for task scheduling and estimates."
+        ),
     )
     estimated_time: float = Field(
         default=0.0,
@@ -160,7 +170,7 @@ class SourceFileMutationData(BaseModel):
         """Path to the JSON meta file for this source file."""
         return Path("mutants") / (self.path + ".meta")
 
-    def load(self) -> None:
+    def load(self, *, heal_corrupt: bool = True) -> None:
         """Load mutation metadata from the JSON meta file.
 
         Tolerates corruption (issue #101 / A3-CM-009, confirmed via a
@@ -177,14 +187,22 @@ class SourceFileMutationData(BaseModel):
                 raw_meta: object = json.load(f)
         except FileNotFoundError:
             return
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            self._discard_corrupt_meta()
+        except (
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ):
+            self._reset_loaded_fields()
+            if heal_corrupt:
+                self._discard_corrupt_meta()
             return
 
         try:
             if not isinstance(raw_meta, dict):
                 raise TypeError("meta root must be an object")
             meta: dict[str, object] = raw_meta
+            raw_schema = meta.pop("schema", None)
+            if raw_schema not in {None, SOURCE_METADATA_SCHEMA}:
+                raise TypeError("unsupported mutation metadata schema")
             raw_exit = meta.pop("exit_code_by_key", {})
             if not isinstance(raw_exit, dict):
                 raise TypeError("exit_code_by_key must be an object")
@@ -234,12 +252,16 @@ class SourceFileMutationData(BaseModel):
             )
             raw_generated_hash = meta.pop("generated_hash", None)
             self.generated_hash = _validated_optional_sha256(raw_generated_hash, "generated_hash")
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError,
+        ):
             # Type-corrupt values inside structurally valid JSON (issue #124
             # / 360°-B10) heal exactly like decode corruption — partial
             # state is reset so the fast path rebuilds from scratch.
             self._reset_loaded_fields()
-            self._discard_corrupt_meta()
+            if heal_corrupt:
+                self._discard_corrupt_meta()
 
     def _reset_loaded_fields(self) -> None:
         """Reset every field ``load`` may have partially populated."""
@@ -275,21 +297,40 @@ class SourceFileMutationData(BaseModel):
         hardlink or symlink cannot redirect the write outside the workspace.
         """
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {
-                "exit_code_by_key": self.exit_code_by_key,
-                "durations_by_key": self.durations_by_key,
-                "type_check_error_by_key": self.type_check_error_by_key,
-                "estimated_durations_by_key": self.estimated_time_of_tests_by_mutant,
-                "source_mtime": self.source_mtime,
-                "source_size": self.source_size,
-                "source_hash": self.source_hash,
-                "generation_fingerprint": self.generation_fingerprint,
-                "generated_hash": self.generated_hash,
-            },
-            indent=4,
-        ).encode("utf-8")
-        atomic_write_bytes(self.meta_path, payload)
+        payload = json.dumps(self._payload(generation_only=False), indent=4).encode("utf-8")
+        ensure_atomic_bytes(self.meta_path, payload)
+
+    def save_generation_metadata(self) -> None:
+        """Publish deterministic sidecar bytes before executable phases.
+
+        SQLite is the verdict authority.  The richer sidecar may be written
+        after a run for the browser, but tests can read files under
+        ``mutants/`` directly.  A fast-path run therefore restores this
+        generation-only form before collecting or executing any test.
+        """
+
+        self.meta_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(self._payload(generation_only=True), indent=4).encode("utf-8")
+        ensure_atomic_bytes(self.meta_path, payload)
+
+    def _payload(self, *, generation_only: bool) -> dict[str, object]:
+        exit_codes = (
+            dict.fromkeys(self.exit_code_by_key) if generation_only else dict(self.exit_code_by_key)
+        )
+        return {
+            "schema": SOURCE_METADATA_SCHEMA,
+            "exit_code_by_key": exit_codes,
+            "durations_by_key": {} if generation_only else self.durations_by_key,
+            "type_check_error_by_key": {} if generation_only else self.type_check_error_by_key,
+            "estimated_durations_by_key": (
+                {} if generation_only else self.estimated_time_of_tests_by_mutant
+            ),
+            "source_mtime": self.source_mtime,
+            "source_size": self.source_size,
+            "source_hash": self.source_hash,
+            "generation_fingerprint": self.generation_fingerprint,
+            "generated_hash": self.generated_hash,
+        }
 
 
 def _validated_nonnegative_float_map(raw: object, field_name: str) -> dict[str, float]:
@@ -321,6 +362,72 @@ def _validated_optional_sha256(raw: object, field_name: str) -> str | None:
     ):
         raise TypeError(f"{field_name} must be a SHA-256 hex digest or null")
     return raw.lower()
+
+
+_SOURCE_METADATA_FIELDS: frozenset[str] = frozenset(
+    {
+        "schema",
+        "exit_code_by_key",
+        "durations_by_key",
+        "type_check_error_by_key",
+        "estimated_durations_by_key",
+        "source_mtime",
+        "source_size",
+        "source_hash",
+        "generation_fingerprint",
+        "generated_hash",
+    }
+)
+
+
+def read_owned_source_metadata(meta_path: Path) -> dict[str, object] | None:
+    """Read a proven mutmut-win sidecar without healing lookalike fixtures.
+
+    Ownership requires the explicit schema, exact writer field set, valid
+    generation hashes and a regular companion generated ``.py`` whose bytes
+    match the committed digest.  An arbitrary project fixture named
+    ``*.meta`` therefore never enters corruption healing or cache authority.
+    """
+
+    if not meta_path.name.casefold().endswith(".py.meta"):
+        return None
+    try:
+        mode = meta_path.lstat().st_mode
+        is_link_like = meta_path.is_symlink() or meta_path.is_junction()
+        raw: object = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError):  # fmt: skip
+        return None
+    if is_link_like or not stat.S_ISREG(mode) or not isinstance(raw, dict):
+        return None
+    if set(raw) != _SOURCE_METADATA_FIELDS or raw.get("schema") != SOURCE_METADATA_SCHEMA:
+        return None
+    exit_codes = raw.get("exit_code_by_key")
+    if not isinstance(exit_codes, dict) or any(
+        not isinstance(name, str)
+        or (value is not None and (not isinstance(value, int) or isinstance(value, bool)))
+        for name, value in exit_codes.items()
+    ):
+        return None
+    try:
+        source_hash = _validated_optional_sha256(raw.get("source_hash"), "source_hash")
+        generation_fingerprint = _validated_optional_sha256(
+            raw.get("generation_fingerprint"), "generation_fingerprint"
+        )
+        generated_hash = _validated_optional_sha256(raw.get("generated_hash"), "generated_hash")
+    except (TypeError, ValueError):  # fmt: skip
+        return None
+    if source_hash is None or generation_fingerprint is None or generated_hash is None:
+        return None
+    companion = meta_path.with_name(meta_path.name[: -len(".meta")])
+    try:
+        companion_mode = companion.lstat().st_mode
+        companion_is_link = companion.is_symlink() or companion.is_junction()
+        companion_hash = hashlib.sha256(companion.read_bytes()).hexdigest()
+    except (OSError, RuntimeError):  # fmt: skip
+        return None
+    if companion_is_link or not stat.S_ISREG(companion_mode) or companion_hash != generated_hash:
+        return None
+    return raw
 
 
 class MutationRunResult(BaseModel):

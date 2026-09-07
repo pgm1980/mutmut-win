@@ -1,13 +1,56 @@
-# BUGFIXUNG ROADMAP – mutmut-win 2.20.0 → 2.21.0
+# BUGFIXUNG ROADMAP – mutmut-win 2.20.0 → 2.21.0 → 2.21.1
 
-**Stand:** 2026-09-01
-**Quelle:** [ANALYSE_MUTMUTWIN220.md](ANALYSE_MUTMUTWIN220.md)
-**Ziel:** False Greens und Daten-/Sourceintegrität zuerst schließen, dann Prozessrobustheit und Releasehygiene.
+**Stand:** 2026-09-07
+**Quellen:** [ANALYSE_MUTMUTWIN220.md](ANALYSE_MUTMUTWIN220.md) und
+[ANALYSE_MUTMUTWIN221.md](ANALYSE_MUTMUTWIN221.md)
 
-**Arbeitsbaum:** PR #134 wurde als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit Tree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert; aktuelle Reparatur auf `fix/v2.21.0-release-blockers`.
-**Aktueller Stand:** 115 fortlaufende Befunde sind bestätigt: 30 P0, 56 P1 und 29 P2. MW220-001 bis -111 waren auf dem ersten integrierten Kandidatentree lokal belegt. Die tatsächlich ausgeführte GitHub-CI deckte danach MW220-112 (Linux-mypy-Portabilität), MW220-113 (nicht portable Same-byte-Identity-Tests, kein Produktions-TOCTOU) und MW220-114 (nicht deterministisches Windows-Semgrep-Gate) auf; es gibt keinen CI-PASS. Alle drei Fixes sind auf `fix/v2.21.0-release-blockers` implementiert und in der vollständigen lokalen Matrix verifiziert. Der abschließende Report-Vertragsaudit fand und schloss zusätzlich MW220-115. Alle Vorfix-Artefakte und Finalclaims bleiben ungültig; Follow-up-Integration und integrierter Rebuild stehen noch aus. Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder GitHub-Releasepublikation entfernt; Tag und Release sind absent.
+**Ziel:** Die für Windows und exakt CPython 3.14.7 bestätigten MW221-Defekte
+schließen und als v2.21.1 veröffentlichen.
+
+**Arbeitsbaum:** v2.21.0 ist als Tag und GitHub-Release auf
+`40b6af31da66f3544ab9d1a38d34511e7e02c79a` / Tree
+`9fe800a9849fe35cf87f57b2f098ee02a08cd76a` veröffentlicht. Die aktuelle
+Reparatur erfolgt auf `fix/v2.21.1-windows314`.
+
+**Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
+MW220-001 bis MW220-115 und bleibt historische
+Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
+klassifiziert. 27 Zielsystemfixes sind implementiert und warten auf das
+vollständige Finalgate; 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
+sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
+außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
+62 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 55 P1 und 5 P2.
+Alle 62 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
+integriert noch getaggt oder veröffentlicht.
+
+## 0. Verbindlicher v2.21.1-Vertrag
+
+1. Unterstütztes Laufzeitsystem ist ausschließlich Windows mit exakt CPython
+   3.14.7. Frühere Interpreter sowie Linux/POSIX/macOS sind kein Releasegate.
+2. Ein fokussierter Test beweist nur die konkrete Implementierung. Release-
+   autorität entsteht erst aus dem vollständigen quieszenten Zielsystemgate,
+   Securitygate, reproduzierbaren Artefakten und Installed-Artifact-Smokes.
+3. Eine wegen Billing nicht gestartete neue GitHub-CI ist eine akzeptierte
+   Evidenzlücke und weder PASS noch FAIL. Tatsächlich ausgeführte Jobs werden
+   weiterhin vollständig adjudiziert.
+4. LIVE-State darf keine Erfolgsflags, Branches, Commits oder Prosa als
+   unveränderliche Wahrheit festpinnen. Unit-Tests prüfen Struktur und logische
+   Zustandsübergänge; Remotezustand wird direkt vor Remote-Writes live gelesen.
+5. Das veröffentlichte annotierte Tag `v2.21.0` bleibt unverändert an seiner
+   bestehenden Releaseprovenienz. Es wird weder verschoben noch gelöscht;
+   v2.21.1 erhält nach seinen eigenen Gates ein separates annotiertes Tag.
+6. Die reale v2.21.0-GitHub-CI war rot (Quality `99647140872`, Ubuntu-Boundary
+   `99647141304`, Windows-Security `99647141196`) und ist kein PASS. Läuft eine
+   neue v2.21.1-CI wegen Billing nicht an, lautet ihr Status `NOT_EXECUTED`:
+   akzeptierte Evidenzlücke, weder PASS noch FAIL.
 
 Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig in den Clone migriert und enthält keine exklusiven relevanten Dateien. Autoritativ und allein bearbeitet wird `<repository root>`; der Legacy-Baum ist keine zweite Source of Truth.
+
+> **Scopehinweis zu den folgenden historischen Abschnitten:** Die Kapitel 1 bis
+> 12 dokumentieren die breitere MW220-Arbeit einschließlich Linux- und
+> Mehrversions-Evidenz. Sie begründen keinen aktuellen Runtime-Support. Für
+> v2.21.1 gilt ausschließlich der Vertrag aus Abschnitt 0: Windows und exakt
+> CPython 3.14.7. Abschnitt 13 ist der verbindliche Follow-up-Plan.
 
 ## 1. Verbindliche Regeln
 
@@ -179,7 +222,7 @@ Der lokale Legacy-ZIP-Arbeitsbaum wurde byte- und inventarbasiert vollständig i
 
 ### E4. Mapping und Reuse
 
-**Status: umgesetzt und am realen Consumer verifiziert.** Solange selektive Hit-Zuordnung nicht end-to-end beweisbar ist, bleibt Mapping nichtautoritativ und nutzt die Vollsuite. Das vorhandene #130/360-B3-Budget setzt dafür `max(60, clean_wall × timeout_multiplier)` an. Der isolierte GitHub-Issue-#133-Repro auf Consumer-Snapshot `8296cd9a…` beendete genau einen bekannten `x_verify`-Mutanten als killed: `completed 1/1`, `pending 0`, `reused 0`, 0 Timeout/Suspicious/Skipped/No-tests, Orchestrator-Exit 0 und 1,8833385 s DB-Taskdauer bei nominal rund 111 s Vollsuite-Budget. Der damalige uncommittete 227-Mutanten-Arbeitsbaum ist nicht bytegenau rekonstruierbar; der Canary bindet den letzten Commit vor Issue-Erstellung, die dokumentierte Ad-hoc-Konfiguration und den problematischen `\boxed{42}`-Node-ID. Es ist kein MW220-116 erforderlich. Vollsuite-Verdicts dürfen bei unverändertem Source-/Universe-Fast-Path und identischem vollständigem Kontextdigest sicher wiederverwendet werden (MW220-047).
+**Status: umgesetzt und am realen Consumer verifiziert.** Solange selektive Hit-Zuordnung nicht end-to-end beweisbar ist, bleibt Mapping nichtautoritativ und nutzt die Vollsuite. Das vorhandene #130/360-B3-Budget setzt dafür `max(60, clean_wall × timeout_multiplier)` an. Der isolierte GitHub-Issue-#133-Repro auf Consumer-Snapshot `8296cd9a…` beendete genau einen bekannten `x_verify`-Mutanten als killed: `completed 1/1`, `pending 0`, `reused 0`, 0 Timeout/Suspicious/Skipped/No-tests, Orchestrator-Exit 0 und 1,8833385 s DB-Taskdauer bei nominal rund 111 s Vollsuite-Budget. Der damalige uncommittete 227-Mutanten-Arbeitsbaum ist nicht bytegenau rekonstruierbar; der Canary bindet den letzten Commit vor Issue-Erstellung, die dokumentierte Ad-hoc-Konfiguration und den problematischen `\boxed{42}`-Node-ID. Es ist kein weiterer MW220-Produktionsbefund außerhalb des geschlossenen 115er-Registers erforderlich. Vollsuite-Verdicts dürfen bei unverändertem Source-/Universe-Fast-Path und identischem vollständigem Kontextdigest sicher wiederverwendet werden (MW220-047).
 
 **Exit:** Die gezielten Regressionstests sind vorhanden; Welle E gilt erst nach der vollständigen Matrix in Abschnitt 12 als releaseverifiziert.
 
@@ -430,7 +473,7 @@ Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitle
 | 2026-09-01 | Reparierte lokale Matrix | vollständige Suite 2.001/44; Coverage 2.001/44 bei 85 % und 8.524/1.275; `.venv` 4.675 Dateien / 120.311.470 Bytes / SHA-256 `2ecc7ac4bebcbda560bcc06b230b5da92da9ccfd1d5be26cc62ba9d0851bddf8`; Ruff, Format, Import-Linter, Lock, Audit, Gitleaks und `git diff --check` grün |
 | 2026-09-01 | Reparierter Dogfood-Recheck | 90 total, 86 killed, vier äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/type-check-caught/segfault/unchecked, 95,6 %, 81,0 s |
 | 2026-09-01 | MW220-115 Report-Vertrag | loser `114`-Teilstring und fehlende Analyse-/Roadmap-Bindung gefunden; exakte Follow-up-IDs, 115er Gesamtzählung und stale-Claim-Verbote implementiert; 12 fokussierte Tests und vollständiger Strict-Lauf 2.002/44 grün |
-| 2026-09-01 | GitHub Issue #133 Closure-Repro | detached Consumer-Snapshot `8296cd9a…`, Kandidat 2.21.0, genau `math_matcher.x_verify__mutmut_1`: completed 1/1, killed, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; MW220-047 plus #130/360-B3 bestätigt, kein MW220-116 |
+| 2026-09-01 | GitHub Issue #133 Closure-Repro | detached Consumer-Snapshot `8296cd9a…`, Kandidat 2.21.0, genau `math_matcher.x_verify__mutmut_1`: completed 1/1, killed, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; MW220-047 plus #130/360-B3 bestätigt, kein weiterer formaler MW220-Befund außerhalb des 115er-Registers |
 
 ## 12. Finale Abschlussnachweise
 
@@ -457,4 +500,198 @@ Zusätzlich: actionlint samt ShellCheck/Pyflakes, Zizmor regular/pedantic, Gitle
 | Branch-/PR-Publikation | PR #134 integriert; Reparaturbranch und Follow-up-PR ausstehend |
 | GitHub-CI | tatsächlich ausgeführt und an MW220-112 bis -114 blockiert; kein PASS |
 
-**Technisches Urteil: Release-NO-GO nur noch bis zur Veröffentlichungskette.** 115 Befunde sind bestätigt; MW220-112 bis -115 sind implementiert, und die vollständige lokale Cross-Platform-Matrix ist grün. PR #134 ist integriert, seine Artefakte sind jedoch nicht mehr releaseautoritativ. Der vorzeitige Tag wurde entfernt; `v2.21.0`-Tag und GitHub-Release bleiben absent. Erst Follow-up-Integration und integrierter Doppelbuild samt Smokes erlauben die Veröffentlichung. Eine Billing-bedingt ausbleibende Follow-up-CI bleibt akzeptierte Evidenzlücke und kein PASS.
+**Technisches Urteil dieses damaligen Vorveröffentlichungsstands: Release-NO-GO nur noch bis zur Veröffentlichungskette.** 115 Befunde waren bestätigt; MW220-112 bis -115 waren implementiert, und die vollständige lokale Cross-Platform-Matrix war grün. PR #134 war integriert, seine Artefakte waren jedoch nicht mehr releaseautoritativ. Der vorzeitige Tag war entfernt; `v2.21.0`-Tag und GitHub-Release waren damals absent. Erst Follow-up-Integration und integrierter Doppelbuild samt Smokes erlaubten die Veröffentlichung. Eine Billing-bedingt ausbleibende Follow-up-CI blieb akzeptierte Evidenzlücke und kein PASS.
+
+> **Historischer Hinweis:** Das vorstehende Urteil beschreibt den Zustand vor
+> der tatsächlichen Veröffentlichung von v2.21.0. Der aktuelle, verbindliche
+> v2.21.1-Plan folgt; die Detailadjudikation steht in
+> `ANALYSE_MUTMUTWIN221.md`.
+
+## 13. MW221-Fixplan für v2.21.1
+
+### 13.1 P0/P1-Zielsystemkorrekturen
+
+| IDs | Maßnahme | Stand | Exitkriterium |
+|---|---|---|---|
+| MW221-004 | Pfadalias und Redirect über Komponenten-/Objektidentität unterscheiden, in Atomic Writer, DB, Staging, pytest-Boundary und Run-Lock konsistent | implementiert; Finalgate offen | deterministische Alias-Seam-Tests plus reale 8.3-Probe, sofern das Volume einen Alias bereitstellt |
+| MW221-005 | Apply/Show aus öffentlicher Originaldefinition erzeugen; Signatur, Defaults, Annotationen, Dekoratoren und Quellkontext erhalten | implementiert; Finalgate offen | Roundtrip-Test führt die angewandte Mutation mit identischer Aufrufsignatur aus; erzeugter Patch ist anwendbar |
+| MW221-006/-007 | Tokenizerfehler kontrolliert behandeln; abgeleitetes `mutants/` nicht rekursiv in seinen eigenen Stats-Digest aufnehmen | implementiert; Finalgate offen | Tab-/Indent-Repros und vollständiger Run ohne Post-Stats-Selbstdrift |
+| MW221-008 | Nichtautoritäre Mappingdaten nur zur Reihenfolge unabhängiger Mutanten-Tasks verwenden; innerhalb jedes Tasks native pytest-Reihenfolge, vollständige Suite und Vollsuite-Fingerprint bewahren, beim ersten echten Fehler abbrechen | sichere Teilkorrektur implementiert; selektive Autorität bleibt bewusst offen; Finalgate offen | reihenfolgeabhängige Gegenprobe beweist unveränderte pytest-Reihenfolge; Survivor durchläuft alle Tests; Reuse bleibt an die Vollsuite gebunden |
+| MW221-010/-011 | Full-/Subset-Autorität persistieren; Subset-Export sperren; Subset-Population in CLI `results` und Browser sichtbar als nicht release-ready kennzeichnen; Git-Dateinamen NUL-separiert lesen | implementiert; Finalgate offen | Legacy-/Browser-/CLI-Subset exportiert nicht; Total/Score ist sichtbar auf den Subset-Scope begrenzt; non-ASCII-`--since-commit`-Repro vollständig |
+| MW221-013 | Core-Drift terminal halten, reine Ambient-Drift diagnostisch abschließen und Basis-/Reuse-Autorität atomar entziehen | implementiert; Finalgate offen | Source-/Test-/Config-/Projektimport-Drift bleibt `failed`; Ambient-Drift bleibt sichtbar, aber Score, Export und Reuse sind fail-closed; Widerrufsfehler bleibt recoveryfähig `running` |
+| MW221-014/-017/-018 | stille Linkauslassung diagnostizieren; Fake-PID-Kills verhindern; E2E muss echten Survivor beweisen | implementiert; Finalgate offen | fokussierte Safety-Tests und vollständige E2E-Referenz grün |
+| MW221-019 / MW220-108/-115 | LIVE-State reparieren und Governance von Prosa-/Bool-Pins auf Zustandsinvarianten umstellen | implementiert; Finalgate offen | Governance-Test bleibt sowohl bei ehrlichem In-Progress- als auch Abschlusszustand gültig und erkennt inkonsistente Übergänge |
+
+MW221-001/-002/-015/-016 werden nicht als Produktfix in v2.21.1 verfolgt, weil
+sie ausschließlich nicht unterstützte Interpreter oder POSIX betreffen. Der
+ehemals breitere Metadaten-/CI-/Dokumentationsvertrag wird stattdessen ehrlich
+auf Windows/CPython 3.14.7 verengt.
+
+### 13.2 P2-Korrekturen
+
+| IDs | Maßnahme | Stand |
+|---|---|---|
+| MW221-020/-023/-024 | PEP-263-Roundtrip, vollständige Methodenargumente, parameterlose/`*args`-Methoden | implementiert; Finalgate offen |
+| MW221-021/-026/-027/-028 | `typing_extensions.cast`, Regex-Klassen/Cache, strukturelle Docstrings und exakte Pragmas | implementiert; Finalgate offen |
+| MW221-030/-031/-032 | Lock-Contention diagnostizieren, O(n)-Plan-Dublettenerkennung, Apply-Auflösung vor Invalidierung | implementiert; Finalgate offen |
+| MW221-035/-036/-041/-042 | Dotenv-Basisbindung, Root-only-Workspace-Ausschlüsse, `#`-sichere Config und Node-ID-Normalisierung | implementiert; Finalgate offen |
+| MW221-025/-037/-043 | kollisionssicherer Trampolin-Namensraum, vollständiger SQLite-Sidecar-Ausschluss und Exit-0-No-op für leere gültige `--since-commit`-Diffs | implementiert; Finalgate offen |
+| MW221-022 | Async-Generatoren und PEP-695-Generika nur mit einem eigenen semantikerhaltenden Operatorvertrag erweitern | akzeptierte konservative Grenze: explizite Regressionen pinnen den Skip; kein ungeprüftes Scope-Wachstum und keine protokollwidrigen Mutanten im Releasefix |
+| MW221-029/-033/-039 | Dev-Schema-, Legacy-Retention- und Watchdog-Adjudikation | kein offener Releasebug: v2.20.0 besaß keine `mutation_run`-Tabelle; Legacy-Verdicts werden vor Apply absichtlich fail-closed invalidiert; der nur bei queued/no-in-flight greifende 60-s-Watchdog ist eine nicht reproduzierte theoretische Availability-Grenze |
+| MW221-040/-044 | Filesystem-/Co-Installationsgrenzen | MW221-040 im README als fail-closed Identitätsgrenze dokumentiert; kein universeller Kompatibilitätsclaim |
+| MW221-045 | pytest-/Security-/Git-Supply-Chain-Bündel | hashgepinntes pytest-Overlay, vollständiger Semgrep-Targetscope, isoliertes Git-Inventar einschließlich `.git/info/exclude` und PR-only Cancellation implementiert; Registry/`--metrics off` bleibt bis zu einem vendorten Regelbundle dokumentierte Grenze |
+| MW221-046 | gemischte Testharness-Schulden | Python-3.14-Orakel, Survivor-Blindheit und Fake-PID-Cleanup geschlossen; übrige Testschulden einzeln führen |
+
+MW221-008 erhält bewusst keine Auslassungsautorität: Mapping-Hints optimieren
+nur die Mutanten-Task-Reihenfolge, niemals die pytest-Reihenfolge oder
+Testpopulation. MW221-009, MW221-034 und MW221-038
+werden nicht durch eine weniger strenge Implementierung „behoben“; ihre
+konservativen Grenzen verhindern stale oder unbelegte Releaseevidenz. Bei
+MW221-013 bleibt dieselbe Strenge für fachliche Core-Drift erhalten, während
+reine Ambient-Drift diagnostische Ergebnisse ohne Releaseautorität bewahren darf.
+
+### 13.3 Codex-Follow-up-Findings
+
+Diese eigene ID-Serie ergänzt Claudes unveränderte MW221-001-bis--046-Matrix
+und fließt nicht in deren Statussumme ein.
+
+Sie umfasst exakt CX221-001 bis CX221-062; ihre Prioritätsverteilung lautet
+2 P0, 55 P1 und 5 P2.
+
+| ID | Maßnahme | Stand |
+|---|---|---|
+| CX221-001 | Explizite `sys.path`-Unterbäume wie `project/build` separat hashen, wenn der Projektroot sie bei seinem Root-Inventar übersprungen hat | implementiert; Finalgate offen |
+| CX221-002 | Versteckte Toolverzeichnisse in jeder Tiefe rekursiv ausschließen, generische fachliche Verzeichnisnamen aber nur am Workspace-Root | implementiert; Finalgate offen |
+| CX221-003 | `tests_dir` und Git-Diffpfade unter Windows komponentenweise case-normalisieren | implementiert; Finalgate offen |
+| CX221-004 | `show`/Browser wie `apply` an den persistierten `source_hash` binden und bei stale Staging fail-closed diagnostizieren | implementiert; Render- und CLI-Regression vorhanden; Finalgate offen |
+| CX221-005 | Lokale Identifier, die den reservierten Mutantentrenner erst an der ID-Grenze bilden, disjunkt und reversibel kodieren; Apply/Show auf die exakte Ursprungsdefinition binden | implementiert; E2E-Regression vorhanden; Finalgate offen |
+| CX221-006 | Reservierten Trennertext in Modul-/Paketkomponenten bewahren und nur den letzten lokalen numerischen Mutantensuffix parsen | implementiert; Mapping-/Parserregressionen vorhanden; Finalgate offen |
+| CX221-007 | Explizit konfigurierte externe Test-, Fixture- und Importbäume vollständig nach den tatsächlich gestagten Bytes hashen | implementiert; externe Generic-Child-Regression vorhanden; Finalgate offen |
+| CX221-008 | PEP-758-Mehrfach-Exceptions in allen Scan-Targets innerhalb des Parservertrags von Semgrep 1.175.0 halten, ohne Gate oder Allowlist abzuschwächen | implementiert; explizite Klammern plus AST-Guard; Finalgate offen |
+| CX221-009 | Vollständige Staging-Ownership führen und gelöschte Source-/Fixture-/Rootdateien, Ghosts, Sidecars und read-only-Artefakte prunen; Read-only-Replacement und Modus-Restore an contained Non-Reparse-Identität und `st_nlink == 1` binden, externe Hardlinks fail-closed lassen | implementiert; Lösch-, Read-only-, Identity- und Hardlink-Regressionen vorhanden; Finalgate offen |
+| CX221-010 | Persistierten `generated_hash` als gemeinsame Provenienzgrenze für Show, Apply und Run erzwingen | implementiert; Missing-/Mismatch-/Edit-Regressionen vorhanden; Finalgate offen |
+| CX221-011 | Stabilen Digest über alle ausführbaren Staging- und Fixturebytes einfrieren und auf jedem autoritativen Erfolgspfad erneut validieren | implementiert; Phasen-/Driftregressionen vorhanden; Finalgate offen |
+| CX221-012 | Self-Dogfood-Governance nur in eindeutig erkennbarem generiertem Mutation-Staging überspringen; Git-lose normale Checkouts weiter prüfen | implementiert; Governance-Erkennung eng begrenzt; Finalgate offen |
+| CX221-013 | Root-Ausschlüsse, explizite Importroots und bereits vorhandenes Staging so adjudizieren, dass keine unsichtbaren False-Green-Bytes verbleiben | implementiert; Root-/Namespace-Regressionen vorhanden; Finalgate offen |
+| CX221-014 | `.meta`-Eigentum nur über valides Schema und das gebundene Source-/Generated-Paar autorisieren; normale `.meta`-Fixtures erhalten | implementiert; Ownership-/Fixture-Regressionen vorhanden; Finalgate offen |
+| CX221-015 | Stateful pytest-/Tool-Caches isolieren und cachegesteuerte Testauswahl ohne gebundene Autorität ablehnen | implementiert; Cache-/pytest-Optionsregressionen vorhanden; Finalgate offen |
+| CX221-016 | `.py`-Endungen an CLI-Ingress, Source-Walk und Mutation-Ignore unter Windows case-insensitiv erkennen | implementiert; positiver Dry-run sowie realer 16-Mutanten-/Show-Gegenlauf; Finalgate offen |
+| CX221-017 | Staging-Evidenz zusätzlich an leere Verzeichnistopologie, Dateiart, Modus und relevante Metadaten binden | implementiert; Datei-/Verzeichnismetadaten-Regressionen vorhanden; Finalgate offen |
+| CX221-018 | Sichtbare Root-/Fixturebytes vollständig binden und ausschließlich klaren Runtime-/PYC-Zustand vor dem Snapshot rekursiv entfernen | implementiert; Runtime-/PYC-Regressionen vorhanden; Finalgate offen |
+| CX221-019 | Vollständigen Staging-Snapshot vor der Coverage-Phase aufnehmen und direkt danach auf unveränderte Basis prüfen | implementiert; Pre-Coverage-Driftregression vorhanden; Finalgate offen |
+| CX221-020 | Reuse-Zuordnungen nach Fehler, Hard-Kill, Abbruch, Interrupt oder später Abschlussdrift revoke-first widerrufen; bei Widerrufsfehler den Run recoveryfähig `running` lassen | implementiert; SQLite-Trigger-/Recovery-Regression vorhanden; Finalgate offen |
+| CX221-021 | Pytest-Report-, Temp-, Coverage- und Benchmark-Ausgaben vor Pluginstart in einen frischen externen Runtime-Root umleiten | implementiert; echte JUnit-/Coverage-/Benchmark-Gegenproben grün; Finalgate offen |
+| CX221-022 | `--min-score` für Namens-, Pfad- und `--since-commit`-Subsetläufe vor Ausführung ablehnen | implementiert; drei CLI-Regressionen vorhanden; Finalgate offen |
+| CX221-023 | Ausgeschlossenen Toolstate nicht indirekt über NTFS-Verzeichnisgröße/-Linkzahl in Cross-run-Digests wiedereinführen | implementiert; 0-zu-4096-NTFS- und Topologie-Regression vorhanden; Finalgate offen |
+| CX221-024 | Tool-eigene Atomic-Publish-Zeiten aus Cross-run-Reuse trennen, ohne die strikte In-run-Metadaten-/ABA-Evidenz zu lockern | implementiert; realer Meta-Lifecycle und Cache-Reuse gegengeprüft; Finalgate offen |
+| CX221-025 | Kanonische DB-/Cache-Ausschlüsse durch sämtliche sekundären `sys.path`-, Editable- und Distribution-Walks propagieren | implementiert; ausgeschlossene DB-Bytes und benachbarte Runtimebytes dynamisch getrennt; Finalgate offen |
+| CX221-026 | Gesamtbasis in fachlichen Core und Ambient-Anteil klassifizieren; nur Ambient-Drift diagnostisch bewahren und Autorität atomar entziehen | implementiert; Core-/Ambient-/Recovery-/Export-Regressionen vorhanden; Finalgate offen |
+| CX221-027 | Unsichere Intra-Suite-Umsortierung nichtautoritativer Hints verhindern; native pytest-Reihenfolge bewahren und nur Mutanten-Tasks planen | implementiert; reihenfolgeabhängige Real-Pytest-, Timeout- und Reuse-Regressionen vorhanden; Finalgate offen |
+| CX221-028 | Phasenausführungsbeweis nicht durch ausschließlich im Call-Body übersprungene Tests autorisieren | implementiert; reale All-skipped-Pytest-Regression vorhanden; Finalgate offen |
+| CX221-029 | DB-/Sidecar-Ausschlüsse auch in expliziten `also_copy`-/`extra_paths`-Mirrors durchsetzen und alte Stagingkopien prunen | implementiert; explizite Datei- und verschachtelte Verzeichnismirror-Regressionen vorhanden; Finalgate offen |
+| CX221-030 | Initial diagnostische Ambient-Basis bis in Stats- und Verdict-Reuse propagieren; beide Caches für diesen Lauf frisch beziehungsweise deaktiviert halten und bei Abschluss auch für eine unverändert unvollständige Basis alle aktuellen/historischen Fingerprints atomar deautorisieren | implementiert; frische Stats-, End-to-End-No-Reuse- und Future-Reuse-Regressionen vorhanden; Finalgate offen |
+| CX221-031 | Aktiven Release-Ref ohne Prosaselbstzertifikat auf Paketversion oder unmittelbaren Patchvorgänger begrenzen und README-/CLAUDE-Befehle an den kanonischen Guide binden | implementiert; exakte Guide-/README-/CLAUDE-Parser sowie Alt-/Zukunfts-/Serien-Gegenproben vorhanden; Remoteexistenz bleibt Live-Gate; Finalgate offen |
+| CX221-032 | Nichtautoritative Vollsuite-Targets wie autoritative Auswahl über eine private geordnete Runtime-Argfile transportieren, damit Windows' Prozesskommandozeilenlimit die vollständige Suite nicht neutralisiert | implementiert; synthetische Zielmenge über 32.767 Zeichen beweist vollständigen Inhalt, native Reihenfolge und kurze `argv`; Finalgate offen |
+| CX221-033 | Sicherheitstest-Setups an verschärfte reale Vorbedingungen binden: Phase-Guard-Double mit `skipped=False`, `--force`-Teillöschtest mit minimal gültigem Mutationsroot | implementiert; beide Orakel erreichen wieder ihre behauptete Atomic-/Löschgrenze; Finalgate offen |
+| CX221-034 | uv-Hardlink-Linkzahlen aus langlebigen Project-/Dependency-/`sys.path`-Digests und deren Reopen-Identitätsvergleich entfernen, ohne die strikte In-run-Staging-Hardlink-Evidenz zu lockern | implementiert; Alias-add/remove-, Write-through-, Export-Doppelsnapshot- und Strict-Staging-Regressionen vorhanden; Finalgate offen |
+| CX221-035 | Flakiges NTFS-ABA-Testorakel auf beobachtbare leere Topologie, explizite Parent-Metadatenänderung und Dateimodus trennen | implementiert; 4/10-Flakeursache entfernt, Produktdigest unverändert; Finalgate offen |
+| CX221-036 | Semgrep-Allowlist-Filehash nur für CRLF/bare-CR normalisieren und Unicode-Zeilentrenner bytewirksam binden | implementiert; U+2028-Bypassregression vorhanden; Finalgate offen |
+| CX221-037 | Windows-Layoutroot und finalen `__init__`-Stem bei der qualifizierten Mutantenidentität case-insensitiv mit der Runtime abgleichen | implementiert; realer `SRC/pkg/__INIT__.PY`-Subprozess beweist Tokenaktivierung; weitergehende Package-/Modul-Casefold-Challenge dynamisch verworfen; Finalgate offen |
+| CX221-038 | Sämtliche geplanten automatischen und konfigurierten Staginginputs gegen tool-eigene Sidecar-, Guard-, Fingerprint- und Exportziele prüfen; Modul-/Package-/Resource-Namespace-/`.pyd`-Shadowing unter `src`/`source` vor jeder Mutation fail-closed abweisen | implementiert; auch data-only Namespaces werden abgewiesen, lose Bytecodeinputs vor Ausführung gepurgt; CLI-Text/JSON, `--force`-Nichtlöschung, Direct API, Dry-run, Copy-, Case-, Package-, Native- und Präzisionsregressionen vorhanden; Finalgate offen |
+| CX221-039 | Docstring-Erkennung auf konstanten `str`-Wert und erste Statementposition begrenzen, führende Bytes-/f-String-Verkettungen wieder mutieren, Semikolon-Docstrings erhalten und Wrapper-Doppelausführung verhindern | implementiert; Mutationsregressionen plus generierte Laufzeitproben mit korrektem `__doc__` und exakt einem Seiteneffekt grün; Finalgate offen |
+| CX221-040 | LIVE-State auf geschlossene Phasen-/Publikationsblöcke, exakte Ref-/Commit-/Parent-/Tree-Identität des Quellbranches oder seines byteidentischen Main-Merges und Reviewstatus auf den tatsächlichen Final-/Housekeeping-Lifecycle binden; Post-Release an Kandidat, Integrationsmerge, annotiertes Tag und direkten docs-only Housekeeping-Child koppeln | implementiert; lokale/GitHub-Detached-, Branch-, Main-Merge-, Version-, Tagtyp/-ziel-, Candidate-/Integration-Tree-, Housekeeping-Diff- und Prozessabschluss-Gegenproben vorhanden; Finalgate offen |
+| CX221-041 | Generierte Quellen im Typechecker-Filter nach ihrem PEP-263-Encoding statt pauschal als UTF-8 lesen | implementiert; reale CP1252-Quelle mit Checkerfehler wird korrekt klassifiziert; Finalgate offen |
+| CX221-042 | `extra_paths` über eine zentrale kanonische Planner-/Copy-/Cleanup-/Runner-/Worker-Abbildung ausschließlich auf Stagingroots begrenzen; externe, rootrelative, drive-relative, geerbte und aliasbedingt abweichende Livepfade nie in `PYTHONPATH` übernehmen | implementiert; Parent-/Worker-, echter Kindimport- und reale Windows-8.3-Kreuzregressionen grün; Finalgate offen |
+| CX221-043 | Post-Merge-Sequenz durch einen maschinenlesbaren Marker binden, beide reproduzierbaren Builds mit vollständigen sortierten Artefakt-/SHA-256-Inventaren vergleichen und die installierte Wheel-/Sdist-Version im Windows-Smoke exakt beweisen | implementiert; Sequenzmarker erweitert, `SHA256SUMS` und sortierte Wheel-/Sdist-Inventare beider Builds werden verglichen und publiziert, Windows prüft Hashes vor Installation sowie zweimal exakt Version 2.21.1; Finalgate offen |
+| CX221-044 | Alle zusätzlichen lokalen Security-, Supply-Chain-, Reproduzierbarkeits- und Installed-Artifact-Gates mit reproduzierbaren Werkzeugpins, assetgepinntem stdlib-Runner, minimalem Semgrep-Bootstrap-Environment und kanonischen Befehlen versehen | implementiert; Python-/Native-Manifestpins, Safe-Extract, exakte Versionsausgaben, isolierte Git-/Toolzustände und vollständiger Gitleaks-Worktree/-History-Vertrag vorhanden; finale Wiederholung nach Diff-Freeze offen |
+| CX221-045 | Automatische und konfigurierte Peer-Mirrors einschließlich fehlender Cleanup-Owner nur dann denselben Stagingtarget besitzen lassen, wenn sie dieselbe Live-Identität beziehungsweise eine konsistente Abbildung derselben Quelle darstellen | implementiert; File-/Tree-/Missing-/Ancestor-/Sentinel-Gegenproben vorhanden; Finalgate offen |
+| CX221-046 | Dry-run bei PEP-263-Dekodierung und physischer Source-Identity-Deduplizierung an die reale Generation angleichen | implementiert; CP1252-, Overlap- und Windows-Alias-Regressionen ohne Workspacewrite vorhanden; Finalgate offen |
+| CX221-047 | `show` als byte-exakten Git-Patch serialisieren: physische LF-Zeilen, CRLF/BOM/PEP-263/EOF-Erhalt, korrekte No-Newline-Marker, binäres stdout und Forensik nur auf stderr | implementiert; reale CP1252-/BOM-/CRLF-/EOF-/Unicode-Separator- und Git-Apply-Gegenproben vorhanden; Finalgate offen |
+| CX221-048 | Leere automatische/konfigurierte Live-Namespaces materialisieren und entfallene leere Staging-Shells bottom-up entfernen, ohne explizite Mirrorroots zu löschen | implementiert; Zwei-Run- und reale `find_spec`-/PEP-420-Regressionen vorhanden; Finalgate offen |
+| CX221-049 | PEP-263-Cookie beim UTF-8-Fallback nur über physische LF-Zeilen bestimmen, damit Unicode-Zeilentrenner die echte zweite Cookiezeile nicht verdecken | implementiert; Latin-1/NEL-Regressionsbytes kompilieren mit aktualisiertem UTF-8-Cookie; Finalgate offen |
+| CX221-050 | Aktive Architektur-, Design-, Lizenz- und Testsuppressionsverträge auf Windows plus exakt CPython 3.14.7, PEP-263-Quelltext und UTF-8-Metadaten sowie GitHub Release als Publikationskanal vereinheitlichen | implementiert; aktive Vertragsquellen und Kommentare korrigiert; Finalgate offen |
+| CX221-051 | Native Releaseasset-Provenienz auf die drei Manifesttools begrenzen und Zizmor getrennt als PyPI-/`uv.lock`-Abhängigkeit mit Sdist- und Plattform-Wheel-Hashes ausweisen | implementiert; Phantom-ZIP/-API-Claim entfernt; Finalgate offen |
+| CX221-052 | Exakten Sprint-39-Backlog anlegen und aktive Product-/Serena-/Sprint-Metadaten samt Governanceprüfung auf Scope, Branch, Reviewquellen, `NOT_EXECUTED` und Releasefolge synchronisieren | implementiert; Existenz und Pflichtinhalt maschinenlesbar gebunden; Finalgate offen |
+| CX221-053 | Lokalen Releasewrapper um gelocktes Zizmor 1.30.0 mit Offline-`regular`-/`pedantic`-Personas erweitern, damit billing-blockierte CI keine Security-Lücke erzeugt | implementiert; Pfad/Version/Personas/minimale Umgebung und Orchestrierung regressionsgebunden; Finalgate offen |
+| CX221-054 | Report-Provenienz als exakt markierte Artefakt-zu-Digest-Abbildung statt freie Hashteilstrings binden | implementiert; sechs eindeutige Zeilen werden direkt gegen Native-Manifest und `uv.lock` geprüft; Finalgate offen |
+| CX221-055 | Aktive Scope-/Release-/Sprint-/Strukturdokumente semantisch statt tokenbasiert prüfen und verbliebene Linux-, Build-, Velocity-, Regexparser- und Markupdrift entfernen | implementiert; strukturierte Positiv-/Negativverträge vorhanden; Finalgate offen |
+| CX221-056 | Gesamten CPython-Derivatabschnitt einschließlich Herkunft, Anpassungsbeschreibung, Copyright und Anwendbarkeit zusätzlich zum PSF-Text exakt hashen | implementiert; positionsgebundener Abschnittshash vorhanden; Finalgate offen |
+| CX221-057 | Gemessenes Coverage-Laufzeitrisiko des 60-Minuten-Testjobs durch ein gepinntes 120-Minuten-Limit mit belastbarer Setup-/Runnerreserve schließen | implementiert; Messung 2.274/43, 85 %, 51:37 und Workflowregression dokumentiert; Finalgate offen |
+| CX221-058 | Sprintbacklog phasenabhängig an offene Candidate- beziehungsweise abgeschlossene Released-Gates binden und genau den aktiven Backlog im direkten docs-only Housekeeping verpflichten | implementiert; ASCII-Sprintpfad sowie Candidate-/Released-/Historien-Negativverträge vorhanden; Finalgate offen |
+| CX221-059 | Staging aus dem Eltern- und Spawn-Worker-Importpfad entfernen; ausführbares Staging ausschließlich den explizit isolierten pytest-Kindern geben | implementiert; Eltern-`sys.path`-/Spawn-Preparation-Regression und realer Vier-Worker-Arbeitsbaum-Recheck grün: 91/91, 90/1, einziger Survivor Windows-äquivalent, 0 Problem-Buckets, 98,9 %, kein Staging-`__pycache__`; integrierte Wiederholung offen |
+| CX221-060 | Zizmor-Konfiguration und Inline-Ignores in beiden Offline-Personas mechanisch deaktivieren | implementiert; Native Wrapper und direkte Build-Prüfungen verwenden `--no-config --no-ignores`, globaler Workflow-/Dokumentvertrag regressionsgebunden; Finalgate offen |
+| CX221-061 | Git for Windows aus dem systemweiten HKLM-Installationsvertrag statt Caller-PATH beziehen und seine Ausgabe strikt als einzeilige Windows-Version prüfen | implementiert; Registry-/Pfad-/Version-/Fake-PATH-Gegenproben vorhanden; Finalgate offen |
+| CX221-062 | Jeden urllib-Redirect-Hop vor dem Folgen gegen HTTPS-, Host- und Credential-Allowlist prüfen | implementiert; erlaubte Zweihop- sowie Host-/HTTP-/Userinfo-Negativtests grün; Finalgate offen |
+
+CX221-044 bindet in `[dependency-groups].release`
+`check-wheel-contents==0.6.3`, `pyflakes==3.4.0`, `twine==7.0.0` und
+`zizmor==1.30.0`; der erneuerte `uv.lock` umfasst 133 Pakete einschließlich
+`packaging==26.3`. Der Supply-Chain-Vertrag prüft Root-Metadaten, Registry und
+die exakten Sdist-/Windows-Wheel-Namen samt SHA-256. Der Build synchronisiert
+die Gruppe und führt Zizmor regular und pedantic, Twine `--strict` sowie
+`check-wheel-contents` aus. Frühere fokussierte Arbeitsbaumläufe bestanden den
+Versionsassert, actionlint 1.7.12 mit ShellCheck 0.11.0 und Pyflakes 3.4.0,
+beide Zizmor-Personas sowie Gitleaks 8.30.1 ohne Leak. Der kanonische Native-
+Lauf wird nach dem Implementierungscommit auf dem sauberen Kandidatenbaum
+wiederholt und erst dann als Kandidatenevidenz gewertet.
+
+<!-- RELEASE_TOOL_PROVENANCE_START -->
+| Autorität | Tool/Artefakt | SHA-256 |
+|---|---|---|
+| Native GitHub asset | actionlint 1.7.12 ZIP | `6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9` |
+| Native GitHub asset | ShellCheck 0.11.0 ZIP | `8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e` |
+| Native GitHub asset | Gitleaks 8.30.1 Windows x64 ZIP | `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e` |
+| PyPI / `uv.lock` | zizmor 1.30.0 sdist | `9a17ac3bb043afbbd9d3c8b6f309fa5b319c6a32e3259fbaf050f6fcd3d0a9cd` |
+| PyPI / `uv.lock` | zizmor 1.30.0 Windows amd64 wheel | `ca321b5b1cb85d08ac0c3c86275bfd5a6b5564c176437e3b41e10bd1e4463296` |
+| PyPI / `uv.lock` | zizmor 1.30.0 manylinux build-host wheel | `9c08a7c34b33ed6f9a3a3d28fcf8c64e3e078c53c51bc9ce05c32ec3ba7feae9` |
+<!-- RELEASE_TOOL_PROVENANCE_END -->
+
+Das Native-Manifest umfasst bewusst nur die ersten drei GitHub-Assets. Zizmor
+kommt aus `uv.lock`; das manylinux-Wheel belegt nur den Buildhost und keine
+unterstützte Linux-Runtime.
+Der aktuelle Windows-/CPython-3.14.7-Arbeitsbaum bestand vor dem
+Implementierungscommit die vollständige strikte Suite mit 2.303 passed,
+43 skipped und 0 failed in 40:34 Minuten sowie die Coverage-Suite mit denselben
+Testzahlen, 9.727 Statements, 1.456 Missing und 85 Prozent in 35:15 Minuten.
+Ruff Check, Format (172 Dateien), mypy (39 Dateien), Import-Linter, Lockprüfung
+und der vollständige Dependency-Export/Pip-Audit sind grün; Pip-Audit meldet
+0 bekannte Schwachstellen. Das kanonische Semgrep-Gate bestand mit 225
+Manifestdateien, 224 Targets, 346 Regeln, exakt 22 allowgelisteten Treffern und
+jeweils 0 unerwarteten Findings, Errors, übersprungenen Regeln und Fixpoint-
+Timeouts. Diese Arbeitsbaumevidenz muss nach dem Diff-Freeze auf dem sauberen
+Kandidatencommit und anschließend auf dem integrierten Commit gebunden werden.
+
+### 13.4 Noch ausstehende Abschlusssequenz
+
+1. Der Arbeitsbaum-Nachweis ist abgeschlossen: alle Regressionen, vollständige
+   strikte Suite, Coverage, Quality-/Dependency-/Semgrep-Gates und der frische
+   Dogfood-Pilot mit `--force --rerun-all --profile advanced`,
+   `--paths-to-mutate src/mutmut_win/code_coverage.py`,
+   `--tests-dir tests/unit/test_code_coverage.py`, `--max-children 4`,
+   `--output json --no-progress` sind grün. Der bewusst nicht autoritative
+   Subset-Pilot lief ohne `--min-score`, erreichte 90/1 bei 98,9 Prozent und
+   besitzt keine CI-Exportautorität.
+2. Implementierungscommit erzeugen, auf dem sauberen Commit das kanonische
+   Native-Release-Gate sowie die Kandidatengates wiederholen und erst danach
+   State, Reports und Sprintbacklog auf `candidate_validated` umstellen. Alle
+   aktiven Installations-/Verbraucherbefehle zeigen bereits auf v2.21.1.
+3. Den finalen Diff und alle Reviewclaims unabhängig reauditeren, den sauberen
+   Kandidatenbranch pushen und ausschließlich per Zwei-Eltern-Merge mit
+   byteidentischem Tree reviewed integrieren.
+4. Den integrierten `main`-Commit erneut lokal validieren und den Dogfood-Piloten
+   wiederholen; daraus zwei
+   reproduzierbare Builds erzeugen, Inventar und Hashgleichheit prüfen sowie
+   Wheel/Sdist in frischen Windows/CPython-3.14.7-Umgebungen real ausführen.
+   Der Quellbranch bleibt mindestens bis zum erfolgreichen Post-Merge-Gate
+   erhalten und unverändert auf dem exakt geprüften Releasecommit; er darf in
+   diesem Fenster weder gelöscht noch weitergeschoben werden. Nur so können
+   Ref, zweiter Mergeparent und byteidentischer Tree weiterhin unabhängig
+   gegeneinander gebunden werden.
+   Anschließend Remote-Refs live prüfen, das annotierte Tag `v2.21.1` erzeugen
+   und den GitHub-Release veröffentlichen.
+   Eine billingbedingt nicht gestartete CI wird im Releasehinweis als
+   Evidenzlücke benannt, niemals als bestanden.
+
+**Aktuelles Urteil für v2.21.1:** Release-NO-GO. Die Arbeitsbaumgates sind grün;
+sauberer Kandidatencommit und Native-Gate, Review-Integration, integrierte
+Wiederholung, Rebuild, Installed-Smokes, Tag und Release stehen noch aus.

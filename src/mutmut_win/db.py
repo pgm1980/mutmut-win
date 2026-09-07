@@ -76,6 +76,7 @@ class MutationRunState:
     basis_fingerprint: str | None = None
     basis_config_json: str | None = None
     evidence_invalidated: bool = False
+    is_full_run: bool = False
 
 
 class RunBasisIncompleteness(StrEnum):
@@ -160,6 +161,7 @@ CREATE TABLE IF NOT EXISTS mutation_run (
     basis_config_json TEXT,
     evidence_invalidated INTEGER NOT NULL DEFAULT 0
         CHECK (evidence_invalidated IN (0, 1)),
+    is_full_run INTEGER NOT NULL DEFAULT 0 CHECK (is_full_run IN (0, 1)),
     CHECK (status IN ('running', 'completed', 'interrupted', 'aborted', 'failed')),
     CHECK (
         (status = 'running' AND finished_at IS NULL)
@@ -237,6 +239,13 @@ _MIGRATE_ADD_EVIDENCE_INVALIDATED = (
     "ALTER TABLE mutation_run ADD COLUMN evidence_invalidated "
     "INTEGER NOT NULL DEFAULT 0 CHECK (evidence_invalidated IN (0, 1))"
 )
+# Existing run rows do not carry proof that their plan covered the configured
+# mutation universe.  Migrating them as subsets is the only fail-closed
+# default: a new full run must establish export authority explicitly.
+_MIGRATE_ADD_IS_FULL_RUN = (
+    "ALTER TABLE mutation_run ADD COLUMN is_full_run "
+    "INTEGER NOT NULL DEFAULT 0 CHECK (is_full_run IN (0, 1))"
+)
 
 #: INSERT-or-replace statement used by save_result.
 _UPSERT_SQL = """
@@ -288,10 +297,6 @@ def _absolute_cache_path(path: Path) -> Path:
         ) from exc
 
 
-def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
-
-
 def _is_reparse_point(metadata: os.stat_result) -> bool:
     attributes = getattr(metadata, "st_file_attributes", 0)
     reparse_flag = getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -333,12 +338,13 @@ def _validate_parent_components(database: Path) -> None:
             _unsafe_cache_path(current, "is not a directory")
         try:
             resolved = current.resolve(strict=True)
+            resolved_metadata = resolved.stat()
         except (OSError, RuntimeError) as exc:
             raise UnsafeWorkspaceStateError(
                 f"Refusing workspace state access: cannot resolve cache parent {current}."
             ) from exc
-        if not _same_path(resolved, current):
-            _unsafe_cache_path(current, f"resolves to redirected parent {resolved}")
+        if _file_identity(metadata) != _file_identity(resolved_metadata):
+            _unsafe_cache_path(current, f"has redirected identity at {resolved}")
 
 
 def _inspect_cache_leaf(
@@ -365,6 +371,7 @@ def _inspect_cache_leaf(
             _unsafe_cache_path(path, f"SQLite {label} is a hardlink ({metadata.st_nlink} links)")
         try:
             resolved = path.resolve(strict=True)
+            resolved_metadata = resolved.stat()
             current = path.lstat()
         except FileNotFoundError:
             if ephemeral:
@@ -374,19 +381,12 @@ def _inspect_cache_leaf(
             raise UnsafeWorkspaceStateError(
                 f"Refusing workspace state access: cannot resolve SQLite {label} {path}."
             ) from exc
-        if _file_identity(current) != _file_identity(metadata):
+        if _file_identity(current) != _file_identity(metadata) or _file_identity(
+            current
+        ) != _file_identity(resolved_metadata):
             if ephemeral:
                 continue
             _unsafe_cache_path(path, f"SQLite {label} changed during validation")
-        if not _same_path(resolved, path):
-            # DELETE-journal files are intentionally short-lived. On Windows
-            # an already unlinked, still-open journal can resolve through
-            # NTFS's $Extend/$Deleted namespace between lstat calls. Treat
-            # only that ephemeral disappearance as absence; persistent
-            # redirected leaves still fail above/below.
-            if ephemeral:
-                return None
-            _unsafe_cache_path(path, f"SQLite {label} resolves to {resolved}")
         return current
     if ephemeral:
         return None
@@ -496,6 +496,23 @@ def _corrupt_cache(path: Path, detail: str, exc: BaseException | None = None) ->
     raise CorruptCacheError(message) from exc
 
 
+def _raise_database_error(path: Path, exc: sqlite3.DatabaseError) -> NoReturn:
+    """Classify transient SQLite contention separately from corrupt bytes."""
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    base_code = error_code & 0xFF if isinstance(error_code, int) else None
+    detail = str(exc).casefold()
+    if base_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or (
+        isinstance(exc, sqlite3.OperationalError)
+        and ("database is locked" in detail or "database table is locked" in detail)
+    ):
+        raise RunStateError(
+            f"cache database at '{path}' is busy or locked by another process; "
+            "wait for that mutmut-win operation to finish and retry. The cache "
+            "is not known to be corrupt and must not be deleted."
+        ) from exc
+    _corrupt_cache(path, str(exc), exc)
+
+
 @contextlib.contextmanager
 def _verified_connection(
     path: Path,
@@ -515,14 +532,14 @@ def _verified_connection(
     try:
         connection = sqlite3.connect(absolute)
     except sqlite3.DatabaseError as exc:
-        _corrupt_cache(absolute, str(exc), exc)
+        _raise_database_error(absolute, exc)
     try:
         # sqlite3 may open/read the file in connect(). Revalidate immediately,
         # then callers revalidate once more directly before schema/write SQL.
         _verify_database_identity(absolute, identity)
         yield connection, identity, absolute
     except sqlite3.DatabaseError as exc:
-        _corrupt_cache(absolute, str(exc), exc)
+        _raise_database_error(absolute, exc)
     else:
         # A read may have completed against the still-open inode after the
         # pathname was permanently replaced.  Validate on every successful
@@ -715,6 +732,8 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
             _add_column_if_missing(conn, _MIGRATE_ADD_BASIS_CONFIG_JSON)
         if "evidence_invalidated" not in run_columns:
             _add_column_if_missing(conn, _MIGRATE_ADD_EVIDENCE_INVALIDATED)
+        if "is_full_run" not in run_columns:
+            _add_column_if_missing(conn, _MIGRATE_ADD_IS_FULL_RUN)
         conn.execute(_CREATE_RUN_MUTANT_TABLE_SQL)
         conn.execute(_CREATE_SINGLE_RUNNING_INDEX_SQL)
         _verify_database_identity(absolute, identity)
@@ -830,6 +849,7 @@ def begin_run(
     *,
     basis_fingerprint: str | None = None,
     basis_config_json: str | None = None,
+    is_full_run: bool = False,
 ) -> str:
     """Persist a running attempt before staging or generation can mutate state."""
     basis_fingerprint, basis_config_json = _validated_run_basis(
@@ -845,10 +865,17 @@ def begin_run(
         conn.execute(
             """
             INSERT INTO mutation_run
-                (run_id, status, started_at, basis_fingerprint, basis_config_json)
-            VALUES (?, ?, ?, ?, ?)
+                (run_id, status, started_at, basis_fingerprint, basis_config_json, is_full_run)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (run_id, RUN_STATUS_RUNNING, _utc_now(), basis_fingerprint, basis_config_json),
+            (
+                run_id,
+                RUN_STATUS_RUNNING,
+                _utc_now(),
+                basis_fingerprint,
+                basis_config_json,
+                int(is_full_run),
+            ),
         )
     return run_id
 
@@ -903,6 +930,7 @@ def start_run(
     *,
     basis_fingerprint: str | None = None,
     basis_config_json: str | None = None,
+    is_full_run: bool = False,
 ) -> str:
     """Atomically persist a new running mutation plan and return its UUID.
 
@@ -940,8 +968,8 @@ def start_run(
             """
             INSERT INTO mutation_run
                 (run_id, status, started_at, plan_finalized, universe_fingerprint,
-                 plan_digest, basis_fingerprint, basis_config_json)
-            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                 plan_digest, basis_fingerprint, basis_config_json, is_full_run)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -953,6 +981,7 @@ def start_run(
                 _ordered_plan_digest(planned),
                 basis_fingerprint,
                 basis_config_json,
+                int(is_full_run),
             ),
         )
         conn.executemany(
@@ -1266,7 +1295,8 @@ def load_current_run(path: Path = DEFAULT_DB_PATH) -> MutationRunState | None:
             """
             SELECT sequence, run_id, status, started_at, finished_at,
                    plan_finalized, universe_fingerprint, plan_digest,
-                   basis_fingerprint, basis_config_json, evidence_invalidated
+                   basis_fingerprint, basis_config_json, evidence_invalidated,
+                   is_full_run
             FROM mutation_run
             ORDER BY sequence DESC
             LIMIT 1
@@ -1354,8 +1384,10 @@ def load_current_run(path: Path = DEFAULT_DB_PATH) -> MutationRunState | None:
     except (TypeError, ValueError) as exc:
         _corrupt_cache(path, f"invalid run basis: {exc}", exc)
     evidence_invalidated = _stored_flag(path, run_row[10], "evidence_invalidated")
+    is_full_run = _stored_flag(path, run_row[11], "is_full_run")
 
     planned_names: list[str] = []
+    planned_name_set: set[str] = set()
     completed_names: list[str] = []
     pending_names: list[str] = []
     completed_results: list[RunMutationResult] = []
@@ -1367,9 +1399,10 @@ def load_current_run(path: Path = DEFAULT_DB_PATH) -> MutationRunState | None:
                 f"stored plan ordinal {ordinal} does not match expected {expected_ordinal}",
             )
         mutant_name = _required_text(path, row[1], "planned mutant name")
-        if mutant_name in planned_names:
+        if mutant_name in planned_name_set:
             _corrupt_cache(path, f"duplicate planned mutant name {mutant_name!r}")
         planned_names.append(mutant_name)
+        planned_name_set.add(mutant_name)
         completed = _stored_flag(path, row[2], f"completed flag for {mutant_name!r}")
         reused = _stored_flag(path, row[3], f"reused flag for {mutant_name!r}")
         if not completed:
@@ -1447,6 +1480,7 @@ def load_current_run(path: Path = DEFAULT_DB_PATH) -> MutationRunState | None:
         basis_fingerprint=basis_fingerprint,
         basis_config_json=basis_config_json,
         evidence_invalidated=evidence_invalidated,
+        is_full_run=is_full_run,
     )
     # Close the permanent post-read replacement window. A same-user attacker
     # can still perform a complete ABA between identity checks without native
@@ -1613,6 +1647,95 @@ def save_results(
                     reused=False,
                     require_planned=False,
                 )
+
+
+def invalidate_cached_reuse_for_run(path: Path, run_id: str) -> int:
+    """Remove reuse capability from every historical row touched by *run_id*.
+
+    Worker verdicts stream into both the immutable run snapshot and the
+    historical ``mutant`` cache before the final staging/live-basis checks.
+    If the run later fails, retaining their test fingerprints would let the
+    next run reuse results whose execution basis was never authorized.
+    Display history is preserved; only the capability-bearing fingerprint is
+    cleared.
+
+    Returns:
+        Number of historical rows whose reuse fingerprint was invalidated.
+    """
+
+    create_db(path)
+    with _write_transaction(path) as conn:
+        known = conn.execute(
+            "SELECT 1 FROM mutation_run WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if known is None:
+            raise RunStateError(f"cannot invalidate reuse for unknown run {run_id!r}")
+        cursor = conn.execute(
+            """
+            UPDATE mutant
+            SET tests_fingerprint = NULL
+            WHERE tests_fingerprint IS NOT NULL
+              AND mutant_name IN (
+                  SELECT mutant_name
+                  FROM mutation_run_mutant
+                  WHERE run_id = ?
+              )
+            """,
+            (run_id,),
+        )
+        return max(0, cursor.rowcount)
+
+
+def deauthorize_active_run_evidence(path: Path, run_id: str) -> int:
+    """Atomically preserve diagnostics while revoking every evidence capability.
+
+    Used when the project core stayed stable but the ambient interpreter,
+    dependency or environment basis changed during a completed run.  The
+    result rows remain visible, while the run basis, export authority and both
+    current-run and historical verdict-reuse fingerprints are removed in one
+    transaction.  Requiring the exact active run prevents a stale caller from
+    deauthorizing a newer attempt.
+
+    Returns:
+        Number of historical cache rows whose reuse fingerprint was cleared.
+    """
+
+    create_db(path)
+    with _write_transaction(path) as conn:
+        _require_active_run(conn, run_id)
+        conn.execute(
+            """
+            UPDATE mutation_run
+            SET basis_fingerprint = NULL,
+                basis_config_json = NULL,
+                evidence_invalidated = 1
+            WHERE run_id = ? AND status = ?
+            """,
+            (run_id, RUN_STATUS_RUNNING),
+        )
+        conn.execute(
+            """
+            UPDATE mutation_run_mutant
+            SET tests_fingerprint = NULL
+            WHERE run_id = ? AND tests_fingerprint IS NOT NULL
+            """,
+            (run_id,),
+        )
+        cursor = conn.execute(
+            """
+            UPDATE mutant
+            SET tests_fingerprint = NULL
+            WHERE tests_fingerprint IS NOT NULL
+              AND mutant_name IN (
+                  SELECT mutant_name
+                  FROM mutation_run_mutant
+                  WHERE run_id = ?
+              )
+            """,
+            (run_id,),
+        )
+        return max(0, cursor.rowcount)
 
 
 def delete_results_not_in(path: Path, valid_names: set[str]) -> int:

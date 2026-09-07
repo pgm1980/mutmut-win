@@ -15,7 +15,7 @@ import pytest
 import mutmut_win.process.worker as worker_module
 from mutmut_win.exceptions import ProcessContainmentError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
-from mutmut_win.process.worker import MUTANT_ENV_VAR, worker_main
+from mutmut_win.process.worker import MUTANT_ENV_VAR, _kill_proc_tree, worker_main
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +86,51 @@ def _make_popen_mock(exit_code: int = 0) -> MagicMock:
     fake_proc.wait.return_value = exit_code
     fake_proc.poll.return_value = exit_code  # already exited
     return fake_proc
+
+
+def test_pytest_output_arguments_are_redirected_before_plugin_startup(tmp_path: Path) -> None:
+    runtime = tmp_path / "external-runtime"
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "--junitxml=report.xml",
+        "--basetemp",
+        "pytest-tmp",
+        "--cov-report=html",
+        "--cov-report",
+        "xml:chosen.xml",
+        "--cov-report=term-missing",
+        "--",
+        "tests/--junitxml=not-an-option.py",
+    ]
+
+    redirected = worker_module.redirect_pytest_output_args(cmd, runtime)
+
+    assert f"--junitxml={runtime.absolute() / 'junit.xml'}" in redirected
+    basetemp_index = redirected.index("--basetemp")
+    assert redirected[basetemp_index + 1] == str(runtime.absolute() / "pytest-tmp")
+    assert f"--cov-report=html:{runtime.absolute() / 'coverage-html'}" in redirected
+    xml_index = redirected.index("--cov-report")
+    assert redirected[xml_index + 1] == f"xml:{runtime.absolute() / 'coverage.xml'}"
+    assert "--cov-report=term-missing" in redirected
+    assert redirected[-1] == "tests/--junitxml=not-an-option.py"
+
+
+def test_kill_proc_tree_never_treats_test_double_pid_as_process_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_proc = _make_popen_mock()
+
+    def fail_descendant_scan(_pid: int) -> list[object]:
+        pytest.fail("a synthetic Popen PID reached the real process table")
+
+    monkeypatch.setattr(worker_module, "_iter_descendants", fail_descendant_scan)
+
+    _kill_proc_tree(fake_proc, job_handle=99999)
+
+    fake_proc.kill.assert_called_once_with()
+    fake_proc.wait.assert_called_once_with(timeout=2.0)
 
 
 def _popen_with_phase_proof(exit_code: int = 0) -> Any:
@@ -464,6 +509,125 @@ class TestWorkerMain:
         assert len(captured_cmds) == 1
         assert "--no-header" in captured_cmds[0]
         assert "-x" in captured_cmds[0]
+
+    def test_non_authoritative_full_suite_uses_ordered_argfile_below_windows_limit(
+        self,
+    ) -> None:
+        staged_test = Path("mutants/test_long.py")
+        staged_test.write_text("def test_placeholder():\n    pass\n", encoding="utf-8")
+        targets = [f"test_long.py::test_{index:04d}_{'x' * 80}" for index in range(500)]
+        direct_cmd = [sys.executable, "-m", "pytest", "--", *targets]
+        assert len(subprocess.list2cmdline(direct_cmd)) > 32_767
+
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task(test_selection_is_authoritative=False))
+        task_q.put(None)
+        captured: dict[str, object] = {}
+
+        def fake_popen(cmd: list[str], **kwargs: Any) -> MagicMock:
+            captured["cmd"] = list(cmd)
+            separator = cmd.index("--")
+            target_args = cmd[separator + 1 :]
+            assert len(target_args) == 1
+            assert target_args[0].startswith("@")
+            captured["argfile_targets"] = (
+                Path(target_args[0][1:]).read_text(encoding="utf-8").splitlines()
+            )
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            captured["has_preferred_order"] = "MUTMUT_PYTEST_PREFERRED_TESTS_PATH" in env
+            return _make_popen_mock(exit_code=0)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(  # type: ignore[arg-type]
+                task_q,
+                event_q,
+                _make_config(tests_dir=targets),
+            )
+
+        cmd = captured["cmd"]
+        assert isinstance(cmd, list)
+        assert "--maxfail=1" in cmd
+        assert len(subprocess.list2cmdline(cmd)) < 32_767
+        assert captured["argfile_targets"] == targets
+        assert captured["has_preferred_order"] is False
+
+    def test_real_pytest_keeps_native_order_with_non_authoritative_hint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        tests_dir = tmp_path / "mutants" / "tests"
+        tests_dir.mkdir()
+        marker = tmp_path / "unpreferred-ran.txt"
+        (tests_dir / "test_order.py").write_text(
+            """\
+import os
+from pathlib import Path
+
+import pytest
+
+
+_READY = False
+
+
+def test_unmapped_first_in_source():
+    global _READY
+    _READY = True
+    Path(os.environ["UNPREFERRED_MARKER"]).write_text("ran", encoding="utf-8")
+
+
+def test_preferred_killer():
+    if not _READY:
+        pytest.skip("depends on the preceding native-order setup test")
+    assert False
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("UNPREFERRED_MARKER", str(marker))
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(
+            MutationTask(
+                mutant_name="src/foo.py::bar__mutmut_1",
+                tests=["tests/test_order.py::test_preferred_killer"],
+                test_selection_is_authoritative=False,
+                timeout_seconds=90.0,
+            ).model_dump()
+        )
+        task_q.put(None)
+
+        def launch_uncontained(
+            cmd: list[str], **kwargs: Any
+        ) -> tuple[subprocess.Popen[bytes], None]:
+            kwargs.pop("posix_start_stopped", None)
+            kwargs.pop("posix_register", None)
+            # Production's Windows launcher asks CreateProcess for a
+            # suspended child so it can assign the Job Object before resume.
+            # This test deliberately bypasses that launcher, so retaining the
+            # flag would leave pytest suspended forever.
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            return subprocess.Popen(cmd, **kwargs), None  # noqa: S603
+
+        def reap_test_child(proc: subprocess.Popen[bytes], _job: object = None) -> None:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5.0)
+
+        with (
+            patch(
+                "mutmut_win.process.worker._popen_contained",
+                side_effect=launch_uncontained,
+            ),
+            patch("mutmut_win.process.worker._kill_proc_tree", side_effect=reap_test_child),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        event_q.get()  # TaskStarted
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 1
+        assert marker.read_text(encoding="utf-8") == "ran"
 
     def test_multiple_tasks_processed_in_order(self) -> None:
         """Multiple tasks must each produce a start/complete pair."""

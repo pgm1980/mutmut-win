@@ -8,6 +8,7 @@ so the existing CLI domain-error handlers render it cleanly. ``run --force`` rec
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -15,7 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import _load_results_or_exit, cli
-from mutmut_win.db import create_db, load_results
+from mutmut_win.db import RunStateError, create_db, load_results
 from mutmut_win.exceptions import CorruptCacheError, MutmutWinError
 
 if TYPE_CHECKING:
@@ -48,6 +49,27 @@ class TestDbLayer:
     def test_fresh_path_is_not_treated_as_corrupt(self, tmp_path: Path) -> None:
         create_db(tmp_path / "fresh.db")
         assert (tmp_path / "fresh.db").exists()
+
+    def test_live_lock_contention_is_not_misreported_as_corruption(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database = tmp_path / "busy.db"
+        create_db(database)
+        real_connect = sqlite3.connect
+        blocker = real_connect(database)
+        blocker.execute("BEGIN EXCLUSIVE")
+
+        def fast_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+            kwargs["timeout"] = 0.01
+            return real_connect(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(sqlite3, "connect", fast_connect)
+        try:
+            with pytest.raises(RunStateError, match=r"busy or locked.*must not be deleted"):
+                load_results(database)
+        finally:
+            blocker.rollback()
+            blocker.close()
 
     def test_message_is_specific_and_unwrapped(self, tmp_path: Path) -> None:
         with pytest.raises(CorruptCacheError) as exc_info:

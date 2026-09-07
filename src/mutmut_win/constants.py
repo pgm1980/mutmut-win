@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from pathlib import Path
 
 
 class Profile(IntEnum):
@@ -48,6 +49,13 @@ class Profile(IntEnum):
 #: import mutmut_win for the env read) and is pinned against this value.
 MUTANT_ENV_VAR: str = "MUTANT_UNDER_TEST"
 
+#: Ownership marker for mutation metadata sidecars.  Runtime verdicts and
+#: durations inside these files are mutable outputs, while source/generation
+#: hashes and the mutant-name universe are stable execution inputs.  The
+#: marker lets the context digester project only tool-owned sidecars without
+#: confusing an arbitrary user fixture named ``*.meta`` for internal state.
+SOURCE_METADATA_SCHEMA: str = "mutmut-win-source-metadata-v1"
+
 #: Internal controls removed from the external type-checker environment as a
 #: hygiene boundary. The run basis still hashes every inherited environment
 #: value: Python startup hooks can observe a value before a later launcher has
@@ -88,6 +96,41 @@ MAXIMUM_PYTEST_VERSION_EXCLUSIVE: tuple[int, int] = (10, 0)
 #: project root carry no prefix to strip.
 SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
 
+
+def configured_staging_relative_path(
+    raw_path: str | Path,
+    *,
+    project_root: Path,
+) -> Path | None:
+    """Map one configured mirror/import path to its relative staging target.
+
+    Absolute project-internal inputs are canonicalized before relativization,
+    so Windows long names, 8.3 aliases, and case variants cannot make the
+    planner, copy phase, runner, and worker disagree.  Absolute external and
+    drive-relative inputs are not staged.  Explicit ``..`` siblings retain the
+    long-standing Bug-#69 contract of being mirrored under their basename.
+    """
+
+    path = Path(raw_path)
+    # On Windows, both ``C:relative`` and ``\root-relative`` are anchored
+    # without being absolute. Joining either to ``mutants`` discards the
+    # staging root, so every consumer must reject them before composition.
+    if path.anchor and not path.is_absolute():
+        return None
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(project_root.resolve())
+        # Parenthesized for the pinned Semgrep parser, which does not yet
+        # understand Python 3.14's PEP 758 bare multi-exception syntax.
+        except (OSError, RuntimeError, ValueError):  # fmt: skip
+            return None
+    if ".." in path.parts:
+        path = Path(path.name)
+    if not path.name or path in {Path(), Path("..")}:
+        return None
+    return path
+
+
 #: Workspace directory names that are neither copied into mutation staging nor
 #: execution-basis inputs.  Keeping one immutable set prevents generated tool
 #: state (for example import-linter or IDE caches) from invalidating a run even
@@ -124,6 +167,37 @@ WORKSPACE_EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 
+#: The subset that is tooling/generated state regardless of nesting depth.
+#: Human project directories with generic names such as ``build`` or ``html``
+#: are excluded only at the workspace root; nested packages with those names
+#: remain executable source and therefore must be staged and fingerprinted.
+WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".git",
+        ".hypothesis",
+        ".tox",
+        ".nox",
+        "mutants",
+        ".mutmut-cache",
+        "node_modules",
+        ".import_linter_cache",
+        ".benchmarks",
+        "htmlcov",
+        ".serena",
+        ".claude",
+        ".codex",
+        ".sprint",
+        ".idea",
+        ".vscode",
+    }
+)
+
 # Exit code to status mapping — based on mutmut 3.5.0, with two deliberate
 # deviations (issue #91, audit A2-EW-020 / A4-QX-025):
 #
@@ -140,8 +214,9 @@ WORKSPACE_EXCLUDED_DIR_NAMES: frozenset[str] = frozenset(
 #   behaviour); the shadowed "killed" mapping was dead code.
 #
 # Negative codes (-24, -11, -9) are POSIX signal semantics — unreachable on
-# Windows, kept for WSL/Linux CI. Windows crashes surface as the unsigned
-# DWORD form of NTSTATUS codes instead.
+# the supported Windows runtime and retained only for legacy result rendering;
+# they carry no POSIX runtime or CI-support commitment. Windows crashes surface
+# as the unsigned DWORD form of NTSTATUS codes instead.
 
 #: Status string for IL-classified kills — single source for the literal
 #: that used to be duplicated in ``loop_monitor`` (issue #132 / 360°-B8).

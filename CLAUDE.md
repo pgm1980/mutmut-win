@@ -1,8 +1,13 @@
 # mutmut-win
 
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
+
 ## Projekt
 
-- **Stack**: CPython >=3.12,<3.15 (3.12–3.14)
+- **Stack**: Windows + CPython 3.14.7 (exactly; no Linux/POSIX or older-Python support)
 - **Repository**: https://github.com/pgm1980/mutmut-win.git
 - **Ziel**: 
 
@@ -39,6 +44,7 @@ PROJEKT-STANDARDS (NICHT VERHANDELBAR):
 - Serena für Code-Navigation (KEIN Grep für Klassen/Funktionen/Variablen)
 - Context7 VOR Nutzung neuer APIs konsultieren
 - Kanonisches Semgrep-Releasegate auf dem vollständigen Git-owned Scope; keine Raw- oder Changed-file-Scans als PASS-Ersatz
+- Bei Release-/Workflowarbeit den kanonischen nativen Release-Wrapper ausführen; er prüft die drei manifestgebundenen nativen Werkzeuge und Zizmor 1.30.0 offline in den Personas regular und pedantic
 - Ruff Lint + Format auf JEDE geänderte Datei — 0 Findings
 - mypy strict — 0 Errors
 - pytest + hypothesis für alle Tests — kein unittest.TestCase
@@ -62,6 +68,7 @@ Auch wenn Subagenten MCP-Zugriff haben, MUSS die Hauptsession nach jeder Subagen
 - [ ] Alle Tests grün? (`uv run pytest` selbst ausführen)
 - [ ] Serena `get_symbols_overview` auf neue Dateien — Strukturcheck
 - [ ] Bei Security-relevantem Code: das kanonische Semgrep-Releasegate selbst bestätigen
+- [ ] Bei Release-/Workflowarbeit: den kanonischen nativen Release-Wrapper selbst bestätigen
 - [ ] Mutation Testing: `uv run mutmut-win run --paths-to-mutate <geänderte Module>` — Score ≥ 80%?
 
 **Vertrauen, aber verifizieren.** Subagent-Aussagen "Build sauber, Tests grün" sind Hinweise, keine Beweise.
@@ -256,6 +263,26 @@ uv run --no-sync python -I scripts/semgrep_release_gate.py
 - **NICHT** Security-Findings ignorieren oder als False Positive markieren ohne dokumentierte Begründung und exakte Allowlist-Signatur
 - **NICHT** `pickle.load()` auf nicht-vertrauenswürdige Daten ohne Semgrep-Review
 
+### Native Release- und Workflow-Prüfung
+
+Der kanonische lokale Wrapper ist:
+
+```bash
+uv sync --locked --only-group release --no-install-project
+uv run --no-sync python -I scripts/release_native_gate.py
+```
+
+Er lädt und prüft ausschließlich die drei nativen ZIP-Werkzeuge aus
+`scripts/release_native_tools.json` (actionlint 1.7.12, ShellCheck 0.11.0 und
+Gitleaks 8.30.1). Zusätzlich führt derselbe Wrapper das aus `uv.lock` gebundene
+Zizmor 1.30.0 offline mit `--strict-collection --no-config --no-ignores` in den
+Personas `regular` und `pedantic` aus. Git for Windows stammt ausschließlich
+aus dem systemweiten HKLM-Installationsvertrag, nicht aus Caller-PATH. Zizmor
+ist kein viertes Manifest-ZIP und besitzt keine native GitHub-Asset-Provenienz
+in diesem Vertrag. Der Wrapper ist vor jedem Release-Abschluss und nach
+Workflowänderungen verpflichtend. Lokal darf nur eine unmittelbar zuvor
+gelockt synchronisierte Releaseumgebung als Bootstrap-Trust-Root dienen.
+
 ### Context7 — Aktuelle Dokumentation
 
 Context7 MUSS vor der Nutzung von APIs und Libraries konsultiert werden.
@@ -263,7 +290,7 @@ Context7 MUSS vor der Nutzung von APIs und Libraries konsultiert werden.
 **Wann Context7 verwenden (PFLICHT):**
 - **Vor Nutzung neuer APIs**: Python stdlib, PyTorch, Transformers, FastAPI, Pydantic, etc.
 - **Bei Unsicherheit über API-Verhalten**: Parameter, Rückgabewerte, Exceptions
-- **Bei Versionswechseln**: Breaking Changes und die CPython-3.12–3.14-Kompatibilität prüfen
+- **Bei Versionswechseln**: Breaking Changes gegen die verbindliche CPython-3.14.7-Runtime prüfen
 - **Best Practices verifizieren**: Aktuelle Empfehlungen für Patterns und Anti-Patterns
 - **AI-Libraries**: Aktuelle API-Docs für PyTorch, HuggingFace, LangChain etc. — diese ändern sich häufig
 
@@ -395,7 +422,7 @@ dev = [
     "pytest-benchmark>=5.1",
     "hypothesis>=6.119",
     "import-linter>=2.1",
-    "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0",
+    "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1",
 ]
 
 [tool.pytest.ini_options]
@@ -407,6 +434,10 @@ markers = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
+
+Der Arbeitsbaum und die aktive Abhängigkeitszeile definieren dieselbe Version.
+Vor ihrer Verwendung gilt ausschließlich der kanonische externe
+Publikationsvertrag am Anfang dieser Datei. Das v2.21.0-Tag bleibt unverändert.
 
 **pytest-Konventionen:**
 - `tests/unit/` für Unit Tests
@@ -427,8 +458,12 @@ mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität de
 
 **Installation** (PyPI-Publishing ist nicht Teil der Release-Sequenz — Installation erfolgt über die Git-URL; führendes Dokument: `_config\mutmut-win-install.md`):
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1" --dev
 ```
+
+Vor der Installation ist die am Dateianfang vorgeschriebene externe
+Tag-/Releaseprüfung auszuführen; die Quelldokumentation zertifiziert keinen
+veränderlichen GitHub-Zustand. Das v2.21.0-Tag wird weder verschoben noch gelöscht.
 
 **Wann mutmut-win verwenden (PFLICHT):**
 - **Nach Abschluss der Unit Tests eines Features**: Mutation Score als Qualitätsmetrik erheben
@@ -604,6 +639,8 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 | `uv run mutmut-win results`                              | Mutation Testing Ergebnisse           |
 | `uv sync --locked --only-group security --no-install-project` | Gelockte Security-only-Umgebung herstellen |
 | `uv run --no-sync python -I scripts/semgrep_release_gate.py` | Kanonisches fail-closed Semgrep-Releasegate |
+| `uv sync --locked --only-group release --no-install-project` | Gelockte Release-Gate-Umgebung herstellen |
+| `uv run --no-sync python -I scripts/release_native_gate.py` | Drei native Manifesttools plus Zizmor 1.30.0 offline regular/pedantic ohne Config/Ignored-Findings; HKLM-Git |
 | `uv run pip-audit`                                   | Dependency-Audit auf Vulnerabilities      |
 
 ---
@@ -657,13 +694,14 @@ Built-In Tools können NICHT via settings.json gesperrt werden. Ihre Nutzung wir
 
 | Voraussetzung               | Version           | Zweck                                         |
 |-----------------------------|-------------------|-----------------------------------------------|
-| Python                      | >=3.12,<3.15      | Unterstützte CPython-Runtime                  |
+| Python                      | ==3.14.7          | Exakt unterstützte CPython-Runtime (Windows) |
 | uv                          | aktuell           | Package Manager + Virtual Environments        |
 | Ruff                        | aktuell           | Linting + Formatting                          |
 | mypy                        | aktuell           | Statische Typ-Prüfung                         |
-| mutmut-win                  | 2.21.0            | Mutation Testing (Windows)                    |
+| mutmut-win                  | Paketstand aus `pyproject.toml`; Publikation extern prüfen | Mutation Testing (Windows) |
 | pip-audit                   | aktuell           | Dependency-Audit                              |
 | Semgrep CLI                 | 1.175.0 (uv.lock) | Security-Scanning über den Release-Wrapper    |
+| Zizmor                      | 1.30.0 (uv.lock)  | Offline-Workflowaudit via nativem Release-Wrapper |
 | Serena MCP-Server           | aktuell           | Symbolbasierte Code-Analyse                   |
 | Context7 MCP-Server         | aktuell           | Aktuelle API-Dokumentation                    |
 | Git                         | aktuell           | Versionskontrolle                             |
@@ -698,7 +736,7 @@ housekeeping_done: false               # true = alle HK-Items erledigt, false = 
 memory_updated: false                  # true = MEMORY.md in diesem Sprint aktualisiert
 github_issues_closed: false            # true = alle Sprint-Issues geschlossen
 sprint_backlog_written: false          # true = Sprint-Backlog-Dokument existiert
-semgrep_passed: false                  # true = Semgrep-Scan ohne Findings bestanden
+semgrep_passed: false                  # true = kanonisches Gate ohne unerwartete Findings/Errors/Skips/Timeouts
 tests_passed: false                    # true = alle Tests grün (pytest + mypy + ruff)
 documentation_updated: false           # true = Docs/Docstrings aktualisiert
 ---
@@ -835,7 +873,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 - **mutmut-win Laufzeit**: Kann bei großen Projekten extrem lang sein. `--paths-to-mutate` für gezieltes Testen verwenden. `--max-children 4` bei RAM-knappen Systemen.
 - **mypy + AI-Libraries**: PyTorch, Transformers, sklearn haben unvollständige Type Stubs. `ignore_missing_imports` pro Modul konfigurieren, nicht global.
 - **`pickle.load()` ist ein Security-Risiko**: Nie auf nicht-vertrauenswürdige Daten anwenden. `safetensors` oder `torch.load(weights_only=True)` bevorzugen.
-- **Runtime-Kompatibilität halten**: Produktionscode MUSS unter CPython 3.12–3.14 funktionieren; keine 3.14-exklusiven Sprachfeatures ohne kompatiblen Fallback.
+- **Runtime-Kompatibilität halten**: Produktionscode MUSS unter Windows mit CPython 3.14.7 funktionieren; andere Python-Versionen und Betriebssysteme sind nicht Teil des Produktvertrags.
 - **`# noqa` ist verboten** ohne dokumentierte Begründung im Code-Kommentar direkt darüber.
 - **`# type: ignore` ist verboten** ohne dokumentierte Begründung und spezifischen Error-Code (`# type: ignore[override]`).
 - **Notebooks sind kein Produktionscode**: Jupyter Notebooks nur für Exploration/Prototyping. Produktionscode MUSS in `src/` als getestete Module leben.
@@ -877,7 +915,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 
 ## Projektspezifische Regeln
 
-- **Sprache**: CPython 3.12–3.14 (`>=3.12,<3.15`)
+- **Sprache**: CPython 3.14.7 (`==3.14.7`, ausschließlich Windows)
 - **Package Manager**: uv
 - **Projektformat**: `pyproject.toml` (PEP 621)
 - **Async Framework**: asyncio + FastAPI (empfohlen für API-Serving, nicht Pflicht)
@@ -891,7 +929,7 @@ Diese Skills sind an keine Phase gebunden — sie werden **situativ** aktiviert:
 - **Dependency-Audit**: pip-audit
 - **Architecture-Enforcement**: import-linter
 - **Code-Dokumentation**: Google-Style Docstrings, Type Hints für alle öffentlichen APIs
-- **Plattformen**: Windows (primär), Linux (GPU-Training), macOS (sekundär)
+- **Plattformen**: ausschließlich Windows 10/11 oder Windows Server 2016+
 
 ---
 

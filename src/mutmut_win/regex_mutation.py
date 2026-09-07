@@ -124,8 +124,13 @@ def _mutate_quantifiers(pattern: str) -> list[str]:
     :func:`mutate_regex_pattern`.
     """
     results: list[str] = []
+    class_spans = _class_spans(pattern)
 
     for match in _QUANTIFIER_RE.finditer(pattern):
+        if _in_class(match.start(), class_spans):
+            # Inside ``[...]`` these glyphs are literals (or class syntax),
+            # never repetition operators.
+            continue
         base, lazy = match.group(1), match.group(2)
         start, end = match.start(), match.end()
         is_exact = base.startswith("{") and "," not in base
@@ -383,8 +388,17 @@ def _is_valid_regex(pattern: str) -> bool:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", FutureWarning)
-            re.compile(pattern)
-    except (re.error, OverflowError, FutureWarning):
+            # ``re.compile`` is globally cached. If another caller compiled
+            # this pattern while ignoring FutureWarning, a later validation
+            # would otherwise become order-dependent and accept an ambiguous
+            # candidate without re-parsing it. The exact supported runtime is
+            # CPython 3.14.7; its uncached compiler is the deterministic seam.
+            re._compiler.compile(pattern)  # type: ignore[attr-defined]
+    except (
+        re.error,
+        OverflowError,
+        FutureWarning,
+    ):
         # Repetition counts >= 2**32-1 (e.g. ``a{4294967295}`` produced by the
         # {n+1} mutation) raise OverflowError instead of re.error
         # (issue #78 / A1-RX-001).

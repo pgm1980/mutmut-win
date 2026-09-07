@@ -25,7 +25,11 @@ from mutmut_win.db import (
     known_run_basis_incompleteness,
 )
 from mutmut_win.exceptions import CorruptCacheError
-from mutmut_win.models import MutationResult, SourceFileMutationData
+from mutmut_win.models import (
+    MutationResult,
+    SourceFileMutationData,
+    read_owned_source_metadata,
+)
 
 if TYPE_CHECKING:
     from textual.binding import Binding
@@ -178,6 +182,12 @@ def _load_source_file_data() -> dict[str, tuple[SourceFileMutationData, dict[str
         return result
 
     for meta_file in mutants_dir.rglob("*.meta"):
+        # Project fixtures may legitimately use the same suffix.  Only an
+        # explicitly schema-marked sidecar whose generated companion matches
+        # its committed hash belongs to mutmut-win; browsing must never heal
+        # or delete arbitrary lookalikes.
+        if read_owned_source_metadata(meta_file) is None:
+            continue
         try:
             rel_meta = meta_file.relative_to(mutants_dir)
         except ValueError:
@@ -185,7 +195,7 @@ def _load_source_file_data() -> dict[str, tuple[SourceFileMutationData, dict[str
 
         source_path = str(rel_meta).removesuffix(".meta")
         sfd = SourceFileMutationData(path=source_path)
-        sfd.load()
+        sfd.load(heal_corrupt=False)
 
         if not sfd.exit_code_by_key:
             continue
@@ -305,7 +315,9 @@ class ResultBrowser(App[None]):
                 return
 
             basis_issue = known_run_basis_incompleteness(current)
-            if current.status == "completed" and basis_issue is not None:
+            if current.status == "completed" and (
+                basis_issue is not None or not current.is_full_run
+            ):
                 run_status.add_class("evidence-invalidated")
                 warning = Text()
                 if basis_issue is RunBasisIncompleteness.MALFORMED:
@@ -314,15 +326,25 @@ class ResultBrowser(App[None]):
                         style="bold white on red",
                     )
                     detail_style = "bold red"
+                elif not current.is_full_run:
+                    warning.append(
+                        "SUBSET RUN - NOT RELEASE-READY\n",
+                        style="bold black on yellow",
+                    )
+                    detail_style = "bold yellow"
                 else:
                     warning.append(
                         "INCOMPLETE EXECUTION BASIS - NOT RELEASE-READY\n",
                         style="bold black on yellow",
                     )
                     detail_style = "bold yellow"
+                basis_complete = basis_issue is None
+                basis_detail = "" if basis_issue is None else f"basis_reason={basis_issue.value}; "
                 warning.append(
-                    "execution_basis_complete=false; release_ready=false; "
-                    f"basis_reason={basis_issue.value}; "
+                    f"execution_basis_complete={str(basis_complete).lower()}; "
+                    "release_ready=false; "
+                    f"run_scope={'full' if current.is_full_run else 'subset'}; "
+                    f"{basis_detail}"
                     f"run={current.run_id[:8]}; recorded_run_state={current.status}; "
                     f"completed_mutants={len(current.completed_names)}/"
                     f"{len(current.planned_names)}; pending={len(current.pending_names)}",

@@ -66,10 +66,33 @@ class TestSubsetPurgeWiring:
         assert orchestrator_cls.call_count == 1
         return bool(orchestrator_cls.call_args.kwargs["purge_stale_results"])
 
+    def _full_run_flag(self, orchestrator_cls: MagicMock) -> bool:
+        assert orchestrator_cls.call_count == 1
+        return bool(orchestrator_cls.call_args.kwargs["is_full_run"])
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            ("pkg.x_f__mutmut_1",),
+            ("--paths-to-mutate", "src/one.py"),
+            ("--since-commit", "HEAD~1"),
+        ],
+    )
+    def test_subset_selection_cannot_authorize_min_score(
+        self,
+        selection: tuple[str, ...],
+    ) -> None:
+        result, orchestrator_cls = _invoke_run("--min-score", "100", *selection)
+
+        assert result.exit_code == 2
+        assert "--min-score requires a full unfiltered run" in result.output
+        orchestrator_cls.assert_not_called()
+
     def test_plain_run_purges(self) -> None:
         result, orch = _invoke_run()
         assert result.exit_code == 0, result.output
         assert self._purge_flag(orch) is True
+        assert self._full_run_flag(orch) is True
 
     def test_paths_override_disables_purge(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -81,12 +104,14 @@ class TestSubsetPurgeWiring:
         result, orch = _invoke_run("--paths-to-mutate", "mod.py")
         assert result.exit_code == 0, result.output
         assert self._purge_flag(orch) is False
+        assert self._full_run_flag(orch) is False
 
     def test_name_filter_disables_purge(self) -> None:
         """Regression pin — name-pattern subsets were already correct."""
         result, orch = _invoke_run("pkg.mod.x_f__mutmut_1")
         assert result.exit_code == 0, result.output
         assert self._purge_flag(orch) is False
+        assert self._full_run_flag(orch) is False
 
 
 # ---------------------------------------------------------------------------

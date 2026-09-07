@@ -354,7 +354,7 @@ class TestRunStats:
             content = plugin_path.read_text(encoding="utf-8")
             assert "pytest_runtest_protocol" in content
             assert "pytest_sessionfinish" in content
-            assert "mutmut-stats.json" in content
+            assert "MUTMUT_STATS_OUTPUT_PATH" in content
 
     def test_does_not_touch_the_process_env(self) -> None:
         """Issue #99 / A2-RN-007: the vestigial os.environ write is gone —

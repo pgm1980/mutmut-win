@@ -163,6 +163,7 @@ class TestExportDenominatorLine:
             plan_digest="c" * 64,
             basis_fingerprint="a" * 64,
             basis_config_json="{}",
+            is_full_run=True,
         )
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()

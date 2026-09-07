@@ -11,10 +11,12 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve complete evidence for main pushes; only superseded PR runs may be cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CI: "true"
+  MUTMUT_GITHUB_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
   PYTHONUTF8: "1"
   UV_NO_PROGRESS: "1"
 
@@ -39,7 +41,7 @@ jobs:
 
   quality:
     name: Quality gates
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - name: Check out source
@@ -49,7 +51,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -70,22 +72,21 @@ jobs:
         run: uv run --no-sync lint-imports
 
   security:
-    name: Security gate (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
+    name: Security gate (Windows, CPython 3.14.7)
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Gitleaks scans every fetched ref plus detached HEAD. A shallow
+          # checkout could otherwise turn the history gate into false evidence.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -96,28 +97,29 @@ jobs:
         run: uv sync --locked --only-group security --no-install-project
       - name: Run the pinned fail-closed Semgrep gate
         run: uv run --no-sync python -I scripts/semgrep_release_gate.py
+      - name: Sync locked native release validators
+        run: uv sync --locked --only-group release --no-install-project
+      - name: Run pinned native workflow and secret gates
+        run: uv run --no-sync python -I scripts/release_native_gate.py
 
   tests:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    name: Tests and coverage (Windows, CPython 3.14.7)
+    runs-on: windows-latest
+    timeout-minutes: 120
     env:
-      UV_PYTHON: ${{ matrix.python-version }}
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-        python-version: ["3.12", "3.13", "3.14"]
+      UV_PYTHON: "3.14.7"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The full-suite release contract resolves the exact source branch
+          # plus main identities even in GitHub's detached PR/main checkouts.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -129,18 +131,16 @@ jobs:
       - name: Sync locked development environment
         run: uv sync --locked --extra dev --group build --no-build-isolation
       - name: Run test suite
-        run: uv run --no-sync pytest
+        run: >-
+          uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
 
   pytest-compat:
-    name: Pytest 8.2 boundary compatibility (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Pytest 8.2 boundary compatibility (Windows, CPython 3.14.7)
+    runs-on: windows-latest
     timeout-minutes: 20
     env:
-      UV_PYTHON: "3.13"
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
+      UV_PYTHON: "3.14.7"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,7 +149,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -157,8 +157,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Exercise the validated pytest floor
+        env:
+          # The overlay has a fully pinned, hash-checked Windows/Python-3.14 lock.
+          UV_REQUIRE_HASHES: "1"
         run: >-
-          uv run --isolated --frozen --no-dev --no-cache --with pytest==8.2.2
+          uv run --isolated --frozen --no-dev --no-cache
+          --with-requirements .github/pytest-8.2.2-windows-py314.txt
           pytest -q -p no:cacheprovider tests/unit/test_pytest_boundary_security_220.py
           tests/unit/test_surface_hardening_220.py::test_child_guard_rejects_external_directory_replacement
           tests/unit/test_surface_hardening_220.py::test_exact_external_file_does_not_authorize_adjacent_conftest
@@ -166,17 +170,11 @@ jobs:
           tests/unit/test_surface_hardening_220.py::test_staged_config_cannot_collect_an_unbound_external_test_tree
 
   audit:
-    name: Dependency audit (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    name: Dependency audit (Windows, CPython 3.14.7)
+    runs-on: windows-latest
     timeout-minutes: 20
     env:
-      UV_PYTHON: ${{ matrix.python-version }}
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-        python-version: ["3.12", "3.13", "3.14"]
+      UV_PYTHON: "3.14.7"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -185,7 +183,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -207,6 +205,7 @@ jobs:
 
   build:
     name: Build distributions
+    needs: [lock, quality, security, tests, pytest-compat, audit]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -217,7 +216,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13.13"
+          # Ubuntu is only the reproducible build host, not a supported runtime.
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -226,26 +226,85 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Sync locked build backend
         run: uv sync --locked --only-group build --no-install-project
-      - name: Build twice from locked inputs
+      - name: Sync locked release validators
+        run: >-
+          uv sync --locked --only-group build --only-group release
+          --no-install-project
+      - name: Build twice and compare release evidence
         shell: bash
         run: |
+          set -euo pipefail
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           export SOURCE_DATE_EPOCH
-          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${RUNNER_TEMP}/dist-first"
-          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${RUNNER_TEMP}/dist-second"
-          diff --recursive --brief "${RUNNER_TEMP}/dist-first" "${RUNNER_TEMP}/dist-second"
-          mkdir dist
-          cp "${RUNNER_TEMP}/dist-first"/*.whl "${RUNNER_TEMP}/dist-first"/*.tar.gz dist/
+          first_dir="${RUNNER_TEMP}/dist-first"
+          second_dir="${RUNNER_TEMP}/dist-second"
+          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${first_dir}"
+          uv run --no-sync uv build --offline --no-build-isolation --no-sources --out-dir "${second_dir}"
+
+          for build_dir in "${first_dir}" "${second_dir}"; do
+            mapfile -d '' -t wheels < <(find "${build_dir}" -maxdepth 1 -type f -name '*.whl' -print0 | sort -z)
+            mapfile -d '' -t sdists < <(find "${build_dir}" -maxdepth 1 -type f -name '*.tar.gz' -print0 | sort -z)
+            if (( ${#wheels[@]} != 1 || ${#sdists[@]} != 1 )); then
+              printf 'Expected exactly one wheel and one source distribution in %s\n' "${build_dir}" >&2
+              exit 1
+            fi
+            wheel_name="${wheels[0]##*/}"
+            sdist_name="${sdists[0]##*/}"
+            (
+              cd "${build_dir}"
+              sha256sum -- "${wheel_name}" "${sdist_name}" | LC_ALL=C sort -k2,2 > SHA256SUMS
+              unzip -Z1 "${wheel_name}" | LC_ALL=C sort > WHEEL-INVENTORY.txt
+              tar -tzf "${sdist_name}" | LC_ALL=C sort > SDIST-INVENTORY.txt
+            )
+          done
+
+          for build_name in dist-first dist-second; do
+            build_dir="${RUNNER_TEMP}/${build_name}"
+            for evidence_name in SHA256SUMS WHEEL-INVENTORY.txt SDIST-INVENTORY.txt; do
+              printf '::group::%s/%s\n' "${build_name}" "${evidence_name}"
+              sed 's/^/  /' "${build_dir}/${evidence_name}"
+              printf '::endgroup::\n'
+            done
+          done
+
+          diff --unified "${first_dir}/SHA256SUMS" "${second_dir}/SHA256SUMS"
+          diff --unified "${first_dir}/WHEEL-INVENTORY.txt" "${second_dir}/WHEEL-INVENTORY.txt"
+          diff --unified "${first_dir}/SDIST-INVENTORY.txt" "${second_dir}/SDIST-INVENTORY.txt"
+          diff --recursive --brief "${first_dir}" "${second_dir}"
+
+          mkdir -p dist/evidence/dist-first dist/evidence/dist-second
+          cp "${first_dir}"/*.whl "${first_dir}"/*.tar.gz dist/
+          cp "${first_dir}"/SHA256SUMS "${first_dir}"/WHEEL-INVENTORY.txt "${first_dir}"/SDIST-INVENTORY.txt dist/evidence/dist-first/
+          cp "${second_dir}"/SHA256SUMS "${second_dir}"/WHEEL-INVENTORY.txt "${second_dir}"/SDIST-INVENTORY.txt dist/evidence/dist-second/
       - name: Require exactly one wheel and one source distribution
         shell: bash
         run: |
           test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
           test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Validate workflow and distributions with locked release tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl' -print0)
+          mapfile -d '' -t sdists < <(find dist -maxdepth 1 -type f -name '*.tar.gz' -print0)
+          if (( ${#wheels[@]} != 1 || ${#sdists[@]} != 1 )); then
+            printf 'Expected exactly one wheel and one source distribution for validation\n' >&2
+            exit 1
+          fi
+          uv run --no-sync python -I -c \
+            "from importlib.metadata import version as v; assert (v('twine'), v('check-wheel-contents'), v('pyflakes'), v('zizmor')) == ('7.0.0', '0.6.3', '3.4.0', '1.30.0')"
+          uv run --no-sync zizmor --offline --strict-collection --no-config --no-ignores --persona=regular .github/workflows/ci.yml
+          uv run --no-sync zizmor --offline --strict-collection --no-config --no-ignores --persona=pedantic .github/workflows/ci.yml
+          uv run --no-sync python -I -m twine check --strict "${wheels[0]}" "${sdists[0]}"
+          uv run --no-sync check-wheel-contents --no-config --package src/mutmut_win "${wheels[0]}"
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: distributions
-          path: dist/*
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/evidence/**
           if-no-files-found: error
           retention-days: 7
 
@@ -262,7 +321,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14.7"
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -286,15 +345,58 @@ jobs:
           $wheelPath = $wheel[0].FullName
           $sdistPath = $sdist[0].FullName
 
-          uv venv --python "3.12" .artifact-wheel
+          $hashFile = Join-Path (Resolve-Path -LiteralPath dist).Path "evidence\dist-first\SHA256SUMS"
+          if (-not (Test-Path -LiteralPath $hashFile -PathType Leaf)) {
+              throw "Missing SHA256SUMS release evidence"
+          }
+          $artifactsByName = @{
+              $wheel[0].Name = $wheel[0]
+              $sdist[0].Name = $sdist[0]
+          }
+          $hashLines = @(Get-Content -LiteralPath $hashFile -Encoding utf8)
+          if ($hashLines.Count -ne $artifactsByName.Count) {
+              throw "SHA256SUMS must contain exactly one entry per distribution"
+          }
+          $verified = @{}
+          foreach ($line in $hashLines) {
+              if ($line -cnotmatch '\A(?<hash>[0-9a-f]{64})  (?<name>[^/\\]+)\z') {
+                  throw "Malformed SHA256SUMS entry: $line"
+              }
+              $artifactName = $Matches.name
+              $expectedHash = $Matches.hash
+              if (-not $artifactsByName.ContainsKey($artifactName)) {
+                  throw "SHA256SUMS names an unexpected distribution: $artifactName"
+              }
+              if ($verified.ContainsKey($artifactName)) {
+                  throw "SHA256SUMS repeats a distribution: $artifactName"
+              }
+              $actualHash = (Get-FileHash -LiteralPath $artifactsByName[$artifactName].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualHash -cne $expectedHash) {
+                  throw "SHA-256 mismatch for $artifactName"
+              }
+              $verified[$artifactName] = $true
+          }
+          if ($verified.Count -ne $artifactsByName.Count) {
+              throw "SHA256SUMS does not cover every distribution"
+          }
+
+          function Assert-MutmutVersion([string] $Executable) {
+              $observedVersion = [string]::Join("`n", @(& $Executable --version))
+              if ($observedVersion -cne "mutmut-win, version 2.21.1") {
+                  throw "Unexpected installed version: $observedVersion"
+              }
+          }
+
+          uv venv --python "3.14.7" .artifact-wheel
           uv pip install --python .artifact-wheel\Scripts\python.exe $wheelPath
           uv pip check --python .artifact-wheel\Scripts\python.exe
-          & .artifact-wheel\Scripts\mutmut-win.exe --version
+          Assert-MutmutVersion ".artifact-wheel\Scripts\mutmut-win.exe"
 
           $requirements = Join-Path $env:RUNNER_TEMP "sdist-build-requirements.txt"
           uv export --frozen --group build --no-emit-project --output-file $requirements
-          uv venv --python "3.12" .artifact-sdist
+          uv venv --python "3.14.7" .artifact-sdist
           uv pip sync --python .artifact-sdist\Scripts\python.exe $requirements
           uv pip install --offline --no-build-isolation --no-deps --python .artifact-sdist\Scripts\python.exe $sdistPath
           uv pip check --python .artifact-sdist\Scripts\python.exe
+          Assert-MutmutVersion ".artifact-sdist\Scripts\mutmut-win.exe"
           & .artifact-sdist\Scripts\mutmut-win.exe --help | Out-Null

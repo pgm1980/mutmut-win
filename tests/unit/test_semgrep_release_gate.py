@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
@@ -234,10 +235,11 @@ class Project:
 def project(tmp_path: Path) -> Project:
     repository = tmp_path / "repository"
     files = {
-        ".semgrepignore": b"tests/e2e_projects/\n",
+        ".semgrepignore": b"# all shipped fixtures are scanned\n",
+        "benchmarks/perf.py": b"def benchmark():\n    return 1\n",
         "src/package/a.py": b"value = b'\\x00\\xff'\n",
         "tests/test_a.py": b"def test_a():\r\n    assert True\r\n",
-        "tests/e2e_projects/vendor.py": b"exec(input())\n",
+        "tests/e2e_projects/stress_test/src/stress_lib/a.py": b"return_value = 1\n",
         "scripts/helper.py": b"print('helper')\n",
     }
     for relative_path, content in files.items():
@@ -289,6 +291,12 @@ def _run(
             "PATH": str(Path(project.tools["semgrep"]).parent),
             "SEMGREP_APP_TOKEN": "must-not-leak",
             "semgrep_registry_url": "must-not-leak-case-insensitively",
+            "GITHUB_TOKEN": "github-secret-must-not-leak",
+            "aws_secret_access_key": "aws-secret-must-not-leak-case-insensitively",
+            "NPM_TOKEN": "npm-secret-must-not-leak",
+            "DATABASE_URL": "database-secret-must-not-leak",
+            "SENTINEL_SECRET": "generic-secret-must-not-leak",
+            "ComSpec": "C:/attacker/cmd.exe",
             "GIT_INDEX_FILE": "foreign-index",
             "git_config_count": "1",
             "GIT_CONFIG_KEY_0": "core.excludesFile",
@@ -303,6 +311,8 @@ def _run(
             "tmpdir": "inherited-temp-must-not-leak",
             "UV_INDEX": "https://counterfeit.invalid/simple",
             "XDG_CONFIG_HOME": "inherited-xdg-must-not-leak",
+            "https_proxy": "http://approved-proxy.invalid:8080",
+            "requests_ca_bundle": "C:/approved/ca-bundle.pem",
         }
         if environment is None
         else environment
@@ -337,12 +347,14 @@ def _parse(
     )
 
 
-def test_production_contracts_and_twenty_findings_are_fully_pinned() -> None:
+def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
     assert gate.SEMGREP_VERSION == "1.175.0"
+    assert gate.SCAN_ROOTS == ("src", "tests", "scripts", "benchmarks")
+    assert gate.POLICY_SKIP_PREFIXES == ()
     assert (
         gate.RuleContract(
-            count=342,
-            ids_sha256="90e5e07621bf32da358a4f056b15c1a14f48b8929a6a03099108fd5b12c198f6",
+            count=346,
+            ids_sha256="4318213bc02b54092f7fe2b48fffe7afd77cdb92399df23c14b20a3b856a3feb",
         )
         == gate.DEFAULT_RULE_CONTRACT
     )
@@ -361,9 +373,9 @@ def test_production_contracts_and_twenty_findings_are_fully_pinned() -> None:
         )
         == gate.DEFAULT_BUNDLE_CONTRACT
     )
-    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 20
-    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 20
-    assert gate.DEFAULT_FINDING_ALLOWLIST[0].start_line == 74
+    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 22
+    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 22
+    assert gate.DEFAULT_FINDING_ALLOWLIST[0].path == "tests/integration/test_kill_proc_tree.py"
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c"
     )
@@ -392,7 +404,7 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
 
     assert evidence["status"] == "pass"
     assert evidence["targets"] == {
-        "count": 3,
+        "count": 5,
         "paths": project.targets,
         "sha256": gate._sequence_digest(project.targets),
     }
@@ -420,6 +432,9 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert dump_command[0] == project.tools["semgrep"]
     assert "--dump-command-for-core" in dump_command
     assert dump_command[dump_command.index("--config") + 1] == "auto"
+    # Semgrep 1.175 refuses registry-backed ``auto`` configuration when
+    # ``--metrics off`` is present.  The bootstrap has no credentials and its
+    # downloaded rules are content-pinned before the offline scan.
     assert "--metrics" not in dump_command
     assert "--disable-nosem" in dump_command
     assert {key.upper() for key in dump_environment if key.upper().startswith("SEMGREP_")} == {
@@ -427,6 +442,20 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     }
     assert all(not key.upper().startswith("UV_") for key in dump_environment)
     assert all(not key.upper().startswith("GIT_") for key in dump_environment)
+    for secret_name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+        "GITHUB_TOKEN",
+        "NPM_TOKEN",
+        "SEMGREP_APP_TOKEN",
+        "SEMGREP_REGISTRY_URL",
+        "SENTINEL_SECRET",
+    ):
+        assert secret_name not in {key.upper() for key in dump_environment}
+    assert dump_environment["HTTPS_PROXY"] == "http://approved-proxy.invalid:8080"
+    assert dump_environment["REQUESTS_CA_BUNDLE"] == "C:/approved/ca-bundle.pem"
+    assert dump_environment["PATH"] == str(Path(project.tools["semgrep"]).parent)
+    assert "COMSPEC" not in {key.upper() for key in dump_environment}
     assert dump_environment["PYTHONDONTWRITEBYTECODE"] == "1"
     assert dump_environment["PYTHONNOUSERSITE"] == "1"
     assert dump_environment["PYTHONSAFEPATH"] == "1"
@@ -447,6 +476,27 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert Path(dump_environment["TMP"]) == isolation_root / "temp"
     assert Path(dump_environment["TMPDIR"]) == isolation_root / "temp"
     assert Path(dump_environment["XDG_CONFIG_HOME"]) != Path("inherited-xdg-must-not-leak")
+    owned_environment_names = {
+        "APPDATA",
+        "HOME",
+        "LOCALAPPDATA",
+        "PATH",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+        "SEMGREP_SETTINGS_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    }
+    assert {key.upper() for key in dump_environment} <= (
+        gate._REMOTE_PARENT_ENV_ALLOWLIST | owned_environment_names
+    )
 
     assert scan_command[0] == project.tools["semgrep"]
     assert "auto" not in scan_command
@@ -461,6 +511,14 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert scan_environment["SEMGREP_SEND_METRICS"] == "off"
     assert scan_environment["UV_OFFLINE"] == "1"
     assert "SEMGREP_APP_TOKEN" not in scan_environment
+    for secret_name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+        "GITHUB_TOKEN",
+        "NPM_TOKEN",
+        "SENTINEL_SECRET",
+    ):
+        assert secret_name not in {key.upper() for key in scan_environment}
     for name in (
         "SEMGREP_APP_URL",
         "SEMGREP_FAIL_OPEN_URL",
@@ -489,7 +547,22 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     git_calls = [call for call in runner.calls if call not in semgrep_calls]
     assert git_calls
     for _command, _cwd, git_environment in git_calls:
-        assert all(not key.upper().startswith("GIT_") for key in git_environment)
+        assert {key.upper() for key in git_environment if key.upper().startswith("GIT_")} == {
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_SYSTEM",
+        }
+        assert git_environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        for name in (
+            "APPDATA",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "HOME",
+            "LOCALAPPDATA",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+        ):
+            assert git_environment[name] == os.devnull
 
 
 def test_success_evidence_is_canonical_and_ignores_timing(project: Project) -> None:
@@ -715,6 +788,26 @@ def test_finding_line_hash_is_stable_across_crlf_and_lf(project: Project) -> Non
     assert crlf == lf == (TEST_FINDING,)
 
 
+def test_finding_file_hash_preserves_non_ascii_line_separators(project: Project) -> None:
+    source = project.repository / "tests" / "test_a.py"
+    source.write_text(
+        "def test_a():\n    assert True\n# marker\nassert False\n",
+        encoding="utf-8",
+    )
+    baseline = gate._finding_signature(_result(), project.repository)
+
+    source.write_text(
+        "def test_a():\n    assert True\n# marker\u2028assert False\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(gate.GateError, match="finding mismatch"):
+        _parse(
+            project,
+            _payload(project.targets),
+            allowlist=(baseline,),
+        )
+
+
 @pytest.mark.parametrize(
     "results",
     [
@@ -822,23 +915,19 @@ def test_scanned_targets_are_exact_safe_and_collision_free(
     assert error.value.code in {"semgrep-json", "semgrep-targets", "unsafe-path"}
 
 
-def test_only_semgrepignore_and_e2e_policy_skips_are_allowed(project: Project) -> None:
+def test_only_semgrepignore_skip_is_allowed_when_all_product_sources_are_scanned(
+    project: Project,
+) -> None:
     payload = _payload(
         project.targets,
-        paths_extra={
-            "skipped": [
-                {"path": ".semgrepignore"},
-                {"path": "tests/e2e_projects"},
-                {"path": "tests\\e2e_projects\\vendor.py"},
-            ]
-        },
+        paths_extra={"skipped": [{"path": ".semgrepignore"}]},
     )
     _parse(project, payload)
     paths = payload["paths"]
     assert isinstance(paths, dict)
     skipped = paths["skipped"]
     assert isinstance(skipped, list)
-    skipped.append({"path": "src/hidden.py"})
+    skipped.append({"path": "tests/e2e_projects/stress_test/src/stress_lib/a.py"})
     with pytest.raises(gate.GateError) as error:
         _parse(project, payload)
     assert error.value.code == "unexpected-policy-skip"
@@ -916,6 +1005,47 @@ def test_inventory_rejects_unsafe_and_out_of_scope_paths(raw_path: str, code: st
     with pytest.raises(gate.GateError) as error:
         gate._validate_inventory([gate.SEMGREP_IGNORE_FILE, raw_path])
     assert error.value.code == code
+
+
+def test_git_inventory_ignores_only_versioned_per_directory_rules() -> None:
+    command = gate._inventory_command("git", Path("C:/repository"))
+
+    assert "--exclude-per-directory=.gitignore" in command
+    assert "--exclude-standard" not in command
+    assert command[-5:] == (*gate.SCAN_ROOTS, gate.SEMGREP_IGNORE_FILE)
+
+
+def test_git_environment_rejects_ambient_config_and_exclude_roots() -> None:
+    environment = gate._git_environment(
+        {
+            "PATH": "controlled-tools",
+            "home": "attacker-home",
+            "XdG_CoNfIg_HoMe": "attacker-xdg",
+            "USERPROFILE": "attacker-profile",
+            "GIT_CONFIG_GLOBAL": "attacker-config",
+            "git_config_count": "1",
+            "GIT_CONFIG_KEY_0": "core.excludesFile",
+            "GIT_CONFIG_VALUE_0": "attacker-ignore",
+        }
+    )
+
+    assert environment["PATH"] == "controlled-tools"
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert {key.upper() for key in environment if key.upper().startswith("GIT_")} == {
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_SYSTEM",
+    }
+    for name in (
+        "APPDATA",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "HOME",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+    ):
+        assert environment[name] == os.devnull
 
 
 def test_inventory_rejects_case_unicode_collisions_and_bad_git_output() -> None:
@@ -1100,6 +1230,25 @@ def test_release_scan_is_serial_but_rule_bootstrap_remains_sharded() -> None:
 
     assert bootstrap[bootstrap.index("--jobs") + 1] == gate.SEMGREP_BOOTSTRAP_JOBS == "4"
     assert scan[scan.index("--jobs") + 1] == gate.SEMGREP_SCAN_JOBS == "1"
+
+
+def test_semgrep_targets_avoid_unsupported_pep758_multi_except_syntax() -> None:
+    """Keep Python 3.14 formatting inside Semgrep 1.175's parser subset."""
+    repository = Path(__file__).resolve().parents[2]
+    unsupported: list[str] = []
+
+    for root_name in gate.SCAN_ROOTS:
+        for path in sorted((repository / root_name).rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
+                    continue
+                segment = ast.get_source_segment(source, node.type)
+                if segment is not None and not segment.lstrip().startswith("("):
+                    unsupported.append(f"{path.relative_to(repository).as_posix()}:{node.lineno}")
+
+    assert unsupported == []
 
 
 def test_temporary_mirror_must_be_external(

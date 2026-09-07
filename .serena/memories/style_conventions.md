@@ -1,7 +1,7 @@
-# Code Style & Conventions (as of v2.21.0)
+# Code Style & Conventions (v2.21.1 candidate, Sprint 39)
 
 ## Language & versions
-- Python >= 3.12,<3.15 (ruff target py312; mypy checks against Python 3.12 semantics).
+- Exactly CPython 3.14.7 on Windows (Ruff target `py314`; mypy checks Python 3.14 semantics).
 - Code, docstrings and README in English; process docs (CLAUDE.md, sprint docs) in German.
 
 ## Naming
@@ -46,9 +46,11 @@
   never only as documentation. Never resolve a violation by removing/weakening a contract.
 
 ## Windows specifics
-- ALWAYS pass `encoding='utf-8'` for file I/O (Windows default is cp1252).
+- Use explicit encodings for file I/O. Public source processing honors the
+  declared PEP-263 encoding; internally generated staging may upgrade to UTF-8
+  when generated code is not representable in the source encoding.
 - spawn semantics only (no fork); child processes belong to Job Objects;
-  POSIX code paths stay functional for WSL/Linux CI.
+  POSIX code paths carry no runtime-support or release-gate commitment.
 - WER (Windows Error Reporting) dialogs are suppressed in workers (issue #123, WIN-001).
 
 ## Git

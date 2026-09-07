@@ -86,8 +86,8 @@ class TestStatsFailureNeverPoisonsTheCache:
             stats_exit=1,
         )
 
-        def dying_run_stats() -> int:
-            (tmp_path / "mutmut-stats.json").write_text("{ partial garbage", encoding="utf-8")
+        def dying_run_stats(output_file: Path) -> int:
+            output_file.write_text("{ partial garbage", encoding="utf-8")
             return 1
 
         runner.run_stats.side_effect = dying_run_stats
@@ -106,10 +106,10 @@ class TestObsoleteCleanupOnDeletion:
         _good_cache(tmp_path)
         runner = _runner(collected=["tests/test_a.py::test_one"])  # test_two deleted
 
-        def plugin_writes_refreshed_stats() -> int:
+        def plugin_writes_refreshed_stats(output_file: Path) -> int:
             save_stats(
                 MutmutStats(duration_by_test={"tests/test_a.py::test_one": 1.5}),
-                tmp_path,
+                output_file.parent,
             )
             return 0
 
@@ -131,14 +131,14 @@ class TestPluginStatsTimeIsPreserved:
         runner = MagicMock()
         runner.collect_tests.return_value = ["tests/test_a.py::test_one"]
 
-        def plugin_writes_json() -> int:
+        def plugin_writes_json(output_file: Path) -> int:
             save_stats(
                 MutmutStats(
                     tests_by_mangled_function_name={},
                     duration_by_test={"tests/test_a.py::test_one": 1.0},
                     stats_time=42.5,
                 ),
-                tmp_path,
+                output_file.parent,
             )
             return 0
 
@@ -231,13 +231,13 @@ class TestChangedTestFileInvalidation:
         )
         runner = _runner(collected=["tests/test_a.py::test_one"])
 
-        def plugin_writes_fresh_stats() -> int:
+        def plugin_writes_fresh_stats(output_file: Path) -> int:
             save_stats(
                 MutmutStats(
                     duration_by_test={"tests/test_a.py::test_one": 1.0},
                     stats_time=2.0,
                 ),
-                mutants,
+                output_file.parent,
             )
             return 0
 
@@ -308,13 +308,13 @@ class TestFingerprintHardening:
         )
         runner = _runner(collected=["tests/test_a.py::test_one"])
 
-        def plugin_writes_custom_stats() -> int:
+        def plugin_writes_custom_stats(output_file: Path) -> int:
             save_stats(
                 MutmutStats(
                     duration_by_test={"tests/test_a.py::test_one": 1.0},
                     stats_time=2.0,
                 ),
-                mutants,
+                output_file.parent,
             )
             return 0
 

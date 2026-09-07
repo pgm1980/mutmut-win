@@ -285,5 +285,10 @@ def test_py3_14_features_mutation_generation(tmp_path: Path) -> None:
     source_file = project_dir / "src" / "py3_14_features" / "__init__.py"
 
     _assert_profile_layered(
-        [source_file], EXPECTED_PY3_14, expected_advanced_count=10, expected_all_count=14
+        [source_file],
+        EXPECTED_PY3_14,
+        # Rendered no-op/cross-operator deduplication intentionally removes two
+        # score-distorting candidates from both profiles.
+        expected_advanced_count=8,
+        expected_all_count=12,
     )

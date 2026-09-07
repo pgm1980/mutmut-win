@@ -71,7 +71,7 @@ class TestKillProcTreeOrphans:
         script = tmp_path / "parent.py"
         script.write_text(_PARENT_THAT_ORPHANS_A_CHILD, encoding="utf-8")
 
-        proc = subprocess.Popen(  # noqa: S603 — fully controlled command  # nosemgrep: python.lang.compatibility.python36.python36-compatibility-Popen2 — project requires Python >=3.12
+        proc = subprocess.Popen(  # noqa: S603 — fully controlled command  # nosemgrep: python.lang.compatibility.python36.python36-compatibility-Popen2 — project requires exactly CPython 3.14.7 on Windows
             [sys.executable, str(script)],
             stdout=subprocess.PIPE,
             encoding="utf-8",
@@ -98,7 +98,7 @@ class TestKillProcTreeOrphans:
         script = tmp_path / "parent.py"
         script.write_text(_PARENT_THAT_KEEPS_RUNNING, encoding="utf-8")
 
-        proc = subprocess.Popen(  # noqa: S603 — fully controlled command  # nosemgrep: python.lang.compatibility.python36.python36-compatibility-Popen2 — project requires Python >=3.12
+        proc = subprocess.Popen(  # noqa: S603 — fully controlled command  # nosemgrep: python.lang.compatibility.python36.python36-compatibility-Popen2 — project requires exactly CPython 3.14.7 on Windows
             [sys.executable, str(script)],
             stdout=subprocess.PIPE,
             encoding="utf-8",

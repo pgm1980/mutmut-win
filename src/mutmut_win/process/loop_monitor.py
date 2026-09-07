@@ -501,13 +501,19 @@ class ProcessMonitor(threading.Thread):
                 self._proc_cache = {
                     pid: p for pid, p in self._proc_cache.items() if pid in live_pids
                 }
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+            ):
                 pass
             # POSIX status is a tree signal just like CPU/I/O: a sleeping
             # launcher with a spinning child is running for classification
             # purposes. Windows declares this signal unavailable downstream.
             status = "running" if tree_running else root_status
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+        ):
             return None
         if self._output_counter is not None:
             try:
@@ -544,7 +550,12 @@ class ProcessMonitor(threading.Thread):
             return None
         try:
             io = proc.io_counters()
-        except (psutil.Error, AttributeError, NotImplementedError, OSError):
+        except (
+            psutil.Error,
+            AttributeError,
+            NotImplementedError,
+            OSError,
+        ):
             return None
         return int(io.read_count + io.write_count + getattr(io, "other_count", 0))
 
@@ -565,7 +576,10 @@ class ProcessMonitor(threading.Thread):
             return 0.0
         try:
             pid = proc.pid
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+        ):
             return 0.0
         cached = self._proc_cache.get(pid)
         if cached is None:
@@ -576,6 +590,9 @@ class ProcessMonitor(threading.Thread):
             return 0.0
         try:
             return float(cached.cpu_percent(interval=None))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+        ):
             self._proc_cache.pop(pid, None)
             return 0.0

@@ -42,7 +42,7 @@ def _is_reparse_point(file_stat: os.stat_result) -> bool:
 
 def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIdentity:
     """Return a stable parent identity, rejecting symlink/reparse indirection."""
-    parent = path.parent
+    parent = path.parent.absolute()
     try:
         parent_stat = parent.lstat()
     except OSError as exc:
@@ -57,17 +57,36 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
             f"atomic-write parent must be a real directory, not a link or reparse point: {parent}"
         )
 
-    # Reject indirection in any earlier path component as well.  Besides
-    # keeping publication within the caller-selected tree, this makes the
-    # identity checks meaningful on platforms without directory-relative
-    # open/replace APIs (notably Windows).
+    # Reject indirection in every existing component.  A textual comparison
+    # between ``absolute()`` and ``resolve()`` is not a link test on Windows:
+    # an ordinary NTFS directory can be addressed through its legitimate 8.3
+    # alias while resolving to the long spelling.  Component metadata plus
+    # final directory identity distinguishes that alias from a redirect.
+    for component in reversed((parent, *parent.parents)):
+        try:
+            component_stat = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UnsafeAtomicWriteError(
+                f"cannot inspect atomic-write parent component {component}"
+            ) from exc
+        if stat.S_ISLNK(component_stat.st_mode) or _is_reparse_point(component_stat):
+            raise UnsafeAtomicWriteError(
+                f"atomic-write parent contains link indirection or reparse point: {component}"
+            )
+        if not stat.S_ISDIR(component_stat.st_mode):
+            raise UnsafeAtomicWriteError(
+                f"atomic-write parent component is not a directory: {component}"
+            )
+
     try:
-        lexical_parent = parent.absolute()
         resolved_parent = parent.resolve(strict=True)
+        resolved_stat = resolved_parent.stat()
     except OSError as exc:
         raise UnsafeAtomicWriteError(f"cannot resolve atomic-write parent {parent}") from exc
-    if os.path.normcase(str(lexical_parent)) != os.path.normcase(str(resolved_parent)):
-        raise UnsafeAtomicWriteError(f"atomic-write parent contains link indirection: {parent}")
+    if _identity(parent_stat) != _identity(resolved_stat):
+        raise UnsafeAtomicWriteError(f"atomic-write parent changed or was redirected: {parent}")
 
     identity = _identity(parent_stat)
     if expected is not None and identity != expected:
@@ -323,7 +342,10 @@ def ensure_atomic_bytes(path: Path, payload: bytes) -> None:
         return
     try:
         atomic_write_bytes(path, payload)
-    except (AtomicPublicationRaceError, AtomicReplaceError):
+    except (
+        AtomicPublicationRaceError,
+        AtomicReplaceError,
+    ):
         if _regular_file_matches_bytes(path, payload):
             return
         raise

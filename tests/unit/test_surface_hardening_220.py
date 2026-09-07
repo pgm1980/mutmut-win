@@ -27,6 +27,7 @@ from mutmut_win.models import MutationResult, MutationRunResult
 from mutmut_win.process.worker import (
     PYTEST_PHASE_GUARD_PLUGIN,
     apply_pytest_boundary_environment,
+    configure_ephemeral_pytest_environment,
     prepare_pytest_collection_guard,
     validated_pytest_args,
     validated_pytest_targets,
@@ -54,6 +55,7 @@ def _verified_current(rows: list[MutationResult]) -> MutationRunState:
         plan_digest="c" * 64,
         basis_fingerprint=_VERIFIED_BASIS,
         basis_config_json="{}",
+        is_full_run=True,
     )
 
 
@@ -194,7 +196,9 @@ def test_test_selection_args_reach_the_worker_pytest_command(staged_project: Pat
     separator_index = cmd.index("--")
     assert separator_index > config_index
     assert len(cmd[separator_index + 1 :]) == 1
-    assert cmd[separator_index + 1].startswith("@mutmut_tests_")
+    argfile = Path(cmd[separator_index + 1].removeprefix("@"))
+    assert argfile.name.startswith("mutmut_tests_")
+    assert not argfile.is_relative_to(staged_project)
     assert staged_project.exists()
 
 
@@ -421,7 +425,8 @@ def test_child_guard_rejects_external_directory_replacement(
         ]
     )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    runtime_dir = tmp_path / "identity-swap-runtime"
+    configure_ephemeral_pytest_environment(environment, runtime_dir)
 
     result = subprocess.run(  # noqa: S603 - controlled interpreter and test paths
         [
@@ -487,7 +492,8 @@ def test_exact_external_file_does_not_authorize_adjacent_conftest(
         ]
     )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    runtime_dir = tmp_path / "exact-file-runtime"
+    configure_ephemeral_pytest_environment(environment, runtime_dir)
 
     result = subprocess.run(  # noqa: S603 - controlled interpreter and test paths
         [
@@ -559,7 +565,8 @@ def test_external_directory_authorizes_only_its_own_conftest_tree(
         ]
     )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    runtime_dir = tmp_path / "external-directory-runtime"
+    configure_ephemeral_pytest_environment(environment, runtime_dir)
 
     result = subprocess.run(  # noqa: S603 - controlled interpreter and test paths
         [
@@ -785,6 +792,31 @@ def test_legitimate_selection_flags_remain_allowed() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "stateful_option",
+    [
+        "--lf",
+        "--last-failed",
+        "--ff",
+        "--failed-first",
+        "--nf",
+        "--new-first",
+        "--sw",
+        "--stepwise",
+        "--sw-skip",
+        "--stepwise-skip",
+        "--last-failed-no-failures=none",
+        "--cache-show",
+    ],
+)
+def test_cache_driven_pytest_options_are_rejected(stateful_option: str) -> None:
+    with pytest.raises(
+        BadTestExecutionCommandsException,
+        match="cache-driven selection or ordering",
+    ):
+        validated_pytest_args([], [stateful_option])
+
+
 def test_real_clean_phase_accepts_a_test_call_proof(
     staged_project: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -798,6 +830,40 @@ def test_real_clean_phase_accepts_a_test_call_proof(
 
     assert runner.run_clean_test() == 0
     assert list(staged_project.glob(".mutmut_pytest_executed_*.sentinel")) == []
+
+
+def test_real_clean_phase_rejects_only_call_time_skips(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_guard_skipped.py").write_text(
+        "import pytest\n\n"
+        "def test_guard_skipped():\n"
+        "    pytest.skip('runtime precondition unavailable')\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(MutmutConfig(tests_dir=["test_guard_skipped.py"], clean_run_timeout=30))
+
+    with pytest.raises(OrchestratorError, match="without executing a pytest test call"):
+        runner.run_clean_test()
+
+
+def test_real_clean_phase_preserves_cache_fixture_in_an_isolated_directory(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_cache_fixture.py").write_text(
+        "def test_cache_fixture(cache):\n"
+        "    cache.set('demo/value', 42)\n"
+        "    assert cache.get('demo/value', None) == 42\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(MutmutConfig(tests_dir=["test_cache_fixture.py"], clean_run_timeout=30))
+
+    assert runner.run_clean_test() == 0
+    assert not (staged_project / ".pytest_cache").exists()
 
 
 @pytest.mark.parametrize("neutralizer_source", ["environment", "pytest.ini"])
@@ -831,6 +897,29 @@ def test_real_clean_phase_rejects_collect_only_outside_mutmut_config(
     else:
         with pytest.raises(OrchestratorError, match="without executing a pytest test call"):
             runner.run_clean_test()
+
+
+def test_staged_pytest_config_cannot_enable_last_failed_selection(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabling cacheprovider closes config-file ingress, not just argv."""
+
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_guard_stateful.py").write_text(
+        "def test_guard_stateful():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (staged_project / "pytest.ini").write_text(
+        "[pytest]\naddopts = --lf\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(MutmutConfig(tests_dir=["test_guard_stateful.py"], clean_run_timeout=30))
+
+    # The config is parsed only inside pytest.  The generated boundary plugin
+    # inspects the effective option state and fails closed as a usage error
+    # before this can become a green subset.
+    assert runner.run_clean_test() == 4
 
 
 def test_run_phase_base_exception_removes_proof_and_reaps_tree(staged_project: Path) -> None:
@@ -917,6 +1006,8 @@ def test_two():
     env = os.environ.copy()
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    stats_output = tmp_path / "stats-output.json"
+    env["MUTMUT_STATS_OUTPUT_PATH"] = str(stats_output)
     repo_src = Path(__file__).resolve().parents[2] / "src"
     inherited_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join(
@@ -941,7 +1032,7 @@ def test_two():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    payload = json.loads((tmp_path / "mutmut-stats.json").read_text(encoding="utf-8"))
+    payload = json.loads(stats_output.read_text(encoding="utf-8"))
     mapping = payload["tests_by_mangled_function_name"]
     assert mapping["pkg.collection"] == [
         "test_collection_hits.py::test_one",
@@ -949,7 +1040,7 @@ def test_two():
     ]
     assert mapping["pkg.one"] == ["test_collection_hits.py::test_one"]
     assert mapping["pkg.two"] == ["test_collection_hits.py::test_two"]
-    assert not (tmp_path / "mutmut-stats.json.tmp").exists()
+    assert not (tmp_path / "mutmut-stats.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -1006,7 +1097,7 @@ def test_explicit_empty_selection_is_usage_failure_with_valid_json() -> None:
     assert "explicit run selection" in result.stderr
 
 
-def test_since_commit_noop_is_nonzero_and_keeps_json_machine_readable() -> None:
+def test_since_commit_noop_succeeds_and_keeps_json_machine_readable() -> None:
     completed = subprocess.CompletedProcess(
         args=["git", "diff", "--name-only", "HEAD"],
         returncode=0,
@@ -1019,11 +1110,11 @@ def test_since_commit_noop_is_nonzero_and_keeps_json_machine_readable() -> None:
     ):
         result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD", "--output", "json"])
 
-    assert result.exit_code == 2
-    assert json.loads(result.stdout) == {
-        "error": "No mutation-target .py files changed since the given commit.",
-        "exit_code": 2,
-    }
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["total_mutants"] == 0
+    assert payload["score"] == 0.0
+    assert "error" not in payload
 
 
 def test_since_commit_uses_effective_custom_tests_dir_before_filtering() -> None:
@@ -1043,7 +1134,7 @@ def test_since_commit_uses_effective_custom_tests_dir_before_filtering() -> None
             ["run", "--tests-dir", "custom_tests", "--since-commit", "HEAD"],
         )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 0
     assert "No mutation-target .py files changed" in result.output
     orchestrator.assert_not_called()
 
@@ -1071,6 +1162,9 @@ def test_force_partial_deletion_fails_closed_with_valid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    source = tmp_path / "src" / "mod.py"
+    source.parent.mkdir()
+    source.write_text("def value():\n    return 1\n", encoding="utf-8")
     (tmp_path / "mutants").mkdir()
     with patch("shutil.rmtree", return_value=None):
         result = CliRunner().invoke(cli, ["run", "--force", "--output", "json"])

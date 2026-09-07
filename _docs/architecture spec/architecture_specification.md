@@ -1,8 +1,12 @@
 # Architecture Specification — mutmut-win
 
-**Version:** 0.6.0
-**Datum:** 2026-03-30
+**Version:** 0.7.0
+**Datum:** 2026-09-07
 **Status:** Approved
+
+**Verbindlicher Laufzeitvertrag:** Windows und exakt CPython 3.14.7; andere Python-Versionen, Implementierungen und Betriebssysteme sind nicht unterstützt.
+
+Python-Quelltext wird gemäß PEP 263 dekodiert; projektinterne Metadaten bleiben UTF-8.
 
 ---
 
@@ -45,14 +49,14 @@
 | 1 | Korrektheit | E2E-Tests gegen mutmut-Snapshot-Ergebnisse | 100% Übereinstimmung mit mutmut-Referenzergebnissen |
 | 2 | Testbarkeit | DI, Protocol-basierte Interfaces, TDD | Coverage ≥ 80%, Mutation Score ≥ 80% |
 | 3 | Wartbarkeit | Schichtentrennung, Module < 300 Zeilen | 0 Architekturverletzungen, 0 Lint-Findings |
-| 4 | Performance | Worker-Pool mit pytest-Caching | Vergleichbar mit mutmut auf Linux (±20%) |
-| 5 | Security | Input-Validierung, Semgrep | 0 Semgrep-Findings |
+| 4 | Performance | Worker-Pool mit pytest-Caching | Zielsystem-Benchmark auf Windows mit exakt CPython 3.14.7 |
+| 5 | Security | Input-Validierung, Semgrep | 0 unerwartete Findings, Fehler, übersprungene Regeln oder Fixpoint-Timeouts |
 
 ### 1.3 Technologie-Stack
 
 | Kategorie | Technologie | Version | Begründung |
 |-----------|-------------|---------|------------|
-| Runtime | Python | 3.14.3 | Projektvorgabe, aktuelle Features |
+| Runtime | CPython unter Windows | 3.14.7 (exakt) | Verbindlicher Product-Owner-Scope |
 | Mutation Engine | libcst | ≥1.8.5 | CST-basiert, identisch mit mutmut |
 | CLI | click | ≥8.0.0 | Kompatibel mit mutmut CLI-Patterns |
 | TUI | textual | ≥1.0.0 | Result Browser (aus mutmut übernommen) |
@@ -462,14 +466,17 @@ Worker kommunizieren Fehler über die Event-Queue. Keine Exceptions über Prozes
 
 ---
 
-### ADR-011: Distribution — PyPI Package
+### ADR-011: Distribution — annotiertes Git-Tag und GitHub Release
 
 **Status:** Accepted
-**Datum:** 2026-03-30
+**Datum:** 2026-09-07
 
 #### Entscheidung
 
-Distribution als PyPI-Package `mutmut-win`. Entry-Point: `mutmut-win` CLI-Befehl. Build-Backend: hatchling.
+Distribution über ein annotiertes Git-Tag und einen GitHub Release. Wheel und
+Source Distribution werden reproduzierbar mit hatchling gebaut, gehasht und als
+GitHub-Release-Artefakte angehängt. PyPI-Publishing ist kein Teil des
+Releasevertrags. Entry-Point bleibt der CLI-Befehl `mutmut-win`.
 
 ---
 
@@ -480,16 +487,16 @@ Distribution als PyPI-Package `mutmut-win`. Entry-Point: `mutmut-win` CLI-Befehl
 
 #### Kontext
 
-mutmut's trampoline mechanism requires source files to be copied to a `mutants/` directory, where the mutated (trampolined) versions replace the originals. sys.path must be manipulated so pytest imports from `mutants/` instead of the original source. This pipeline was missing in the initial port.
+mutmut's trampoline mechanism requires source files to be copied to a `mutants/` directory, where the mutated (trampolined) versions replace the originals. Nur die isolierte pytest-Kindumgebung erhält diese Roots über ein explizites `PYTHONPATH`; Orchestrator und Generation-Worker behalten den Live-Engine-Importpfad. Diese Pipeline fehlte im initialen Port.
 
 #### Entscheidung
 
-New module `file_setup.py` handles all file operations: walking source files, copying to mutants/, writing mutated code, setting up sys.path. Ported 1:1 from mutmut's __main__.py with encoding='utf-8' added to all open() calls.
+New module `file_setup.py` handles the staging file operations: walking source files, copying to mutants/, and writing mutated code. `runner.py` constructs the isolated pytest-child import environment without mutating the parent `sys.path`. Python source follows PEP 263; project-owned metadata uses explicit UTF-8 and opaque copied files remain byte-preserving.
 
 #### Konsequenzen
 
 - **Wird einfacher:** Orchestrator bleibt schlank — Dateisystem-Logik ist isoliert in file_setup.py
-- **Wird schwieriger:** sys.path-Manipulation muss Thread-sicher rückgängig gemacht werden
+- **Wird schwieriger:** Eltern-, Spawn-Worker- und pytest-Kindimportpfade müssen strikt getrennt bleiben
 - **Muss revisited werden:** Bei mutmut-Versionswechseln mit geänderten mutants/-Layouts
 
 #### Action Items
@@ -802,7 +809,7 @@ Hierarchie: CLI-Flags > pyproject.toml > Defaults
 **Strategie:**
 - Input-Validierung via Pydantic (Config, CLI-Argumente)
 - Keine Ausführung von untrusted Code (Mutanten werden nur in isolierten Worker-Prozessen getestet)
-- `encoding='utf-8'` für alle File-I/O (verhindert CP1252-Probleme auf Windows)
+- Python-Quellen gemäß PEP 263 behandeln; projektinterne Textmetadaten explizit als UTF-8 lesen und schreiben
 - Semgrep-Scan vor jedem Release
 
 ---
@@ -811,7 +818,7 @@ Hierarchie: CLI-Flags > pyproject.toml > Defaults
 
 ### 6.1 Deployment-Modell
 
-**Typ:** PyPI Package mit CLI Entry-Point
+**Typ:** Annotiertes Git-Tag mit Wheel, Source Distribution und Prüfsummen als GitHub-Release-Artefakte; kein PyPI-Publishing
 
 ### 6.2 Plattform-Support
 
@@ -823,19 +830,42 @@ Hierarchie: CLI-Flags > pyproject.toml > Defaults
 
 ### 6.3 Build & Distribution
 
-```bash
-# Install dependencies
-uv sync
+Die Releasekette ist strikt geordnet und darf keine Kandidaten- durch
+Integrationsevidenz ersetzen:
 
-# Test
-uv run pytest
+1. **Kandidat einfrieren:** Unter Windows und exakt CPython 3.14.7 wird die
+   Entwicklungsumgebung mit
+   `uv sync --locked --extra dev --group build --no-build-isolation`
+   hergestellt. Die vollständige strikte Suite läuft mit `uv run --no-sync`;
+   Ruff Check/Format, mypy, Import-Linter, `uv lock --check`, vollständiger
+   Dependency-Export/Pip-Audit, das kanonische Semgrep-Gate, der kanonische
+   native Release-Wrapper und der Dogfood-Pilot gehören zu denselben
+   Kandidatengates. Der native Wrapper prüft die drei manifestgebundenen ZIP-
+   Werkzeuge sowie Zizmor 1.30.0 offline mit `--no-config --no-ignores` in den
+   Personas `regular` und `pedantic`; Git for Windows wird aus HKLM statt
+   Caller-PATH bezogen. Zizmor ist kein viertes Manifestasset.
+2. **Reviewed integrieren:** Der geprüfte Kandidat wird über einen reviewed
+   Zwei-Parent-Merge integriert. Der Merge-Tree muss byteidentisch zum
+   Kandidaten-Tree sein.
+3. **Integriert erneut prüfen:** Sämtliche Kandidatengates werden auf dem
+   unveränderten integrierten Commit wiederholt. Nur diese Wiederholung besitzt
+   Releaseautorität.
+4. **Reproduzierbar bauen:** `SOURCE_DATE_EPOCH` wird aus dem integrierten
+   Commit gebunden. Wheel und Sdist werden in zwei frischen externen
+   Verzeichnissen mit
+   `uv run --no-sync uv build --offline --no-build-isolation --no-sources`
+   erzeugt. Bytes, SHA-256, `SHA256SUMS` und sortierte Artefaktinventare beider
+   Builds müssen exakt übereinstimmen.
+5. **Installierte Artefakte prüfen:** Wheel und Sdist werden getrennt in
+   frischen Windows-/CPython-3.14.7-Umgebungen installiert. Beide Smokes müssen
+   exakt die Paketversion des Releasekandidaten sowie einen funktionsfähigen
+   `mutmut-win`-Entry-Point nachweisen.
+6. **Erst danach publizieren:** Ein annotiertes Tag verweist auf den
+   integrierten Commit; ausschließlich dessen geprüfte Artefakte und
+   Prüfsummen werden an den zugehörigen GitHub Release angehängt.
+   PyPI-Publishing ist ausgeschlossen.
 
-# Build
-uv build
-
-# Publish
-uv publish
-```
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
 
 ---
 
@@ -848,7 +878,7 @@ uv publish
 | 3 | Segfault-Mutant Exit-Code auf Windows | Low | Separater erwarteter Wert in E2E-Tests | Mitigated |
 | 4 | Queue-Serialisierung (pickle) | Low | Nur primitive Typen + Pydantic Models | Mitigated |
 | 5 | mutmut-Schema-Änderungen | Medium | Schema kompatibel halten, Version prüfen | Open |
-| 6 | Windows-Encoding (CP1252) | Medium | Explizites encoding='utf-8' überall | Mitigated |
+| 6 | Windows-/Quell-Encoding (z. B. CP1252) | Medium | PEP-263-Dekodierung, encodingtreues Schreiben und UTF-8 nur für projektinterne Metadaten | Mitigated |
 
 ---
 
@@ -968,3 +998,4 @@ Port aller verbleibenden mutmut-Funktionen für vollständige Feature-Parität:
 | 0.3.0 | 2026-03-30 | Claude Code Agent | ADR-015–016: In-Process Stats Collection via pytest.main(), Remaining Completeness Gaps |
 | 0.5.0 | 2026-03-30 | Claude Code Agent | ADR-017: Windows Job Object Orphan Protection (ctypes) |
 | 0.6.0 | 2026-03-30 | Claude Code Agent | ADR-018: 7 neue Mutationsoperatoren für v1.0.0 |
+| 0.7.0 | 2026-09-07 | Codex | Verbindlichen Windows-/CPython-3.14.7-, PEP-263- und GitHub-Releasevertrag synchronisiert |

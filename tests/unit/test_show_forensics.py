@@ -84,9 +84,14 @@ class TestShowCommandForensics:
             "resolve_mutant",
             lambda _pattern, _config: ("pkg.x_f__mutmut_1", SimpleNamespace(path="src/pkg.py")),
         )
-        monkeypatch.setattr(cli_module, "render_function_diff", lambda _path, _name: "-old\n+new")
+        monkeypatch.setattr(
+            cli_module, "render_function_diff_bytes", lambda _path, _name: b"-old\n+new"
+        )
         result = CliRunner().invoke(cli_module.show, ["pkg.x_f__mutmut_1"])
         assert result.exit_code == 0, result.output
+        if with_db_row:
+            assert "Infinite-loop verdict" in result.stderr
+            assert "Infinite-loop verdict" not in result.stdout
         return result.output
 
     def test_show_appends_panel_for_il_kill(
@@ -127,7 +132,9 @@ class TestShowCommandForensics:
             "resolve_mutant",
             lambda _pattern, _config: ("pkg.x_f__mutmut_1", SimpleNamespace(path="src/pkg.py")),
         )
-        monkeypatch.setattr(cli_module, "render_function_diff", lambda _path, _name: "-old\n+new")
+        monkeypatch.setattr(
+            cli_module, "render_function_diff_bytes", lambda _path, _name: b"-old\n+new"
+        )
 
         result = CliRunner().invoke(cli_module.show, ["pkg.x_f__mutmut_*"])
 

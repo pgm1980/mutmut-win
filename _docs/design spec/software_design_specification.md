@@ -1,10 +1,14 @@
 # Software Design Specification — mutmut-win
 
-**Version:** 0.1.0
-**Datum:** 2026-03-29
+**Version:** 0.4.0
+**Datum:** 2026-09-07
 **Status:** Approved
 **Referenz:** [Architecture Specification](..%2Farchitecture%20spec%2Farchitecture_specification.md)
 **Basis:** Brainstorming-Ergebnis: `_docs/specs/2026-03-29-mutmut-win-design.md`
+
+**Verbindlicher Laufzeitvertrag:** Windows und exakt CPython 3.14.7; andere Python-Versionen, Implementierungen und Betriebssysteme sind nicht unterstützt.
+
+Python-Quelltext wird gemäß PEP 263 dekodiert; projektinterne Metadaten bleiben UTF-8.
 
 ---
 
@@ -70,8 +74,8 @@
 | ID | Anforderung | Priorität | Release |
 |----|-------------|-----------|--------|
 | FR-06.1 | Das System MUSS nativ auf Windows 10 und Windows 11 (64-bit) ohne WSL lauffähig sein | Must | v0.1 |
-| FR-06.2 | Das System MUSS UTF-8-Encoding für alle Datei-I/O-Operationen verwenden | Must | v0.1 |
-| FR-06.3 | Das System MUSS einen klaren `ImportError` auf Nicht-Windows-Plattformen ausgeben | Must | v0.1 |
+| FR-06.2 | Das System MUSS Python-Quelltext gemäß PEP 263 dekodieren und projektinterne Metadaten als UTF-8 behandeln | Must | v2.21.1 |
+| FR-06.3 | Nicht-Windows-Plattformen und abweichende Python-Laufzeiten sind explizit nicht unterstützt; interne Restpfade begründen keinen Produktvertrag | Must | v2.21.1 |
 | FR-06.4 | Das System MUSS `multiprocessing.set_start_method('spawn')` verwenden | Must | v0.1 |
 
 ---
@@ -144,7 +148,7 @@
 
 | ID | Anforderung | Metrik |
 |----|-------------|--------|
-| NFR-06.1 | Das System MUSS auf Windows 10/11 (64-bit) mit Python ≥3.11 laufen | CI auf windows-latest |
+| NFR-06.1 | Das System MUSS auf Windows 10/11 (64-bit) mit exakt CPython 3.14.7 laufen | Lokales Zielsystemgate und Installed-Artifact-Smokes; CI nur bei tatsächlicher Ausführung |
 | NFR-06.2 | Konfigurationsformat MUSS mit mutmut `[tool.mutmut]` kompatibel sein | Gleiche Key-Namen |
 | NFR-06.3 | Ergebnis-Datenbankformat MUSS mit mutmut 3.5.0 SQLite-Schema kompatibel sein | E2E-Tests |
 
@@ -390,7 +394,8 @@ Phase 1: Vorbereitung (sequentiell, Hauptprozess)
 
 4.  Mutanten erzeugen:
     Für jede Datei in paths_to_mutate:
-      mutation.mutate_file_contents(source, encoding='utf-8')
+      source_text, source_encoding = decode_python_source_via_pep263(source_bytes)
+      mutation.mutate_file_contents(source_text, encoding=source_encoding)
       write_all_mutants_to_file() → Trampoline-Datei schreiben
     Trampoline-Datei enthält ALLE Mutanten als mangle-Funktionen
     MUTANT_UNDER_TEST-Env-Var selektiert welcher Mutant aktiv ist
@@ -544,8 +549,8 @@ MutmutWinError(Exception)               # Basis für alle mutmut-win-Ausnahmen
 | Filesystem-Scope | Dateioperationen nur in configured paths_to_mutate | Code Review + Semgrep |
 | Subprocess ohne Shell | subprocess.run mit shell=False (S603) | Semgrep S603 |
 | Pickle-Sicherheit | Queue-Messages sind ausschließlich intern erzeugte Pydantic-Models | Code Review |
-| Dependency Audit | pip-audit vor jedem Release (CI) | CI-Pipeline |
-| Static Analysis | Gelockter `scripts/semgrep_release_gate.py` auf dem vollständigen Git-owned Scope vor jedem Release | CI-Pipeline + lokaler Release-Gate-Lauf |
+| Dependency Audit | pip-audit lokal vor jedem Release und zusätzlich in tatsächlich ausgeführter CI | Lokaler Release-Gate-Lauf + optionale CI-Pipeline |
+| Static Analysis | Gelockter `scripts/semgrep_release_gate.py` auf dem vollständigen Git-owned Scope vor jedem Release | Lokaler Release-Gate-Lauf + optionale CI-Pipeline |
 | Keine Netzwerkzugriffe | mutmut-win greift auf keine externen APIs zu | Code Review |
 
 ---
@@ -556,8 +561,8 @@ MutmutWinError(Exception)               # Basis für alle mutmut-win-Ausnahmen
 
 | Artefakt | Format | Ziel |
 |----------|--------|------|
-| Python Wheel | `mutmut_win-*.whl` | PyPI Distribution |
-| Source Distribution | `mutmut_win-*.tar.gz` | PyPI Source |
+| Python Wheel | `mutmut_win-*.whl` | GitHub Release: Artefakt am annotierten Tag |
+| Source Distribution | `mutmut_win-*.tar.gz` | GitHub Release: Artefakt am annotierten Tag |
 
 ### 8.2 Konfigurationsparameter
 
@@ -674,3 +679,4 @@ run_stats() -> AllTestsMetadata
 |---------|-------|-------|----------|
 | 0.1.0 | 2026-03-29 | Claude Sonnet 4.6 | Initiale Version — Sprint 0 Phase 3 |
 | 0.3.0 | 2026-03-30 | Claude Code Agent | FR-11–12: In-Process Stats Collection, Feature Completeness; Interface-Ergänzungen _state + PytestRunner.run_stats() |
+| 0.4.0 | 2026-09-07 | Codex | Verbindlichen Windows-/CPython-3.14.7-, PEP-263- und GitHub-Releasevertrag synchronisiert |

@@ -82,6 +82,7 @@ def _flatten_expected_my_lib() -> dict[str, int]:
 
 
 _KILL_LIKE_STATUSES = {"killed", "caught by type check", "timeout", "suspicious"}
+_INFRASTRUCTURE_LIKE_STATUSES = {"timeout", "suspicious"}
 
 
 def _is_upstream_kill(expected_exit_code: int) -> bool:
@@ -196,6 +197,27 @@ def test_my_lib_pipeline_matches_expected_snapshot(tmp_path: Path) -> None:
         f"{len(kill_regressions)} mutant(s) in my_lib lost detection vs. upstream snapshot:\n"
         + "\n".join(kill_regressions[:20])
         + (f"\n  …and {len(kill_regressions) - 20} more" if len(kill_regressions) > 20 else "")
+    )
+
+    # A broken environment that times out or rejects every mutant used to pass
+    # the one-directional "kill-like" oracle above.  This deterministic fixture
+    # is small enough that neither status is legitimate, and its intentionally
+    # weak tests must leave at least one upstream survivor alive.  Together the
+    # assertions prove that the pipeline can distinguish real kills from real
+    # survivors instead of merely over-classifying everything as killed.
+    infrastructure_failures = [
+        name for name in sorted(common) if actual[name] in _INFRASTRUCTURE_LIKE_STATUSES
+    ]
+    assert not infrastructure_failures, (
+        "Deterministic my_lib mutants ended in timeout/suspicious states:\n"
+        + "\n".join(f"  {name}: {actual[name]}" for name in infrastructure_failures[:20])
+    )
+
+    expected_survivors = {name for name in common if expected[name] == 0}
+    actual_expected_survivors = {name for name in expected_survivors if actual[name] == "survived"}
+    assert actual_expected_survivors, (
+        "No upstream-surviving mutant actually survived locally; the E2E run "
+        "cannot distinguish real mutation kills from global overkilling."
     )
 
     # Sanity 3: at least 80 % of expected-killed mutants are also killed locally.

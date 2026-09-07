@@ -239,24 +239,47 @@ class TestCollectOrLoadStats:
         assert result.stats_time == pytest.approx(42.0)
         runner.run_stats.assert_not_called()
 
-    def _plugin_writing_runner(self, tmp_path: Path, stats: MutmutStats) -> MagicMock:
+    def test_diagnostic_only_basis_forces_fresh_stats_collection(self, tmp_path: Path) -> None:
+        cached = MutmutStats(
+            duration_by_test={"t::test_a": 0.1},
+            stats_time=42.0,
+            context_fingerprint="a" * 64,
+        )
+        save_stats(cached, mutants_dir=tmp_path)
+        runner = self._plugin_writing_runner(
+            MutmutStats(
+                duration_by_test={"t::test_a": 0.2},
+                stats_time=7.0,
+                context_fingerprint="a" * 64,
+            )
+        )
+
+        result = collect_or_load_stats(
+            runner,
+            mutants_dir=tmp_path,
+            context_fingerprint="a" * 64,
+            allow_cache_reuse=False,
+        )
+
+        runner.run_stats.assert_called_once()
+        assert result.stats_time == pytest.approx(7.0)
+
+    def _plugin_writing_runner(self, stats: MutmutStats) -> MagicMock:
         """Mock runner that does what the real one does (issue #99): the
         stats SUBPROCESS plugin writes mutmut-stats.json; run_stats returns
         the exit code. The plugin JSON is the single source of truth."""
         runner = MagicMock()
         runner.collect_tests.return_value = list(stats.duration_by_test)
 
-        def write_and_succeed() -> int:
-            save_stats(stats, mutants_dir=tmp_path)
+        def write_and_succeed(output_file: Path) -> int:
+            save_stats(stats, mutants_dir=output_file.parent)
             return 0
 
         runner.run_stats.side_effect = write_and_succeed
         return runner
 
     def test_calls_runner_when_no_cache(self, tmp_path: Path) -> None:
-        runner = self._plugin_writing_runner(
-            tmp_path, MutmutStats(duration_by_test={"t::test_a": 0.5})
-        )
+        runner = self._plugin_writing_runner(MutmutStats(duration_by_test={"t::test_a": 0.5}))
 
         result = collect_or_load_stats(runner, mutants_dir=tmp_path)
 
@@ -264,9 +287,7 @@ class TestCollectOrLoadStats:
         assert "t::test_a" in result.duration_by_test
 
     def test_persists_collected_stats(self, tmp_path: Path) -> None:
-        runner = self._plugin_writing_runner(
-            tmp_path, MutmutStats(duration_by_test={"t::test_a": 0.7})
-        )
+        runner = self._plugin_writing_runner(MutmutStats(duration_by_test={"t::test_a": 0.7}))
 
         collect_or_load_stats(runner, mutants_dir=tmp_path)
 
@@ -287,7 +308,7 @@ class TestCollectOrLoadStats:
         # Issue #99 / A2-RN-008: the parent used to re-save with a near-zero
         # process_time(); the plugin measurement must survive.
         runner = self._plugin_writing_runner(
-            tmp_path, MutmutStats(duration_by_test={"t::test_a": 0.5}, stats_time=1.5)
+            MutmutStats(duration_by_test={"t::test_a": 0.5}, stats_time=1.5)
         )
 
         result = collect_or_load_stats(runner, mutants_dir=tmp_path)
@@ -296,7 +317,6 @@ class TestCollectOrLoadStats:
 
     def test_tests_by_mangled_populated_from_plugin_json(self, tmp_path: Path) -> None:
         runner = self._plugin_writing_runner(
-            tmp_path,
             MutmutStats(
                 tests_by_mangled_function_name={"pkg.func__mutmut_1": {"tests/t.py::test_x"}},
                 duration_by_test={"tests/t.py::test_x": 0.1},

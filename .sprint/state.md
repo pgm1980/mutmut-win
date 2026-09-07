@@ -1,42 +1,38 @@
 ---
-current_sprint: "38"
-sprint_goal: "v2.21.0: alle bestaetigten False-Green-, Prozess-, Persistenz-, pytest-, Security-, Supply-Chain- und Releasegate-Befunde des adversarialen 360-Grad-Reviews schliessen; lokal vollstaendig verifizieren und als GitHub-Tag/Release publizieren."
-branch: "fix/v2.21.0-release-blockers"
-started_at: "2026-08-30"
+current_sprint: "39"
+sprint_goal: "v2.21.1: in progress"
+branch: "fix/v2.21.1-windows314"
+started_at: "2026-09-02"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
 housekeeping_done: false
 memory_updated: true
 github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
+semgrep_passed: false
+tests_passed: false
 documentation_updated: true
 ---
 
-# Sprint State (v2.21.0 — adversarial 360-review hardening)
+# Sprint State — Windows/CPython-3.14.7-Follow-up
+
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
 
 <!-- LIVE_STATE_START -->
 
-## Aktiver Releasekandidat v2.21.0
-
-PR #134 wurde als Mergecommit
-`55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit dem unveraenderten
-Kandidatentree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert.
-GitHub-CI lief daraufhin tatsaechlich und deckte MW220-112, MW220-113 und
-MW220-114 als drei weitere Releaseblocker auf; es gibt keinen CI-PASS. Der autoritative
-Reparaturzweig ist deshalb `fix/v2.21.0-release-blockers`, abgezweigt von diesem
-Mergecommit. Alle davor gebauten integrierten Artefakte und Abschlussclaims sind
-durch die nachfolgenden Fixes ungueltig und muessen auf dem neuen Kandidaten
-vollstaendig neu erhoben werden.
-
-Der abschliessende Report-Vertragsaudit fand und schloss zusaetzlich MW220-115.
-Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder GitHub-Releasepublikation
-wieder entfernt; Tag und Release sind derzeit nicht vorhanden. Nach vollstaendiger
-Revalidierung der implementierten Fixes und geprueftem Follow-up-PR
-folgen der annotierte Tag und das GitHub-Release. Eine weitere Remote-CI darf
-wegen des akzeptierten Billing-Problems ausbleiben, wird dann aber niemals als
-PASS gewertet. Lokale Test-, Semgrep-, Memory- und Dokumentationsflags sind
-belegt `true`; Housekeeping und GitHub-Issue-Closure bleiben bis zur
-Veröffentlichung ehrlich `false`.
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.1 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
+<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 

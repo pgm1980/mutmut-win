@@ -1,9 +1,13 @@
 # Software Design Specification — mutmut-win
 
-**Version:** 0.6.0
-**Datum:** 2026-03-30
+**Version:** 0.7.0
+**Datum:** 2026-09-07
 **Status:** Approved
 **Referenz:** [Architecture Specification](../architecture%20spec/architecture_specification.md)
+
+**Verbindlicher Laufzeitvertrag:** Windows und exakt CPython 3.14.7; andere Python-Versionen, Implementierungen und Betriebssysteme sind nicht unterstützt.
+
+Python-Quelltext wird gemäß PEP 263 dekodiert; projektinterne Metadaten bleiben UTF-8.
 
 ---
 
@@ -17,7 +21,7 @@
 | FR-01.2 | Das System MUSS alle mutmut 3.5.0 Mutations-Operatoren unterstützen | Must | v0.1 |
 | FR-01.3 | Das System MUSS Mutanten in eine Trampoline-Datei schreiben können | Must | v0.1 |
 | FR-01.4 | Das System MUSS Name-Mangling für Trampoline-Funktionen unterstützen | Must | v0.1 |
-| FR-01.5 | Das System MUSS `encoding='utf-8'` für alle File-I/O verwenden | Must | v0.1 |
+| FR-01.5 | Das System MUSS Python-Quelltext gemäß PEP 263 dekodieren, encodingtreu schreiben und projektinterne Metadaten als UTF-8 behandeln | Must | v2.21.1 |
 
 ### FR-02: Prozess-Management
 
@@ -85,7 +89,7 @@
 |----|-------------|-----------|---------|
 | FR-08.1 | Das System MUSS Quelldateien nach mutants/ kopieren | Must | v0.2 |
 | FR-08.2 | Das System MUSS mutierte Dateien mit Trampolines auf Disk schreiben | Must | v0.2 |
-| FR-08.3 | Das System MUSS sys.path für mutants/-Import einrichten | Must | v0.2 |
+| FR-08.3 | Das System MUSS den mutants/-Import ausschließlich in der isolierten pytest-Kindumgebung einrichten und den Eltern-/Generation-`sys.path` unverändert lassen | Must | v0.2 |
 | FR-08.4 | Das System MUSS qualifizierte Mutant-Namen konstruieren | Must | v0.2 |
 | FR-08.5 | Das System MUSS also_copy-Dateien kopieren | Must | v0.2 |
 
@@ -162,7 +166,7 @@
 | NFR-01.1 | Alle Config-Eingaben MÜSSEN via Pydantic validiert werden | 100% Input-Validierung |
 | NFR-01.2 | Keine bekannten Vulnerabilities in Dependencies | pip-audit: 0 Findings |
 | NFR-01.3 | Semgrep MUSS vor jedem Release bestehen | 0 offene Security-Findings |
-| NFR-01.4 | Alle File-I/O MUSS `encoding='utf-8'` verwenden | Kein implicit CP1252 |
+| NFR-01.4 | Python-Quelltext MUSS PEP 263 folgen; projektinterne Metadaten bleiben explizit UTF-8 | Encoding-/Byte-Roundtrip-Tests |
 
 ### NFR-02: Performance
 
@@ -170,7 +174,7 @@
 |----|-------------|--------|
 | NFR-02.1 | Worker-Startup SOLL < 5s dauern (pytest-Init einmalig) | Benchmark-verifiziert |
 | NFR-02.2 | Mutation-Generierung SOLL < 100ms pro Datei dauern | Benchmark-verifiziert |
-| NFR-02.3 | Gesamtlaufzeit SOLL ±20% von mutmut auf Linux sein (gleiches Projekt) | Vergleichsmessung |
+| NFR-02.3 | Die Performance-Baseline MUSS ausschließlich unter Windows mit exakt CPython 3.14.7 erhoben und für den geprüften Releasebaum eingefroren werden | Versionierte Zielsystem-Baseline; keine plattformfremde Vergleichsmessung als Abnahmekriterium |
 
 ### NFR-03: Zuverlässigkeit
 
@@ -206,8 +210,8 @@
 
 | ID | Anforderung | Metrik |
 |----|-------------|--------|
-| NFR-06.1 | Das System MUSS auf Windows 10/11 lauffähig sein | CI-verifiziert |
-| NFR-06.2 | Das System MUSS Python ≥ 3.12 unterstützen (Ziel: 3.14) | CI-verifiziert |
+| NFR-06.1 | Das System MUSS auf Windows 10/11 mit exakt CPython 3.14.7 lauffähig sein | Lokales Zielsystemgate und Installed-Artifact-Smokes; CI nur bei tatsächlicher Ausführung |
+| NFR-06.2 | Andere Python-Versionen, Implementierungen und Betriebssysteme sind nicht unterstützt | Kein Releasegate außerhalb des verbindlichen Laufzeitvertrags |
 | NFR-06.3 | Config-Format MUSS kompatibel mit mutmut [tool.mutmut] sein | E2E-Test-verifiziert |
 | NFR-06.4 | SQLite-Schema MUSS kompatibel mit mutmut sein | Schema-Test |
 
@@ -322,8 +326,8 @@ def copy_also_copy_files(also_copy: list[str], mutants_dir: Path) -> None:
     """Copy additional files listed in also_copy config."""
     ...
 
-def setup_source_paths(mutants_dir: Path) -> list[str]:
-    """Prepend mutants/ to sys.path, return original sys.path for restore."""
+def build_mutant_test_environment(mutants_dir: Path) -> dict[str, str]:
+    """Return an isolated pytest-child environment with staged PYTHONPATH."""
     ...
 
 def write_all_mutants_to_file(
@@ -401,11 +405,11 @@ def find_mutant(
     ...
 
 def read_mutants_module(mutant_file: Path) -> str:
-    """Read trampolined mutant file with encoding='utf-8'."""
+    """Read the trampolined module according to its PEP 263 encoding."""
     ...
 
 def read_orig_module(source_file: Path) -> str:
-    """Read original source file with encoding='utf-8'."""
+    """Read original Python source according to its PEP 263 encoding."""
     ...
 
 def get_diff_for_mutant(mutant_name: str, mutants_dir: Path) -> str:
@@ -586,7 +590,7 @@ MutmutWinError (base)
 | Maßnahme | Beschreibung | Verifizierung |
 |----------|-------------|---------------|
 | Input-Validierung | Pydantic validiert alle Config-Werte | Unit Tests + Semgrep |
-| File-I/O Encoding | `encoding='utf-8'` explizit auf allen `open()` Calls | Ruff + Code Review |
+| File-I/O Encoding | Python-Quellen folgen PEP 263; projektinterne Metadaten verwenden explizit UTF-8; Kopien bleiben bytegetreu | Encoding-/Byte-Roundtrip-Tests + Code Review |
 | Worker-Isolation | Mutanten laufen in eigenen Prozessen | Architektur-Design |
 | Dependency Audit | Regelmäßige pip-audit Prüfung | Sprint DoD |
 | No Pickle Untrusted | Queue-Daten sind intern erzeugt, nicht von extern | Code Review |
@@ -599,7 +603,7 @@ MutmutWinError (base)
 
 | Artefakt | Format | Ziel |
 |----------|--------|------|
-| mutmut-win | wheel + sdist | PyPI |
+| mutmut-win | wheel + sdist | GitHub Release: Artefakte am annotierten Git-Tag; kein PyPI-Publishing |
 
 ### 8.2 Konfigurationsparameter
 
@@ -624,3 +628,4 @@ MutmutWinError (base)
 | 0.3.0 | 2026-03-30 | Claude Code Agent | FR-11–12: In-Process Stats Collection, Feature Completeness |
 | 0.5.0 | 2026-03-30 | Claude Code Agent | FR-13: Orphan-Prozess-Schutz (Windows Job Objects) |
 | 0.6.0 | 2026-03-30 | Claude Code Agent | FR-14: 7 neue Mutationsoperatoren für v1.0.0 |
+| 0.7.0 | 2026-09-07 | Codex | Verbindlichen Windows-/CPython-3.14.7-, PEP-263- und GitHub-Releasevertrag synchronisiert |

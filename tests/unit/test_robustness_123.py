@@ -18,6 +18,7 @@ inherit) and spawns with CREATE_NO_WINDOW, win32-gated.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from queue import Queue
@@ -59,6 +60,10 @@ class TestStaleStagingError:
         (tmp_path / "mutants").mkdir(exist_ok=True)
         with (
             patch("mutmut_win.cli.load_config", return_value=MagicMock()),
+            patch(
+                "mutmut_win.cli.resolve_mutant",
+                return_value=("src.mod.x_f__mutmut_1", MagicMock()),
+            ),
             patch(
                 "mutmut_win.cli.apply_mutant",
                 side_effect=StaleStagingError(
@@ -116,31 +121,108 @@ class TestUnmatchedExclusionWarning:
         assert "matched no files" not in out
         assert result.total_mutants == 0  # control: the pattern really excluded
 
-    def test_dry_run_warns_about_non_utf8_source(
+    def test_dry_run_supports_pep263_source_without_filesystem_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mutmut_win.file_setup import _decode_python_source
+        from mutmut_win.mutation import mutate_file_contents
+        from mutmut_win.orchestrator import MutationOrchestrator
+
+        self._project(tmp_path, monkeypatch)
+        source_bytes = (
+            b"# coding: cp1252\r\n"
+            b"def adjust(value):\r\n"
+            b"    label = 'caf\xe9'\r\n"
+            b"    return value + 1\r\n"
+        )
+        source = tmp_path / "src" / "cp1252_module.py"
+        source.write_bytes(source_bytes)
+        decoded, _encoding = _decode_python_source(source_bytes)
+        _generated, expected_names = mutate_file_contents("src/cp1252_module.py", decoded)
+        assert expected_names
+
+        cfg = MutmutConfig(paths_to_mutate=["src/cp1252_module.py"])
+        result = MutationOrchestrator(cfg, runner=MagicMock(), executor=MagicMock()).dry_run()
+
+        output = capsys.readouterr().out
+        assert "Warning: could not mutate" not in output
+        assert result.total_mutants == len(expected_names)
+        assert source.read_bytes() == source_bytes
+        assert list((tmp_path / "mutants").iterdir()) == []
+
+    def test_dry_run_warns_about_unknown_source_encoding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         from mutmut_win.orchestrator import MutationOrchestrator
 
         self._project(tmp_path, monkeypatch)
-        # Two valid-Python-but-Latin-1 files (0xe9 = é), NOT UTF-8 decodable.
-        # The full run warns ("could not mutate ... codec can't decode"); the
-        # dry-run preview must warn for EACH instead of silently dropping them,
-        # so the reported count is not a silent under-count (external QA: MUT-003).
-        (tmp_path / "src" / "latin1_a.py").write_bytes(b"# coding: latin-1\nA = '\xe9'\n")
-        (tmp_path / "src" / "latin1_b.py").write_bytes(b"# coding: latin-1\nB = '\xe9'\n")
-        cfg = MutmutConfig(paths_to_mutate=["src"])
-        MutationOrchestrator(cfg, runner=MagicMock(), executor=MagicMock()).dry_run()
+        (tmp_path / "src" / "invalid_cookie.py").write_bytes(
+            b"# coding: definitely-not-an-encoding\nVALUE = 1\n"
+        )
 
-        out_lines = capsys.readouterr().out.splitlines()
-        warn_lines = [line for line in out_lines if "could not mutate" in line]
-        # BOTH bad files must warn — a `continue`->`break` mutant would stop
-        # after the first. startswith + "<name>: " pins kill the XX-wrap and the
-        # separator string mutants (a wrapped string still CONTAINS the substring).
-        assert len(warn_lines) == 2
-        assert all(line.startswith("Warning: could not mutate ") for line in warn_lines)
-        assert any("latin1_a.py: " in line for line in warn_lines)
-        assert any("latin1_b.py: " in line for line in warn_lines)
-        assert all("codec can't decode" in line for line in warn_lines)
+        MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+
+        warnings = [
+            line for line in capsys.readouterr().out.splitlines() if "could not mutate" in line
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].startswith("Warning: could not mutate src\\invalid_cookie.py: ")
+        assert "unknown encoding" in warnings[0]
+
+    def test_dry_run_counts_overlapping_source_roots_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.orchestrator import MutationOrchestrator
+
+        self._project(tmp_path, monkeypatch)
+        package = tmp_path / "src" / "pkg"
+        package.mkdir()
+        (package / "logic.py").write_text(
+            "def multiply(left, right):\n    return left * right\n",
+            encoding="utf-8",
+        )
+
+        baseline = MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+        overlapping = MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src", "src/pkg"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+
+        assert baseline.total_mutants > 0
+        assert overlapping.total_mutants == baseline.total_mutants
+        assert list((tmp_path / "mutants").iterdir()) == []
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path-alias contract")
+    def test_dry_run_counts_windows_case_alias_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.orchestrator import MutationOrchestrator
+
+        self._project(tmp_path, monkeypatch)
+
+        baseline = MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+        aliased = MutationOrchestrator(
+            MutmutConfig(paths_to_mutate=["src", "SRC"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+
+        assert baseline.total_mutants > 0
+        assert aliased.total_mutants == baseline.total_mutants
+        assert list((tmp_path / "mutants").iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

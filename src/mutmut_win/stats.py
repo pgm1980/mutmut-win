@@ -33,9 +33,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.atomic_file import atomic_write_bytes
-from mutmut_win.constants import WORKSPACE_EXCLUDED_DIR_NAMES
+from mutmut_win.constants import (
+    WORKSPACE_EXCLUDED_DIR_NAMES,
+    WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mutmut_win.config import MutmutConfig
     from mutmut_win.runner import PytestRunner
 
@@ -56,6 +61,11 @@ _CICD_STATS_FILENAME = "mutmut-cicd-stats.json"
 
 #: Default filename for the stats JSON cache.
 _STATS_FILENAME = "mutmut-stats.json"
+
+#: Persistent timing/mapping state is run-control data, not executable test
+#: input.  Keeping it beside the SQLite cache prevents a stats refresh from
+#: changing the ``mutants/`` tree that the clean/forced/worker phases execute.
+DEFAULT_STATS_DIR = Path(".mutmut-cache")
 
 
 @dataclass
@@ -88,12 +98,12 @@ class MutmutStats:
     mapping_is_authoritative: bool = False
 
 
-def load_stats(mutants_dir: Path = Path("mutants")) -> MutmutStats | None:
+def load_stats(mutants_dir: Path = DEFAULT_STATS_DIR) -> MutmutStats | None:
     """Load stats from *mutants_dir*/mutmut-stats.json.
 
     Args:
         mutants_dir: Directory that contains the stats JSON file.
-            Defaults to ``mutants/``.
+            Defaults to ``.mutmut-cache/``.
 
     Returns:
         A populated ``MutmutStats`` instance, or ``None`` if the file does
@@ -103,7 +113,11 @@ def load_stats(mutants_dir: Path = Path("mutants")) -> MutmutStats | None:
     try:
         with stats_path.open(encoding="utf-8") as f:
             raw_data: object = json.load(f)
-    except (FileNotFoundError, JSONDecodeError, UnicodeDecodeError):
+    except (
+        FileNotFoundError,
+        JSONDecodeError,
+        UnicodeDecodeError,
+    ):
         return None
     if not isinstance(raw_data, dict):
         return None
@@ -192,7 +206,8 @@ def _fingerprint_test_files(node_ids: object) -> dict[str, str]:
     return fingerprints
 
 
-_CONTEXT_SKIP_DIRS = WORKSPACE_EXCLUDED_DIR_NAMES
+_CONTEXT_SKIP_DIRS = WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES
+_CONTEXT_ROOT_SKIP_DIRS = WORKSPACE_EXCLUDED_DIR_NAMES
 _IMPORT_CONTEXT_SKIP_DIRS = frozenset({"__pycache__"})
 # A prefixed context remains useful for current-run diagnostics, but never
 # becomes a capability for reusing an older verdict or authorizing CI export.
@@ -207,6 +222,17 @@ class _DependencyBasis:
 
     digest: str
     reuse_safe: bool
+    core_reuse_safe: bool = True
+
+
+@dataclass(frozen=True)
+class _StatsContextEvidence:
+    """Combined context plus the independently observable project core."""
+
+    fingerprint: str
+    core_digest: str
+    complete: bool
+    core_complete: bool
 
 
 @dataclass(frozen=True)
@@ -215,6 +241,26 @@ class RunBasisEvidence:
 
     digest: str
     complete: bool
+    # ``core_digest`` covers source, tests, config, explicit trees and every
+    # effective import root contained by the project.  It lets the
+    # orchestrator distinguish a real project-basis change (terminal) from an
+    # ambient interpreter/environment change (diagnostic results may be kept,
+    # but never reused or exported).  ``None`` is deliberately unclassifiable
+    # and therefore retains the historical fail-closed behaviour for older
+    # callers and test doubles.
+    core_digest: str | None = None
+    core_complete: bool = False
+
+
+class _HashFanout:
+    """Forward one canonical byte stream to independent digest domains."""
+
+    def __init__(self, *targets: Any) -> None:
+        self._targets = targets
+
+    def update(self, payload: bytes) -> None:
+        for target in self._targets:
+            target.update(payload)
 
 
 def context_allows_result_reuse(context_fingerprint: str | None) -> bool:
@@ -226,16 +272,17 @@ def context_allows_result_reuse(context_fingerprint: str | None) -> bool:
 
 
 def _skip_context_file(name: str) -> bool:
-    """Exclude mutable coordination files and non-staged dotenv secrets."""
+    """Exclude only mutable coordination files from the execution basis.
+
+    Dotenv files remain absent from executable staging so their secret values
+    are never copied into ``mutants/``.  Their bytes can still influence test
+    startup through upward dotenv discovery, however, so the one-way context
+    digest must bind them just like any other runtime input.
+    """
 
     folded = name.casefold()
-    if folded in {".mutmut-win.run.lock", ".mutmut-win.run.lock.guard"} or (
+    return folded in {".mutmut-win.run.lock", ".mutmut-win.run.lock.guard"} or (
         folded.startswith(".mutmut-win-") and folded.endswith((".run.lock", ".run.lock.guard"))
-    ):
-        return True
-    return folded == ".env" or (
-        folded.startswith(".env.")
-        and folded not in {".env.example", ".env.sample", ".env.template"}
     )
 
 
@@ -246,10 +293,68 @@ def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
-def _same_path_binding(left: os.stat_result, right: os.stat_result) -> bool:
-    """Compare two handles without Windows' incompatible ``st_ctime`` APIs."""
+def _hash_runtime_metadata(
+    hasher: Any,
+    metadata: os.stat_result,
+    *,
+    include_timestamps: bool,
+    include_link_count: bool,
+) -> None:
+    """Bind metadata that Python/tests can observe without hashing access time.
 
-    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+    File bytes alone do not describe the execution basis: tests commonly
+    inspect writability, timestamps and Windows file attributes. Timestamps
+    and link count are useful for an in-run executable-staging snapshot
+    (including create-then-delete ABA), but generated sidecars are deliberately
+    rewritten between their generation-only and rich result forms. Cross-run
+    context fingerprints omit the derived tree's timestamps and every regular
+    file's externally mutable hardlink count while still binding content,
+    topology, permissions and Windows attributes.
+    """
+
+    is_directory = stat.S_ISDIR(metadata.st_mode)
+    fields = ["st_mode"]
+    # For a stable project/import fingerprint, directory topology is already
+    # represented by the retained path entries.  Binding directory allocation
+    # size or link count would indirectly reintroduce deliberately excluded
+    # tool state (on Windows, creating `.mutmut-cache` can change the parent
+    # size from 0 to 4096).  The strict in-run staging snapshot opts into the
+    # full metadata set below and therefore still detects directory ABA.
+    if include_link_count:
+        fields.append("st_nlink")
+    if not is_directory or include_timestamps:
+        fields.append("st_size")
+    if include_timestamps:
+        fields.extend(("st_mtime_ns", "st_ctime_ns", "st_birthtime_ns"))
+    fields.extend(("st_file_attributes", "st_reparse_tag"))
+    for field_name in fields:
+        if not hasattr(metadata, field_name):
+            continue
+        hasher.update(field_name.encode("ascii"))
+        hasher.update(b"=")
+        hasher.update(str(getattr(metadata, field_name)).encode("ascii", errors="replace"))
+        hasher.update(b"\0")
+
+
+def _same_path_binding(
+    left: os.stat_result,
+    right: os.stat_result,
+    *,
+    compare_link_count: bool,
+) -> bool:
+    """Compare two handles without treating unrelated aliases as path drift.
+
+    Cross-run context snapshots deliberately ignore ``st_nlink``.  uv shares
+    installed package files through hardlinks, so creating or deleting an
+    unrelated environment changes the link count of this environment's files
+    without changing their binding or executable bytes.  The strict in-run
+    staging snapshot opts back into the comparison below.
+    """
+
+    fields = ["st_dev", "st_ino", "st_mode"]
+    if compare_link_count:
+        fields.append("st_nlink")
+    fields.extend(("st_size", "st_mtime_ns"))
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
@@ -266,6 +371,8 @@ def _hash_context_file(
     *,
     label: str,
     seen: set[Path],
+    hash_timestamps: bool = True,
+    hash_link_count: bool = False,
 ) -> bool:
     """Hash one regular file and verify its path/identity stayed stable."""
 
@@ -283,6 +390,12 @@ def _hash_context_file(
             if not stat.S_ISREG(before.st_mode):
                 hasher.update(b"not-regular\0")
                 return False
+            _hash_runtime_metadata(
+                hasher,
+                before,
+                include_timestamps=hash_timestamps,
+                include_link_count=hash_link_count,
+            )
             while chunk := stream.read(1024 * 1024):
                 hasher.update(chunk)
             after_handle = os.fstat(stream.fileno())
@@ -293,7 +406,9 @@ def _hash_context_file(
             with absolute.open("rb") as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
         if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
-            after_handle, rebound_handle
+            after_handle,
+            rebound_handle,
+            compare_link_count=hash_link_count,
         ):
             hasher.update(b"identity-changed\0")
             return False
@@ -312,7 +427,10 @@ def _editable_source_path(direct_url: str) -> Path | None:
 
     try:
         payload = json.loads(direct_url)
-    except (JSONDecodeError, TypeError):
+    except (
+        JSONDecodeError,
+        TypeError,
+    ):
         return None
     if not isinstance(payload, dict):
         return None
@@ -339,8 +457,13 @@ def _hash_context_tree(
     seen: set[Path],
     excluded: set[Path] | None = None,
     skip_dirs: frozenset[str] = _CONTEXT_SKIP_DIRS,
+    root_skip_dirs: frozenset[str] = _CONTEXT_ROOT_SKIP_DIRS,
+    skip_file: Callable[[Path], bool] | None = None,
+    hash_file_timestamps: bool = True,
+    hash_directory_timestamps: bool = False,
+    hash_link_counts: bool = False,
 ) -> bool:
-    """Hash every stable file in one runtime-relevant tree."""
+    """Hash every stable entry in one runtime-relevant tree."""
 
     reuse_safe = True
     excluded = excluded or set()
@@ -351,18 +474,38 @@ def _hash_context_tree(
 
     try:
         resolved_root = root.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (
+        OSError,
+        RuntimeError,
+    ):
         hasher.update(f"{label_prefix}:missing\0".encode("utf-8", errors="surrogateescape"))
         return False
     if not resolved_root.is_dir():
         hasher.update(f"{label_prefix}:not-directory\0".encode())
         return False
 
+    try:
+        root_metadata = resolved_root.lstat()
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            hasher.update(f"{label_prefix}:root-not-directory\0".encode())
+            return False
+        hasher.update(f"{label_prefix}:.\0".encode("utf-8", errors="surrogateescape"))
+        _hash_runtime_metadata(
+            hasher,
+            root_metadata,
+            include_timestamps=hash_directory_timestamps,
+            include_link_count=hash_link_counts,
+        )
+    except OSError:
+        hasher.update(f"{label_prefix}:root-unreadable\0".encode())
+        return False
+
     for root_str, dirs, files in os.walk(resolved_root, onerror=record_walk_error):
         directory = Path(root_str)
         retained_dirs: list[str] = []
         for dirname in sorted(dirs):
-            if dirname.casefold() in skip_dirs:
+            folded = dirname.casefold()
+            if folded in skip_dirs or (directory == resolved_root and folded in root_skip_dirs):
                 continue
             child = directory / dirname
             try:
@@ -372,6 +515,34 @@ def _hash_context_tree(
             if is_link:
                 hasher.update(
                     f"{label_prefix}:unfollowed-directory-link:{dirname}\0".encode(
+                        "utf-8", errors="surrogateescape"
+                    )
+                )
+                reuse_safe = False
+                continue
+            try:
+                child_metadata = child.lstat()
+                if not stat.S_ISDIR(child_metadata.st_mode):
+                    hasher.update(
+                        f"{label_prefix}:not-directory:{dirname}\0".encode(
+                            "utf-8", errors="surrogateescape"
+                        )
+                    )
+                    reuse_safe = False
+                    continue
+                relative_child = child.relative_to(resolved_root).as_posix()
+                hasher.update(
+                    f"{label_prefix}:{relative_child}/\0".encode("utf-8", errors="surrogateescape")
+                )
+                _hash_runtime_metadata(
+                    hasher,
+                    child_metadata,
+                    include_timestamps=hash_directory_timestamps,
+                    include_link_count=hash_link_counts,
+                )
+            except (OSError, ValueError):  # fmt: skip
+                hasher.update(
+                    f"{label_prefix}:directory-unreadable:{dirname}\0".encode(
                         "utf-8", errors="surrogateescape"
                     )
                 )
@@ -387,17 +558,43 @@ def _hash_context_tree(
             if absolute in excluded:
                 continue
             try:
-                relative = path.relative_to(resolved_root).as_posix()
+                relative_path = path.relative_to(resolved_root)
             except ValueError:
-                relative = path.name
+                relative_path = Path(path.name)
+            if skip_file is not None and skip_file(relative_path):
+                continue
             if not _hash_context_file(
                 hasher,
                 path,
-                label=f"{label_prefix}:{relative}",
+                label=f"{label_prefix}:{relative_path.as_posix()}",
                 seen=seen,
+                hash_timestamps=hash_file_timestamps,
+                hash_link_count=hash_link_counts,
             ):
                 reuse_safe = False
     return reuse_safe
+
+
+def build_staging_context_evidence(
+    project_root: Path | None = None,
+) -> RunBasisEvidence:
+    """Hash all stable bytes that test phases can consume from ``mutants/``."""
+
+    root = (project_root or Path.cwd()).resolve() / "mutants"
+    hasher = hashlib.sha256()
+    hasher.update(b"stable-generated-staging:v2\0")
+    complete = _hash_context_tree(
+        hasher,
+        root,
+        label_prefix="generated-staging",
+        seen=set(),
+        skip_dirs=frozenset(),
+        root_skip_dirs=frozenset(),
+        hash_file_timestamps=True,
+        hash_directory_timestamps=True,
+        hash_link_counts=True,
+    )
+    return RunBasisEvidence(hasher.hexdigest(), complete)
 
 
 def _hash_inherited_environment(hasher: Any) -> None:
@@ -474,17 +671,138 @@ def _hash_runtime_identity(hasher: Any, seen: set[Path]) -> bool:
     )
 
 
+def _is_generated_import_root(resolved: Path, generated_root: Path) -> bool:
+    """Return whether *resolved* is safe generated staging below ``mutants/``.
+
+    The staging tree is a deterministic derivative of the already-hashed
+    project/configuration basis. Hashing it again would make the stats file
+    recursively part of its own context digest if an explicitly isolated test
+    child exposes ``mutants/`` on its import path. Resolved containment is the authority:
+    a Windows 8.3/Junction/subst spelling of the workspace can legitimately
+    differ lexically while naming the same tree. A redirected staging root is
+    still rejected before containment is considered.
+    """
+
+    try:
+        if generated_root.is_symlink() or generated_root.is_junction():
+            return False
+        resolved_generated_root = generated_root.resolve(strict=True)
+        resolved.relative_to(resolved_generated_root)
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+    ):
+        return False
+    return True
+
+
+def _project_core_relative_path(path: Path, project_root: Path) -> Path | None:
+    """Return a safe project-relative execution path, excluding tool state."""
+
+    try:
+        resolved = path.resolve(strict=False)
+        relative = resolved.relative_to(project_root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):  # fmt: skip
+        return None
+    if any(part.casefold() in _CONTEXT_SKIP_DIRS for part in relative.parts):
+        return None
+    return relative
+
+
+def _hash_project_import_core(
+    hasher: Any,
+    project_root: Path,
+    seen: set[Path],
+    excluded: set[Path],
+) -> bool:
+    """Bind effective project-contained import bytes to the terminal core.
+
+    The ordinary workspace walk intentionally omits generated/tool roots and
+    generic top-level output names.  A generic root such as ``build/`` becomes
+    executable input when the project root (or that child) is on ``sys.path``;
+    such bytes are project drift, not ambient interpreter drift.  Runtime
+    trees such as ``.venv`` and ``.mutmut-cache`` remain excluded recursively.
+    """
+
+    complete = True
+    generated_root = _absolute_lexical_path(project_root / "mutants")
+    hasher.update(b"effective-project-import-core:v1\0")
+    for index, raw_entry in enumerate(sys.path):
+        try:
+            entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
+            absolute = _absolute_lexical_path(Path(entry) if entry else project_root)
+        except (OSError, TypeError, ValueError) as exc:
+            hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
+            complete = False
+            continue
+        relative = _project_core_relative_path(absolute, project_root)
+        if relative is None:
+            continue
+        encoded_entry = entry.encode("utf-8", errors="surrogateescape")
+        encoded_absolute = str(absolute).encode("utf-8", errors="surrogateescape")
+        hasher.update(index.to_bytes(8, "big"))
+        hasher.update(len(encoded_entry).to_bytes(8, "big"))
+        hasher.update(encoded_entry)
+        hasher.update(len(encoded_absolute).to_bytes(8, "big"))
+        hasher.update(encoded_absolute)
+        hasher.update(b"\0")
+        try:
+            resolved = absolute.resolve(strict=True)
+            if _is_generated_import_root(resolved, generated_root):
+                hasher.update(b"generated-staging-bound-separately\0")
+                continue
+            if resolved.is_file():
+                if resolved in excluded:
+                    hasher.update(b"excluded-file\0")
+                    continue
+                if not _hash_context_file(
+                    hasher,
+                    resolved,
+                    label=f"project-import:{index}:file",
+                    seen=seen,
+                ):
+                    complete = False
+                continue
+            if not resolved.is_dir():
+                hasher.update(b"unsupported-entry\0")
+                complete = False
+                continue
+            root_skip_dirs = frozenset({"mutants"}) if not relative.parts else frozenset()
+            if not _hash_context_tree(
+                hasher,
+                resolved,
+                label_prefix=f"project-import:{index}:{relative.as_posix() or '.'}",
+                seen=seen,
+                excluded=excluded,
+                skip_dirs=_CONTEXT_SKIP_DIRS,
+                root_skip_dirs=root_skip_dirs,
+            ):
+                complete = False
+        except (OSError, RuntimeError, ValueError) as exc:
+            hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
+            complete = False
+    return complete
+
+
 def _hash_effective_import_paths(
     hasher: Any,
     project_root: Path,
     seen: set[Path],
     covered_trees: tuple[tuple[Path, frozenset[str]], ...],
+    excluded: set[Path],
 ) -> bool:
     """Bind ordered import roots, including unclaimed modules and ``.pth``."""
 
     reuse_safe = True
-    content_roots: set[Path] = set()
+    content_roots: dict[Path, frozenset[str]] = {}
+    generated_content_roots: set[Path] = set()
     hasher.update(b"effective-sys-path:v2\0")
+    generated_root = _absolute_lexical_path(project_root / "mutants")
+    try:
+        resolved_project_root = project_root.resolve(strict=True)
+    except (OSError, RuntimeError):  # fmt: skip
+        resolved_project_root = _absolute_lexical_path(project_root)
 
     def covered_by(root: Path, candidates: tuple[tuple[Path, frozenset[str]], ...]) -> bool:
         for candidate, skipped_names in candidates:
@@ -492,11 +810,21 @@ def _hash_effective_import_paths(
                 relative = root.relative_to(candidate)
             except ValueError:
                 continue
-            if not relative.parts or all(
-                part.casefold() not in skipped_names for part in relative.parts
-            ):
+            # An exact root walked with root-level exclusions is only partially
+            # covered.  If that same root is effective on sys.path, direct
+            # namespace packages such as ``build.runtime_helper`` are
+            # executable and must be picked up by a second, overlap-aware walk.
+            if not relative.parts:
+                return not skipped_names
+            if all(part.casefold() not in skipped_names for part in relative.parts):
                 return True
         return False
+
+    def partial_coverage_policy(root: Path) -> frozenset[str] | None:
+        for candidate, skipped_names in covered_trees:
+            if root == candidate and skipped_names:
+                return _CONTEXT_SKIP_DIRS
+        return None
 
     for index, raw_entry in enumerate(sys.path):
         entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
@@ -511,6 +839,13 @@ def _hash_effective_import_paths(
         hasher.update(b"\0")
         try:
             if absolute.is_file():
+                try:
+                    resolved_file = absolute.resolve(strict=False)
+                except (OSError, RuntimeError):  # fmt: skip
+                    resolved_file = absolute
+                if resolved_file in excluded:
+                    hasher.update(b"excluded-import-file\0")
+                    continue
                 if not _hash_context_file(
                     hasher,
                     absolute,
@@ -521,10 +856,20 @@ def _hash_effective_import_paths(
             elif absolute.is_dir():
                 resolved = absolute.resolve(strict=True)
                 hasher.update(b"directory\0")
-                if covered_by(resolved, covered_trees):
+                if _is_generated_import_root(resolved, generated_root):
+                    # Staging is executable state, not an unquestioned
+                    # derivative. Hash its stable bytes once below so stale
+                    # mirrors and post-generation tampering invalidate reuse;
+                    # mutable stats/verdict outputs are deliberately omitted.
+                    resolved_generated = generated_root.resolve(strict=True)
+                    generated_content_roots.add(resolved_generated)
+                    hasher.update(b"generated-content-bound-separately\0")
+                elif covered_by(resolved, covered_trees):
                     hasher.update(b"content-covered\0")
                 else:
-                    content_roots.add(resolved)
+                    content_roots[resolved] = partial_coverage_policy(resolved) or (
+                        _IMPORT_CONTEXT_SKIP_DIRS
+                    )
             else:
                 try:
                     absolute.lstat()
@@ -547,38 +892,81 @@ def _hash_effective_import_paths(
     # DLLs; a venv root and its site-packages).  Their ordered path semantics
     # were bound above. Walk each remaining byte tree only once while retaining
     # complete coverage of unclaimed modules and .pth files.
-    selected_roots: list[Path] = []
+    selected_roots: list[tuple[Path, frozenset[str]]] = []
     for root in sorted(
         content_roots,
         key=lambda item: (len(item.parts), os.path.normcase(str(item))),
     ):
-        existing = tuple((candidate, _IMPORT_CONTEXT_SKIP_DIRS) for candidate in selected_roots)
-        if covered_by(root, existing):
+        if covered_by(root, tuple(selected_roots)):
             continue
-        selected_roots.append(root)
-    for root in selected_roots:
+        selected_roots.append((root, content_roots[root]))
+
+    for root in sorted(
+        generated_content_roots,
+        key=lambda item: (len(item.parts), os.path.normcase(str(item))),
+    ):
+        if not _hash_context_tree(
+            hasher,
+            root,
+            label_prefix=f"sys.path:generated:{root}",
+            seen=seen,
+            excluded=excluded,
+            skip_dirs=frozenset(),
+            root_skip_dirs=frozenset(),
+            hash_file_timestamps=False,
+            hash_directory_timestamps=False,
+        ):
+            reuse_safe = False
+
+    for root, skip_dirs in selected_roots:
+        # ``mutants/`` is bound by the dedicated stable-content walk above.
+        # Avoid descending into it again when the project root itself is an
+        # effective import root.
+        root_skip_dirs = frozenset({"mutants"}) if root == resolved_project_root else frozenset()
         if not _hash_context_tree(
             hasher,
             root,
             label_prefix=f"sys.path:content:{root}",
             seen=seen,
-            skip_dirs=_IMPORT_CONTEXT_SKIP_DIRS,
+            excluded=excluded,
+            skip_dirs=skip_dirs,
+            root_skip_dirs=root_skip_dirs,
         ):
             reuse_safe = False
     return reuse_safe
 
 
-def _installed_distribution_basis(project_root: Path, seen: set[Path]) -> _DependencyBasis:
+def _installed_distribution_basis(
+    project_root: Path,
+    seen: set[Path],
+    *,
+    excluded: set[Path] | None = None,
+    core_hasher: Any | None = None,
+    core_seen: set[Path] | None = None,
+) -> _DependencyBasis:
     """Hash installed distribution bytes; mark any incomplete basis unsafe."""
 
+    excluded = excluded or set()
+    core_seen = core_seen if core_seen is not None else set()
+    core_reuse_safe = True
     hasher = hashlib.sha256()
     _hash_inherited_environment(hasher)
     reuse_safe = _hash_runtime_identity(hasher, seen)
     try:
         resolved_project_root = project_root.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (
+        OSError,
+        RuntimeError,
+    ):
         resolved_project_root = _absolute_lexical_path(project_root)
-    covered_trees: list[tuple[Path, frozenset[str]]] = [(resolved_project_root, _CONTEXT_SKIP_DIRS)]
+    # ``_hash_context_tree`` excludes generic generated directories only when
+    # they are direct children of a covered root.  Keep the coverage shortcut
+    # conservative with the full root skip set: an explicitly-added import
+    # root such as ``<project>/build`` was not walked with the project and must
+    # be content-hashed independently rather than labelled ``content-covered``.
+    covered_trees: list[tuple[Path, frozenset[str]]] = [
+        (resolved_project_root, _CONTEXT_ROOT_SKIP_DIRS)
+    ]
     try:
         distributions = list(importlib.metadata.distributions())
     except Exception as exc:  # pragma: no cover - importlib backend failure
@@ -623,6 +1011,13 @@ def _installed_distribution_basis(project_root: Path, seen: set[Path]) -> _Depen
                     )
                     reuse_safe = False
                     continue
+                try:
+                    resolved_path = path.resolve(strict=False)
+                except (OSError, RuntimeError):  # fmt: skip
+                    resolved_path = _absolute_lexical_path(path)
+                if resolved_path in excluded:
+                    hasher.update(f"{identity}:{entry}:excluded\0".encode())
+                    continue
                 if not _hash_context_file(
                     hasher,
                     path,
@@ -630,6 +1025,17 @@ def _installed_distribution_basis(project_root: Path, seen: set[Path]) -> _Depen
                     seen=seen,
                 ):
                     reuse_safe = False
+                if (
+                    core_hasher is not None
+                    and _project_core_relative_path(resolved_path, project_root) is not None
+                    and not _hash_context_file(
+                        core_hasher,
+                        resolved_path,
+                        label=f"project-distribution:{identity}:{entry}",
+                        seen=core_seen,
+                    )
+                ):
+                    core_reuse_safe = False
 
         try:
             direct_url = distribution.read_text("direct_url.json")
@@ -662,26 +1068,58 @@ def _installed_distribution_basis(project_root: Path, seen: set[Path]) -> _Depen
             editable_path,
             label_prefix=f"{identity}:editable",
             seen=seen,
+            excluded=excluded,
         ):
             reuse_safe = False
+        if (
+            core_hasher is not None
+            and _project_core_relative_path(editable_path, project_root) is not None
+            and not _hash_context_tree(
+                core_hasher,
+                editable_path,
+                label_prefix=f"project-editable:{identity}",
+                seen=core_seen,
+                excluded=excluded,
+                skip_dirs=_CONTEXT_SKIP_DIRS,
+                root_skip_dirs=_CONTEXT_ROOT_SKIP_DIRS,
+            )
+        ):
+            core_reuse_safe = False
         try:
-            covered_trees.append((editable_path.resolve(strict=True), _CONTEXT_SKIP_DIRS))
-        except (OSError, RuntimeError):
+            covered_trees.append((editable_path.resolve(strict=True), _CONTEXT_ROOT_SKIP_DIRS))
+        except (
+            OSError,
+            RuntimeError,
+        ):
             reuse_safe = False
 
-    if not _hash_effective_import_paths(hasher, project_root, seen, tuple(covered_trees)):
+    if not _hash_effective_import_paths(
+        hasher,
+        project_root,
+        seen,
+        tuple(covered_trees),
+        excluded,
+    ):
         reuse_safe = False
 
-    return _DependencyBasis(hasher.hexdigest(), reuse_safe)
+    if core_hasher is not None and not _hash_project_import_core(
+        core_hasher,
+        project_root,
+        core_seen,
+        excluded,
+    ):
+        core_reuse_safe = False
+
+    return _DependencyBasis(hasher.hexdigest(), reuse_safe, core_reuse_safe)
 
 
-def build_stats_context_fingerprint(
+def _build_stats_context_evidence(
     config: MutmutConfig,
     project_root: Path | None = None,
     *,
     excluded_paths: tuple[Path, ...] = (),
-) -> str:
-    """Hash project bytes, configuration and the effective dependency basis.
+) -> _StatsContextEvidence:
+    """Hash the combined context and its independently classified core.
 
     This intentionally prefers conservative invalidation to a guessed import
     graph. Every automatically staged project file, explicit external tree and
@@ -695,29 +1133,36 @@ def build_stats_context_fingerprint(
         candidate = excluded if excluded.is_absolute() else root / excluded
         try:
             excluded_resolved.add(candidate.resolve(strict=False))
-        except (OSError, RuntimeError):
+        except (
+            OSError,
+            RuntimeError,
+        ):
             excluded_resolved.add(candidate.absolute())
 
     hasher = hashlib.sha256()
+    core_hasher = hashlib.sha256()
+    core_hasher.update(b"run-basis-core:v1\0")
+    project_hasher = _HashFanout(hasher, core_hasher)
     config_payload = json.dumps(
         config.model_dump(mode="json"),
         sort_keys=True,
         separators=(",", ":"),
     )
-    hasher.update(config_payload.encode("utf-8"))
-    hasher.update(b"\0")
+    project_hasher.update(config_payload.encode("utf-8"))
+    project_hasher.update(b"\0")
     # Every pytest phase is pinned to one staged local config plus root and
     # confcut boundary. Project/config/dependency bytes below determine the
     # selected file; the schema marker prevents pre-boundary evidence reuse.
-    hasher.update(b"pytest-boundary:v2\0")
+    project_hasher.update(b"pytest-boundary:v2\0")
     seen: set[Path] = set()
-    reuse_safe = _hash_context_tree(
-        hasher,
+    core_complete = _hash_context_tree(
+        project_hasher,
         root,
         label_prefix="project",
         seen=seen,
         excluded=excluded_resolved,
     )
+    reuse_safe = core_complete
     if config.type_check_command:
         # ``type_check_command`` is intentionally a generic argv contract. An
         # executable can read scripts, plugins or configuration outside the
@@ -743,62 +1188,101 @@ def build_stats_context_fingerprint(
                 configured_path if configured_path.is_absolute() else root / configured_path
             )
             prefix = f"configured:{field_name}:{configured}"
-            hasher.update(prefix.encode("utf-8"))
-            hasher.update(b"\0")
+            project_hasher.update(prefix.encode("utf-8"))
+            project_hasher.update(b"\0")
             if absolute.is_file():
                 try:
                     resolved_absolute = absolute.resolve(strict=False)
-                except (OSError, RuntimeError):
+                except (
+                    OSError,
+                    RuntimeError,
+                ):
                     resolved_absolute = absolute.absolute()
                 if resolved_absolute in excluded_resolved:
-                    hasher.update(b"excluded\0")
+                    project_hasher.update(b"excluded\0")
                     continue
                 if not _hash_context_file(
-                    hasher,
+                    project_hasher,
                     absolute,
                     label=prefix,
                     seen=seen,
                 ):
                     reuse_safe = False
+                    core_complete = False
                 continue
             if not absolute.is_dir():
                 try:
                     absolute.lstat()
                 except FileNotFoundError:
-                    hasher.update(b"missing\0")
+                    project_hasher.update(b"missing\0")
                     # Absence is a complete, observable state. Optional
                     # ``also_copy`` defaults deliberately name candidates that
                     # do not exist in every project; a later appearance changes
                     # this marker to a file/tree digest and invalidates reuse.
                 except OSError as exc:
-                    hasher.update(
+                    project_hasher.update(
                         f"unreadable:{type(exc).__qualname__}\0".encode(
                             "utf-8", errors="surrogateescape"
                         )
                     )
                     reuse_safe = False
+                    core_complete = False
                 else:
                     # Broken links, devices and other unsupported entries are
                     # not the same as an observed absent optional path.
-                    hasher.update(b"unsupported-configured-path\0")
+                    project_hasher.update(b"unsupported-configured-path\0")
                     reuse_safe = False
+                    core_complete = False
                 continue
             if not _hash_context_tree(
-                hasher,
+                project_hasher,
                 absolute,
                 label_prefix=prefix,
                 seen=seen,
                 excluded=excluded_resolved,
+                # This is an explicitly configured execution/staging root,
+                # not the implicit workspace root.  Generic names such as
+                # build/html/dist are therefore source content here, exactly
+                # as copy_also_copy_files treats their child directories.
+                root_skip_dirs=frozenset(),
             ):
                 reuse_safe = False
+                core_complete = False
 
-    dependency_basis = _installed_distribution_basis(root, seen)
+    dependency_basis = _installed_distribution_basis(
+        root,
+        seen,
+        excluded=excluded_resolved,
+        core_hasher=core_hasher,
+        core_seen=set(),
+    )
     hasher.update(b"installed-distributions\0")
     hasher.update(dependency_basis.digest.encode("ascii"))
     digest = hasher.hexdigest()
-    if not dependency_basis.reuse_safe or not reuse_safe:
-        return f"{_NO_REUSE_CONTEXT_PREFIX}{digest}"
-    return digest
+    core_complete = core_complete and dependency_basis.core_reuse_safe
+    complete = dependency_basis.reuse_safe and reuse_safe
+    fingerprint = f"{_NO_REUSE_CONTEXT_PREFIX}{digest}" if not complete else digest
+    return _StatsContextEvidence(
+        fingerprint=fingerprint,
+        core_digest=core_hasher.hexdigest(),
+        complete=complete,
+        core_complete=core_complete,
+    )
+
+
+def build_stats_context_fingerprint(
+    config: MutmutConfig,
+    project_root: Path | None = None,
+    *,
+    excluded_paths: tuple[Path, ...] = (),
+) -> str:
+    """Return the combined project/config/dependency context fingerprint."""
+
+    return _build_stats_context_evidence(
+        config,
+        project_root,
+        excluded_paths=excluded_paths,
+    ).fingerprint
 
 
 def canonical_run_basis_config(config: MutmutConfig) -> str:
@@ -838,7 +1322,7 @@ def build_run_basis_evidence(
 
     import mutmut_win
 
-    context_fingerprint = build_stats_context_fingerprint(
+    context_evidence = _build_stats_context_evidence(
         config,
         project_root,
         excluded_paths=excluded_paths,
@@ -847,20 +1331,22 @@ def build_run_basis_evidence(
         {
             "schema": 2,
             "engine_version": mutmut_win.__version__,
-            "context_fingerprint": context_fingerprint,
+            "context_fingerprint": context_evidence.fingerprint,
         },
         sort_keys=True,
         separators=(",", ":"),
     )
     return RunBasisEvidence(
         digest=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-        complete=context_allows_result_reuse(context_fingerprint),
+        complete=context_evidence.complete,
+        core_digest=context_evidence.core_digest,
+        core_complete=context_evidence.core_complete,
     )
 
 
 def save_stats(
     stats: MutmutStats,
-    mutants_dir: Path = Path("mutants"),
+    mutants_dir: Path = DEFAULT_STATS_DIR,
     *,
     refresh_file_fingerprints: bool = True,
 ) -> None:
@@ -871,7 +1357,7 @@ def save_stats(
 
     Args:
         stats: The ``MutmutStats`` instance to persist.
-        mutants_dir: Existing real target directory. Defaults to ``mutants/``;
+        mutants_dir: Existing real target directory. Defaults to ``.mutmut-cache/``;
             callers must create and validate it before publication.
     """
     stats_path = mutants_dir / _STATS_FILENAME
@@ -898,9 +1384,10 @@ def save_stats(
 
 def collect_or_load_stats(
     runner: PytestRunner,
-    mutants_dir: Path = Path("mutants"),
+    mutants_dir: Path = DEFAULT_STATS_DIR,
     *,
     context_fingerprint: str | None = None,
+    allow_cache_reuse: bool = True,
 ) -> MutmutStats:
     """Load cached stats or collect fresh ones via *runner*.
 
@@ -916,6 +1403,9 @@ def collect_or_load_stats(
     Args:
         runner: ``PytestRunner`` instance.
         mutants_dir: Directory where the stats JSON file lives.
+        allow_cache_reuse: Whether a previously persisted mapping may be
+            consumed. Diagnostic-only runs force a fresh collection even when
+            the later context fingerprint appears stable.
 
     Returns:
         A ``MutmutStats`` instance.
@@ -924,6 +1414,18 @@ def collect_or_load_stats(
     if cached is None:
         return _run_stats_collection(
             runner, mutants_dir, cached=None, context_fingerprint=context_fingerprint
+        )
+
+    if not allow_cache_reuse:
+        print(
+            "The initial execution basis was diagnostic-only — "
+            "re-collecting the full test mapping without cache reuse."
+        )
+        return _run_stats_collection(
+            runner,
+            mutants_dir,
+            cached=cached,
+            context_fingerprint=context_fingerprint,
         )
 
     if context_fingerprint is not None and not context_allows_result_reuse(context_fingerprint):
@@ -1032,7 +1534,7 @@ def _run_stats_collection(
     with contextlib.suppress(FileNotFoundError):
         stats_path.unlink()
     try:
-        exit_code = runner.run_stats()
+        exit_code = runner.run_stats(stats_path)
     except BaseException:
         if cached is not None:
             save_stats(cached, mutants_dir, refresh_file_fingerprints=False)
@@ -1103,7 +1605,7 @@ class ListAllTestsResult:
         """Return the set of currently active test node IDs."""
         return self._ids
 
-    def clear_out_obsolete_test_names(self, mutants_dir: Path = Path("mutants")) -> None:
+    def clear_out_obsolete_test_names(self, mutants_dir: Path = DEFAULT_STATS_DIR) -> None:
         """Remove test names that no longer exist from the cached stats.
 
         Cleans BOTH the per-mutant test mapping (whose dead node IDs end up

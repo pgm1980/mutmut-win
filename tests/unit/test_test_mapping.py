@@ -28,21 +28,24 @@ class TestMangledNameFromMutantName:
         assert mangled_name_from_mutant_name(name) == f"src.module.x{sep}MyClass{sep}my_method"
 
     def test_missing_mutmut_marker_raises(self) -> None:
-        with pytest.raises(ValueError, match="missing '__mutmut_'"):
+        with pytest.raises(ValueError, match="missing local '__mutmut_' suffix"):
             mangled_name_from_mutant_name("src.module.x_my_func")
 
     def test_strips_only_at_mutmut_boundary(self) -> None:
-        # The partition is on the first occurrence of __mutmut_.
         name = "pkg.mod.x_func__mutmut_10"
         result = mangled_name_from_mutant_name(name)
         assert result == "pkg.mod.x_func"
         assert "__mutmut_" not in result
 
-    def test_multiple_mutmut_in_name(self) -> None:
-        # partition takes the first occurrence; the rest is discarded.
-        name = "pkg.mod.x_func__mutmut_1__mutmut_extra"
+    def test_reserved_text_in_module_path_uses_final_local_suffix(self) -> None:
+        name = "pkg.foo__mutmut_bar.x_func__mutmut_1"
         result = mangled_name_from_mutant_name(name)
-        assert result == "pkg.mod.x_func"
+        assert result == "pkg.foo__mutmut_bar.x_func"
+
+    @pytest.mark.parametrize("suffix", ["", "extra", "1__mutmut_extra"])
+    def test_malformed_local_suffix_raises(self, suffix: str) -> None:
+        with pytest.raises(ValueError, match="malformed '__mutmut_' suffix"):
+            mangled_name_from_mutant_name(f"pkg.mod.x_func__mutmut_{suffix}")
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +132,13 @@ class TestTestsForMutantNames:
         mapping = {"src.module.x_func": {"tests/test_foo.py::test_a"}}
         result = tests_for_mutant_names(["src.module.x_func__mutmut_1"], mapping)
         assert result == {"tests/test_foo.py::test_a"}
+
+    def test_reserved_text_in_module_path_preserves_function_mapping(self) -> None:
+        mangled = "pkg.foo__mutmut_bar.x_func"
+        mapping = {mangled: {"tests/test_foo.py::test_a"}}
+
+        assert tests_for_mutant_names([f"{mangled}__mutmut_1"], mapping) == mapping[mangled]
+        assert tests_for_mutant_names([mangled], mapping) == mapping[mangled]
 
     def test_unknown_name_returns_empty_set(self) -> None:
         mapping: dict[str, set[str]] = {}

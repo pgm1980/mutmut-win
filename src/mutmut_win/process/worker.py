@@ -16,12 +16,18 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.atomic_file import atomic_write_bytes, ensure_atomic_bytes
-from mutmut_win.constants import EXIT_CODE_INFINITE_LOOP, EXIT_CODE_TIMEOUT, SOURCE_ROOT_NAMES
+from mutmut_win.constants import (
+    EXIT_CODE_INFINITE_LOOP,
+    EXIT_CODE_TIMEOUT,
+    SOURCE_ROOT_NAMES,
+    configured_staging_relative_path,
+)
 
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
@@ -150,6 +156,7 @@ _PYTEST_PHASE_SENTINEL_PATH_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
 _PYTEST_PHASE_SENTINEL_PROOF_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
 _PYTEST_ALLOWED_DIRS_ENV: str = "MUTMUT_PYTEST_ALLOWED_DIRS"
 _PYTEST_ALLOWED_FILES_ENV: str = "MUTMUT_PYTEST_ALLOWED_FILES"
+_PYTEST_RUNTIME_DIR_ENV: str = "MUTMUT_PYTEST_RUNTIME_DIR"
 _PYTEST_PHASE_GUARD_SOURCE: str = '''\
 """Auto-generated mutmut-win pytest phase-execution guard."""
 
@@ -166,6 +173,7 @@ _PATH_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
 _PROOF_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
 _ALLOWED_DIRS_ENV = "MUTMUT_PYTEST_ALLOWED_DIRS"
 _ALLOWED_FILES_ENV = "MUTMUT_PYTEST_ALLOWED_FILES"
+_RUNTIME_DIR_ENV = "MUTMUT_PYTEST_RUNTIME_DIR"
 
 
 def _bound_identity(raw, expected_kind):
@@ -227,6 +235,80 @@ def _boundary_paths():
 _BOUNDARY_PATHS_AT_IMPORT = _boundary_paths()
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Reject stateful selection and externalise optional plugin storage."""
+    stateful = [
+        option
+        for attribute, option in (
+            ("lf", "--lf/--last-failed"),
+            ("failedfirst", "--ff/--failed-first"),
+            ("newfirst", "--nf/--new-first"),
+            ("stepwise", "--sw/--stepwise"),
+            ("stepwise_skip", "--sw-skip/--stepwise-skip"),
+            ("cacheshow", "--cache-show"),
+        )
+        if bool(getattr(config.option, attribute, False))
+    ]
+    if stateful:
+        raise pytest.UsageError(
+            "mutmut-win forbids cache-driven pytest selection or ordering: "
+            + ", ".join(stateful)
+        )
+    runtime_dir = Path(os.environ[_RUNTIME_DIR_ENV])
+    if not runtime_dir.is_absolute() or not runtime_dir.is_dir():
+        raise pytest.UsageError("mutmut-win pytest runtime directory is missing or invalid")
+
+    # User-supplied pytest reporting/temp options are evaluated with the
+    # executable staging tree as cwd.  Relative destinations would otherwise
+    # create test-visible files after the frozen snapshot and make an ordinary
+    # JUnit/coverage configuration fail as unexplained staging drift.  Keep
+    # their semantics, but confine every known output to this invocation's
+    # fresh external runtime directory.
+    for attribute, leaf in (
+        ("basetemp", "pytest-tmp"),
+        ("xmlpath", "junit.xml"),
+        ("log_file", "pytest.log"),
+        ("htmlpath", "pytest.html"),
+        ("json_report_file", "pytest-report.json"),
+        ("report_log", "pytest-report.jsonl"),
+        ("allure_report_dir", "allure-results"),
+    ):
+        if getattr(config.option, attribute, None):
+            setattr(config.option, attribute, str(runtime_dir / leaf))
+
+    cov_reports = getattr(config.option, "cov_report", None)
+    if cov_reports:
+        external_reports = {
+            "annotate": runtime_dir / "coverage-annotate",
+            "html": runtime_dir / "coverage-html",
+            "json": runtime_dir / "coverage.json",
+            "lcov": runtime_dir / "coverage.lcov",
+            "markdown": runtime_dir / "coverage.md",
+            "markdown-append": runtime_dir / "coverage-append.md",
+            "xml": runtime_dir / "coverage.xml",
+        }
+        rewritten = []
+        for report in cov_reports:
+            report_name = str(report).split(":", 1)[0]
+            destination = external_reports.get(report_name)
+            rewritten.append(
+                f"{report_name}:{destination}" if destination is not None else str(report)
+            )
+        config.option.cov_report = rewritten
+
+    # pytest-benchmark constructs its storage even when no benchmark is
+    # saved.  Its default ``./.benchmarks`` would mutate executable staging.
+    # Assign only when that optional plugin registered the option; ordinary
+    # pytest installations therefore see no unknown command-line option.
+    if hasattr(config.option, "benchmark_storage"):
+        # pytest-benchmark 5.x strips ``file://`` manually; a standards-based
+        # ``file:///C:/...`` URI becomes ``/C:/...`` and is then treated as a
+        # relative Windows path under executable staging.  Its supported raw
+        # absolute-path form round-trips correctly through ``load_storage``.
+        config.option.benchmark_storage = str(runtime_dir / "benchmarks")
+
+
 def _inside(path, directories):
     for directory in directories:
         try:
@@ -237,11 +319,38 @@ def _inside(path, directories):
     return False
 
 
-@pytest.hookimpl(tryfirst=True)
+@pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_load_initial_conftests(early_config):
-    """Install a root-aware loader before pytest imports any conftest."""
+    """Externalise early plugin outputs and install the conftest boundary."""
+    # pytest-cov creates its controller in this same hook and snapshots
+    # ``known_args_namespace`` before pytest_configure.  A try-first wrapper
+    # runs before every non-wrapper implementation regardless of registration
+    # order, covering both explicit argv and ``addopts`` from frozen config.
+    runtime_value = os.environ.get(_RUNTIME_DIR_ENV)
+    cov_reports = getattr(early_config.known_args_namespace, "cov_report", None)
+    if runtime_value and cov_reports:
+        runtime_dir = Path(runtime_value)
+        external_reports = {
+            "annotate": runtime_dir / "coverage-annotate",
+            "html": runtime_dir / "coverage-html",
+            "json": runtime_dir / "coverage.json",
+            "lcov": runtime_dir / "coverage.lcov",
+            "markdown": runtime_dir / "coverage.md",
+            "markdown-append": runtime_dir / "coverage-append.md",
+            "xml": runtime_dir / "coverage.xml",
+        }
+        rewritten = []
+        for report in cov_reports:
+            report_name = str(report).split(":", 1)[0]
+            destination = external_reports.get(report_name)
+            rewritten.append(
+                f"{report_name}:{destination}" if destination is not None else str(report)
+            )
+        early_config.known_args_namespace.cov_report = rewritten
+
     pluginmanager = early_config.pluginmanager
     if getattr(pluginmanager, "_mutmut_boundary_loader_installed", False):
+        yield
         return
     original_loader = pluginmanager._loadconftestmodules
 
@@ -297,6 +406,7 @@ def pytest_load_initial_conftests(early_config):
 
     pluginmanager._loadconftestmodules = boundary_loader
     pluginmanager._mutmut_boundary_loader_installed = True
+    yield
 
 
 @pytest.hookimpl(trylast=True)
@@ -345,8 +455,8 @@ def pytest_collection_finish(session):
 
 
 def pytest_runtest_logreport(report):
-    """Publish proof only after pytest produced a real call-phase report."""
-    if report.when != "call":
+    """Publish proof only after pytest executed a non-skipped test call."""
+    if report.when != "call" or report.skipped:
         return
     marker_path = os.environ.get(_PATH_ENV)
     proof = os.environ.get(_PROOF_ENV)
@@ -374,6 +484,94 @@ _PYTEST_PHASE_NEUTRALIZERS: frozenset[str] = frozenset(
         "-h",
     }
 )
+
+# Built-in cache-driven selection/order flags can make one mutant's outcome
+# change which tests a later mutant executes.  Every pytest process also
+# disables the cacheprovider plugin, closing the same ingress through staged
+# pytest configuration rather than only through mutmut's explicit argv.
+_PYTEST_STATEFUL_OPTIONS: frozenset[str] = frozenset(
+    {
+        "--cache-show",
+        "--failed-first",
+        "--ff",
+        "--last-failed",
+        "--last-failed-no-failures",
+        "--lf",
+        "--new-first",
+        "--nf",
+        "--stepwise",
+        "--stepwise-skip",
+        "--sw",
+        "--sw-skip",
+    }
+)
+
+_PYTEST_EXTERNAL_OUTPUT_OPTIONS: dict[str, str] = {
+    "--alluredir": "allure-results",
+    "--basetemp": "pytest-tmp",
+    "--benchmark-storage": "benchmarks",
+    "--html": "pytest.html",
+    "--json-report-file": "pytest-report.json",
+    "--junit-xml": "junit.xml",
+    "--junitxml": "junit.xml",
+    "--log-file": "pytest.log",
+    "--report-log": "pytest-report.jsonl",
+}
+_PYTEST_FILE_COVERAGE_REPORTS: dict[str, str] = {
+    "annotate": "coverage-annotate",
+    "html": "coverage-html",
+    "json": "coverage.json",
+    "lcov": "coverage.lcov",
+    "markdown": "coverage.md",
+    "markdown-append": "coverage-append.md",
+    "xml": "coverage.xml",
+}
+
+
+def redirect_pytest_output_args(cmd: list[str], runtime_dir: Path) -> list[str]:
+    """Route known pytest report/temp outputs outside executable staging.
+
+    This happens in the parent argv before pytest startup.  In particular,
+    pytest-cov snapshots ``--cov-report`` during
+    ``pytest_load_initial_conftests``; changing ``config.option`` later in the
+    phase guard cannot prevent its default ``htmlcov/`` write.
+    """
+
+    external_root = runtime_dir.absolute()
+    separator = cmd.index("--") if "--" in cmd else len(cmd)
+    rewritten = list(cmd)
+
+    def external_value(option: str, value: str) -> str:
+        if option == "--cov-report":
+            report_name = value.split(":", 1)[0]
+            leaf = _PYTEST_FILE_COVERAGE_REPORTS.get(report_name)
+            return f"{report_name}:{external_root / leaf}" if leaf is not None else value
+        leaf = _PYTEST_EXTERNAL_OUTPUT_OPTIONS[option]
+        destination = external_root / leaf
+        return str(destination)
+
+    index = 0
+    while index < separator:
+        token = rewritten[index]
+        for option in (*_PYTEST_EXTERNAL_OUTPUT_OPTIONS, "--cov-report"):
+            if token == option:
+                if index + 1 < separator:
+                    rewritten[index + 1] = external_value(option, rewritten[index + 1])
+                    index += 1
+                break
+            prefix = f"{option}="
+            if token.startswith(prefix):
+                rewritten[index] = prefix + external_value(option, token[len(prefix) :])
+                break
+        index += 1
+    # ``log_file`` is also a native pytest INI key, so it may be active even
+    # when no output option appears in argv/addopts.  A final command-line INI
+    # override is the only pre-start authority that covers both sources.
+    rewritten[separator:separator] = [
+        "-o",
+        f"log_file={external_root / 'pytest.log'}",
+    ]
+    return rewritten
 
 
 def validated_pytest_args(
@@ -458,6 +656,15 @@ def validated_pytest_args(
                 detail=(
                     f"{option_name} is not allowed in mutmut-win pytest arguments: "
                     "it can exit successfully without executing test bodies."
+                ),
+            )
+        if option_name in _PYTEST_STATEFUL_OPTIONS:
+            raise BadTestExecutionCommandsException(
+                args,
+                detail=(
+                    f"{option_name} is not allowed in mutmut-win pytest arguments: "
+                    "cache-driven selection or ordering can make one mutant alter the "
+                    "test population of a later mutant."
                 ),
             )
 
@@ -563,16 +770,45 @@ def _publish_pytest_guard(plugin_path: Path) -> None:
         ) from exc
 
 
-def prepare_pytest_collection_guard() -> None:
+def prepare_pytest_collection_guard(mutants_dir: Path = Path("mutants")) -> None:
     """Install the location guard for collection-only phases."""
 
-    plugin_path = Path("mutants") / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
+    plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
     _publish_pytest_guard(plugin_path)
+
+
+def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Path) -> Path:
+    """Redirect Python/pytest/Hypothesis state to one fresh process directory.
+
+    ``PYTHONDONTWRITEBYTECODE`` alone does not stop CPython from consuming an
+    existing ``UNCHECKED_HASH`` pyc.  A unique ``PYTHONPYCACHEPREFIX`` changes
+    the normal import lookup as well as the write target.  The directory must
+    never be shared across phases: explicit ``py_compile`` can still populate
+    it despite the no-write flag.
+
+    Returns:
+        The isolated pytest cache directory to use in ``-o cache_dir=...``.
+    """
+
+    runtime_dir = runtime_dir.absolute()
+    cache_dir = runtime_dir / "pytest-cache"
+    pycache_dir = runtime_dir / "python-cache"
+    hypothesis_dir = runtime_dir / "hypothesis"
+    for directory in (cache_dir, pycache_dir, hypothesis_dir):
+        directory.mkdir(parents=True, exist_ok=False)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    env["HYPOTHESIS_STORAGE_DIRECTORY"] = str(hypothesis_dir)
+    env["COVERAGE_FILE"] = str(runtime_dir / ".coverage")
+    env[_PYTEST_RUNTIME_DIR_ENV] = str(runtime_dir)
+    return cache_dir
 
 
 def prepare_pytest_phase_guard(
     env: dict[str, str],
     mutants_dir: Path = Path("mutants"),
+    *,
+    runtime_dir: Path | None = None,
 ) -> tuple[Path, str]:
     """Install the guard plugin and add one unique proof target to *env*.
 
@@ -583,6 +819,9 @@ def prepare_pytest_phase_guard(
     Args:
         env: Child-process environment to augment.
         mutants_dir: Staging directory from which pytest loads the plugin.
+        runtime_dir: Fresh parent-owned directory for the execution proof.
+            Production callers always provide one outside executable staging;
+            the legacy default is retained for direct helper callers.
 
     Returns:
         ``(marker_path, expected_token)`` for post-process verification.
@@ -594,8 +833,9 @@ def prepare_pytest_phase_guard(
     # existing redirected staging parent would already have received that
     # write. The generated plugin publishes this unpredictable leaf with the
     # same safe atomic writer only after a real pytest call-phase report exists.
+    marker_root = mutants_dir if runtime_dir is None else runtime_dir
     marker_path = (
-        mutants_dir / f".mutmut_pytest_executed_{secrets.token_hex(16)}.sentinel"
+        marker_root / f".mutmut_pytest_executed_{secrets.token_hex(16)}.sentinel"
     ).absolute()
     token = secrets.token_hex(32)
     env[_PYTEST_PHASE_SENTINEL_PATH_ENV] = str(marker_path)
@@ -614,9 +854,9 @@ def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
             marker_path.unlink()
 
 
-def _write_pytest_argfile(tests: list[str], mutants_dir: Path = Path("mutants")) -> Path:
-    """Publish one private pytest argument file inside a verified staging parent."""
-    argfile = mutants_dir / f"mutmut_tests_{secrets.token_hex(16)}.txt"
+def _write_pytest_argfile(tests: list[str], output_dir: Path = Path("mutants")) -> Path:
+    """Publish one private pytest argument file in a caller-owned directory."""
+    argfile = output_dir / f"mutmut_tests_{secrets.token_hex(16)}.txt"
     payload = "".join(f"{test}\n" for test in tests).encode("utf-8")
     atomic_write_bytes(argfile, payload)
     return argfile
@@ -771,6 +1011,11 @@ def _process_task(
     # setup succeeds, only the remaining task budget is passed to wait().
     start = time.monotonic()
     deadline = start + timeout_seconds
+    runtime_context = tempfile.TemporaryDirectory(
+        prefix="mutmut-win-worker-runtime-",
+        ignore_cleanup_errors=True,
+    )
+    runtime_dir = Path(runtime_context.name)
 
     # Build the pytest command.
     cmd: list[str] = _pytest_base_cmd()
@@ -788,20 +1033,21 @@ def _process_task(
     # dependency floor AND the orchestrator's run-start guard against
     # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
     tests_argfile: Path | None = None
-    if task.tests:
-        validated_task_tests = validated_pytest_targets(
+    selected_targets: list[str] = []
+    if task.tests and task.test_selection_is_authoritative:
+        selected_targets = validated_pytest_targets(
             task.tests,
             field_name="MutationTask.tests",
         )
-        tests_argfile = _write_pytest_argfile(validated_task_tests)
-        cmd.append("--")
-        cmd.append(f"@{tests_argfile.name}")
     elif pytest_targets:
-        # The internal separator is deliberately AFTER every owned option.
-        # Even if a future validator regresses, targets cannot become config,
-        # root, plugin, or response-file options.
+        # A non-authoritative mapping is only a scheduling hint. Preserve the
+        # complete configured target vector, in its original order, while
+        # keeping it out of Windows' 32,767-character command-line limit.
+        selected_targets = pytest_targets
+    if selected_targets:
+        tests_argfile = _write_pytest_argfile(selected_targets, runtime_dir)
         cmd.append("--")
-        cmd.extend(pytest_targets)
+        cmd.append(f"@{tests_argfile.absolute()}")
 
     # Activate the specific mutant via the trampoline env var.
     # Set PYTHONPATH so subprocess can import from mutants/src etc.
@@ -810,6 +1056,10 @@ def _process_task(
     # it prevents pytest from prepending it a second time ahead of the internal
     # config/root boundary (including a hostile ``--`` separator).
     env.pop("PYTEST_ADDOPTS", None)
+    # Keep mutation subprocesses inside the same explicit staging universe as
+    # clean/stats phases.  Live inherited PYTHONPATH entries are not evidence-
+    # bound staging inputs; users must mirror them through extra_paths.
+    env.pop("PYTHONPATH", None)
     apply_pytest_boundary_environment(pytest_boundary, env)
     pythonpath_dirs: list[str] = []
     for subdir in [*SOURCE_ROOT_NAMES, "."]:
@@ -821,20 +1071,17 @@ def _process_task(
     raw_extra_paths = config_data.get("extra_paths", [])
     if isinstance(raw_extra_paths, list):
         for extra in raw_extra_paths:
-            extra_as_path = Path(str(extra))
-            # Issue #132 / 360°-B7: sibling entries with ".." are STAGED
-            # under their basename (file_setup.copy_also_copy_files) — but
-            # this mapping used "mutants" / "../x", which points at the
-            # UNSTAGED original outside the staging tree. Keep both rules
-            # in sync or mutants silently import unmutated code.
-            if ".." in extra_as_path.parts:
-                extra_as_path = Path(extra_as_path.name)
+            extra_as_path = configured_staging_relative_path(
+                str(extra),
+                project_root=Path.cwd(),
+            )
+            if extra_as_path is None:
+                continue
             extra_path = Path("mutants") / extra_as_path
             if extra_path.exists():
                 pythonpath_dirs.append(str(extra_path.absolute()))
     if pythonpath_dirs:
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs + ([existing] if existing else []))
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs)
     env[MUTANT_ENV_VAR] = task.mutant_name
     # Unbuffered stdout/stderr for the whole subprocess tree: with block
     # buffering the capture byte counter froze while the suite made progress,
@@ -844,7 +1091,18 @@ def _process_task(
     # copied test modules in mutants/ keep their original basenames, and
     # pytest's import-mismatch check would reject them via stale __pycache__.
     env["PY_IGNORE_IMPORTMISMATCH"] = "1"
-    phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(env)
+    cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+    cmd = redirect_pytest_output_args(cmd, runtime_dir)
+    phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
+        env,
+        runtime_dir=runtime_dir,
+    )
+    separator = cmd.index("--") if "--" in cmd else len(cmd)
+    # Mutation testing needs only the first failing test. Keep pytest's native
+    # order: reordering diagnostic mapping hits would change the semantics of
+    # order-dependent suites and could create false survivors or false kills.
+    # When no failure occurs, the entire configured suite still runs.
+    cmd[separator:separator] = ["--maxfail=1", "-o", f"cache_dir={cache_dir}"]
 
     # A continuously drained pipe avoids PIPE-buffer deadlock while retaining
     # only a bounded tail. The monotonic byte counter remains an honest output
@@ -991,6 +1249,7 @@ def _process_task(
         if tests_argfile is not None and tests_argfile.exists():
             with contextlib.suppress(OSError):
                 tests_argfile.unlink()
+        runtime_context.cleanup()
 
     duration = time.monotonic() - start
 
@@ -1087,14 +1346,20 @@ def _build_il_thresholds(config_data: dict[str, object]) -> Any:
         v = config_data.get(key, default)
         try:
             return float(v) if isinstance(v, (int, float)) else default
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError,
+        ):
             return default
 
     def _coerce_int(key: str, default: int) -> int:
         v = config_data.get(key, default)
         try:
             return int(v) if isinstance(v, (int, float)) else default
-        except (TypeError, ValueError):
+        except (
+            TypeError,
+            ValueError,
+        ):
             return default
 
     return IlThresholds(
@@ -1177,12 +1442,18 @@ def _create_task_job(pid: int | None = None) -> int | None:
         )
 
         handle = create_kill_on_close_job()
-    except (OSError, RuntimeError):
+    except (
+        OSError,
+        RuntimeError,
+    ):
         return None
     if pid is not None:
         try:
             assign_process_to_job(handle, pid)
-        except (OSError, RuntimeError):
+        except (
+            OSError,
+            RuntimeError,
+        ):
             with contextlib.suppress(Exception):
                 close_job(handle)
             return None
@@ -1360,6 +1631,18 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
     and orphaned the grandchildren until the END of the whole run).  Two
     sweeps narrow the TOCTOU window for processes spawned mid-kill.
     """
+    # Unit tests and third-party integrations can supply Popen-like objects.
+    # Their synthetic ``pid`` values are not process identities and must never
+    # reach Job Object assignment, killpg, or the psutil descendant sweep: a
+    # coincidental live PID would target an unrelated process.  Real production
+    # launchers inherit from the concrete Popen type captured at import time.
+    if not isinstance(proc, _REAL_POPEN_TYPE):
+        with contextlib.suppress(Exception):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=2.0)
+        return
+
     if job_handle is not None:
         with contextlib.suppress(Exception):
             from mutmut_win.process.job_object import close_job

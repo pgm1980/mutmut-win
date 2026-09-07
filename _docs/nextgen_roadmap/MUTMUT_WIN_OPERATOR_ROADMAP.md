@@ -2,6 +2,9 @@
 
 *Companion to `MUTATION_OPERATOR_MATRIX.md`. Turns the matrix gaps into a concrete, profile-gated implementation plan with per-operator CST sketches. Scope decisions are the project owner's (2026-06-13): `→None` return is enough (no shape-return), full 15-mutator regex suite, UOI in, 3-profile model, and the mutmut-3.6.0 surface backports are in.*
 
+**Binding runtime contract:** Windows with exactly CPython 3.14.7; other Python
+versions, implementations, and operating systems are unsupported.
+
 All file:line references are to `_codebase_v2140/mutmut_win/`.
 
 ---
@@ -140,8 +143,16 @@ def operator_match_guard(node):                # cst.MatchCase
     yield node.with_changes(guard=cst.Name("False"))
 ```
 
-### 3.7 Full regex suite (#42) — biggest chunk
-Expand `regex_mutation.mutate_regex_pattern()` to the **Stryker 15-mutator** set. Recommended approach: parse with CPython's `re._parser.parse()` (stable across 3.12–3.14) into a structured tree, mutate nodes, re-emit, and keep mutmut-win's existing `re.compile()` validation gate. Port these sub-mutators:
+### 3.7 Full regex suite (#42) — historische Planungsgrundlage
+
+Die ursprüngliche Roadmap empfahl, `regex_mutation.mutate_regex_pattern()` über
+die private CPython-API `re._parser.parse()` auf die **Stryker-15-Mutator**-
+Oberfläche zu erweitern. Diese Idee wurde nicht implementiert und ist durch die
+in v2.18.0 ausgelieferte stringbasierte Class-Span-Tokenizer-Lösung überholt:
+`re._parser` besitzt keinen stabilen Roundtrip-Emitter. Die folgende Tabelle
+bleibt als historischer Scope-Katalog erhalten, nicht als aktuelle Parser-
+Entscheidung. Jede tatsächlich erzeugte Kandidatenform durchläuft weiterhin das
+bestehende `re.compile()`-Validierungsgate.
 
 | # | Sub-mutator | Example | Python-`re` note |
 |---|---|---|---|
@@ -206,7 +217,10 @@ Each new operator should get an `opmatrix`-style probe (target fn + strong kill-
 
 1. **Default-selected profile = `advanced`** (REVISED 2026-06-14, supersedes the 2026-06-13 `basic` lock). `advanced` == mutmut-win's historical operator set, so the default is **behaviour-neutral — NOT a breaking change**. `basic` is the opt-in mutmut-parity profile; `all` is for audits. See the ✅ box in §1; shipped in v2.16.0 (minor bump).
 2. **`all`-tier scope = UOI + AOD + general-statement-removal + member/attr-assignment-removal + exception-swap.** The dynamic-typing-hard operators (constructor→None, naked-receiver, argument-propagation) and remove-`await` are **excluded**.
-3. **Regex parser = CPython `re._parser`** (compact; add a 3.12→3.14 version smoke-test as a guard against private-API drift).
+3. **Regex-Implementierung = stringbasierter Class-Span-Tokenizer.** Die
+   ursprünglich erwogene private `re._parser`-API wurde mangels stabilem
+   Roundtrip-Emitter verworfen; `re.compile()` bleibt das Validierungsgate.
 
-With these locked, the roadmap is implementation-ready; §6 gives the phasing.
-</content>
+Diese Entscheidungen wurden gemäß §6 in v2.16.0 bis v2.19.0 umgesetzt; die
+ausgelieferten Implementierungen und Regressionstests sind gegenüber den
+historischen Skizzen autoritativ.
