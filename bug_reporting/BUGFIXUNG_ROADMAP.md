@@ -15,12 +15,12 @@ Reparatur erfolgt auf `fix/v2.21.1-windows314`.
 **Aktueller Stand:** Das formale MW220-Register umfasst exakt und lückenlos
 MW220-001 bis MW220-115 und bleibt historische
 Fixevidenz. Der MW221-Reaudit hat 46 neue oder wiedereröffnete Claims
-klassifiziert. 27 Zielsystemfixes sind implementiert und warten auf das
-vollständige Finalgate; 1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
+klassifiziert. 27 Zielsystemfixes sind auf dem lokalen Kandidaten verifiziert;
+1 Punkt bleibt bis zur Veröffentlichung als Prozessarbeit offen, 10
 sind konservative, akzeptierte oder als Bug verworfene Grenzen, 4 liegen
 außerhalb des Zielsystems und 4 sind gemischte Test-/Supply-Chain-Bündel. Die
 62 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 55 P1 und 5 P2.
-Alle 62 sind implementiert und warten auf das Finalgate. v2.21.1 ist weder
+Alle 62 sind auf dem lokalen Kandidaten verifiziert. v2.21.1 ist weder
 integriert noch getaggt oder veröffentlicht.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
@@ -651,15 +651,19 @@ kommt aus `uv.lock`; das manylinux-Wheel belegt nur den Buildhost und keine
 unterstützte Linux-Runtime.
 Der aktuelle Windows-/CPython-3.14.7-Arbeitsbaum bestand vor dem
 Implementierungscommit die vollständige strikte Suite mit 2.303 passed,
-43 skipped und 0 failed in 40:34 Minuten sowie die Coverage-Suite mit denselben
-Testzahlen, 9.727 Statements, 1.456 Missing und 85 Prozent in 35:15 Minuten.
+43 skipped und 0 failed in 40:34 Minuten sowie auf dem sauberen Commit
+`4daed987742d24b420285fec46fc91bc2e1189a4` die Coverage-Suite mit denselben
+Testzahlen, 9.727 Statements, 1.450 Missing und 85 Prozent in 43:51 Minuten.
 Ruff Check, Format (172 Dateien), mypy (39 Dateien), Import-Linter, Lockprüfung
 und der vollständige Dependency-Export/Pip-Audit sind grün; Pip-Audit meldet
 0 bekannte Schwachstellen. Das kanonische Semgrep-Gate bestand mit 225
 Manifestdateien, 224 Targets, 346 Regeln, exakt 22 allowgelisteten Treffern und
 jeweils 0 unerwarteten Findings, Errors, übersprungenen Regeln und Fixpoint-
-Timeouts. Diese Arbeitsbaumevidenz muss nach dem Diff-Freeze auf dem sauberen
-Kandidatencommit und anschließend auf dem integrierten Commit gebunden werden.
+Timeouts. Derselbe saubere Implementierungscommit bestand in einer frisch
+gelockten CPython-3.14.7-Releaseumgebung zusätzlich das Native-Gate aus
+actionlint, ShellCheck, Pyflakes, Zizmor regular/pedantic und Gitleaks
+Worktree/History. Die Governance-only-Kandidatenbytes werden erneut geprüft;
+anschließend bleibt die vollständige Wiederholung auf dem integrierten Commit.
 
 ### 13.4 Noch ausstehende Abschlusssequenz
 
