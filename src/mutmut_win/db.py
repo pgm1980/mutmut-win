@@ -354,12 +354,22 @@ def _inspect_cache_leaf(
     ephemeral: bool = False,
 ) -> os.stat_result | None:
     """Return one safe regular single-link leaf, or ``None`` if absent."""
+    # Concurrent Windows journal cleanup can briefly deny access or report
+    # zero remaining links. Retried sidecars restart every leaf check; neither
+    # exhausted failure may be treated as an absent file.
     for _attempt in range(3):
         try:
             metadata = path.lstat()
         except FileNotFoundError:
             return None
         except OSError as exc:
+            if (
+                ephemeral
+                and os.name == "nt"
+                and getattr(exc, "winerror", None) == 5
+                and _attempt < 2
+            ):
+                continue
             raise UnsafeWorkspaceStateError(
                 f"Refusing workspace state access: cannot inspect SQLite {label} {path}."
             ) from exc
@@ -367,6 +377,10 @@ def _inspect_cache_leaf(
             _unsafe_cache_path(path, f"SQLite {label} is a symlink, junction, or reparse point")
         if not stat_module.S_ISREG(metadata.st_mode):
             _unsafe_cache_path(path, f"SQLite {label} is not a regular file")
+        if ephemeral and os.name == "nt" and metadata.st_nlink == 0:
+            if _attempt < 2:
+                continue
+            _unsafe_cache_path(path, f"SQLite {label} still has no links after repeated validation")
         if metadata.st_nlink != 1:
             _unsafe_cache_path(path, f"SQLite {label} is a hardlink ({metadata.st_nlink} links)")
         try:
@@ -378,6 +392,13 @@ def _inspect_cache_leaf(
                 return None
             _unsafe_cache_path(path, f"SQLite {label} disappeared during validation")
         except (OSError, RuntimeError) as exc:
+            if (
+                ephemeral
+                and os.name == "nt"
+                and getattr(exc, "winerror", None) == 5
+                and _attempt < 2
+            ):
+                continue
             raise UnsafeWorkspaceStateError(
                 f"Refusing workspace state access: cannot resolve SQLite {label} {path}."
             ) from exc

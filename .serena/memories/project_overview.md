@@ -23,8 +23,8 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: candidate_validated -->
-<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
 <!-- RELEASE_TARGET: v2.21.1 -->
 <!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
 <!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->

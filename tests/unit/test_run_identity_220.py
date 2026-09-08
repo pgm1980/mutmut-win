@@ -473,9 +473,10 @@ def test_parallel_start_has_exactly_one_winner(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
 
-    assert len(winners) == 1
-    assert len(errors) == 3
-    assert all(isinstance(error, RunStateError) for error in errors)
+    error_details = [(type(error).__name__, str(error), repr(error.__cause__)) for error in errors]
+    assert len(winners) == 1, (winners, error_details)
+    assert len(errors) == 3, error_details
+    assert all(isinstance(error, RunStateError) for error in errors), error_details
     current = load_current_run(db_path)
     assert current is not None
     assert current.run_id == winners[0]
