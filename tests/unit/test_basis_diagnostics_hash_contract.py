@@ -5,8 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from typing import TYPE_CHECKING
 
 from mutmut_win import basis_diagnostics as diagnostics
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
 def test_published_hash_report_accounts_for_chunks_streams_and_frame_returns(tmp_path):
@@ -149,3 +155,97 @@ def test_published_empty_stream_has_no_update_or_frame_contribution(tmp_path):
     ]
     assert len(snapshot["frames"]) == 1
     assert snapshot["frames"][0]["hashes"] == []
+
+
+def test_active_digest_is_exact_bytes_and_reading_it_does_not_consume_hash_state(
+    tmp_path: Path,
+) -> None:
+    @diagnostics.snapshot
+    def observe() -> tuple[bytes, bytes, str]:
+        hasher = diagnostics.observed_sha256(b"prefix:", stream="digest-contract")
+        hasher.update(b"known payload")
+        first = hasher.digest()
+        hasher.update(b":tail")
+        return first, hasher.digest(), hasher.hexdigest()
+
+    output = tmp_path / "digest.json"
+    with diagnostics.diagnostics_session(output):
+        first, final, hexadecimal = observe()
+
+    assert type(first) is bytes
+    assert type(final) is bytes
+    assert first == hashlib.sha256(b"prefix:known payload").digest()
+    assert final == hashlib.sha256(b"prefix:known payload:tail").digest()
+    assert hexadecimal == hashlib.sha256(b"prefix:known payload:tail").hexdigest()
+    assert json.loads(output.read_text(encoding="utf-8"))["diagnostics_complete"] is True
+
+
+def test_private_token_events_bind_known_bytes_and_keep_their_safe_identity(tmp_path: Path) -> None:
+    key = bytes(range(32))
+    first = b"PRIVATE_FIRST_OBSERVED_VALUE"
+    second = b"PRIVATE_SECOND_OBSERVED_VALUE"
+
+    @diagnostics.snapshot
+    def observe() -> None:
+        diagnostics.record_token("configuration-value", first, name="FIRST", scope="fixture")
+        diagnostics.record_token("configuration-value", second, name="SECOND", scope="fixture")
+
+    output = tmp_path / "tokens.json"
+    with diagnostics.diagnostics_session(output) as collector:
+        # The existing hash-contract fixture establishes this known-key oracle.
+        collector.key = key
+        observe()
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["snapshots"][0]["frames"][0]["events"] == [
+        {
+            "kind": "configuration-value",
+            "name": "FIRST",
+            "scope": "fixture",
+            "token": hmac.digest(key, first, hashlib.sha256).hex(),
+        },
+        {
+            "kind": "configuration-value",
+            "name": "SECOND",
+            "scope": "fixture",
+            "token": hmac.digest(key, second, hashlib.sha256).hex(),
+        },
+    ]
+    assert report["diagnostics_complete"] is True
+    text = output.read_text(encoding="utf-8")
+    assert first.decode("ascii") not in text
+    assert second.decode("ascii") not in text
+    assert key.hex() not in text
+
+
+def test_report_names_a_provider_fault_without_replacing_canonical_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "provider-fault.json"
+    private_message = "provider-only-private-detail"
+
+    def unavailable_provider(*_args: object, **_kwargs: object) -> None:
+        raise OSError(private_message)
+
+    @diagnostics.snapshot
+    def build() -> str:
+        # Restore the auxiliary provider before later updates and finalization.
+        with monkeypatch.context() as patch:
+            patch.setattr(diagnostics.hmac, "new", unavailable_provider)
+            hasher = diagnostics.observed_sha256(b"canonical", stream="context")
+        hasher.update(b"-tail")
+        return hasher.hexdigest()
+
+    with diagnostics.diagnostics_session(output):
+        actual = build()
+
+    assert actual == hashlib.sha256(b"canonical-tail").hexdigest()
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["snapshots"][0]["status"] == "complete"
+    assert report["diagnostics_complete"] is False
+    assert report["errors"] == [{"operation": "begin_hash_stream", "exception_type": "OSError"}]
+    stderr = capsys.readouterr().err
+    assert "incomplete" in stderr
+    assert private_message not in output.read_text(encoding="utf-8")
+    assert private_message not in stderr
+    assert not diagnostics.is_observing()

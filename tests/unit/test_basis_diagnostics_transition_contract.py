@@ -6,10 +6,14 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pytest
 
 from mutmut_win import basis_diagnostics as diagnostics
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -224,3 +228,61 @@ def test_identity_dictionary_order_does_not_create_component_changes(tmp_path):
     assert report["diagnostics_complete"] is True
     assert report["transitions"][0]["frame_changes"] == []
     assert report["transitions"][0]["stream_observations_changed"] is False
+
+
+def test_component_occurrences_preserve_identity_and_compact_hierarchy(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "components.json"
+
+    @diagnostics.snapshot
+    def build() -> bool:
+        with diagnostics.component_scope("branch", name="left"):
+            with diagnostics.component_scope("leaf", group="g", index=1):
+                pass
+            # Equal identities with a different insertion order remain equal.
+            with diagnostics.component_scope("leaf", index=1, group="g"):
+                pass
+            with diagnostics.component_scope("leaf", group="g", index=1):
+                pass
+            with diagnostics.component_scope("leaf", group="g", index=2):
+                pass
+        with (
+            diagnostics.component_scope("branch", name="right"),
+            diagnostics.component_scope("leaf", group="g", index=1),
+        ):
+            pass
+        return True
+
+    with diagnostics.diagnostics_session(output):
+        assert build() is True
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["diagnostics_complete"] is True
+    assert report["errors"] == []
+    frames = report["snapshots"][0]["frames"]
+    assert [(frame["kind"], frame["identity"], frame["occurrence"]) for frame in frames] == [
+        ("snapshot", {}, 0),
+        ("branch", {"name": "left"}, 0),
+        ("leaf", {"group": "g", "index": 1}, 0),
+        ("leaf", {"group": "g", "index": 1}, 1),
+        ("leaf", {"group": "g", "index": 1}, 2),
+        ("leaf", {"group": "g", "index": 2}, 0),
+        ("branch", {"name": "right"}, 0),
+        ("leaf", {"group": "g", "index": 1}, 0),
+    ]
+    # IDs may be opaque, but must uniquely connect each child to its parent.
+    assert all(type(frame["id"]) is int for frame in frames)
+    assert len({frame["id"] for frame in frames}) == len(frames)
+    root, left, *_, right, right_leaf = frames
+    assert root["parent_id"] is None
+    assert left["parent_id"] == right["parent_id"] == root["id"]
+    assert all(frame["parent_id"] == left["id"] for frame in frames[2:6])
+    assert right_leaf["parent_id"] == right["id"]
+    for frame in frames:
+        assert frame["status"] == "complete"
+        assert frame["events"] == []
+        assert frame["hashes"] == []
+        # Published parent IDs carry the hierarchy without repeated ancestor
+        # chains or a second, untrimmed copy of the frame list.
+        assert "path" not in frame

@@ -161,3 +161,49 @@ def test_fanout_forwards_each_byte_once(tmp_path: Path) -> None:
     report = json.loads(output.read_text(encoding="utf-8"))
     streams = report["snapshots"][0]["streams"]
     assert [(item["name"], item["bytes"]) for item in streams] == [("left", 12), ("right", 6)]
+
+
+def test_file_observation_events_publish_all_six_bound_metadata_values(tmp_path: Path) -> None:
+    project = tmp_path / "input"
+    project.mkdir()
+    source = project / "sample.py"
+    source.write_bytes(b"value = 42\n")
+
+    @snapshot
+    def observe() -> bool:
+        hasher = observed_sha256(stream="file-contract")
+        return stats._hash_context_file(hasher, source, label="fixture", seen=set())
+
+    output = tmp_path / "file-observations.json"
+    with source.open("rb") as handle:
+        # Use a bound handle on Windows: path-stat ctime has different semantics.
+        expected_stat = os.fstat(handle.fileno())
+        with diagnostics_session(output):
+            assert observe() is True
+        after_stat = os.fstat(handle.fileno())
+
+    expected_fields = {
+        "st_dev": expected_stat.st_dev,
+        "st_ino": expected_stat.st_ino,
+        "st_mode": expected_stat.st_mode,
+        "st_size": expected_stat.st_size,
+        "st_mtime_ns": expected_stat.st_mtime_ns,
+        "st_ctime_ns": expected_stat.st_ctime_ns,
+    }
+    assert expected_fields == {
+        "st_dev": after_stat.st_dev,
+        "st_ino": after_stat.st_ino,
+        "st_mode": after_stat.st_mode,
+        "st_size": after_stat.st_size,
+        "st_mtime_ns": after_stat.st_mtime_ns,
+        "st_ctime_ns": after_stat.st_ctime_ns,
+    }
+    report = json.loads(output.read_text(encoding="utf-8"))
+    file_frames = [frame for frame in report["snapshots"][0]["frames"] if frame["kind"] == "file"]
+    assert len(file_frames) == 1
+    assert file_frames[0]["events"] == [
+        {"kind": "file-observation", "role": "before", "fields": expected_fields},
+        {"kind": "file-observation", "role": "after-handle", "fields": expected_fields},
+        {"kind": "file-observation", "role": "rebound", "fields": expected_fields},
+    ]
+    assert report["diagnostics_complete"] is True

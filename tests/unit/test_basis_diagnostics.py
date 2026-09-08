@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from mutmut_win import basis_diagnostics as diagnostics
+
+if TYPE_CHECKING:
+    from typing import Any, Never
 
 
 @dataclass(frozen=True)
@@ -302,3 +310,349 @@ def test_no_snapshots_is_not_reported_as_complete(tmp_path):
     with diagnostics.diagnostics_session(output):
         pass
     assert _read(output)["diagnostics_complete"] is False
+
+
+class _OpaqueValue:
+    def __str__(self) -> str:
+        return "PRIVATE_OPAQUE_STRING"
+
+    def __repr__(self) -> str:
+        return "PRIVATE_OPAQUE_REPR"
+
+
+class _UnreadableFields(dict[str, object]):
+    def items(self) -> Never:
+        raise OSError("PRIVATE_FIELD_ACCESS_FAILURE")
+
+
+class _UnreadableMetadataError(RuntimeError):
+    @property
+    def errno(self) -> int:
+        raise OSError("PRIVATE_ERROR_METADATA_FAILURE")
+
+
+def test_published_report_retains_session_and_snapshot_provenance(tmp_path: Path) -> None:
+    output = tmp_path / "provenance.json"
+    pid, thread_id = os.getpid(), threading.get_ident()
+
+    @diagnostics.snapshot
+    def build() -> bool:
+        return True
+
+    before = time.monotonic_ns()
+    with diagnostics.diagnostics_session(output):
+        assert build() is True
+        assert not output.exists()
+    after = time.monotonic_ns()
+
+    report = _read(output)
+    assert report["schema"] == 1
+    assert report["pid"] == pid
+    # The identifier is opaque: do not freeze its random value or exact length.
+    assert isinstance(report["session_id"], str)
+    assert report["session_id"]
+    assert report["diagnostics_complete"] is True
+    assert report["errors"] == []
+    scope = report["token_scope"].casefold()
+    assert "per-session" in scope
+    assert "hmac-sha256" in scope
+    assert "not exported" in scope
+    assert len(report["snapshots"]) == 1
+    snapshot = report["snapshots"][0]
+    assert snapshot["sequence"] == 1
+    assert snapshot["pid"] == pid
+    assert snapshot["thread_id"] == thread_id
+    assert snapshot["status"] == "complete"
+    assert snapshot["result"] is True
+    assert report["transitions"] == []
+
+    stamps = [report["start"], snapshot["start"], snapshot["end"], report["end"]]
+    assert all(set(stamp) == {"utc", "monotonic_ns"} for stamp in stamps)
+    ticks = [stamp["monotonic_ns"] for stamp in stamps]
+    assert all(type(value) is int for value in ticks)
+    assert before <= ticks[0] <= ticks[1] <= ticks[2] <= ticks[3] <= after
+    assert all(datetime.fromisoformat(stamp["utc"]).utcoffset() == timedelta(0) for stamp in stamps)
+
+
+def test_published_safe_event_fields_preserve_values_without_object_representations(
+    tmp_path: Path,
+) -> None:
+    known_path = tmp_path / "known-input-name"
+    opaque = _OpaqueValue()
+
+    @diagnostics.snapshot
+    def observe() -> None:
+        diagnostics.record_event(
+            "safe-fields",
+            payload={
+                "none": None,
+                "text": "known text",
+                "flag": False,
+                "integer": 17,
+                "fraction": 2.5,
+                "path": known_path,
+                "sequence": (None, known_path, [True, 23]),
+                "nested": {"retained": "known", 99: "PRIVATE_NONSTRING_KEY_VALUE"},
+                "opaque": opaque,
+            },
+        )
+
+    output = tmp_path / "safe-fields.json"
+    with diagnostics.diagnostics_session(output):
+        observe()
+
+    report = _read(output)
+    assert report["snapshots"][0]["frames"][0]["events"] == [
+        {
+            "kind": "safe-fields",
+            "payload": {
+                "none": None,
+                "text": "known text",
+                "flag": False,
+                "integer": 17,
+                "fraction": 2.5,
+                "path": str(known_path),
+                "sequence": [None, str(known_path), [True, 23]],
+                "nested": {"retained": "known"},
+                "opaque": {"type": "_OpaqueValue"},
+            },
+        }
+    ]
+    assert report["diagnostics_complete"] is True
+    assert "PRIVATE_" not in output.read_text(encoding="utf-8")
+
+
+def test_snapshot_return_values_remain_exact_and_unknown_results_have_a_type_label(
+    tmp_path: Path,
+) -> None:
+    @diagnostics.snapshot
+    def echo(value: object) -> object:
+        return value
+
+    opaque = _OpaqueValue()
+    output = tmp_path / "results.json"
+    with diagnostics.diagnostics_session(output):
+        assert echo(None) is None
+        assert echo(opaque) is opaque
+
+    report = _read(output)
+    assert [item["result"] for item in report["snapshots"]] == [None, {"type": "_OpaqueValue"}]
+    assert report["diagnostics_complete"] is True
+    assert "PRIVATE_" not in output.read_text(encoding="utf-8")
+
+
+def test_error_events_keep_numeric_os_codes_and_omit_unavailable_codes_and_messages(
+    tmp_path: Path,
+) -> None:
+    error = PermissionError(13, "PRIVATE_OS_ERROR_MESSAGE")
+    error.winerror = 5
+
+    @diagnostics.snapshot
+    def observe() -> None:
+        diagnostics.record_error("read-fixture", error, label="known-file")
+        diagnostics.record_error("inspect-fixture", RuntimeError("PRIVATE_RUNTIME_MESSAGE"))
+
+    output = tmp_path / "errors.json"
+    with diagnostics.diagnostics_session(output):
+        observe()
+
+    report = _read(output)
+    assert report["snapshots"][0]["frames"][0]["events"] == [
+        {
+            "kind": "error",
+            "operation": "read-fixture",
+            "exception_type": "PermissionError",
+            "label": "known-file",
+            "errno": 13,
+            "winerror": 5,
+        },
+        {
+            "kind": "error",
+            "operation": "inspect-fixture",
+            "exception_type": "RuntimeError",
+        },
+    ]
+    assert report["errors"] == []
+    assert report["diagnostics_complete"] is True
+    assert "PRIVATE_" not in output.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("operation", ["record_event", "record_token", "record_error"])
+def test_recording_failures_preserve_the_call_and_publish_precise_failure_attribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    expected = _OpaqueValue()
+
+    def unavailable_hmac(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("PRIVATE_HMAC_FAILURE")
+
+    @diagnostics.snapshot
+    def observe() -> object:
+        if operation == "record_event":
+            diagnostics.record_event("fixture", details=_UnreadableFields())
+        elif operation == "record_token":
+            # Restore the dependency before snapshot finalization/publication.
+            with monkeypatch.context() as patch:
+                patch.setattr(diagnostics.hmac, "new", unavailable_hmac)
+                diagnostics.record_token("fixture", b"known observed bytes", name="known")
+        else:
+            diagnostics.record_error("fixture", _UnreadableMetadataError("PRIVATE_MESSAGE"))
+        return expected
+
+    output = tmp_path / f"{operation}-failure.json"
+    with diagnostics.diagnostics_session(output):
+        assert observe() is expected
+
+    report = _read(output)
+    assert report["errors"] == [{"operation": operation, "exception_type": "OSError"}]
+    assert report["diagnostics_complete"] is False
+    assert report["snapshots"][0]["status"] == "complete"
+    assert report["snapshots"][0]["frames"][0]["events"] == []
+    assert "PRIVATE_" not in output.read_text(encoding="utf-8")
+
+
+def test_recording_between_snapshots_is_a_noop_without_diagnostic_faults(tmp_path: Path) -> None:
+    @diagnostics.snapshot
+    def observe() -> None:
+        return None
+
+    output = tmp_path / "between-snapshots.json"
+    with diagnostics.diagnostics_session(output):
+        diagnostics.record_event("outside-before", known=1)
+        diagnostics.record_token("outside-before", b"known bytes", name="known")
+        diagnostics.record_error("outside-before", RuntimeError("PRIVATE_MESSAGE"))
+        observe()
+        diagnostics.record_event("outside-after", known=2)
+        diagnostics.record_token("outside-after", b"more known bytes", name="known")
+
+    report = _read(output)
+    assert report["errors"] == []
+    assert report["diagnostics_complete"] is True
+    assert report["snapshots"][0]["frames"][0]["events"] == []
+
+
+def test_failure_to_record_a_diagnostic_fault_cannot_replace_the_canonical_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = LookupError("PRIVATE_CANONICAL_EXCEPTION")
+
+    def unavailable_fault(_operation: str, _error: BaseException) -> None:
+        raise OSError("PRIVATE_FAULT_SINK_FAILURE")
+
+    @diagnostics.snapshot
+    def observe() -> None:
+        diagnostics.record_event("fixture", details=_UnreadableFields())
+        raise original
+
+    output = tmp_path / "fault-sink-failure.json"
+    with diagnostics.diagnostics_session(output) as collector:
+        monkeypatch.setattr(collector, "fault", unavailable_fault)
+        with pytest.raises(LookupError) as caught:
+            observe()
+        assert caught.value is original
+
+    report = _read(output)
+    assert report["diagnostics_complete"] is False
+    assert report["snapshots"][0]["status"] == "partial"
+    assert report["snapshots"][0]["frames"][0]["events"] == [
+        {"kind": "error", "operation": "snapshot", "exception_type": "LookupError"}
+    ]
+    assert "PRIVATE_" not in output.read_text(encoding="utf-8")
+
+
+def test_declared_missing_input_root_does_not_prevent_a_valid_report(tmp_path: Path) -> None:
+    missing_input = tmp_path / "declared-input-not-yet-present"
+
+    @diagnostics.snapshot
+    def observe() -> bool:
+        diagnostics.register_input_root(missing_input)
+        return False
+
+    output = tmp_path / "missing-input.json"
+    with diagnostics.diagnostics_session(output):
+        assert observe() is False
+
+    assert not missing_input.exists()
+    report = _read(output)
+    assert report["errors"] == []
+    assert report["diagnostics_complete"] is True
+    assert report["snapshots"][0]["result"] is False
+
+
+def test_report_path_cannot_also_be_registered_as_an_exact_input_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "declared-input.json"
+
+    @diagnostics.snapshot
+    def observe() -> bool:
+        diagnostics.register_input_root(output)
+        return True
+
+    with diagnostics.diagnostics_session(output):
+        assert observe() is True
+
+    assert not output.exists()
+    assert "could not be published" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "value", [float("nan"), float("inf"), -float("inf")], ids=["nan", "inf", "minus-inf"]
+)
+def test_nonfinite_observation_never_publishes_nonstandard_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: float
+) -> None:
+    output = tmp_path / "nonfinite.json"
+
+    @diagnostics.snapshot
+    def build() -> bool:
+        diagnostics.record_event("measurement", value=value)
+        return True
+
+    with diagnostics.diagnostics_session(output):
+        actual = build()
+
+    assert actual is True
+    assert not output.exists()
+    stderr = capsys.readouterr().err
+    assert "could not be published" in stderr
+    assert "ValueError" in stderr
+    assert not diagnostics.is_observing()
+
+
+def test_failed_input_root_resolution_keeps_publication_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    observed_root = tmp_path / "observed-input"
+    observed_root.mkdir()
+    output = observed_root / "report.json"
+    resolve = Path.resolve
+    private_message = "unavailable-local-input-private-detail"
+
+    def resolve_with_unavailable_root(path: Path, strict: bool = False) -> Path:
+        if path == observed_root:
+            raise OSError(private_message)
+        return resolve(path, strict=strict)
+
+    @diagnostics.snapshot
+    def build() -> bool:
+        diagnostics.register_input_root(observed_root)
+        return True
+
+    # Initial output validation succeeds. Only the later local input-root
+    # inspection fails; it is restored before publication is attempted.
+    with diagnostics.diagnostics_session(output), monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", resolve_with_unavailable_root)
+        actual = build()
+
+    assert actual is True
+    assert not output.exists()
+    stderr = capsys.readouterr().err
+    assert "could not be published" in stderr
+    assert "ValueError" in stderr
+    assert private_message not in stderr
+    assert not diagnostics.is_observing()
