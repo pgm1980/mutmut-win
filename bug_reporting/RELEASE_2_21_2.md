@@ -30,6 +30,19 @@ wiederverwendeter numerischer PIDs anhand der nativen Erstellungsidentität;
 dies ist keine Produktänderung dieses Patches. Der historische erste STOP und
 seine ursprünglichen Readbacks bleiben erhalten.
 
+Der erste vorab begrenzte Kandidatenpilot auf sechs geänderten
+Funktionsbereichen beendete 392 frische Mutanten mit gültiger Basis,
+276 Kills und 116 Überlebenden. Sein Score von 70,408 Prozent verfehlte
+die 80-Prozent-Schwelle; dieser FAIL bleibt erhalten. Statischer Review
+belegte fehlende Testassertionen für vollständige Anzeigezeilen,
+Hashbeiträge, Zähler, Attribution und Übergangsdetails. Die ergänzten
+Tests verwenden bekannte Eingabebytes und ein unabhängiges HMAC-Oracle
+sowie veröffentlichte Berichtsdaten. Sie ändern keinen Produktcode.
+Die Wirkung muss eine neue Kampagne mit denselben sechs Funktionsbereichen,
+demselben Operatorprofil und unverändertem Mutantennenner belegen.
+Ein ausreichender Pilot-Score ersetzt weiterhin keine vollständige
+Modulabdeckung oder integrierte Releasequalifikation.
+
 ## Offene Qualifikation
 
 Der verbindliche Umfang mit neun offenen Releasegates steht in

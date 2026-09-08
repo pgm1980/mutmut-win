@@ -55,7 +55,9 @@ def test_fallback_reports_actual_budget_without_selected_timing_formula(
     assert dispatched[0].timeout_seconds == expected_budget
     out = capsys.readouterr().out
     assert f"Timeout budgets: {expected_budget:.1f}s for 1 dispatched task(s)." in out
-    assert "1 task(s) use the fallback: max(60.0s, clean run " in out
+    assert (
+        f"Timeout model: 1 task(s) use the fallback: max(60.0s, clean run {clean_wall:.1f}s x 2.0)."
+    ) in out.splitlines()
     assert "selected test time x" not in out
     assert "authoritative selected-test timings" not in out
 
@@ -70,20 +72,25 @@ def test_authoritative_selection_reports_assigned_budget_range(
     dispatched = _apply_timeouts(
         tasks,
         {"test_fast": 0.5, "test_slow": 2.0},
-        2.0,
-        startup_floor=5.0,
-        clean_wall_seconds=7.5,
+        3.0,
+        startup_floor=6.5,
+        clean_wall_seconds=9.0,
     )
 
     _print_timeout_model(
-        dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=7.5, total_test_time=2.5
+        dispatched, 3.0, startup_floor=6.5, clean_wall_seconds=9.0, total_test_time=2.5
     )
 
-    assert [task.timeout_seconds for task in dispatched] == [6.0, 9.0]
+    assert [task.timeout_seconds for task in dispatched] == [8.0, 12.5]
     out = capsys.readouterr().out
-    assert "Timeout budgets: 6.0s to 9.0s for 2 dispatched task(s)." in out
-    assert "2 task(s) use authoritative selected-test timings" in out
-    assert "max(5.0s, startup floor 5.0s + selected test time x 2.0)" in out
+    assert "Timeout budgets: 8.0s to 12.5s for 2 dispatched task(s)." in out
+    assert (
+        "Timeout calibration: startup floor 6.5s (clean run 9.0s - measured test time 2.5s)."
+    ) in out.splitlines()
+    assert (
+        "Timeout model: 2 task(s) use authoritative selected-test timings: "
+        "max(5.0s, startup floor 6.5s + selected test time x 3.0)."
+    ) in out.splitlines()
     assert "fallback" not in out
 
 
@@ -121,8 +128,13 @@ def test_mixed_dispatch_reports_both_active_models(
     assert [task.timeout_seconds for task in dispatched] == budgets
     out = capsys.readouterr().out
     assert f"Timeout budgets: {displayed_budgets} for 2 dispatched task(s)." in out
-    assert "1 task(s) use authoritative selected-test timings" in out
-    assert "1 task(s) use the fallback" in out
+    assert (
+        "Timeout model: 1 task(s) use authoritative selected-test timings: "
+        "max(5.0s, startup floor 5.0s + selected test time x 2.0)."
+    ) in out.splitlines()
+    assert (
+        f"Timeout model: 1 task(s) use the fallback: max(60.0s, clean run {clean_wall:.1f}s x 2.0)."
+    ) in out.splitlines()
 
 
 def test_no_dispatch_has_no_timeout_announcement(capsys: pytest.CaptureFixture[str]) -> None:
