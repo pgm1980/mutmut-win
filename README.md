@@ -2,7 +2,7 @@
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 **Windows-native mutation testing for Python.**
@@ -87,7 +87,7 @@ identity-capable volume rather than disabling the safety check.
 |---|---|---|
 | Windows | blocked ([#397](https://github.com/boxed/mutmut/issues/397)) | native (spawn worker pool, job objects, no `fork`) |
 | Orphan protection | — | Windows Job Objects: if the parent dies, the kernel reaps every worker and pytest child |
-| Timeout model | CPU-time limit (`RLIMIT_CPU`) | wall-clock budget = measured startup floor + scaled test time |
+| Timeout model | CPU-time limit (`RLIMIT_CPU`) | measured wall-clock budgets; full-suite fallback is at least 60 seconds |
 | Hung mutants | plain timeout | infinite-loop classifier with forensics + confidence |
 | Type-checker filter | — | `type_check_command` kills mutants without running tests |
 | CI output | text | `--output json` (clean stdout), `--min-score`, CI stats export |
@@ -106,13 +106,13 @@ external-publication verification contract at the top of this document before
 using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2" --dev
 ```
 
 Do not use the pinned dependency unless the required external tag/release
@@ -190,6 +190,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
+| `--basis-diagnostics ABSOLUTE_JSON_PATH` | Record execution-basis inputs and changes to a new file outside measured roots; opt-in and published after the run |
 | `--debug` | Full tracebacks on errors |
 
 Exit codes of `run`: `0` success, `1` runtime failure, failed
@@ -197,6 +198,27 @@ Exit codes of `run`: `0` success, `1` runtime failure, failed
 remainder is reported and the score gate is skipped), `2` invalid
 configuration or option value, `130` interrupted (Ctrl-C — partial
 results are persisted, the score gate is skipped).
+
+### Execution-basis diagnostics
+
+To investigate a changing execution basis, create an evidence directory outside
+your project and Python installation, then use a fresh absolute destination:
+
+```powershell
+mutmut-win run --basis-diagnostics C:\evidence\run-01.json
+```
+
+The report compares observed inputs at the start and end of a run. It includes
+paths, environment variable names and file metadata; file contents and environment
+values are represented by private comparison tokens. Recording adds CPU, memory
+and elapsed time. The report is written after the run and does not determine
+whether its mutation results are valid. See the [diagnostic report guide](_docs/basis_diagnostics.md)
+for completeness fields, comparison limits and handling recording errors.
+
+The timeout message shows the minimum and maximum budgets actually assigned to
+pending tasks and the formula used. It reports the full-suite fallback whenever
+test mapping is not authoritative. This corrects the display; task budgets and
+timeout classification retain their existing behavior.
 
 ## Configuration
 
@@ -421,8 +443,11 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
    always loaded as non-authoritative: observed durations may order independent
    mutant tasks, but pytest's native item order is unchanged, every survivor
    receives the full selected suite, and no cached flag can create selective or
-   `no tests` verdicts. A measured startup floor plus the full-suite time
-   determines both budget and reuse identity.
+   `no tests` verdicts. Such tasks use the full-suite fallback budget
+   `max(60 seconds, clean-run wall time × timeout_multiplier)`. Authoritative
+   mappings use the measured startup floor plus scaled test time, with a
+   minimum budget of five seconds. Result reuse separately binds the selected
+   tests and execution basis.
 4. **Plan & execute**: the exact generated universe is committed as the
    current run plan before dispatch. Spawn-based workers activate one mutant
    at a time via `MUTANT_UNDER_TEST` and run its tests. Subprocess output is

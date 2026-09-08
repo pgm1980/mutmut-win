@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mutmut-win"
-version = "2.21.1"
+version = "2.21.2"
 description = "Windows-native mutation testing for Python, based on mutmut 3.5.0"
 readme = "README.md"
 license = "ISC AND BSD-3-Clause AND PSF-2.0"
@@ -89,6 +89,7 @@ include = [
     "/scripts",
     "/.semgrepignore",
     "/README.md",
+    "/_docs/basis_diagnostics.md",
     "/LICENSE",
     "/pyproject.toml",
     "/uv.lock",
