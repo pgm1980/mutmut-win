@@ -26,6 +26,7 @@ annotiertes Tag und GitHub-Release bleiben bis zu ihren tatsächlichen Nachweise
 Die historische MW220-ID-Menge bleibt unverändert bei 115. Die MW221-Summe bleibt
 46: 27 VERIFIED_FIXED, 7 ACCEPTED_LIMITATION, 3 REJECTED_AS_BUG,
 4 OUT_OF_TARGET, 4 MIXED und 1 OPEN_PROCESS.
+Die 70 getrennt geführten Codex-Follow-up-Findings umfassen 2 P0, 63 P1 und 5 P2.
 
 ## 0. Verbindlicher v2.21.1-Vertrag
 
@@ -721,6 +722,19 @@ Config- und Rootprüfungen bei. Ihr Verbund bestand mit 158 Tests in 30,26 s;
 der unabhängige Root-Verbund einschließlich Supply Chain mit 61 Tests in 3,39 s.
 Ruff und Format blieben ohne Befund. Produktbytes wurden dabei nicht geändert;
 der nachfolgende Commit benötigte seine vollständige Revalidierung; deren abgeschlossener Nachweis steht in Abschnitt 13.4.
+
+Der erste attestierte Candidate `45cd62ef489a49cd8889283d893218a9d8ee1121`
+mit Tree `bda15ab5f0c594f71f88a494d9f88ee0bcca7064` verlor beim Ersetzen
+des Roadmap-Kopfs eine bestehende Vertragsphrase zur 70er-Codex-ID-Menge.
+Der Previewvergleich übersah diesen Pflichtanker. Der gezielte Governancecluster
+reproduzierte 1 failed/64 passed in 3,61 s; die überholte Vollsuite wurde nach
+der sichtbaren Fehlermeldung kontrolliert abgebrochen. Danach waren der Checkout
+sauber und alle zugehörigen Testprozesse beendet. Dieser Versuch bleibt
+`ABORTED` und liefert keinen abgeschlossenen Candidate-Nachweis.
+Die wahre 70er-Kopfzeile ist wiederhergestellt und im externen Updater auch für
+Housekeeping erhalten. Produktcode, Tests und Befund-ID-Mengen bleiben unverändert.
+Die korrigierten Dokumentbytes erhalten einen eigenen commit-genauen Kandidatennachweis;
+Implementierungsergebnisse ersetzen diese Gates nicht.
 
 ### 13.4 Aktueller Abschlussstand und exakte Sequenz
 
