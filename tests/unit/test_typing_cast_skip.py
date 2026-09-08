@@ -131,6 +131,34 @@ def normalise(obj):
     assert "type_cast(None," not in mutated_code
 
 
+def test_typing_extensions_cast_first_arg_is_skipped() -> None:
+    source = """\
+from typing_extensions import cast as backport_cast
+
+
+def normalise(obj):
+    return backport_cast("Any", obj)
+"""
+    mutated_code, _ = mutate_file_contents("m.py", source)
+
+    assert 'backport_cast("XXAnyXX",' not in mutated_code
+    assert "backport_cast(None," not in mutated_code
+
+
+def test_qualified_typing_extensions_cast_first_arg_is_skipped() -> None:
+    source = """\
+import typing_extensions
+
+
+def normalise(obj):
+    return typing_extensions.cast("Any", obj)
+"""
+    mutated_code, _ = mutate_file_contents("m.py", source)
+
+    assert 'typing_extensions.cast("XXAnyXX",' not in mutated_code
+    assert "typing_extensions.cast(None," not in mutated_code
+
+
 def test_local_function_named_cast_keeps_first_argument_mutable() -> None:
     source = """\
 def cast(kind, value):

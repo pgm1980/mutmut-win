@@ -74,13 +74,19 @@ class TestLocalCollisions:
 
 
 class TestStarArgsMethods:
-    def test_method_with_only_star_args_left_unmutated(self) -> None:
-        # A1-MT-003: ``def m(*args)`` has no named first parameter the wrapper
-        # could bind — such methods are left unmutated instead of broken.
+    def test_method_with_only_star_args_is_mutated_and_dispatches(self) -> None:
+        # A1-MT-003/MW221-024: the complete ``*args`` tuple, including the
+        # bound instance, is forwarded to both the original and each mutant.
         source = "class C:\n    def m(*args):\n        return (1 + 1, args[1:])\n"
         ns, names = _exec_clean(source)
         assert ns["C"]().m(5) == (2, (5,))
-        assert not any("ǁCǁm" in n for n in names)
+        method_mutants = [name for name in names if "ǁCǁm" in name]
+        assert method_mutants
+        try:
+            os.environ["MUTANT_UNDER_TEST"] = "m." + method_mutants[0]
+            assert ns["C"]().m(5) != (2, (5,))
+        finally:
+            os.environ.pop("MUTANT_UNDER_TEST", None)
 
     def test_method_with_self_and_star_args_still_mutated(self) -> None:
         source = "class C:\n    def m(self, *rest):\n        return (1 + 1, rest)\n"

@@ -15,25 +15,40 @@ from __future__ import annotations
 import ast
 import contextlib
 import hashlib
+import importlib.machinery
+import itertools
 import json
 import os
+import re
 import shutil
+import stat
 import sys
 import time
+import tokenize
 import warnings
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
 import libcst as cst
 
 from mutmut_win.atomic_file import atomic_copy_file, atomic_write_bytes
-from mutmut_win.constants import SOURCE_ROOT_NAMES, WORKSPACE_EXCLUDED_DIR_NAMES, Profile
-from mutmut_win.exceptions import UnsafeStagingError
-from mutmut_win.models import SourceFileMutationData
+from mutmut_win.constants import (
+    SOURCE_ROOT_NAMES,
+    WORKSPACE_EXCLUDED_DIR_NAMES,
+    WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
+    Profile,
+    configured_staging_relative_path,
+)
+from mutmut_win.exceptions import (
+    StagingNamespaceCollisionError,
+    StaleStagingError,
+    UnsafeStagingError,
+)
+from mutmut_win.models import SourceFileMutationData, read_owned_source_metadata
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from mutmut_win.config import MutmutConfig
 
@@ -42,12 +57,29 @@ if TYPE_CHECKING:
 #: carry diverging literals, and tooling trees (node_modules, .claude, …)
 #: were mirrored into mutants/ on every first run.
 _STAGING_SKIP_DIRS: frozenset[str] = WORKSPACE_EXCLUDED_DIR_NAMES
+_STAGING_RECURSIVE_SKIP_DIRS: frozenset[str] = WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES
 
 # Stable workspace coordination artifacts belong beside the project, never in
 # the import staging tree. The guard intentionally survives clean releases.
 _STAGING_SKIP_FILES: frozenset[str] = frozenset(
     {".mutmut-win.run.lock", ".mutmut-win.run.lock.guard"}
 )
+_PERSISTENT_STAGING_STATE_FILES: frozenset[str] = frozenset({".mutmut-config-fingerprint"})
+
+# These paths are produced inside executable staging after the live project
+# mirror is copied. A project input at the same target must be rejected,
+# never silently replaced. The helper modules are additionally reserved as
+# import names under every source root that precedes ``mutants/`` on the child
+# PYTHONPATH (CX221-038).
+_FIXED_STAGING_ARTIFACT_OWNERS: dict[str, str] = {
+    ".mutmut-config-fingerprint": "the mutation-universe fingerprint",
+    "mutmut-cicd-stats.json": "the CI/CD statistics export",
+}
+_STAGING_HELPER_MODULE_OWNERS: dict[str, str] = {
+    "_mutmut_phase_guard": "the pytest phase guard",
+    "_mutmut_stats_plugin": "the pytest statistics plugin",
+    "sitecustomize": "the editable-install path blocker",
+}
 
 
 def _skip_automatic_root_file(name: str) -> bool:
@@ -63,9 +95,71 @@ def _skip_automatic_root_file(name: str) -> bool:
     )
 
 
-def _is_staging_skip_dir(name: str) -> bool:
-    """Apply Windows' case-insensitive directory semantics consistently."""
-    return name.casefold() in _STAGING_SKIP_DIRS
+def _is_staging_skip_dir(name: str, *, at_workspace_root: bool) -> bool:
+    """Apply root-only and recursive exclusions with Windows case-folding."""
+    folded = name.casefold()
+    return folded in _STAGING_RECURSIVE_SKIP_DIRS or (
+        at_workspace_root and folded in _STAGING_SKIP_DIRS
+    )
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    metadata = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    junction_check = getattr(path, "is_junction", None)
+    return bool(
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and attributes & reparse_flag)
+        or (callable(junction_check) and junction_check())
+    )
+
+
+def _retry_readonly_removal(
+    operation: Callable[[str], object],
+    raw_path: str,
+    error: BaseException,
+) -> None:
+    """Retry deletion after safely clearing an owned staging attribute.
+
+    A DOS read-only attribute is shared by every hardlink to the same file.
+    Clearing it before proving sole staging ownership could therefore mutate a
+    live file outside ``mutants/`` even though the subsequent unlink remains
+    contained.  Freeze and revalidate the staging identity on both sides of
+    ``chmod`` and restore the original mode when deletion does not complete.
+    """
+
+    if not isinstance(error, PermissionError):
+        raise error
+    path, metadata = _checked_owned_staging_leaf(Path(raw_path), allow_directory=True)
+    identity = _staging_identity(metadata)
+    original_mode = stat.S_IMODE(metadata.st_mode)
+    mode_changed = False
+    try:
+        path.chmod(original_mode | stat.S_IWRITE, follow_symlinks=False)
+        mode_changed = True
+        _require_same_owned_staging_leaf(path, identity, allow_directory=True)
+        operation(raw_path)
+    finally:
+        if mode_changed:
+            _restore_staging_leaf_mode(path, identity, original_mode)
+
+
+def _unlink_staging_file(path: Path) -> None:
+    """Delete one owned staging file, including copy2-preserved read-only files."""
+
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError as exc:
+        _retry_readonly_removal(os.unlink, str(path), exc)
+
+
+def _warn_skipped_source_link(path: Path, detail: str) -> None:
+    warnings.warn(
+        f"Skipping linked or redirected source path {path}: {detail}",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 def _validated_mutants_root() -> Path:
@@ -88,29 +182,195 @@ def validate_staging_root() -> Path:
     return _validated_mutants_root()
 
 
+def purge_staging_runtime_artifacts() -> None:
+    """Remove inherited interpreter/tool state before freezing ``mutants/``.
+
+    CPython consumes ``UNCHECKED_HASH`` bytecode without comparing it with the
+    staged source.  Merely skipping ``__pycache__`` in a digest therefore
+    allowed a stale or test-written pyc to turn survivors into false kills.
+    The executable staging contract contains source/config/fixture bytes only:
+    recursive tool-cache directories and sourceless ``*.pyc``/``*.pyo`` files
+    are removed before the snapshot.  Any such entry created later is included
+    in the full staging digest and makes the run fail closed.
+    """
+
+    mutants_root = _validated_mutants_root()
+    staging = Path("mutants")
+    if not staging.is_dir():
+        return
+    recursive_runtime_dirs = {name.casefold() for name in _STAGING_RECURSIVE_SKIP_DIRS}
+    for root_str, dirs, files in os.walk(staging, topdown=True):
+        directory = Path(root_str)
+        retained: list[str] = []
+        for name in dirs:
+            candidate = directory / name
+            if name.casefold() not in recursive_runtime_dirs:
+                retained.append(name)
+                continue
+            _validated_staging_destination(candidate, mutants_root)
+            shutil.rmtree(candidate, onexc=_retry_readonly_removal)
+        dirs[:] = retained
+        for name in files:
+            if Path(name).suffix.casefold() not in {".pyc", ".pyo"}:
+                continue
+            candidate = directory / name
+            _validated_staging_destination(candidate, mutants_root)
+            _unlink_staging_file(candidate)
+
+
 def _validated_staging_destination(destination: Path, mutants_root: Path) -> Path:
-    """Return a lexical staging path only when no component redirects it."""
-    # ``absolute`` makes the path lexical-absolute without dereferencing
-    # symlinks/junctions; comparing it with ``resolve`` below is intentional.
+    """Return a contained lexical staging path with no redirected component."""
     lexical = destination.absolute()
-    try:
-        lexical.relative_to(mutants_root)
-    except ValueError as exc:
-        raise UnsafeStagingError(
-            f"Unsafe staging destination {destination}: path escapes {mutants_root}"
-        ) from exc
+
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    for component in reversed((lexical, *lexical.parents)):
+        try:
+            metadata = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UnsafeStagingError(
+                f"Cannot inspect staging destination component {component}: {exc}"
+            ) from exc
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        junction_check = getattr(component, "is_junction", None)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or bool(reparse_flag and attributes & reparse_flag)
+            or (callable(junction_check) and junction_check())
+        ):
+            raise UnsafeStagingError(
+                f"Unsafe staging destination {destination}: component {component} "
+                "is a symlink/junction or reparse point"
+            )
+        if component != lexical and not stat.S_ISDIR(metadata.st_mode):
+            raise UnsafeStagingError(
+                f"Unsafe staging destination {destination}: parent component "
+                f"{component} is not a directory"
+            )
     try:
         resolved = destination.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
         raise UnsafeStagingError(
             f"Cannot resolve staging destination {destination}: {exc}"
         ) from exc
-    if resolved != lexical:
+    try:
+        resolved.relative_to(mutants_root)
+    except ValueError as exc:
         raise UnsafeStagingError(
-            f"Unsafe staging destination {destination}: resolves through a "
-            f"symlink/junction to {resolved}"
-        )
+            f"Unsafe staging destination {destination}: path escapes {mutants_root}"
+        ) from exc
     return lexical
+
+
+def _staging_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """Return the stable filesystem identity used by staging attribute guards."""
+
+    identity = (int(metadata.st_dev), int(metadata.st_ino))
+    if identity[1] == 0:
+        raise UnsafeStagingError("Cannot establish a stable identity for a staging leaf")
+    return identity
+
+
+def _checked_owned_staging_leaf(
+    path: Path,
+    *,
+    allow_directory: bool = False,
+) -> tuple[Path, os.stat_result]:
+    """Return one contained, non-redirected, solely owned staging leaf."""
+
+    mutants_root = _validated_mutants_root()
+    lexical = _validated_staging_destination(path, mutants_root)
+    if lexical == mutants_root:
+        raise UnsafeStagingError("Refusing to change attributes on the staging root itself")
+    try:
+        metadata = lexical.lstat()
+    except OSError as exc:
+        raise UnsafeStagingError(f"Cannot inspect staging leaf {lexical}: {exc}") from exc
+
+    is_regular = stat.S_ISREG(metadata.st_mode)
+    if not is_regular and not (allow_directory and stat.S_ISDIR(metadata.st_mode)):
+        raise UnsafeStagingError(f"Unsafe staging leaf {lexical}: not a regular owned file")
+    if is_regular and metadata.st_nlink != 1:
+        raise UnsafeStagingError(
+            f"Unsafe staging leaf {lexical}: read-only file has {metadata.st_nlink} hardlinks"
+        )
+    _staging_identity(metadata)
+    return lexical, metadata
+
+
+def _require_same_owned_staging_leaf(
+    path: Path,
+    identity: tuple[int, int],
+    *,
+    allow_directory: bool = False,
+) -> os.stat_result:
+    """Revalidate that *path* still names the frozen owned staging leaf."""
+
+    _lexical, metadata = _checked_owned_staging_leaf(
+        path,
+        allow_directory=allow_directory,
+    )
+    if _staging_identity(metadata) != identity:
+        raise UnsafeStagingError(f"Unsafe staging leaf {path}: identity changed during operation")
+    return metadata
+
+
+def _restore_staging_leaf_mode(path: Path, identity: tuple[int, int], mode: int) -> None:
+    """Best-effort restore *mode* only while the frozen leaf still owns *path*."""
+
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return
+    try:
+        if _staging_identity(metadata) != identity:
+            return
+    except UnsafeStagingError:
+        return
+    with contextlib.suppress(OSError):
+        path.chmod(mode, follow_symlinks=False)
+
+
+@contextlib.contextmanager
+def _temporarily_writable_staging_leaf(path: Path) -> Iterator[None]:
+    """Make an existing read-only Windows staging leaf replaceable, safely.
+
+    Windows refuses an atomic replace when the existing destination carries
+    the DOS read-only attribute.  The exception is intentionally limited to a
+    regular, non-reparse leaf with one link.  On a successful atomic publish
+    the old identity disappears, so its mode is not applied to the new file;
+    on failure the old mode is restored in ``finally``.
+    """
+
+    if os.name != "nt":
+        yield
+        return
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        yield
+        return
+    if stat.S_IMODE(metadata.st_mode) & stat.S_IWRITE:
+        yield
+        return
+
+    checked_path, metadata = _checked_owned_staging_leaf(path)
+    identity = _staging_identity(metadata)
+    original_mode = stat.S_IMODE(metadata.st_mode)
+    mode_changed = False
+    try:
+        checked_path.chmod(original_mode | stat.S_IWRITE, follow_symlinks=False)
+        mode_changed = True
+        current = _require_same_owned_staging_leaf(checked_path, identity)
+        if not stat.S_IMODE(current.st_mode) & stat.S_IWRITE:
+            raise UnsafeStagingError(
+                f"Cannot make read-only staging leaf replaceable: {checked_path}"
+            )
+        yield
+    finally:
+        if mode_changed:
+            _restore_staging_leaf_mode(checked_path, identity, original_mode)
 
 
 # ---------------------------------------------------------------------------
@@ -140,22 +400,43 @@ def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
                 # mutation engine. Resolve children as a junction/symlink
                 # defence in addition to the fast name filter.
                 safe_dirs: list[str] = []
+                at_workspace_root = Path(root).resolve() == project_root
                 for directory in dirs:
-                    if _is_staging_skip_dir(directory):
+                    if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
                         continue
+                    candidate = Path(root) / directory
                     try:
-                        (Path(root) / directory).resolve().relative_to(project_root)
-                    except (OSError, ValueError):
+                        if _is_link_or_reparse(candidate):
+                            _warn_skipped_source_link(
+                                candidate,
+                                "directory links are not traversed during mutation discovery",
+                            )
+                            continue
+                        candidate.resolve().relative_to(project_root)
+                    except (OSError, ValueError) as exc:
+                        _warn_skipped_source_link(
+                            candidate, f"cannot prove project containment ({exc})"
+                        )
                         continue
                     safe_dirs.append(directory)
                 dirs[:] = safe_dirs
                 for filename in files:
+                    candidate = Path(root) / filename
                     try:
-                        (Path(root) / filename).resolve().relative_to(project_root)
-                    except (OSError, ValueError):
+                        if _is_link_or_reparse(candidate):
+                            _warn_skipped_source_link(
+                                candidate,
+                                "file links are not mutation inputs",
+                            )
+                            continue
+                        candidate.resolve().relative_to(project_root)
+                    except (OSError, ValueError) as exc:
                         # A file symlink can escape even when its containing
                         # directory is inside the project. Never feed that
                         # external target to staging/mutation implicitly.
+                        _warn_skipped_source_link(
+                            candidate, f"cannot prove project containment ({exc})"
+                        )
                         continue
                     yield root, filename
 
@@ -170,8 +451,484 @@ def walk_source_files(config: MutmutConfig) -> Iterator[Path]:
         ``Path`` objects pointing to Python source files.
     """
     for root, filename in walk_all_files(config):
-        if filename.endswith(".py"):
+        if filename.casefold().endswith(".py"):
             yield Path(root) / filename
+
+
+def _staging_key(path: Path) -> tuple[str, ...]:
+    """Return a Windows-identity key for a staging-relative path."""
+
+    return tuple(part.casefold() for part in path.parts if part not in {"", "."})
+
+
+def _iter_automatic_staging_inputs(
+    excluded_resolved: frozenset[Path],
+) -> Iterator[tuple[Path, Path]]:
+    """Yield file/directory ownership planned for the automatic root mirror."""
+
+    project_root = Path.cwd().resolve()
+    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
+        source_root = Path(source_root_name)
+        if not source_root.is_dir():
+            continue
+        for root_str, dirs, files in os.walk(source_root):
+            source_directory = Path(root_str)
+            try:
+                if _is_link_or_reparse(source_directory):
+                    dirs[:] = []
+                    continue
+                source_directory.resolve(strict=True).relative_to(project_root)
+            except (OSError, ValueError):  # fmt: skip
+                dirs[:] = []
+                continue
+            safe_dirs: list[str] = []
+            at_workspace_root = Path(root_str).resolve() == project_root
+            for directory in dirs:
+                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                    continue
+                candidate = Path(root_str) / directory
+                try:
+                    if _is_link_or_reparse(candidate):
+                        continue
+                    candidate.resolve().relative_to(project_root)
+                except (
+                    OSError,
+                    ValueError,
+                ):  # fmt: skip
+                    continue
+                safe_dirs.append(directory)
+            dirs[:] = safe_dirs
+            if source_root_name == "." and Path(root_str).resolve() == project_root:
+                source_roots = {name.casefold() for name in SOURCE_ROOT_NAMES}
+                dirs[:] = [name for name in dirs if name.casefold() not in source_roots]
+
+            target_directory = Path(root_str)
+            if _staging_key(target_directory):
+                # ``mutants/`` itself is the engine-owned staging root, not a
+                # project input that conflicts with every configured mirror
+                # nested below it.  Descendant directories remain explicit
+                # ownership entries so empty namespace packages participate
+                # in collision preflight.
+                yield source_directory, target_directory
+
+            for name in files:
+                if _skip_automatic_root_file(name):
+                    continue
+                source = Path(root_str) / name
+                try:
+                    if _is_link_or_reparse(source):
+                        continue
+                    resolved = source.resolve(strict=True)
+                    resolved.relative_to(project_root)
+                except (
+                    OSError,
+                    ValueError,
+                ):  # fmt: skip
+                    continue
+                if resolved in excluded_resolved:
+                    continue
+                yield source, Path(root_str) / name
+
+
+def _iter_configured_staging_inputs(
+    config: MutmutConfig,
+    excluded_resolved: frozenset[Path],
+) -> Iterator[tuple[Path, Path]]:
+    """Yield planned file mirrors from ``also_copy`` and ``extra_paths``."""
+
+    project_root = Path.cwd().resolve()
+    mutants_root = project_root / "mutants"
+    for raw in (*config.also_copy, *config.extra_paths):
+        path = Path(raw)
+        destination = configured_staging_relative_path(path, project_root=project_root)
+        if destination is None:
+            continue
+        if _is_staging_skip_dir(path.name, at_workspace_root=True):
+            continue
+        try:
+            resolved_path = path.resolve()
+            if resolved_path in (project_root, mutants_root):
+                continue
+        except (
+            OSError,
+            RuntimeError,
+        ):  # fmt: skip
+            continue
+        if not path.exists():
+            continue
+        if path.is_file():
+            try:
+                if path.resolve(strict=True) not in excluded_resolved:
+                    yield path, destination
+            except OSError:
+                continue
+            continue
+        for root_str, dirs, files in os.walk(path):
+            dirs[:] = [
+                name for name in dirs if not _is_staging_skip_dir(name, at_workspace_root=False)
+            ]
+            relative_root = Path(root_str).relative_to(path)
+            yield Path(root_str), destination / relative_root
+            for name in files:
+                source = Path(root_str) / name
+                try:
+                    if source.resolve(strict=True) in excluded_resolved:
+                        continue
+                except OSError:
+                    continue
+                yield source, destination / relative_root / name
+
+
+def _helper_owner_for_target(
+    target: Path,
+    *,
+    active_helpers: dict[str, str],
+    import_roots: Sequence[Path],
+    is_directory: bool = False,
+) -> str | None:
+    """Return the internal owner shadowed by one planned import target."""
+
+    key = _staging_key(target)
+    for configured_root in import_roots:
+        import_root = _staging_key(configured_root)
+        if key[: len(import_root)] != import_root or len(key) <= len(import_root):
+            continue
+        remainder = key[len(import_root) :]
+        first = remainder[0]
+        for module_name, owner in active_helpers.items():
+            folded_module = module_name.casefold()
+            # An empty directory is already a PEP 420 namespace. Publishing
+            # the helper would replace its import identity even without any
+            # descendant files. A same-named extensionless regular file is
+            # ordinary user data and must remain allowed (CX221-068).
+            if first == folded_module and (len(remainder) > 1 or is_directory):
+                return owner
+            if len(remainder) == 1 and any(
+                first == f"{folded_module}{suffix.casefold()}"
+                for suffix in (".py", *importlib.machinery.EXTENSION_SUFFIXES)
+            ):
+                return owner
+    return None
+
+
+def _same_live_input(left: Path, right: Path) -> bool:
+    """Return whether two planned sources identify the same live object."""
+
+    try:
+        return left.samefile(right)
+    except OSError:
+        try:
+            return os.path.normcase(str(left.resolve(strict=True))) == os.path.normcase(
+                str(right.resolve(strict=True))
+            )
+        except OSError:
+            return False
+
+
+def _same_planned_input(left: Path, right: Path) -> bool:
+    """Compare configured input identities even when both paths are absent."""
+
+    try:
+        return os.path.normcase(str(left.resolve(strict=False))) == os.path.normcase(
+            str(right.resolve(strict=False))
+        )
+    except (
+        OSError,
+        RuntimeError,
+    ):  # fmt: skip
+        return False
+
+
+def _iter_configured_staging_roots(
+    config: MutmutConfig,
+    excluded_resolved: frozenset[Path],
+) -> Iterator[tuple[Path, Path]]:
+    """Yield canonical live roots and their staging-relative destinations."""
+
+    project_root = Path.cwd().resolve()
+    mutants_root = project_root / "mutants"
+    for raw in (*config.also_copy, *config.extra_paths):
+        path = Path(raw)
+        destination = configured_staging_relative_path(path, project_root=project_root)
+        if destination is None or _is_staging_skip_dir(path.name, at_workspace_root=True):
+            continue
+        try:
+            source = path.resolve(strict=True)
+        except OSError:
+            continue
+        if source in excluded_resolved or source in (project_root, mutants_root):
+            continue
+        if source.is_file() or source.is_dir():
+            yield source, destination
+
+
+def _iter_missing_configured_staging_roots(
+    config: MutmutConfig,
+    excluded_resolved: frozenset[Path],
+) -> Iterator[tuple[Path, Path]]:
+    """Yield absent configured inputs whose staging targets would be removed.
+
+    A missing ``also_copy``/``extra_paths`` entry is not a no-op: the copy
+    phase deletes its previous destination so stale executable bytes cannot
+    survive.  The preflight must therefore model that destructive ownership
+    even though there is no live source to enumerate.
+    """
+
+    project_root = Path.cwd().resolve()
+    mutants_root = project_root / "mutants"
+    for raw in (*config.also_copy, *config.extra_paths):
+        path = Path(raw)
+        destination = configured_staging_relative_path(path, project_root=project_root)
+        if destination is None or _is_staging_skip_dir(path.name, at_workspace_root=True):
+            continue
+        if path.exists():
+            continue
+        try:
+            source = path.resolve(strict=False)
+        except (
+            OSError,
+            RuntimeError,
+        ):  # fmt: skip
+            source = path.absolute()
+        if source in excluded_resolved or source in (project_root, mutants_root):
+            continue
+        yield source, destination
+
+
+def _staging_targets_overlap(left: Path, right: Path) -> bool:
+    """Return whether either staging target contains the other on Windows."""
+
+    left_key = _staging_key(left)
+    right_key = _staging_key(right)
+    if not left_key or not right_key:
+        return left_key == right_key
+    return left_key[: len(right_key)] == right_key or right_key[: len(left_key)] == left_key
+
+
+def _mapped_live_input(root_source: Path, root_target: Path, target: Path) -> Path | None:
+    """Map one descendant staging target back through a configured live root."""
+
+    root_key = _staging_key(root_target)
+    target_key = _staging_key(target)
+    if target_key[: len(root_key)] != root_key:
+        return None
+    relative_parts = target.parts[len(root_target.parts) :]
+    if not relative_parts:
+        return root_source
+    if not root_source.is_dir():
+        return None
+    return root_source.joinpath(*relative_parts)
+
+
+def validate_staging_namespace(
+    config: MutmutConfig,
+    *,
+    excluded_paths: Sequence[Path] = (),
+) -> None:
+    """Reject live inputs that collide with mutmut-win-owned staging paths.
+
+    This is a read-only preflight. It models both automatic and configured
+    mirrors, compares with Windows case-insensitive identity, and runs before
+    ``--force``, cache creation, or staging publication. It is repeated at
+    the copy boundary to narrow the validation/use race.
+    """
+
+    excluded_resolved: set[Path] = set()
+    for excluded in excluded_paths:
+        try:
+            excluded_resolved.add(excluded.resolve())
+        except OSError:
+            continue
+    frozen_exclusions = frozenset(excluded_resolved)
+
+    exact_owners = {
+        _staging_key(Path(name)): owner for name, owner in _FIXED_STAGING_ARTIFACT_OWNERS.items()
+    }
+    for source in walk_source_files(config):
+        if config.should_ignore_for_mutation(source):
+            continue
+        metadata_target = Path(f"{source}.meta")
+        exact_owners[_staging_key(metadata_target)] = f"mutation metadata for {source}"
+
+    active_helpers = dict(_STAGING_HELPER_MODULE_OWNERS)
+    if not any(Path(name).is_dir() for name in SOURCE_ROOT_NAMES):
+        # No editable source root means the runner deliberately does not
+        # publish its sitecustomize blocker; a flat-layout project may retain
+        # its own startup module without colliding.
+        active_helpers.pop("sitecustomize")
+
+    import_roots = [Path(), *(Path(name) for name in SOURCE_ROOT_NAMES)]
+    project_root = Path.cwd().resolve()
+    for raw in config.extra_paths:
+        extra_path = configured_staging_relative_path(raw, project_root=project_root)
+        if extra_path is not None:
+            import_roots.append(extra_path)
+
+    collisions: set[tuple[str, str, str]] = set()
+    automatic_inputs = list(_iter_automatic_staging_inputs(frozen_exclusions))
+    configured_inputs = list(_iter_configured_staging_inputs(config, frozen_exclusions))
+    planned_inputs = itertools.chain(automatic_inputs, configured_inputs)
+    target_owners: dict[tuple[str, ...], tuple[Path, str]] = {}
+    for source, target in planned_inputs:
+        target_key = _staging_key(target)
+        previous = target_owners.get(target_key)
+        if previous is not None and not _same_live_input(previous[0], source):
+            collisions.add(
+                (
+                    str(target),
+                    str(source),
+                    f"another live staging input {previous[1]}",
+                )
+            )
+        else:
+            target_owners[target_key] = (source, str(source))
+        owner = exact_owners.get(_staging_key(target))
+        if owner is None:
+            owner = _helper_owner_for_target(
+                target,
+                active_helpers=active_helpers,
+                import_roots=import_roots,
+                is_directory=source.is_dir(),
+            )
+        if owner is not None:
+            collisions.add((str(target), str(source), owner))
+
+    configured_roots = list(_iter_configured_staging_roots(config, frozen_exclusions))
+    for configured_source, configured_target in configured_roots:
+        configured_key = _staging_key(configured_target)
+        for automatic_source, automatic_target in automatic_inputs:
+            automatic_key = _staging_key(automatic_target)
+            if automatic_key[: len(configured_key)] == configured_key:
+                expected_source = _mapped_live_input(
+                    configured_source,
+                    configured_target,
+                    automatic_target,
+                )
+                if expected_source is None or not _same_live_input(
+                    expected_source, automatic_source
+                ):
+                    collisions.add(
+                        (
+                            str(configured_target),
+                            str(configured_source),
+                            f"automatic project input {automatic_source}",
+                        )
+                    )
+            elif configured_key[: len(automatic_key)] == automatic_key:
+                expected_source = _mapped_live_input(
+                    automatic_source,
+                    automatic_target,
+                    configured_target,
+                )
+                if expected_source is None or not _same_live_input(
+                    expected_source, configured_source
+                ):
+                    collisions.add(
+                        (
+                            str(configured_target),
+                            str(configured_source),
+                            f"automatic project input {automatic_source}",
+                        )
+                    )
+
+    for index, (left_source, left_target) in enumerate(configured_roots):
+        left_key = _staging_key(left_target)
+        for right_source, right_target in configured_roots[index + 1 :]:
+            right_key = _staging_key(right_target)
+            if right_key[: len(left_key)] == left_key:
+                mapped_left = _mapped_live_input(left_source, left_target, right_target)
+                if mapped_left is not None and _same_live_input(mapped_left, right_source):
+                    continue
+            elif left_key[: len(right_key)] == right_key:
+                mapped_right = _mapped_live_input(right_source, right_target, left_target)
+                if mapped_right is not None and _same_live_input(mapped_right, left_source):
+                    continue
+            else:
+                continue
+            collisions.add(
+                (
+                    str(right_target),
+                    str(right_source),
+                    f"configured staging input {left_source} at mutants/{left_target}",
+                )
+            )
+
+    # Missing configured inputs still own a cleanup destination.  Reject any
+    # overlap with a live mirror before ``copy_src_dir`` creates or changes a
+    # staging file; otherwise ``copy_also_copy_files`` could erase an
+    # automatic/configured mirror that was copied only moments earlier.
+    missing_configured_roots = list(
+        _iter_missing_configured_staging_roots(config, frozen_exclusions)
+    )
+    for missing_source, missing_target in missing_configured_roots:
+        owner = exact_owners.get(_staging_key(missing_target))
+        if owner is None:
+            owner = _helper_owner_for_target(
+                missing_target,
+                active_helpers=active_helpers,
+                import_roots=import_roots,
+            )
+        if owner is not None:
+            collisions.add((str(missing_target), str(missing_source), owner))
+
+        for automatic_source, automatic_target in automatic_inputs:
+            if not _staging_targets_overlap(missing_target, automatic_target):
+                continue
+            automatic_key = _staging_key(automatic_target)
+            missing_key = _staging_key(missing_target)
+            if missing_key[: len(automatic_key)] == automatic_key:
+                mapped_source = _mapped_live_input(
+                    automatic_source,
+                    automatic_target,
+                    missing_target,
+                )
+                if mapped_source is not None and _same_planned_input(mapped_source, missing_source):
+                    # A redundant missing descendant of the same automatic
+                    # live directory shares that mirror's cleanup authority.
+                    continue
+            collisions.add(
+                (
+                    str(missing_target),
+                    str(missing_source),
+                    f"automatic project input {automatic_source}",
+                )
+            )
+        for configured_source, configured_target in configured_roots:
+            if not _staging_targets_overlap(missing_target, configured_target):
+                continue
+            configured_key = _staging_key(configured_target)
+            missing_key = _staging_key(missing_target)
+            if missing_key[: len(configured_key)] == configured_key:
+                mapped_source = _mapped_live_input(
+                    configured_source,
+                    configured_target,
+                    missing_target,
+                )
+                if mapped_source is not None and _same_planned_input(mapped_source, missing_source):
+                    # A redundant missing descendant of the same configured
+                    # live tree only tightens that tree's stale cleanup.
+                    continue
+            collisions.add(
+                (
+                    str(missing_target),
+                    str(missing_source),
+                    f"configured staging input {configured_source} at mutants/{configured_target}",
+                )
+            )
+
+    if not collisions:
+        return
+    details = "\n".join(
+        f"- {source} -> mutants/{target}: reserved for {owner}"
+        for target, source, owner in sorted(
+            collisions,
+            key=lambda item: (_staging_key(Path(item[0])), item[1].casefold()),
+        )
+    )
+    raise StagingNamespaceCollisionError(
+        "Live project inputs collide with mutmut-win's reserved staging namespace:\n"
+        f"{details}\nRename or move the listed project inputs; --force cannot make this safe."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -211,30 +968,91 @@ def _copy_with_retry(
         # watcher could otherwise replace it with an external hardlink.
         atomic_copy_file(src, dst)
 
-    for attempt in range(max_attempts):
-        try:
-            copy_once()
-            return
-        except OSError:
-            if attempt < max_attempts - 1:
-                time.sleep(0.1 * (2**attempt))
-    # Final attempt — let the exception propagate if it still fails.
-    copy_once()
+    publish_guard = contextlib.nullcontext() if is_tree else _temporarily_writable_staging_leaf(dst)
+    with publish_guard:
+        for attempt in range(max_attempts):
+            try:
+                copy_once()
+                return
+            except OSError:
+                if attempt < max_attempts - 1:
+                    time.sleep(0.1 * (2**attempt))
+        # Final attempt — let the exception propagate if it still fails.
+        copy_once()
 
 
-def _atomic_write_text(path: Path, content: str) -> str:
-    """Publish UTF-8 text and return the SHA-256 of the exact written bytes."""
+def _atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    translate_newlines: bool = True,
+) -> str:
+    """Publish encoded text and return the SHA-256 of the exact written bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Match TextIOWrapper's platform newline translation explicitly, then
-    # publish those immutable bytes.  Generation inputs were read in text
-    # mode, so they contain normalized LF rather than pre-existing CRLF.
-    payload = content.replace("\n", os.linesep).encode("utf-8")
-    atomic_write_bytes(path, payload)
+    # Keep text-file callers' platform newline behavior. Generated Python opts
+    # out because the CST already contains the source's physical newlines.
+    if translate_newlines:
+        content = content.replace("\n", os.linesep)
+    payload = content.encode(encoding)
+    with _temporarily_writable_staging_leaf(path):
+        atomic_write_bytes(path, payload)
     return hashlib.sha256(payload).hexdigest()
 
 
+_CODING_COOKIE = re.compile(
+    r"(?i)^(?P<prefix>[ \t\f]*\#.*?coding[:=][ \t]*)(?P<encoding>[-_.a-z0-9]+)"
+)
+
+
+def _decode_python_source(payload: bytes) -> tuple[str, str]:
+    """Decode PEP 263 source without changing its physical newline bytes."""
+    encoding, _consumed = tokenize.detect_encoding(BytesIO(payload).readline)
+    with TextIOWrapper(BytesIO(payload), encoding=encoding, newline="") as source_file:
+        return source_file.read(), encoding
+
+
+def _rewrite_coding_cookie(source: str, encoding: str) -> str:
+    # PEP 263 counts physical source lines delimited by LF. ``str.splitlines``
+    # also treats NEL, VT, FF and the Unicode line separators as boundaries;
+    # one of those characters in physical line 1 must not hide a valid cookie
+    # on physical line 2 when generated identifiers require a UTF-8 fallback.
+    parts = source.split("\n")
+    lines = [f"{part}\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    for index in range(min(2, len(lines))):
+        rewritten, count = _CODING_COOKIE.subn(
+            lambda match: f"{match.group('prefix')}{encoding}",
+            lines[index],
+            count=1,
+        )
+        if count:
+            lines[index] = rewritten
+            break
+    return "".join(lines)
+
+
+def _atomic_write_generated_python(
+    path: Path,
+    content: str,
+    *,
+    source_encoding: str,
+) -> str:
+    """Publish generated Python without contradicting its PEP 263 cookie."""
+    try:
+        return _atomic_write_text(path, content, encoding=source_encoding, translate_newlines=False)
+    except UnicodeEncodeError:
+        # Generated private method identifiers can contain the Unicode scope
+        # separator even when the user source is cp1252/latin-1.  Staging is an
+        # internal derivative, so normalize it to UTF-8 and update the cookie;
+        # ``apply`` still writes the public source in its original encoding.
+        utf8_content = _rewrite_coding_cookie(content, "utf-8")
+        return _atomic_write_text(path, utf8_content, encoding="utf-8", translate_newlines=False)
+
+
 def copy_src_dir(
-    config: MutmutConfig,  # noqa: ARG001 — kept for API compatibility
+    config: MutmutConfig,
     *,
     excluded_paths: Sequence[Path] = (),
 ) -> None:
@@ -261,6 +1079,7 @@ def copy_src_dir(
             exclusions would also drop legitimate test fixtures such as
             ``tests/fixture.sqlite``.
     """
+    validate_staging_namespace(config, excluded_paths=excluded_paths)
     expected_targets: set[Path] = set()
     synced_roots: list[Path] = []
     project_root = Path.cwd().resolve()
@@ -279,22 +1098,50 @@ def copy_src_dir(
         source_root = Path(source_root_name)
         if not source_root.exists() or not source_root.is_dir():
             continue
-        if source_root_name != ".":
-            # Deletion sync only covers the EXPLICIT mirror roots: under the
-            # "." grab-bag the expectation set cannot be cleanly separated
-            # from also_copy mirrors and generated artifacts (stats plugin,
-            # sitecustomize) — deleting there would be guessing.
-            synced_roots.append(source_root)
+        # Track every automatic mirror root, including the project-root
+        # grab-bag.  The deletion pass is deliberately limited to Python
+        # modules and their metadata, so generated non-source artifacts remain
+        # distinguishable while deleted root-level imports cannot haunt the
+        # next clean run.
+        synced_roots.append(source_root)
 
         for root_str, dirs, files in os.walk(source_root):
+            source_directory = Path(root_str)
+            try:
+                if _is_link_or_reparse(source_directory):
+                    _warn_skipped_source_link(
+                        source_directory,
+                        "directory links are not copied into executable staging",
+                    )
+                    dirs[:] = []
+                    continue
+                source_directory.resolve(strict=True).relative_to(project_root)
+            except (OSError, ValueError) as exc:
+                _warn_skipped_source_link(
+                    source_directory,
+                    f"cannot prove project containment ({exc})",
+                )
+                dirs[:] = []
+                continue
             # Skip cache/venv/tooling directories (issue #129 / 360°-C4).
             safe_dirs: list[str] = []
+            at_workspace_root = Path(root_str).resolve() == project_root
             for directory in dirs:
-                if _is_staging_skip_dir(directory):
+                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
                     continue
+                candidate = Path(root_str) / directory
                 try:
-                    (Path(root_str) / directory).resolve().relative_to(project_root)
-                except (OSError, ValueError):
+                    if _is_link_or_reparse(candidate):
+                        _warn_skipped_source_link(
+                            candidate,
+                            "directory links are not copied into executable staging",
+                        )
+                        continue
+                    candidate.resolve().relative_to(project_root)
+                except (OSError, ValueError) as exc:
+                    _warn_skipped_source_link(
+                        candidate, f"cannot prove project containment ({exc})"
+                    )
                     continue
                 safe_dirs.append(directory)
             dirs[:] = safe_dirs
@@ -306,16 +1153,34 @@ def copy_src_dir(
                 source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
                 dirs[:] = [d for d in dirs if d.casefold() not in source_root_names]
 
+            # Directory entries are import-visible under PEP 420 even when
+            # they contain no files.  Materialize every validated live
+            # directory so a clean first run has the same namespace-package
+            # topology as the project; excluded/link roots were pruned above.
+            target_directory = Path("mutants") / root_str
+            _validated_staging_destination(target_directory, mutants_root)
+            target_directory.mkdir(exist_ok=True, parents=True)
+
             for name in files:
                 if _skip_automatic_root_file(name):
                     continue
                 source_path = Path(root_str) / name
                 try:
+                    if _is_link_or_reparse(source_path):
+                        _warn_skipped_source_link(
+                            source_path,
+                            "file links are not copied into executable staging",
+                        )
+                        continue
                     resolved_source = source_path.resolve(strict=True)
                     resolved_source.relative_to(project_root)
-                except (OSError, ValueError):
+                except (OSError, ValueError) as exc:
                     # Automatic staging must never dereference an external or
                     # broken file symlink into the executable mirror.
+                    _warn_skipped_source_link(
+                        source_path,
+                        f"cannot prove project containment ({exc})",
+                    )
                     continue
                 if resolved_source in excluded_resolved:
                     continue
@@ -325,18 +1190,26 @@ def copy_src_dir(
 
                 if target_path.exists():
                     if source_path.is_file() and _mirror_is_stale(source_path, target_path):
+                        meta_path = Path(str(target_path) + ".meta")
+                        owned_meta = read_owned_source_metadata(meta_path) is not None
                         _copy_with_retry(source_path, target_path)
                         print(f"     updated: {source_path} (source changed since last run)")
-                        # Invalidate cached mutation results for this file.
-                        meta_path = Path(str(target_path) + ".meta")
-                        if meta_path.exists():
-                            meta_path.unlink()
+                        # Invalidate only a proven mutation sidecar.  A project
+                        # fixture named like ``runtime.meta`` is an independent
+                        # expected target and must survive companion updates.
+                        if owned_meta and meta_path.exists():
+                            _unlink_staging_file(meta_path)
                     continue
 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
                 _copy_with_retry(source_path, target_path)
 
-    _sync_deleted_sources(expected_targets, synced_roots, set(_STAGING_SKIP_DIRS))
+    _sync_deleted_sources(
+        expected_targets,
+        synced_roots,
+        set(_STAGING_RECURSIVE_SKIP_DIRS),
+        _configured_mirror_destinations(config, mutants_root),
+    )
     # Heal staging created before run-lock and dotenv files were excluded.
     for candidate in Path("mutants").rglob("*"):
         if _skip_automatic_root_file(candidate.name):
@@ -365,14 +1238,15 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
     except OSError:
         return True
     meta_path = target.with_name(target.name + ".meta")
-    if meta_path.exists():
-        try:
-            raw = json.loads(meta_path.read_text(encoding="utf-8"))
-            recorded = raw.get("source_hash") if isinstance(raw, dict) else None
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            return True
+    owned_metadata = read_owned_source_metadata(meta_path)
+    if owned_metadata is not None:
+        recorded = owned_metadata["source_hash"]
         return not isinstance(recorded, str) or recorded != _content_hash(source)
-    if src_stat.st_mtime != dst_stat.st_mtime or src_stat.st_size != dst_stat.st_size:
+    if (
+        src_stat.st_mtime_ns != dst_stat.st_mtime_ns
+        or src_stat.st_size != dst_stat.st_size
+        or stat.S_IMODE(src_stat.st_mode) != stat.S_IMODE(dst_stat.st_mode)
+    ):
         return True
     # Stat equality is a cheap early check, never proof of content identity.
     return _content_hash(source) != _content_hash(target)
@@ -383,7 +1257,37 @@ def _content_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _sync_tree(source_root: Path, destination_root: Path) -> None:
+def read_verified_generated_bytes(
+    source_path: Path | str,
+    expected_generated_hash: str | None,
+) -> bytes:
+    """Read one staged module only when generation metadata proves its bytes.
+
+    The generated Python file and its ``.meta`` sidecar are published in two
+    atomic steps.  A crash, stale mirror, or later edit can therefore leave a
+    syntactically valid but unauthorised staged module.  Every consumer that
+    displays, applies, or executes it must bind the exact bytes to
+    ``generated_hash`` rather than trusting the filename.
+    """
+
+    mutants_root = _validated_mutants_root()
+    target = _validated_staging_destination(Path("mutants") / source_path, mutants_root)
+    payload = target.read_bytes()
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    if expected_generated_hash is None or actual_hash != expected_generated_hash:
+        raise StaleStagingError(
+            f"{target} content cannot be proven to match its generated metadata — "
+            "re-run 'mutmut-win run' before using this staging tree."
+        )
+    return payload
+
+
+def _sync_tree(
+    source_root: Path,
+    destination_root: Path,
+    *,
+    excluded_resolved: frozenset[Path] = frozenset(),
+) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
     content-aware per-file sync replacing the previous ``copytree``:
@@ -399,12 +1303,22 @@ def _sync_tree(source_root: Path, destination_root: Path) -> None:
     mutants_root = _validated_mutants_root()
     _validated_staging_destination(destination_root, mutants_root)
     for root_str, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if not _is_staging_skip_dir(d)]
+        dirs[:] = [d for d in dirs if not _is_staging_skip_dir(d, at_workspace_root=False)]
         rel_root = Path(root_str).relative_to(source_root)
+        destination_directory = destination_root / rel_root
+        _validated_staging_destination(destination_directory, mutants_root)
+        destination_directory.mkdir(parents=True, exist_ok=True)
         for name in files:
             src_file = Path(root_str) / name
             dst_file = destination_root / rel_root / name
             _validated_staging_destination(dst_file, mutants_root)
+            try:
+                if src_file.resolve(strict=True) in excluded_resolved:
+                    continue
+            except OSError:
+                # An input that cannot be resolved cannot safely defeat an
+                # exact caller-owned exclusion through a transient alias.
+                continue
             if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
                 continue
             dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -412,77 +1326,227 @@ def _sync_tree(source_root: Path, destination_root: Path) -> None:
 
     if not destination_root.is_dir():
         return
+    cleanup_candidates: list[Path] = []
     for root_str, dirs, files in os.walk(destination_root):
         safe_dirs: list[str] = []
         for directory in dirs:
-            if _is_staging_skip_dir(directory):
+            if _is_staging_skip_dir(directory, at_workspace_root=False):
                 continue
-            _validated_staging_destination(Path(root_str) / directory, mutants_root)
+            staged_directory = Path(root_str) / directory
+            _validated_staging_destination(staged_directory, mutants_root)
             safe_dirs.append(directory)
+            cleanup_candidates.append(staged_directory)
         dirs[:] = safe_dirs
         rel_root = Path(root_str).relative_to(destination_root)
         for name in files:
-            if (source_root / rel_root / name).exists():
+            source_file = source_root / rel_root / name
+            try:
+                source_is_current = (
+                    source_file.exists()
+                    and source_file.resolve(strict=True) not in excluded_resolved
+                )
+            except OSError:
+                source_is_current = False
+            if source_is_current:
                 continue
-            _validated_staging_destination(Path(root_str) / name, mutants_root)
-            with contextlib.suppress(OSError):
-                (Path(root_str) / name).unlink()
+            stale_path = Path(root_str) / name
+            _validated_staging_destination(stale_path, mutants_root)
+            _unlink_staging_file(stale_path)
+
+    # Keep the configured mirror root itself stable, but do not retain nested
+    # package shells after their live directories disappear.  For
+    # ``extra_paths`` such a shell is directly import-visible and would create
+    # a false PEP 420 namespace package.
+    for staged_directory in sorted(
+        cleanup_candidates,
+        key=lambda candidate: len(candidate.parts),
+        reverse=True,
+    ):
+        relative_directory = staged_directory.relative_to(destination_root)
+        source_directory = source_root / relative_directory
+        try:
+            source_directory_is_current = source_directory.is_dir() and not _is_link_or_reparse(
+                source_directory
+            )
+        except OSError:
+            source_directory_is_current = False
+        if source_directory_is_current:
+            continue
+        try:
+            next(staged_directory.iterdir())
+        except StopIteration:
+            _validated_staging_destination(staged_directory, mutants_root)
+            try:
+                staged_directory.rmdir()
+            except FileNotFoundError:
+                continue
+            except PermissionError as exc:
+                _retry_readonly_removal(os.rmdir, str(staged_directory), exc)
+        except FileNotFoundError:
+            continue
+
+
+def _configured_mirror_destinations(
+    config: MutmutConfig,
+    mutants_root: Path,
+) -> set[Path]:
+    """Return staging roots whose deletion contract belongs to also-copy sync."""
+
+    destinations: set[Path] = set()
+    project_root = Path.cwd().resolve()
+    for raw in (*config.also_copy, *config.extra_paths):
+        path = Path(raw)
+        if _is_staging_skip_dir(path.name, at_workspace_root=True):
+            continue
+        try:
+            if path.resolve() in (Path.cwd().resolve(), mutants_root):
+                continue
+        except (OSError, RuntimeError):  # fmt: skip
+            continue
+        relative_destination = configured_staging_relative_path(
+            path,
+            project_root=project_root,
+        )
+        if relative_destination is None:
+            continue
+        destination = Path("mutants") / relative_destination
+        try:
+            validated = _validated_staging_destination(destination, mutants_root)
+        except UnsafeStagingError:
+            continue
+        if validated != mutants_root:
+            destinations.add(validated)
+    return destinations
 
 
 def _sync_deleted_sources(
-    expected_targets: set[Path], synced_roots: list[Path], skip_dirs: set[str]
+    expected_targets: set[Path],
+    synced_roots: list[Path],
+    skip_dirs: set[str],
+    separately_synced_destinations: set[Path],
 ) -> None:
-    """Remove staged ``.py`` mirrors whose source no longer exists.
+    """Remove automatic staged mirrors whose source no longer exists.
 
     Deleted/renamed sources used to stay in ``mutants/`` forever — tests ran
     green against deleted modules and their ``.meta`` files survived with
     them (issue #101 / A3-FD-003 + the OS-012 remainder). Deliberately
-    narrow: only ``*.py`` files (plus their ``.meta``) under the mirror
-    roots, using the SAME walk skip set as the copy phase, never anything
-    else in the staging tree. Locked files are skipped, never fatal.
+    The mirror owns every staged file except explicit also-copy/extra-path
+    destinations and the two persistent cache/fingerprint files.  That keeps
+    deleted JSON fixtures, native modules and root-level helpers from haunting
+    later runs while leaving each configured extra tree to ``_sync_tree``.
 
     Args:
         expected_targets: Every target path the copy walk produced.
         synced_roots: The source roots that were mirrored this run.
         skip_dirs: Directory names excluded from the copy walk.
+        separately_synced_destinations: Staging roots owned by also-copy sync.
     """
-    import contextlib
-
     removed = 0
     mutants_root = _validated_mutants_root()
     folded_skip_dirs = {directory.casefold() for directory in skip_dirs}
+    expected_absolute = {target.absolute() for target in expected_targets}
+
+    def owned_elsewhere(path: Path) -> bool:
+        absolute = path.absolute()
+        return any(
+            absolute == destination or absolute.is_relative_to(destination)
+            for destination in separately_synced_destinations
+        )
+
+    # The project root subsumes explicit ``src``/``source`` mirrors. Walk the
+    # staging tree once when it was part of this run rather than revisiting its
+    # descendants and reporting duplicate removals.
+    if Path() in synced_roots:
+        synced_roots = [Path()]
     for source_root in synced_roots:
         staged_root = Path("mutants") / source_root
         _validated_staging_destination(staged_root, mutants_root)
         if not staged_root.is_dir():
             continue
+        cleanup_candidates: list[Path] = []
         for root_str, dirs, files in os.walk(staged_root):
             safe_dirs: list[str] = []
             for directory in dirs:
                 if directory.casefold() in folded_skip_dirs or directory.casefold() == "mutants":
                     continue
-                _validated_staging_destination(Path(root_str) / directory, mutants_root)
+                staged_directory = Path(root_str) / directory
+                _validated_staging_destination(staged_directory, mutants_root)
+                if owned_elsewhere(staged_directory):
+                    continue
                 safe_dirs.append(directory)
+                cleanup_candidates.append(staged_directory)
             dirs[:] = safe_dirs
             for name in files:
-                if not name.endswith(".py"):
-                    continue
                 staged = Path(root_str) / name
                 _validated_staging_destination(staged, mutants_root)
-                if staged in expected_targets:
+                if owned_elsewhere(staged):
                     continue
-                with contextlib.suppress(OSError):
-                    staged.unlink()
-                    removed += 1
-                meta = Path(str(staged) + ".meta")
-                if meta.exists():
-                    with contextlib.suppress(OSError):
-                        meta.unlink()
+                if staged.absolute() in expected_absolute:
+                    continue
+                if (
+                    staged.parent.absolute() == mutants_root
+                    and name.casefold() in _PERSISTENT_STAGING_STATE_FILES
+                ):
+                    continue
+                if name.casefold().endswith(".meta"):
+                    companion = Path(str(staged)[: -len(".meta")]).absolute()
+                    if (
+                        companion in expected_absolute
+                        and read_owned_source_metadata(staged) is not None
+                    ):
+                        continue
+                _unlink_staging_file(staged)
+                removed += 1
+                # Every companion is visited independently through the same
+                # expected-input and configured-owner checks. Deleting a
+                # *.py file must not also erase a live user *.py.meta fixture
+                # or another mirror's independently owned input (CX221-067).
+
+        # Files are synchronized first; then remove only directory shells
+        # whose corresponding live directory disappeared.  Leaving one such
+        # shell behind changes Python import semantics by creating a PEP 420
+        # namespace package that does not exist in the live project.  Work
+        # bottom-up so nested stale packages can empty their parents, while
+        # preserving the staging root, live empty directories and every
+        # explicit also-copy/extra-path mirror root.
+        for staged_directory in sorted(
+            cleanup_candidates,
+            key=lambda candidate: len(candidate.parts),
+            reverse=True,
+        ):
+            if owned_elsewhere(staged_directory):
+                continue
+            relative_directory = staged_directory.relative_to(staged_root)
+            source_directory = source_root / relative_directory
+            try:
+                source_directory_is_current = source_directory.is_dir() and not _is_link_or_reparse(
+                    source_directory
+                )
+            except OSError:
+                source_directory_is_current = False
+            if source_directory_is_current:
+                continue
+            try:
+                next(staged_directory.iterdir())
+            except StopIteration:
+                _validated_staging_destination(staged_directory, mutants_root)
+                try:
+                    staged_directory.rmdir()
+                except FileNotFoundError:
+                    continue
+                except PermissionError as exc:
+                    _retry_readonly_removal(os.rmdir, str(staged_directory), exc)
+            except FileNotFoundError:
+                continue
     if removed:
         print(f"     removed {removed} stale staged files (sources deleted/renamed)")
 
 
-def copy_also_copy_files(config: MutmutConfig) -> None:
+def copy_also_copy_files(
+    config: MutmutConfig,
+    *,
+    excluded_paths: Sequence[Path] = (),
+) -> None:
     """Sync config.also_copy files/directories into the mutants/ directory.
 
     Trees are mirrored mtime-aware INCLUDING deletions via
@@ -493,48 +1557,78 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
 
     Args:
         config: Active ``MutmutConfig`` instance.
+        excluded_paths: Exact caller-owned state files that must neither enter
+            staging directly nor through a configured directory mirror.
     """
     # extra_paths (Bug #69) are handled by the same copy mechanism as also_copy.
     # Their distinguishing trait — being added to the worker's PYTHONPATH — is
     # implemented in process/worker.py rather than here.
     paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
+    excluded_resolved: set[Path] = set()
+    for excluded in excluded_paths:
+        try:
+            excluded_resolved.add(excluded.resolve())
+        except OSError:
+            continue
+    frozen_exclusions = frozenset(excluded_resolved)
 
     mutants_root = _validated_mutants_root()
+    project_root = Path.cwd().resolve()
     for path_str in paths_to_copy:
         path = Path(path_str)
+        relative_destination = configured_staging_relative_path(path, project_root=project_root)
+        if relative_destination is None:
+            continue
         # Guard 1 (Bug #67): top-level virtualenv / cache directories must not
         # be mirrored into mutants/ even when the user lists them explicitly.
         # The walk filter inside _sync_tree only skips *children*, so a
         # top-level entry like ``also_copy = [".venv"]`` would otherwise be
         # mirrored wholesale — slow at best, broken on Windows because of
         # symlinked Scripts/python.exe.
-        if _is_staging_skip_dir(path.name):
+        if _is_staging_skip_dir(path.name, at_workspace_root=True):
             print("     skipping", path_str, "(matches venv/cache skip list)")
             continue
         # Guard 2 (issue #101 / A3-FD-005): "." and mutants/ itself defeat the
         # name-based skip (``Path(".").name == ""``) and would nest the whole
         # project — including mutants/ and .git — into mutants/mutants.
-        if path.resolve() in (Path.cwd().resolve(), mutants_root):
+        resolved_path = path.resolve()
+        if resolved_path in (project_root, mutants_root):
             print("     skipping", path_str, "(would nest the project into mutants/)")
             continue
-        # Guard 3: absolute paths break Path("mutants") / path because Python
-        # discards the left operand when the right is absolute, causing a
-        # self-copy (source == destination).  Make them relative to CWD.
-        if path.is_absolute():
-            try:
-                path = path.relative_to(Path.cwd())
-            except ValueError:
-                continue  # Path outside the project — skip
-        # Sibling entries with ".." (the Bug-#69 core use case) are staged
-        # under their own name — mutants/<name>, which is exactly where the
-        # worker puts them on PYTHONPATH. Without this, "mutants" / "../x"
-        # silently wrote OUTSIDE the staging tree (issue #101 / A3-FD-002,
-        # sandbox-confirmed).
-        destination = Path("mutants") / (path.name if ".." in path.parts else path)
+        # Absolute inputs and explicit ``..`` siblings share the central
+        # planner/runner/worker mapping.  This prevents both prefix discard and
+        # Windows 8.3/long-path divergence.
+        destination = Path("mutants") / relative_destination
         # Guard 4 (containment, second line of defence): whatever the entry
         # looks like, the destination must stay inside mutants/.
         _validated_staging_destination(destination, mutants_root)
+        try:
+            path_is_excluded = path.resolve() in frozen_exclusions
+        except OSError:
+            path_is_excluded = False
+        if path_is_excluded:
+            if destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination, onexc=_retry_readonly_removal)
+                else:
+                    _unlink_staging_file(destination)
+            print("     skipping", path_str, "(caller-owned state exclusion)")
+            continue
         if not path.exists():
+            # This destination is owned by the configured mirror.  If its
+            # source disappears, retaining an old non-Python fixture/native
+            # module lets workers execute bytes absent from the live run basis.
+            # Remove the exact, revalidated destination instead of silently
+            # accepting a haunted staging tree.
+            try:
+                destination_mode = destination.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(destination_mode):
+                shutil.rmtree(destination, onexc=_retry_readonly_removal)
+            else:
+                _unlink_staging_file(destination)
+            print("     removed stale configured mirror", destination)
             continue
         print("     also copying", path_str)
         if path.is_file():
@@ -543,7 +1637,7 @@ def copy_also_copy_files(config: MutmutConfig) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
         else:
-            _sync_tree(path, destination)
+            _sync_tree(path, destination, excluded_resolved=frozen_exclusions)
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
     # that contain relative paths. These paths are relative to the original
@@ -679,11 +1773,14 @@ def _sanitise_mutants_pyproject() -> None:
 
 
 def setup_source_paths() -> None:
-    """Insert mutants/ into sys.path and remove the original source paths.
+    """Prepare ``sys.path`` inside an explicitly isolated test child.
 
-    Ensures that test processes import the *mutated* source code rather than
-    the originals.  The following well-known source roots are considered:
-    the current directory, ``src``, and ``source``.
+    This compatibility helper must never run in the orchestration parent or a
+    generation worker: Windows spawn would inherit the staging roots and lazy
+    engine imports could then mutate the frozen staging tree.  Production
+    pytest children receive the equivalent roots through the runner's explicit
+    ``PYTHONPATH`` environment.  The following well-known source roots are
+    considered: the current directory, ``src``, and ``source``.
     """
     source_code_paths = [Path(), *(Path(name) for name in SOURCE_ROOT_NAMES)]
 
@@ -729,7 +1826,9 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
     Converts a relative source file path to a dotted module name, strips the
     leading source-root prefix (``src.`` or ``source.`` — the same roots the
     staging mirrors and the workers put on PYTHONPATH, issue #126 /
-    360°-A3), and appends the mangled method name. The result MUST equal
+    360°-A3), and appends the mangled method name. On Windows, source-root
+    and final ``__init__`` comparisons follow the filesystem's
+    case-insensitive identity. The result MUST equal
     ``orig.__module__ + '.' + mangled_name``: the trampoline's prefix check
     and the stats mapping both depend on that identity — a root that is
     importable but not stripped turns every one of its mutants into
@@ -756,16 +1855,24 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
         Fully qualified mutant identifier string.
     """
     stem = str(relative_source_path)[: -len(relative_source_path.suffix)]
-    module_name = stem.replace(os.sep, ".").replace("/", ".")
+    module_components = stem.replace(os.sep, ".").replace("/", ".").split(".")
     for root in SOURCE_ROOT_NAMES:
-        stripped = strip_prefix(module_name, prefix=root + ".")
-        if stripped != module_name:
+        root_matches = module_components and module_components[0] == root
+        if os.name == "nt" and module_components:
+            root_matches = module_components[0].casefold() == root.casefold()
+        if root_matches:
             # Exactly ONE root strips (src/source/pkg → source.pkg).
-            module_name = stripped
+            module_components = module_components[1:]
             break
-    mutant_name = f"{module_name}.{mutant_method_name}"
-    # Collapse .__init__. to . for package __init__ modules.
-    return mutant_name.replace(".__init__.", ".")
+    if len(module_components) > 1:
+        final_stem_is_init = module_components[-1] == "__init__"
+        if os.name == "nt":
+            final_stem_is_init = module_components[-1].casefold() == "__init__"
+        if final_stem_is_init:
+            # Package __init__ functions live in the package module itself.
+            module_components.pop()
+    module_name = ".".join(module_components)
+    return f"{module_name}.{mutant_method_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -871,12 +1978,13 @@ def create_mutants_for_file(
     # universe must be regenerated regardless of file timestamps.
     source_bytes = filename.read_bytes()
     source_hash = hashlib.sha256(source_bytes).hexdigest()
-    # Text-mode read normalizes CRLF before the generated text is written in
-    # text mode again; decoding raw CRLF and then write_text would produce
-    # CRCRLF on Windows. The hash above remains byte-exact.
-    source = filename.read_text(encoding="utf-8")
+    # Preserve physical newlines throughout the CST roundtrip, including those
+    # inside multiline strings and explicit continuations. The generated writer
+    # likewise bypasses Windows newline translation.
+    source, source_encoding = _decode_python_source(source_bytes)
     generation_payload = json.dumps(
         {
+            "source_newline_policy": "preserve-v1",
             "profile": active_profile.to_name(),
             "do_not_mutate_patterns": sorted(do_not_mutate_patterns),
             "covered_lines": sorted(covered_lines) if covered_lines is not None else None,
@@ -913,9 +2021,16 @@ def create_mutants_for_file(
                 if local:
                     existing_local.append(local)
             if existing_local:
+                # Tests can read staging sidecars directly.  Remove verdict
+                # and timing outputs from the previous run before any phase
+                # starts so identical generated code exposes identical bytes.
+                source_file_mutation_data.save_generation_metadata()
                 return existing_local, collected_warnings, True
             # No names in meta → fall through to regenerate
-    except (OSError, _FastPathMissError):
+    except (
+        OSError,
+        _FastPathMissError,
+    ):
         pass
 
     mutant_names: list[str]
@@ -975,7 +2090,11 @@ def create_mutants_for_file(
             generated = source
             mutant_names = []
 
-    generated_hash = _atomic_write_text(output_path, generated)
+    generated_hash = _atomic_write_generated_python(
+        output_path,
+        generated,
+        source_encoding=source_encoding,
+    )
 
     # Persist the mutation metadata for this file, including the source
     # fingerprint the fast path compares against (issue #101 / A3-FD-004).
@@ -995,6 +2114,6 @@ def create_mutants_for_file(
     # Meta is the transaction commit marker and must be published last.  A
     # crash after the Python file replace leaves missing/old generated_hash
     # authority, so the next run regenerates rather than trusting partial state.
-    source_file_mutation_data.save()
+    source_file_mutation_data.save_generation_metadata()
 
     return mutant_names, collected_warnings, False

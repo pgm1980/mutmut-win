@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
@@ -26,8 +27,12 @@ from mutmut_win.db import (
     load_results,
     validate_cache_path,
 )
-from mutmut_win.exceptions import MutmutWinError, UnsafeWorkspaceStateError
-from mutmut_win.mutant_diff import apply_mutant, render_function_diff, resolve_mutant
+from mutmut_win.exceptions import (
+    MutmutWinError,
+    StagingNamespaceCollisionError,
+    UnsafeWorkspaceStateError,
+)
+from mutmut_win.mutant_diff import apply_mutant, render_function_diff_bytes, resolve_mutant
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.executor import SpawnPoolExecutor
 from mutmut_win.process.run_lock import (
@@ -102,7 +107,10 @@ def _fixed_workspace_root_refusal(dirname: str, *, action: str) -> str | None:
         resolved = path.resolve(strict=False)
         junction_check = getattr(path, "is_junction", None)
         is_link_like = path.is_symlink() or (callable(junction_check) and junction_check())
-    except (OSError, RuntimeError):
+    except (
+        OSError,
+        RuntimeError,
+    ):
         is_link_like = True
         resolved = None
         expected = Path.cwd() / dirname
@@ -322,9 +330,10 @@ def _load_result_snapshot_or_exit(
     multiple=True,
     type=str,
     help=(
-        "Sibling directories to copy into mutants/ and add to the worker's "
-        "PYTHONPATH. Use when tests import from packages outside the wheel "
-        "(e.g. benchmarks/). Repeatable. Overrides [tool.mutmut].extra_paths."
+        "Relative project or explicit ../ sibling directories to copy into mutants/ "
+        "and add to the staged test PYTHONPATH. External absolute and Windows "
+        "anchored-relative paths are rejected. Repeatable. Overrides "
+        "[tool.mutmut].extra_paths."
     ),
 )
 @click.option(
@@ -449,37 +458,27 @@ def run(
                 _emit_json_error(json_stdout, message, 1)
                 sys.exit(1)
 
-        # --force: clean slate — delete mutants/ and .mutmut-cache/ before running
-        if force:
-            import shutil
-
-            for dirname in ("mutants", ".mutmut-cache"):
-                p = Path(dirname)
-                if p.exists():
-                    refusal = _force_cleanup_refusal(dirname)
-                    if refusal is not None:
-                        click.echo(refusal, err=True)
-                        _emit_json_error(json_stdout, refusal, 1)
-                        sys.exit(1)
-                    shutil.rmtree(p, ignore_errors=True)
-                    # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
-                    # unconditional success message sold a PARTIAL deletion
-                    # (files locked by another process) as a clean slate.
-                    if p.exists():
-                        message = (
-                            f"Could not fully remove {dirname}/ (files in use?); "
-                            "refusing to run with stale state."
-                        )
-                        click.echo(message, err=True)
-                        _emit_json_error(json_stdout, message, 1)
-                        sys.exit(1)
-                    else:
-                        click.echo(f"Removed {dirname}/")
-
         # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
         # escape as a 47-line traceback with exit 1 while CLI flags with the
         # SAME rules exited 2 — one config-error contract for every command.
         config = _load_config_or_exit(json_stdout)
+
+        # A score gate is release/CI authority over the complete configured
+        # mutant universe. Name, path and --since-commit selections are
+        # intentionally subset runs; judging their denominator could turn a
+        # one-mutant retest into a false 100% project score. Reject the
+        # incompatible request before any expensive generation or git diff.
+        subset_selection_requested = bool(
+            mutant_names or since_commit is not None or paths_to_mutate
+        )
+        if min_score is not None and subset_selection_requested:
+            message = (
+                "--min-score requires a full unfiltered run; mutant names, "
+                "--paths-to-mutate, and --since-commit cannot authorize a project score"
+            )
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 2)
+            sys.exit(2)
 
         # --- Apply CLI overrides to config ---
         overrides: dict[str, object] = {}
@@ -530,40 +529,68 @@ def run(
             # just changed" workflow includes uncommitted edits (issue #128
             # / 360°-A4). Untracked files stay invisible to git diff.
             git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-                ["git", "diff", "--name-only", since_commit],  # noqa: S607 — git is a well-known executable
+                ["git", "diff", "--name-only", "-z", since_commit],  # noqa: S607 — git is a well-known executable
                 capture_output=True,
-                encoding="utf-8",
             )
             # Issue #102 / A3-CM-006: the returncode was never checked — an
             # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
             if git_result.returncode != 0:
-                message = (
-                    f"git diff failed (exit {git_result.returncode}): {git_result.stderr.strip()}"
+                stderr = (
+                    git_result.stderr.decode("utf-8", errors="replace")
+                    if isinstance(git_result.stderr, bytes)
+                    else git_result.stderr
                 )
+                message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
                 click.echo(message, err=True)
                 _emit_json_error(json_stdout, message, 2)
                 sys.exit(2)
-            tests_dir_parts = tuple(Path(d.strip("/").strip("\\")).parts for d in config.tests_dir)
+
+            def _comparison_parts(path_text: str) -> tuple[str, ...]:
+                return tuple(os.path.normcase(part) for part in Path(path_text).parts)
+
+            tests_dir_parts = tuple(
+                _comparison_parts(target.split("::", 1)[0].strip("/").strip("\\"))
+                for target in config.tests_dir
+            )
 
             def _is_mutation_target(name: str) -> bool:
                 # Deleted files and test files used to become mutation targets.
-                if not name.endswith(".py") or not Path(name).exists():
+                if not name.casefold().endswith(".py") or not Path(name).exists():
                     return False
-                parts = Path(name).parts
+                parts = _comparison_parts(name)
                 # Component-prefix match (issue #128 / 360°-A4): the old
                 # parts[0] comparison against the FULL tests_dir string never
                 # matched nested dirs like "tests/unit/" — changed TEST files
                 # became mutation targets.
                 return all(parts[: len(td)] != td for td in tests_dir_parts)
 
-            changed_py = [
-                f for f in git_result.stdout.strip().split("\n") if f and _is_mutation_target(f)
-            ]
+            if isinstance(git_result.stdout, bytes):
+                changed_names = [
+                    raw.decode("utf-8", errors="surrogateescape")
+                    for raw in git_result.stdout.split(b"\0")
+                    if raw
+                ]
+            else:
+                # Test doubles and third-party subprocess seams may still
+                # return text. Production uses bytes so ``-z`` can preserve
+                # every pathname without Git's C-style quoting.
+                separator = "\0" if "\0" in git_result.stdout else "\n"
+                changed_names = [name for name in git_result.stdout.split(separator) if name]
+            changed_py = [name for name in changed_names if _is_mutation_target(name)]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
+                # A valid diff with no changed production target is an
+                # incremental no-op, not malformed input.  This distinction
+                # matters in CI: an invalid ref above still exits 2, while a
+                # docs/tests-only change can end successfully without
+                # fabricating mutation evidence (MW221-043).
+                if json_stdout is not None:
+                    from mutmut_win.models import MutationRunResult
+
+                    click.echo(MutationRunResult().model_dump_json(indent=2), file=json_stdout)
+                else:
+                    click.echo(message)
+                return
             overrides["paths_to_mutate"] = changed_py
 
         if overrides:
@@ -591,6 +618,49 @@ def run(
             _emit_json_error(json_stdout, message, 2)
             sys.exit(2)
 
+        # Build and validate the exact staging-input plan before --force can
+        # delete prior evidence and before an executor or database is created.
+        # A project file that would be overwritten by mutmut-win-owned
+        # metadata/plugins is a configuration error, not a cleanable cache.
+        from mutmut_win.file_setup import validate_staging_namespace
+
+        try:
+            validate_staging_namespace(config)
+        except StagingNamespaceCollisionError as exc:
+            message = str(exc)
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 2)
+            sys.exit(2)
+
+        # --force: clean slate — only after the effective configuration and
+        # read-only namespace plan have been proven safe. The workspace lock
+        # acquired above continues to serialize both removals.
+        if force:
+            import shutil
+
+            for dirname in ("mutants", ".mutmut-cache"):
+                p = Path(dirname)
+                if p.exists():
+                    refusal = _force_cleanup_refusal(dirname)
+                    if refusal is not None:
+                        click.echo(refusal, err=True)
+                        _emit_json_error(json_stdout, refusal, 1)
+                        sys.exit(1)
+                    shutil.rmtree(p, ignore_errors=True)
+                    # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
+                    # unconditional success message sold a PARTIAL deletion
+                    # (files locked by another process) as a clean slate.
+                    if p.exists():
+                        message = (
+                            f"Could not fully remove {dirname}/ (files in use?); "
+                            "refusing to run with stale state."
+                        )
+                        click.echo(message, err=True)
+                        _emit_json_error(json_stdout, message, 1)
+                        sys.exit(1)
+                    else:
+                        click.echo(f"Removed {dirname}/")
+
         # Only a FULL run may purge stale DB rows (issue #96): subset runs know
         # just a slice of the valid mutant set and must never delete history.
         # A --paths-to-mutate override narrows the staging to that slice, so it
@@ -616,6 +686,7 @@ def run(
                 mutant_names=mutant_names if mutant_names else None,
                 no_progress=no_progress,
                 purge_stale_results=is_full_run,
+                is_full_run=is_full_run,
                 rerun_all=rerun_all,
                 workspace_lock=workspace_lock,
             )
@@ -740,10 +811,17 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
             f"({len(current_run.completed_names)} completed, "
             f"{len(current_run.pending_names)} pending, {reused} reused)"
         )
+        if not current_run.is_full_run:
+            click.echo(
+                "Latest run is a subset selection; release-ready: no. "
+                "Displayed totals and score cover only this subset.",
+                err=True,
+            )
         if current_run.evidence_invalidated:
             click.echo(
                 "Evidence invalidated: yes; release-ready: no. "
-                "Source changed after this run; re-run 'mutmut-win run'.",
+                "The recorded execution basis is no longer authoritative; "
+                "re-run 'mutmut-win run'.",
                 err=True,
             )
         elif current_run.status == "completed":
@@ -883,6 +961,13 @@ def _format_ratio(value: object) -> str:
     return "?"
 
 
+def _write_stdout_bytes(payload: bytes) -> None:
+    """Write patch output without encoding or Windows CRLF rewriting."""
+    stream = click.get_binary_stream("stdout")
+    stream.write(payload)
+    stream.flush()
+
+
 @cli.command()
 @click.argument("mutant_name")
 def show(mutant_name: str) -> None:
@@ -904,14 +989,13 @@ def show(mutant_name: str) -> None:
         # flow resolved inside the diff helper only, so a glob rendered the
         # diff but silently lost the forensics panel.
         resolved_name, data = resolve_mutant(mutant_name, config)
-        diff = render_function_diff(data.path, resolved_name)
+        diff = render_function_diff_bytes(data.path, resolved_name)
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
     if diff:
-        click.echo(f"# {resolved_name}")
-        click.echo(diff)
+        _write_stdout_bytes(f"# {resolved_name}\n".encode() + diff)
     else:
         click.echo(f"No diff found for '{resolved_name}'.")
 
@@ -923,7 +1007,10 @@ def show(mutant_name: str) -> None:
         if row is not None:
             panel = _format_forensics_panel(row.status, row.forensics)
             if panel is not None:
-                click.echo(panel)
+                # Keep stdout a directly pipeable patch stream. Interactive
+                # users still see the forensic explanation on stderr, while
+                # ``mutmut-win show NAME > mutant.patch`` remains valid.
+                click.echo(panel, err=True)
 
 
 @cli.command()
@@ -950,6 +1037,10 @@ def apply(mutant_name: str) -> None:
                 sys.exit(1)
 
             config = _load_config_or_exit()
+            # Resolve before revoking evidence: a typo or ambiguous glob has
+            # not changed the source and must leave the latest run snapshot
+            # and CI artifact intact.
+            resolved_name, _data = resolve_mutant(mutant_name, config)
             # Revoke prior evidence before the irreversible source replacement.
             # If invalidation or artifact cleanup fails, apply must not touch
             # the source.  If apply itself later fails, losing reusable evidence
@@ -963,7 +1054,7 @@ def apply(mutant_name: str) -> None:
                     f"Could not remove CI/CD artifact before applying mutant "
                     f"{artifact_path}: {exc}; source was not changed"
                 ) from exc
-            apply_mutant(mutant_name, config)
+            apply_mutant(resolved_name, config)
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
@@ -996,8 +1087,7 @@ def tests_for_mutant_cmd(name: str) -> None:
     Loads the stats cache and prints each test node ID that covers the
     mutated function.  Exits with code 1 if no stats are available.
     """
-    mutants_dir = Path("mutants")
-    stats = load_stats(mutants_dir)
+    stats = load_stats()
     if stats is None:
         click.echo(
             "No stats found. Run 'mutmut-win run' first to collect stats.",
@@ -1035,8 +1125,7 @@ def time_estimates_cmd(mutant_names: tuple[str, ...]) -> None:
     Exits with code 1 if no stats are available.  An empty results DB is
     informational — notice plus exit 0 (issue #109 / A4-UI-013 convention).
     """
-    mutants_dir = Path("mutants")
-    stats = load_stats(mutants_dir)
+    stats = load_stats()
     if stats is None:
         click.echo(
             "No stats found. Run 'mutmut-win run' first to collect stats.",
@@ -1150,7 +1239,8 @@ def _export_cicd_stats_locked() -> None:
     if current_run is not None and current_run.evidence_invalidated:
         artifact_path.unlink(missing_ok=True)
         click.echo(
-            "Latest mutation run evidence was invalidated by an applied mutant; "
+            "Latest mutation run evidence was invalidated because its recorded "
+            "execution basis is no longer authoritative; "
             "re-run 'mutmut-win run' before CI/CD export.",
             err=True,
         )
@@ -1181,6 +1271,14 @@ def _export_cicd_stats_locked() -> None:
         click.echo(
             "Latest mutation run has an invalid persisted basis config; "
             "CI/CD export failed closed.",
+            err=True,
+        )
+        sys.exit(1)
+    if not current_run.is_full_run:
+        artifact_path.unlink(missing_ok=True)
+        click.echo(
+            "Latest mutation run was a subset selection and cannot authorize a full-run "
+            "CI/CD score; re-run 'mutmut-win run' without mutant or path filters.",
             err=True,
         )
         sys.exit(1)

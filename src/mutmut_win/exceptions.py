@@ -9,6 +9,16 @@ class ConfigError(MutmutWinError):
     """Error in configuration loading or validation."""
 
 
+class StagingNamespaceCollisionError(ConfigError):
+    """A live project input collides with a mutmut-win-owned staging path.
+
+    The source/configuration is valid Python, but its planned mirror target
+    would be overwritten by mutation metadata, pytest guards, or other
+    run-control artifacts.  The collision is therefore rejected before any
+    cache or staging mutation instead of silently testing different bytes.
+    """
+
+
 class InvalidConfigValueError(ConfigError):
     """A specific configuration value failed validation.
 

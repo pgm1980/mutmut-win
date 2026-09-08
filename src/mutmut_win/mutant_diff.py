@@ -7,15 +7,16 @@ on files under the ``mutants/`` staging directory produced by
 
 from __future__ import annotations
 
+import codecs
 import hashlib
-import re
 import stat
+import tokenize
 from difflib import unified_diff
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import libcst as cst
-from libcst.metadata import MetadataWrapper, PositionProvider
 
 from mutmut_win.atomic_file import atomic_write_bytes
 from mutmut_win.exceptions import (
@@ -23,8 +24,9 @@ from mutmut_win.exceptions import (
     MutationParseError,
     StaleStagingError,
 )
-from mutmut_win.file_setup import walk_source_files
+from mutmut_win.file_setup import read_verified_generated_bytes, walk_source_files
 from mutmut_win.models import SourceFileMutationData
+from mutmut_win.mutation import parse_module_preserving_newlines
 from mutmut_win.test_mapping import (
     function_definition_location_from_key,
     mangled_name_from_mutant_name,
@@ -34,6 +36,34 @@ from mutmut_win.test_mapping import (
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
+
+
+def _decode_python_bytes(payload: bytes, path: Path | str) -> tuple[str, str]:
+    """Decode source bytes under Python's PEP 263 rules."""
+    try:
+        encoding, _consumed = tokenize.detect_encoding(BytesIO(payload).readline)
+        return payload.decode(encoding), encoding
+    except (LookupError, SyntaxError, UnicodeDecodeError) as exc:
+        msg = f"cannot decode Python source file {path}: {exc}"
+        raise MutationParseError(msg) from exc
+
+
+def _read_source_bytes_matching_staging(
+    path: Path | str,
+    expected_source_hash: str | None,
+) -> bytes:
+    """Read source bytes only when they match the generation-time digest."""
+    source_path = Path(path)
+    source_bytes = source_path.read_bytes()
+    current_hash = hashlib.sha256(source_bytes).hexdigest()
+    if expected_source_hash is None or current_hash != expected_source_hash:
+        msg = (
+            f"{source_path} content cannot be proven to match the source used for "
+            "mutant generation — re-run 'mutmut-win run' before showing or applying "
+            "mutants."
+        )
+        raise StaleStagingError(msg)
+    return source_bytes
 
 
 def find_mutant(mutant_name: str, config: MutmutConfig) -> SourceFileMutationData:
@@ -109,7 +139,12 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
     return matches[0]
 
 
-def read_mutants_module(path: Path | str) -> cst.Module:
+def read_mutants_module(
+    path: Path | str,
+    *,
+    expected_generated_hash: str | None = None,
+    require_verified: bool = False,
+) -> cst.Module:
     """Read and parse the mutated file from the ``mutants/`` directory.
 
     Args:
@@ -123,10 +158,14 @@ def read_mutants_module(path: Path | str) -> cst.Module:
             (issue #114 / A4-QX-006 — used to leak raw libcst errors).
     """
     target = Path("mutants") / path
-    with target.open(encoding="utf-8") as f:
-        source = f.read()
+    payload = (
+        read_verified_generated_bytes(path, expected_generated_hash)
+        if require_verified
+        else target.read_bytes()
+    )
+    source, _encoding = _decode_python_bytes(payload, target)
     try:
-        return cst.parse_module(source)
+        return parse_module_preserving_newlines(source)
     except cst.ParserSyntaxError as exc:
         msg = f"cannot parse staged file {target}: {exc}"
         raise MutationParseError(msg) from exc
@@ -145,10 +184,9 @@ def read_orig_module(path: Path | str) -> cst.Module:
         MutationParseError: If the source file is not parseable Python
             (issue #114 / A4-QX-006).
     """
-    with Path(path).open(encoding="utf-8") as f:
-        source = f.read()
+    source, _encoding = _decode_python_bytes(Path(path).read_bytes(), path)
     try:
-        return cst.parse_module(source)
+        return parse_module_preserving_newlines(source)
     except cst.ParserSyntaxError as exc:
         msg = f"cannot parse source file {path}: {exc}"
         raise MutationParseError(msg) from exc
@@ -280,6 +318,174 @@ def read_mutant_function(module: cst.Module, mutant_name: str) -> cst.FunctionDe
     return result.with_changes(name=cst.Name(orig_function_name))
 
 
+def _public_mutant_function(
+    original_module: cst.Module,
+    original_function: cst.FunctionDef,
+    mutants_module: cst.Module,
+    mutant_name: str,
+) -> cst.FunctionDef:
+    """Rebuild a mutant on the original public function declaration.
+
+    Private implementations in ``mutants/`` intentionally omit defaults,
+    annotations, decorators, return annotations, type parameters and leading
+    lines so importing the staged module cannot repeat user definition-time
+    side effects.  Those implementation-only normalisations must never leak
+    into ``show`` or ``apply``.  Only the mutated body belongs to the selected
+    mutant; the public declaration remains byte-for-byte CST-equivalent to the
+    current source definition.
+    """
+    # Older Windows generation normalized whole bodies, including string and
+    # continuation newlines. Valid source/staging hashes alone cannot certify
+    # that such a body is safe to transplant. Render both originals under the
+    # public module's defaults so compatible legacy staging remains usable.
+    stale_message = (
+        f"Staged original body for {mutant_name} does not match the source; "
+        "re-run 'mutmut-win run' to regenerate mutants before show or apply."
+    )
+    try:
+        staged_original = read_original_function(mutants_module, mutant_name)
+    except FileNotFoundError as exc:
+        raise StaleStagingError(stale_message) from exc
+    if original_module.code_for_node(original_function.body) != original_module.code_for_node(
+        staged_original.body
+    ):
+        raise StaleStagingError(stale_message)
+    private_mutant = read_mutant_function(mutants_module, mutant_name)
+    return original_function.with_changes(body=private_mutant.body)
+
+
+def _source_modules_for_mutant(
+    path: Path | str,
+    source_bytes: bytes,
+    mutants_module: cst.Module,
+    mutant_name: str,
+) -> tuple[cst.Module, cst.Module, str]:
+    """Return a verified source module and its one-function mutant variant."""
+    source, encoding = _decode_python_bytes(source_bytes, path)
+    try:
+        original_module = parse_module_preserving_newlines(source)
+    except cst.ParserSyntaxError as exc:
+        msg = f"cannot parse source file {path}: {exc}"
+        raise MutationParseError(msg) from exc
+
+    location = function_definition_location_from_key(mutant_name)
+    original_function = _find_function_in_scope(
+        original_module,
+        location.function_name,
+        location.class_name,
+        location.definition_ordinal,
+    )
+    if original_function is None:
+        location_text = (
+            f"{location.class_name}.{location.function_name}"
+            if location.class_name is not None
+            else location.function_name
+        )
+        raise FileNotFoundError(
+            f"Could not find source function {location_text!r} for mutant {mutant_name}"
+        )
+
+    public_mutant = _public_mutant_function(
+        original_module,
+        original_function,
+        mutants_module,
+        mutant_name,
+    )
+    mutated_module = cast(
+        "cst.Module",
+        original_module.deep_replace(original_function, public_mutant),
+    )
+    return original_module, mutated_module, encoding
+
+
+def _physical_source_lines(text: str) -> list[str]:
+    """Split only at LF, preserving CRLF and every other Unicode character."""
+    if not text:
+        return []
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _git_unified_diff(original: str, mutated: str, *, label: str) -> str:
+    """Return a byte-stable, Git-applicable unified diff.
+
+    A plain ``splitlines()`` loses CRLF/EOF distinctions, while even its
+    ``keepends`` form treats NEL, VT, FF and Unicode separators as lines that
+    Git does not recognise.  Preserve only physical LF-delimited source lines
+    and add Git's explicit ``No newline`` marker for every affected side that
+    lacks one. Diff metadata always uses LF so redirection is deterministic.
+    """
+    raw_lines = unified_diff(
+        _physical_source_lines(original),
+        _physical_source_lines(mutated),
+        fromfile=f"a/{label}",
+        tofile=f"b/{label}",
+        n=1,
+        lineterm="\n",
+    )
+    rendered: list[str] = []
+    for line in raw_lines:
+        if line.endswith("\n"):
+            rendered.append(line)
+            continue
+        rendered.extend((line, "\n\\ No newline at end of file\n"))
+    return "".join(rendered)
+
+
+def _encode_git_patch(diff: str, source_encoding: str) -> bytes:
+    """Encode metadata as UTF-8 and hunk payload in the source encoding."""
+    try:
+        canonical_encoding = codecs.lookup(source_encoding).name
+    except LookupError as exc:  # pragma: no cover - tokenize already validated it
+        raise MutationParseError(f"unknown Python source encoding: {source_encoding}") from exc
+    payload_encoding = "utf-8" if canonical_encoding == "utf-8-sig" else canonical_encoding
+    output = bytearray()
+    for index, line in enumerate(_physical_source_lines(diff)):
+        if index < 2 or line.startswith(("@@", "\\ ")):
+            output.extend(line.encode("utf-8"))
+            continue
+        if not line.startswith((" ", "+", "-")):
+            raise MutationParseError("generated unified diff contains an invalid hunk line")
+        output.extend(line[0].encode("ascii"))
+        try:
+            output.extend(line[1:].encode(payload_encoding))
+        except UnicodeEncodeError as exc:
+            msg = f"mutant diff cannot be represented in source encoding {source_encoding}: {exc}"
+            raise MutationParseError(msg) from exc
+    return bytes(output)
+
+
+def _render_function_diff(path: Path | str, mutant_name: str) -> tuple[str, str]:
+    """Render one diff and return its verified Python source encoding."""
+    metadata = SourceFileMutationData(path=str(path))
+    metadata.load()
+    source_bytes = _read_source_bytes_matching_staging(path, metadata.source_hash)
+    module = read_mutants_module(
+        path,
+        expected_generated_hash=metadata.generated_hash,
+        require_verified=True,
+    )
+    original_module, mutated_module, source_encoding = _source_modules_for_mutant(
+        path,
+        source_bytes,
+        module,
+        mutant_name,
+    )
+    orig_code = original_module.code
+    mutant_code = mutated_module.code
+    if codecs.lookup(source_encoding).name == "utf-8-sig":
+        # ``decode('utf-8-sig')`` removes the BOM. Git patches model it as the
+        # first content byte, not as a BOM in front of the diff header.
+        orig_code = "\ufeff" + orig_code
+        mutant_code = "\ufeff" + mutant_code
+
+    label = str(path).replace("\\", "/")
+    return _git_unified_diff(orig_code, mutant_code, label=label), source_encoding
+
+
 def render_function_diff(path: Path | str, mutant_name: str) -> str:
     """Render the per-mutant function diff from a known mutants file.
 
@@ -295,78 +501,28 @@ def render_function_diff(path: Path | str, mutant_name: str) -> str:
     Returns:
         A unified diff string (possibly empty if no difference is detected).
 
-    Patch-capability (issue #115 / A4-UI-014): hunk headers carry the
-    function's REAL start line in the original source (located via
-    libcst position metadata; falls back to function-relative numbering
-    when the original is missing or changed), and the labels are
-    distinct ``a/<path>`` / ``b/<path>``. Boundary: method bodies render
-    at function scope — for class methods prefer ``mutmut-win apply``
-    over ``patch``.
+    Patch-capability (issue #115 / A4-UI-014): the diff is rendered from the
+    generation-time source module with only the selected body changed. It
+    therefore retains the public signature, decorators, comments and
+    indentation and applies to methods as well as top-level functions. A
+    missing source or missing/mismatched generation hash fails closed instead
+    of emitting a patch against unverifiable bytes.
 
     Raises:
         FileNotFoundError: If the ``_orig`` copy or the mutant function is
             missing from the mutants file.
         OSError: If the mutants file cannot be read.
+        StaleStagingError: If the current source bytes do not match the source
+            hash recorded when the mutants were generated.
     """
-    module = read_mutants_module(path)
-    orig_code = cst.Module([read_original_function(module, mutant_name)]).code.strip()
-    mutant_code = cst.Module([read_mutant_function(module, mutant_name)]).code.strip()
-
-    label = str(path).replace("\\", "/")  # difflib requires str; patch wants forward slashes
-    diff_lines = list(
-        unified_diff(
-            orig_code.split("\n"),
-            mutant_code.split("\n"),
-            fromfile=f"a/{label}",
-            tofile=f"b/{label}",
-            lineterm="",
-        )
-    )
-    start_line = _original_start_line(path, mutant_name)
-    if start_line is not None and start_line > 1:
-        offset = start_line - 1
-        diff_lines = [_offset_hunk_header(line, offset) for line in diff_lines]
-    return "\n".join(diff_lines)
+    diff, _source_encoding = _render_function_diff(path, mutant_name)
+    return diff
 
 
-#: ``@@ -<start>[,<count>] +<start>[,<count>] @@`` — the counts are optional.
-_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)((?:,\d+)?) \+(\d+)((?:,\d+)?) @@$")
-
-
-def _offset_hunk_header(line: str, offset: int) -> str:
-    """Shift both start numbers of a unified-diff hunk header by *offset*."""
-    match = _HUNK_HEADER_RE.match(line)
-    if match is None:
-        return line
-    a_start = int(match.group(1)) + offset
-    b_start = int(match.group(3)) + offset
-    return f"@@ -{a_start}{match.group(2)} +{b_start}{match.group(4)} @@"
-
-
-def _original_start_line(path: Path | str, mutant_name: str) -> int | None:
-    """Locate the mutated function's start line in the ORIGINAL source file.
-
-    Returns ``None`` when the original cannot be read/parsed or the
-    function is not found (e.g. the source changed since generation) —
-    callers degrade to function-relative hunk numbering.
-    """
-    location = function_definition_location_from_key(mutant_name)
-    try:
-        module = read_orig_module(path)
-    except (OSError, MutationParseError):
-        return None
-    wrapper = MetadataWrapper(module)
-    positions = wrapper.resolve(PositionProvider)
-    target = _find_function_in_scope(
-        wrapper.module,
-        location.function_name,
-        location.class_name,
-        location.definition_ordinal,
-    )
-    if target is None:
-        return None
-    position = positions.get(target)
-    return position.start.line if position is not None else None
+def render_function_diff_bytes(path: Path | str, mutant_name: str) -> bytes:
+    """Render a redirect-safe patch whose hunk bytes match the source file."""
+    diff, source_encoding = _render_function_diff(path, mutant_name)
+    return _encode_git_patch(diff, source_encoding)
 
 
 def get_diff_for_mutant(mutant_name: str, config: MutmutConfig) -> str:
@@ -418,26 +574,19 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     source_path = Path(path)
     mutants_path = Path("mutants") / path
 
-    source_bytes = source_path.read_bytes()
+    source_bytes = _read_source_bytes_matching_staging(source_path, data.source_hash)
     source_mode = stat.S_IMODE(source_path.stat().st_mode)
-    current_hash = hashlib.sha256(source_bytes).hexdigest()
-    if data.source_hash is None or current_hash != data.source_hash:
-        msg = (
-            f"{source_path} content changed after its mutants were generated — "
-            "re-run 'mutmut-win run' before applying mutants."
-        )
-        raise StaleStagingError(msg)
 
     location = function_definition_location_from_key(mutant_name)
     orig_function_name = location.function_name.rpartition(".")[-1]
 
     # Byte-exact reads: no universal-newline translation, so the patched file
     # keeps the original line endings.
-    orig_module = cst.parse_module(source_bytes.decode("utf-8"))
-    mutants_module = cst.parse_module(mutants_path.read_bytes().decode("utf-8"))
-
-    mutant_function = read_mutant_function(mutants_module, mutant_name)
-    mutant_function = mutant_function.with_changes(name=cst.Name(orig_function_name))
+    source, source_encoding = _decode_python_bytes(source_bytes, source_path)
+    staged_bytes = read_verified_generated_bytes(path, data.generated_hash)
+    staged_source, _staged_encoding = _decode_python_bytes(staged_bytes, mutants_path)
+    orig_module = parse_module_preserving_newlines(source)
+    mutants_module = parse_module_preserving_newlines(staged_source)
 
     original_function = _find_function_in_scope(
         orig_module,
@@ -448,9 +597,21 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     if not original_function:
         raise FileNotFoundError(f"Could not apply mutant {mutant_name}")
 
+    mutant_function = _public_mutant_function(
+        orig_module,
+        original_function,
+        mutants_module,
+        mutant_name,
+    )
+
     # libcst.deep_replace is typed to return CSTNode; we know the result is Module.
     new_module = cast("cst.Module", orig_module.deep_replace(original_function, mutant_function))
 
     backup_path = source_path.with_name(source_path.name + ".mutmut-orig.bak")
     atomic_write_bytes(backup_path, source_bytes, mode=source_mode)
-    atomic_write_bytes(source_path, new_module.bytes, mode=source_mode)
+    try:
+        applied_bytes = new_module.code.encode(source_encoding)
+    except UnicodeEncodeError as exc:
+        msg = f"applied mutant cannot be represented in source encoding {source_encoding}: {exc}"
+        raise MutationParseError(msg) from exc
+    atomic_write_bytes(source_path, applied_bytes, mode=source_mode)

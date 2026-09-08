@@ -1,10 +1,10 @@
-"""Fail-closed Semgrep release gate for the complete Git-owned source surface.
+"""Fail-closed Semgrep release gate for the Git-owned Python product surface.
 
 The scanner never runs in the repository itself.  This wrapper inventories every
 tracked or non-ignored untracked file in the release-relevant roots, copies the
 files into an external byte-identical mirror, and proves that neither side moved
-while Semgrep was running.  Only the documented third-party E2E fixtures are a
-policy skip.
+while Semgrep was running.  Runtime code, tests, shipped E2E fixtures, release
+scripts, and project-authored benchmarks are all scanned without policy skips.
 
 The module intentionally uses only the Python standard library so that the gate
 does not depend on the environment it is intended to audit.
@@ -37,15 +37,20 @@ SEMGREP_BOOTSTRAP_JOBS: Final = "4"
 # fixpoint budget even though the identical scan completes serially.  A
 # release gate values complete, deterministic analysis over throughput.
 SEMGREP_SCAN_JOBS: Final = "1"
-SEMGREP_RULE_COUNT: Final = 342
-SEMGREP_RULE_IDS_SHA256: Final = "90e5e07621bf32da358a4f056b15c1a14f48b8929a6a03099108fd5b12c198f6"
+# Expanding the audited surface to shipped JSON fixtures added exactly four
+# applicable rules to the historical 342-ID set (and no removals): the three
+# ``json.aws.security`` S3/assume-role checks and Renovate's
+# ``renovate-missing-minimum-release-age`` check.  The downloaded definition
+# bundle itself remains byte-identical to the reviewed 1,074-rule contract.
+SEMGREP_RULE_COUNT: Final = 346
+SEMGREP_RULE_IDS_SHA256: Final = "4318213bc02b54092f7fe2b48fffe7afd77cdb92399df23c14b20a3b856a3feb"
 RULE_DEFINITION_COUNT: Final = 1_074
 RULE_DEFINITIONS_SHA256: Final = "b6e589b3bdcdf6eb2086765c0cdb3b128bda6d9b26e42cd36852e093cd1d601e"
 RULE_BUNDLE_SIZE: Final = 2_192_939
 RULE_BUNDLE_SHA256: Final = "76b5a021560070925e9b86f93d2e61153b72ab6a7e306c0d49e1677bb07cbce5"
 EVIDENCE_SCHEMA_VERSION: Final = 1
-SCAN_ROOTS: Final = ("src", "tests", "scripts")
-POLICY_SKIP_PREFIX: Final = "tests/e2e_projects/"
+SCAN_ROOTS: Final = ("src", "tests", "scripts", "benchmarks")
+POLICY_SKIP_PREFIXES: Final[tuple[str, ...]] = ()
 SEMGREP_IGNORE_FILE: Final = ".semgrepignore"
 
 type Command = tuple[str, ...]
@@ -110,10 +115,11 @@ DEFAULT_BUNDLE_CONTRACT: Final = BundleContract(
 class FindingSignature:
     """A finding bound to its rule, span, involved lines, and full source context.
 
-    ``file_sha256`` hashes the complete mirror file after strict UTF-8 decoding,
-    ``splitlines()``, LF joining, and UTF-8 encoding.  No synthetic trailing LF
-    is added.  This makes CRLF/LF checkouts equivalent without allowing context
-    outside the finding span to drift.
+    ``file_sha256`` hashes the complete mirror file after strict UTF-8 decoding
+    and normalization of CRLF or bare CR to LF.  Other Unicode separators stay
+    byte-significant.  No synthetic trailing LF is added.  This makes ordinary
+    CRLF/LF checkouts equivalent without allowing context outside the finding
+    span to drift.
     """
 
     path: str
@@ -130,23 +136,24 @@ _POPEN_RULE: Final = "python.lang.compatibility.python36.python36-compatibility-
 _IMPORT_RULE: Final = "python.lang.security.audit.non-literal-import.non-literal-import"
 _EXEC_RULE: Final = "python.lang.security.audit.exec-detected.exec-detected"
 _PICKLE_RULE: Final = "python.lang.security.deserialization.pickle.avoid-pickle"
-_KILL_PROC_FILE_SHA: Final = "e68eff6ac0b762c545b3be8781f8db80b9c012ec78e144551b944e26e2d87669"
-_ARCHITECTURE_FILE_SHA: Final = "9ad23a3d71a02756b65dfba018d80d651aa4fa3681b207cb07c92c94aa08542c"
+_KILL_PROC_FILE_SHA: Final = "aff81671be553a2da9ef0a006baec1bdc8b01133601d3834da9a90fa72a2cb32"
+_ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
 _CLASS_BODY_FILE_SHA: Final = "81ce773253c18c42ce5ace134f08c6a3290b05666709c43cc620686106c30706"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
-    "445082a606a1c81e2346ec3a7e4c53acceb4a1c235847edda67740598381edb4"
+    "874635fc0f8b82ef1d8ba4cac975e4bffc7f7712ad7f37d4191c21a7cd40637b"
 )
 _MODELS_FILE_SHA: Final = "cfcd968a3ee16aedadfe1b1a61a95b5418c62537b7c4a02db99cf9ee5915a43a"
+_MUTANT_DIFF_FILE_SHA: Final = "94e89108069d2cd5f924ef02a3cd8f4e60057dc6cb328f94b23ebdf7cf71e967"
 _MUTATION_ADVERSARIAL_FILE_SHA: Final = (
-    "53e1eb8bb9a34234af771b0bfff6b7afc703854012c08314e9fb4c6e5120e41e"
+    "9bbaac97643cb3dffa9143688aac92a7f48372e2c5198f30ac616e4356b55f57"
 )
 _MUTATION_HARDENING_FILE_SHA: Final = (
-    "abe9e0990d733824f20bda682d67e840b638617b5bf7a4fbb13a7837dbb7bf97"
+    "f8661ec3c4a78e9d9daa1d519a29a791899ee5b892fdf08aeadfd4ad31943ce8"
 )
 _SITECUSTOMIZE_FILE_SHA: Final = "991169a46ec355325d51178e193e4df8caa6f6647c0a754a9542686f6c2b63bb"
-_STATICMETHOD_FILE_SHA: Final = "0445d598d9e4ff34fb503a2b65b6ba543b63a208ad156b6812feaf7adec773eb"
+_STATICMETHOD_FILE_SHA: Final = "d9707d4b429b3274fcebf64b52eaa9f747df9973c0045821b574569f7cae62ca"
 _WRAPPER_CODEGEN_FILE_SHA: Final = (
-    "a6e2da917d5e83443a3c3407331852bd53d08b9f5c32d8055e4defa8444380b7"
+    "4b4f889f82a17909ad29fad1c5f48ef667823442ac84a3b6f3ccd7df5137432b"
 )
 
 
@@ -158,7 +165,7 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         16,
         78,
         10,
-        "72c29eb3260990e075a51678228b6cb0e5800f6be9b4ca397d7d30c9fd4d1256",
+        "5702c9eb93300dd4f618af4c583c67973c7e775c3ffa98aa4b9069377c04fd72",
         _KILL_PROC_FILE_SHA,
     ),
     FindingSignature(
@@ -168,15 +175,15 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         16,
         105,
         10,
-        "72c29eb3260990e075a51678228b6cb0e5800f6be9b4ca397d7d30c9fd4d1256",
+        "5702c9eb93300dd4f618af4c583c67973c7e775c3ffa98aa4b9069377c04fd72",
         _KILL_PROC_FILE_SHA,
     ),
     FindingSignature(
         "tests/test_architecture.py",
         _IMPORT_RULE,
-        40,
+        100,
         20,
-        40,
+        100,
         46,
         "d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         _ARCHITECTURE_FILE_SHA,
@@ -201,6 +208,19 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "8a53a564916e0e3791fddce82e7659a80d021ab5994563bbc4b1effabc7c4ba4",
         _CLASS_BODY_FILE_SHA,
     ),
+    # The generated source and namespace are both test-owned constants.  This
+    # executes the trampoline twice to prove that a source name containing the
+    # reserved mutant delimiter remains reversible and collision-free.
+    FindingSignature(
+        "tests/unit/test_duplicate_definitions_220.py",
+        _EXEC_RULE,
+        193,
+        5,
+        193,
+        83,
+        "1dccd9aaa511115af8daeb45c3e8fd2fb3efbb8a13ae2d532846bc4c69de89a4",
+        _DUPLICATE_DEFINITIONS_FILE_SHA,
+    ),
     *(
         FindingSignature(
             "tests/unit/test_duplicate_definitions_220.py",
@@ -212,7 +232,7 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
             "06bcfb77f28dc11c6fe59297f6856a66300b0b1ad39bd1d0709030d79bf8e1af",
             _DUPLICATE_DEFINITIONS_FILE_SHA,
         )
-        for line in (192, 219, 229, 247)
+        for line in (277, 304, 314, 332)
     ),
     FindingSignature(
         "tests/unit/test_models.py",
@@ -254,12 +274,24 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "b9531179ddec5d36108a0b76b13811e43929d7302780880bdd417e44ff25a989",
         _MODELS_FILE_SHA,
     ),
+    # ``expected`` is assembled from a literal source fixture immediately
+    # above; executing it proves that apply preserved callable semantics.
+    FindingSignature(
+        "tests/unit/test_mutant_diff.py",
+        _EXEC_RULE,
+        581,
+        9,
+        583,
+        10,
+        "23d8ffb9e2cacc9b6edf4c0e7b02146b23771c7496f4e70ebf68d0964c05c0b9",
+        _MUTANT_DIFF_FILE_SHA,
+    ),
     FindingSignature(
         "tests/unit/test_mutation_adversarial_a5.py",
         _EXEC_RULE,
-        27,
+        28,
         9,
-        29,
+        30,
         10,
         "5897addaccc52f279bb3b7cf7fcdf624fdfce0be682c3fbf6877ea8e87d7c937",
         _MUTATION_ADVERSARIAL_FILE_SHA,
@@ -422,40 +454,55 @@ def _bind_semgrep_to_project_environment(
     repository: Path,
     python_prefix: Path,
     python_base_prefix: Path,
+    declared_project_environment: str | None,
 ) -> None:
     prefix = python_prefix.absolute()
     base_prefix = python_base_prefix.absolute()
-    expected_prefix = repository / ".venv"
     if os.path.normcase(str(prefix)) == os.path.normcase(str(base_prefix)):
         raise GateError("unsafe-executable", "Semgrep gate requires an active virtual environment")
+    if not declared_project_environment:
+        raise GateError(
+            "unsafe-executable",
+            "UV_PROJECT_ENVIRONMENT must name the active external release environment",
+        )
+    expected_prefix = Path(declared_project_environment)
+    if not expected_prefix.is_absolute():
+        raise GateError("unsafe-executable", "UV_PROJECT_ENVIRONMENT must be absolute")
+    expected_prefix = expected_prefix.absolute()
     _validate_repository_directory(prefix)
     _validate_repository_directory(expected_prefix)
-    pyvenv_stat = _lstat(expected_prefix / "pyvenv.cfg", label="project pyvenv.cfg")
+    pyvenv_stat = _lstat(expected_prefix / "pyvenv.cfg", label="external project pyvenv.cfg")
     if not stat.S_ISREG(pyvenv_stat.st_mode):
-        raise GateError("unsafe-executable", "Project pyvenv.cfg is not a regular file")
+        raise GateError("unsafe-executable", "External project pyvenv.cfg is not a regular file")
     executable_path = Path(executable).absolute()
     try:
         resolved_prefix = prefix.resolve(strict=True)
         resolved_expected_prefix = expected_prefix.resolve(strict=True)
+        resolved_repository = repository.resolve(strict=True)
         resolved_executable = executable_path.resolve(strict=True)
     except OSError as exc:
         raise GateError("unsafe-executable", f"Cannot resolve Python tool boundary: {exc}") from exc
     if os.path.normcase(str(resolved_prefix)) != os.path.normcase(str(resolved_expected_prefix)):
         raise GateError(
-            "unsafe-executable", "Active Python environment is not the repository .venv"
+            "unsafe-executable",
+            "Active Python environment does not match UV_PROJECT_ENVIRONMENT",
+        )
+    if _is_within(resolved_expected_prefix, resolved_repository) or _is_within(
+        resolved_repository, resolved_expected_prefix
+    ):
+        raise GateError(
+            "unsafe-executable",
+            "UV_PROJECT_ENVIRONMENT and the release checkout must be disjoint",
         )
     scripts_directory = prefix / ("Scripts" if os.name == "nt" else "bin")
-    scripts_stat = _lstat(scripts_directory, label="project virtualenv scripts directory")
+    scripts_stat = _lstat(scripts_directory, label="external virtualenv scripts directory")
     if not stat.S_ISDIR(scripts_stat.st_mode):
         raise GateError("unsafe-executable", "Virtualenv scripts path is not a directory")
     try:
         resolved_scripts = scripts_directory.resolve(strict=True)
     except OSError as exc:
         raise GateError("unsafe-executable", f"Cannot resolve scripts directory: {exc}") from exc
-    if (
-        executable_path.parent != scripts_directory
-        or resolved_executable.parent != resolved_scripts
-    ):
+    if resolved_executable.parent != resolved_scripts:
         raise GateError(
             "unsafe-executable",
             "Semgrep executable is not in the project virtualenv scripts directory",
@@ -589,7 +636,10 @@ def _inventory_command(git: str, repository: Path) -> Command:
         "-z",
         "--cached",
         "--others",
-        "--exclude-standard",
+        # Use only versioned per-directory ignore files.  ``--exclude-standard``
+        # would additionally trust ambient global excludes and .git/info/exclude,
+        # either of which can silently hide an untracked release-gate input.
+        "--exclude-per-directory=.gitignore",
         "--",
         *SCAN_ROOTS,
         SEMGREP_IGNORE_FILE,
@@ -893,36 +943,61 @@ def _temporary_external_mirror(repository: Path) -> Iterator[Path]:
 
 _OFFLINE_ENDPOINT: Final = "http://127.0.0.1:9"
 
-
-def _remote_environment(parent: Environment, xdg_config_home: Path) -> dict[str, str]:
-    isolation_root = xdg_config_home.parent
-    blocked_names = {
-        "APPDATA",
-        "HOME",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "LOCALAPPDATA",
-        "NETRC",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "USERPROFILE",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
+# The rule bootstrap is the sole network-enabled subprocess in the gate.  Do
+# not give that third-party process the caller's arbitrary environment: a
+# denylist can never anticipate every credential spelling (GITHUB_TOKEN,
+# AWS_SECRET_ACCESS_KEY, DATABASE_URL, ...).  Proxy values are an explicit
+# exception because they may be required to reach the registry; callers must
+# treat credentials embedded in those URLs as intentionally delegated to the
+# bootstrap.  Certificate paths and basic OS/locale values carry no ambient
+# account authority.
+_REMOTE_PARENT_ENV_ALLOWLIST: Final[frozenset[str]] = frozenset(
+    {
+        "ALL_PROXY",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NO_PROXY",
+        "PATHEXT",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TZ",
+        "WINDIR",
     }
+)
+
+
+def _remote_environment(
+    parent: Environment,
+    xdg_config_home: Path,
+    *,
+    semgrep_directory: Path,
+) -> dict[str, str]:
+    """Return a credential-minimal environment for registry bootstrap."""
+
+    isolation_root = xdg_config_home.parent
+    # Canonicalise allowed names so a case-variant mapping cannot create two
+    # Windows environment entries with conflicting values.
     environment = {
-        key: value
+        key.upper(): value
         for key, value in parent.items()
-        if key.upper() not in blocked_names
-        and not key.upper().startswith(("GIT_", "PYTHON", "SEMGREP_", "UV_"))
+        if key.upper() in _REMOTE_PARENT_ENV_ALLOWLIST
     }
     environment.update(
         {
             "APPDATA": str(isolation_root / "appdata"),
             "HOME": str(isolation_root / "home"),
             "LOCALAPPDATA": str(isolation_root / "localappdata"),
+            # The Semgrep console script and its packaged engine are both
+            # resolved before this point.  A caller-controlled PATH would let
+            # an unrelated executable participate in the security gate.
+            "PATH": str(semgrep_directory),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
@@ -1068,7 +1143,45 @@ def _validate_optional_skips(paths_payload: dict[str, Any]) -> None:
 
 
 def _is_policy_skip(path: str) -> bool:
-    return path == POLICY_SKIP_PREFIX.rstrip("/") or path.startswith(POLICY_SKIP_PREFIX)
+    return any(
+        path == prefix.rstrip("/") or path.startswith(prefix) for prefix in POLICY_SKIP_PREFIXES
+    )
+
+
+def _git_environment(parent: Environment) -> dict[str, str]:
+    """Return a Git environment isolated from user/system config and excludes."""
+
+    blocked_names = {
+        "APPDATA",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+    }
+    environment = {
+        key: value
+        for key, value in parent.items()
+        if key.upper() not in blocked_names
+        and not key.upper().startswith(("GIT_", "SEMGREP_", "UV_"))
+    }
+    # ``os.devnull`` is a real non-config sink on Windows (``nul``) and POSIX.
+    # Explicit overrides also make the boundary independent of Git's fallback
+    # rules for HOME, XDG_CONFIG_HOME, and the system config location.
+    environment.update(
+        {
+            "APPDATA": os.devnull,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "HOME": os.devnull,
+            "LOCALAPPDATA": os.devnull,
+            "USERPROFILE": os.devnull,
+            "XDG_CONFIG_HOME": os.devnull,
+        }
+    )
+    return environment
 
 
 def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1244,7 +1357,10 @@ def _finding_signature(result: object, mirror: Path) -> FindingSignature:
         source_text = source_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise GateError("semgrep-findings", f"Finding source is not strict UTF-8: {path}") from exc
-    source_lines = source_text.splitlines()
+    normalized_source = source_text.replace("\r\n", "\n").replace("\r", "\n")
+    source_lines = normalized_source.split("\n")
+    if source_lines and source_lines[-1] == "":
+        source_lines.pop()
     if not (1 <= start_line <= end_line <= len(source_lines)):
         raise GateError("semgrep-findings", f"Finding line range is outside source: {path}")
     if start_col > len(source_lines[start_line - 1]) + 1:
@@ -1432,11 +1548,7 @@ def run_release_gate(
 
     candidate = repository.absolute()
     parent_environment = dict(os.environ if environment is None else environment)
-    git_environment = {
-        key: value
-        for key, value in parent_environment.items()
-        if not key.upper().startswith(("GIT_", "SEMGREP_", "UV_"))
-    }
+    git_environment = _git_environment(parent_environment)
     _validate_repository_directory(candidate)
     git = _find_executable("git", executable_finder)
     semgrep = _find_executable("semgrep", executable_finder)
@@ -1445,6 +1557,7 @@ def run_release_gate(
         candidate,
         Path(sys.prefix) if python_prefix is None else python_prefix,
         Path(sys.base_prefix) if python_base_prefix is None else python_base_prefix,
+        parent_environment.get("UV_PROJECT_ENVIRONMENT"),
     )
     semgrep_parent, semgrep_record = _snapshot_absolute_artifact(Path(semgrep))
     root_output = _run_checked(
@@ -1511,7 +1624,11 @@ def run_release_gate(
                     "unsafe-control-root",
                     f"Isolated user directory is not fresh: {directory_name}",
                 )
-        remote_environment = _remote_environment(parent_environment, xdg_config_home)
+        remote_environment = _remote_environment(
+            parent_environment,
+            xdg_config_home,
+            semgrep_directory=semgrep_parent,
+        )
         offline_environment = _offline_environment(remote_environment)
         records = _copy_to_mirror(candidate, mirror, inventory)
         mirror_directory_identities = _collect_directory_identities(mirror, inventory)

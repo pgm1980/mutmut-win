@@ -9,7 +9,8 @@ The two meanings are now separated by an explicit authority bit:
 
 * Only an authoritative collector may turn an absent mapping into ``no tests``.
 * The current collector cannot observe every import/subprocess/xdist hit, so
-  its mapping is non-authoritative and unmapped mutants use the full suite.
+  its mapping is non-authoritative. Observed durations may schedule independent
+  mutant tasks, but the worker retains the complete native-order suite.
 """
 
 from __future__ import annotations
@@ -75,15 +76,17 @@ class TestSplitNoTestTasks:
         assert len(dispatchable) == 2
         assert no_tests == set()
 
-    def test_non_authoritative_mapping_cannot_narrow_even_observed_mutant(self) -> None:
+    def test_non_authoritative_mapping_is_only_a_task_scheduling_hint(self) -> None:
         task = _task("src/a.py::x_f__mutmut_1")
         mapping = {"src/a.py::x_f": {"tests/test_x.py::test_parent_only"}}
 
         [assigned] = _assign_tests_to_tasks([task], _stats(mapping))
 
         # An unobserved subprocess/xdist test may be the one that kills this
-        # mutant. Empty node IDs select the full pytest suite in the worker.
-        assert assigned.tests == []
+        # mutant. The observed node ID is retained for ordering, while the
+        # explicit authority flag keeps full-suite collection in the worker.
+        assert assigned.tests == ["tests/test_x.py::test_parent_only"]
+        assert assigned.test_selection_is_authoritative is False
 
     def test_authoritative_mapping_may_narrow_observed_mutant(self) -> None:
         task = _task("src/a.py::x_f__mutmut_1")
@@ -92,6 +95,7 @@ class TestSplitNoTestTasks:
         [assigned] = _assign_tests_to_tasks([task], _stats(mapping, authoritative=True))
 
         assert assigned.tests == ["tests/test_x.py::test_one"]
+        assert assigned.test_selection_is_authoritative is True
 
     def test_persisted_authority_bit_cannot_activate_selective_testing(
         self, tmp_path: Path
@@ -122,7 +126,11 @@ class TestSplitNoTestTasks:
         ]
         assigned = _assign_tests_to_tasks(tasks, loaded)
         dispatchable, no_tests = _split_no_test_tasks(assigned, loaded)
-        assert [task.tests for task in dispatchable] == [[], []]
+        assert [task.tests for task in dispatchable] == [
+            ["tests/test_x.py::test_one"],
+            [],
+        ]
+        assert all(task.test_selection_is_authoritative is False for task in dispatchable)
         assert no_tests == set()
 
     def test_partial_non_authoritative_mapping_keeps_full_suite(self) -> None:

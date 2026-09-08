@@ -525,7 +525,10 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
         # discarding the other regex/body mutants in the file.
         try:
             serialized = cst.parse_expression(repr(mutated_pattern))
-        except (cst.ParserSyntaxError, cst.CSTValidationError):
+        except (
+            cst.ParserSyntaxError,
+            cst.CSTValidationError,
+        ):
             continue
         if not isinstance(serialized, cst.SimpleString):
             continue

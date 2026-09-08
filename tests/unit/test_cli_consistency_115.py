@@ -16,6 +16,7 @@ line has (the label is exactly as wide as the old field width).
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +24,7 @@ import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
-from mutmut_win.exceptions import AmbiguousMutantNameError
+from mutmut_win.exceptions import AmbiguousMutantNameError, StaleStagingError
 from mutmut_win.models import MutationResult, SourceFileMutationData
 from mutmut_win.mutant_diff import render_function_diff, resolve_mutant
 from mutmut_win.test_mapping import match_mutant_names
@@ -163,9 +164,16 @@ class TestPatchCapableDiff:
             "X = 1\n\n\ndef helper() -> int:\n    return 0\n", encoding="utf-8"
         )
         original = "X = 1\n\n\ndef foo() -> int:\n    return 1\n"  # foo starts at line 4
-        (tmp_path / "src" / "mod.py").write_text(original, encoding="utf-8")
+        source_path = tmp_path / "src" / "mod.py"
+        source_path.write_text(original, encoding="utf-8")
         (tmp_path / "mutants" / "src").mkdir(parents=True)
-        (tmp_path / "mutants" / "src" / "mod.py").write_text(_MUTANTS_SOURCE, encoding="utf-8")
+        staged_path = tmp_path / "mutants" / "src" / "mod.py"
+        staged_path.write_text(_MUTANTS_SOURCE, encoding="utf-8")
+        metadata = SourceFileMutationData(path="src/mod.py")
+        metadata.exit_code_by_key = {"src.mod.x_foo__mutmut_1": 0}
+        metadata.source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        metadata.generated_hash = hashlib.sha256(staged_path.read_bytes()).hexdigest()
+        metadata.save()
 
         diff = render_function_diff("src/mod.py", "src.mod.x_foo__mutmut_1")
         assert "--- a/src/mod.py" in diff
@@ -173,19 +181,25 @@ class TestPatchCapableDiff:
         assert "@@ -4" in diff  # real position, not function-relative -1
         assert "+4" in diff
 
-    def test_labels_differ_even_without_position(
+    def test_changed_source_fails_closed_instead_of_using_relative_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the original file is missing/changed, hunks degrade to
-        function-relative numbering but the a/b labels stay distinct."""
         monkeypatch.chdir(tmp_path)
+        source_path = tmp_path / "src" / "mod.py"
+        source_path.parent.mkdir()
+        source_path.write_text("def foo() -> int:\n    return 1\n", encoding="utf-8")
         (tmp_path / "mutants" / "src").mkdir(parents=True)
-        (tmp_path / "mutants" / "src" / "mod.py").write_text(_MUTANTS_SOURCE, encoding="utf-8")
+        staged_path = tmp_path / "mutants" / "src" / "mod.py"
+        staged_path.write_text(_MUTANTS_SOURCE, encoding="utf-8")
+        metadata = SourceFileMutationData(path="src/mod.py")
+        metadata.exit_code_by_key = {"src.mod.x_foo__mutmut_1": 0}
+        metadata.source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        metadata.generated_hash = hashlib.sha256(staged_path.read_bytes()).hexdigest()
+        metadata.save()
+        source_path.write_text("def foo() -> int:\n    return 100\n", encoding="utf-8")
 
-        diff = render_function_diff("src/mod.py", "src.mod.x_foo__mutmut_1")
-        assert "--- a/src/mod.py" in diff
-        assert "+++ b/src/mod.py" in diff
-        assert "@@ -1" in diff
+        with pytest.raises(StaleStagingError, match="before showing or applying"):
+            render_function_diff("src/mod.py", "src.mod.x_foo__mutmut_1")
 
 
 # ---------------------------------------------------------------------------

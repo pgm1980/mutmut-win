@@ -7,11 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import UnsafeStagingError
+from mutmut_win.constants import configured_staging_relative_path
+from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
     copy_also_copy_files,
     copy_src_dir,
@@ -19,10 +21,12 @@ from mutmut_win.file_setup import (
     get_mutant_name,
     setup_source_paths,
     strip_prefix,
+    validate_staging_namespace,
     walk_all_files,
     walk_source_files,
     write_all_mutants_to_file,
 )
+from mutmut_win.orchestrator import MutationOrchestrator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,6 +40,15 @@ def _config(**overrides: Any) -> MutmutConfig:
 
 
 _SIMPLE_SOURCE = "def add(a, b):\n    return a + b\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows anchored-path semantics")
+@pytest.mark.parametrize("raw_path", [r"\live_probe", r"C:live_probe"])
+def test_configured_staging_path_rejects_anchored_non_absolute_windows_path(
+    tmp_path: Path,
+    raw_path: str,
+) -> None:
+    assert configured_staging_relative_path(raw_path, project_root=tmp_path) is None
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +84,10 @@ class TestWalkAllFiles:
                 pytest.skip(f"file symlinks unavailable on this host: {exc}")
 
             config = _config(paths_to_mutate=["src"])
-            assert list(walk_source_files(config)) == []
-            copy_src_dir(config)
+            with pytest.warns(RuntimeWarning, match=r"Skipping linked or redirected.*leak\.py"):
+                assert list(walk_source_files(config)) == []
+            with pytest.warns(RuntimeWarning, match=r"Skipping linked or redirected.*leak\.py"):
+                copy_src_dir(config)
             assert not (tmp_path / "mutants" / "src" / "leak.py").exists()
         finally:
             outside.unlink(missing_ok=True)
@@ -131,6 +146,25 @@ class TestWalkSourceFiles:
         cfg = _config(paths_to_mutate=["."])
         paths = list(walk_source_files(cfg))
         assert all(isinstance(p, Path) for p in paths)
+
+    def test_windows_uppercase_python_suffix_reaches_mutation_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "MODULE.PY"
+        source.parent.mkdir()
+        source.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        cfg = _config(paths_to_mutate=["src/MODULE.PY"])
+
+        assert list(walk_source_files(cfg)) == [Path("src/MODULE.PY")]
+        assert cfg.should_ignore_for_mutation(Path("src/MODULE.PY")) is False
+        result = MutationOrchestrator(
+            cfg,
+            runner=MagicMock(),
+            executor=MagicMock(),
+        ).dry_run()
+        assert result.total_mutants > 0
+        assert not (tmp_path / "mutants").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +309,598 @@ class TestCopySrcDir:
         assert not (tmp_path / "mutants" / ".MUTMUT-WIN.RUN.LOCK").exists()
         assert not (tmp_path / "mutants" / ".Mutmut-Win.Run.Lock.Guard").exists()
 
+    @pytest.mark.parametrize(
+        "relative_collision",
+        [
+            "sitecustomize.py",
+            "SRC/SITECUSTOMIZE.PY",
+            "_mutmut_stats_plugin.py",
+            "src/_MUTMUT_STATS_PLUGIN.PY",
+            "source/_mutmut_phase_guard.py",
+            "src/_mutmut_phase_guard/__init__.py",
+            "src/_mutmut_phase_guard.pyd",
+            "src/_mutmut_stats_plugin/data.json",
+            ".mutmut-config-fingerprint",
+            "mutmut-cicd-stats.json",
+        ],
+    )
+    def test_reserved_staging_inputs_fail_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        relative_collision: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        collision = tmp_path / relative_collision
+        collision.parent.mkdir(parents=True, exist_ok=True)
+        collision.write_bytes(b"PROJECT-FIXTURE")
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match="reserved staging namespace",
+        ):
+            copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert collision.read_bytes() == b"PROJECT-FIXTURE"
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize(
+        "relative_collision",
+        [".mutmut-config-fingerprint", "mutmut-cicd-stats.json"],
+    )
+    def test_reserved_staging_directory_fails_before_materialization(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        relative_collision: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        collision = tmp_path / relative_collision
+        collision.mkdir()
+
+        with pytest.raises(StagingNamespaceCollisionError, match="reserved staging namespace"):
+            copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert collision.is_dir()
+        assert not (tmp_path / "mutants").exists()
+
+    def test_selected_source_metadata_name_fails_before_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "mod.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        legitimate_metadata = tmp_path / "src" / "mod.py.meta"
+        legitimate_metadata.write_bytes(b"PROJECT-FIXTURE-METADATA")
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match=r"mod\.py\.meta.*mutation metadata",
+        ):
+            copy_src_dir(_config(paths_to_mutate=["src/mod.py"]))
+
+        assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("import_root", [".", "src", "source"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_empty_helper_namespace_is_rejected_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        import_root: str,
+        helper_name: str,
+    ) -> None:
+        """CX221-068: an empty namespace still has an import-visible identity."""
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        namespace = tmp_path / import_root / helper_name
+        namespace.mkdir(parents=True)
+
+        with pytest.raises(StagingNamespaceCollisionError, match="reserved staging namespace"):
+            copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert namespace.is_dir()
+        assert list(namespace.iterdir()) == []
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("mirror_field", ["also_copy", "extra_paths"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_empty_configured_helper_namespace_is_rejected_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mirror_field: str,
+        helper_name: str,
+    ) -> None:
+        project = tmp_path / "project"
+        selected = project / "src" / "selected.py"
+        selected.parent.mkdir(parents=True)
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        namespace = tmp_path / "external" / helper_name
+        namespace.mkdir(parents=True)
+        configured_path = (
+            f"../external/{helper_name}" if mirror_field == "also_copy" else "../external"
+        )
+        staging = project / "mutants"
+        staging.mkdir()
+        sentinel = staging / "sentinel.bin"
+        sentinel.write_bytes(b"PREEXISTING-STAGING")
+        monkeypatch.chdir(project)
+
+        with pytest.raises(StagingNamespaceCollisionError, match="reserved staging namespace"):
+            copy_src_dir(
+                _config(paths_to_mutate=["src/selected.py"], **{mirror_field: [configured_path]})
+            )
+
+        assert namespace.is_dir()
+        assert list(namespace.iterdir()) == []
+        assert sentinel.read_bytes() == b"PREEXISTING-STAGING"
+        assert list(staging.iterdir()) == [sentinel]
+
+    @pytest.mark.parametrize("import_root", [".", "src", "source"])
+    @pytest.mark.parametrize(
+        "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
+    )
+    def test_extensionless_helper_data_file_remains_a_normal_fixture(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        import_root: str,
+        helper_name: str,
+    ) -> None:
+        """A regular file without an importable suffix is not a namespace."""
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        fixture = tmp_path / import_root / helper_name
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(b"EXTENSIONLESS-USER-DATA")
+
+        copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert fixture.read_bytes() == b"EXTENSIONLESS-USER-DATA"
+        assert (
+            tmp_path / "mutants" / import_root / helper_name
+        ).read_bytes() == b"EXTENSIONLESS-USER-DATA"
+
+    def test_unselected_source_metadata_name_remains_a_normal_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        unselected = tmp_path / "fixtures" / "other.py"
+        unselected.parent.mkdir()
+        unselected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        legitimate_metadata = tmp_path / "fixtures" / "other.py.meta"
+        legitimate_metadata.write_bytes(b"PROJECT-FIXTURE-METADATA")
+
+        copy_src_dir(_config(paths_to_mutate=["src/selected.py"]))
+
+        assert (
+            tmp_path / "mutants" / "fixtures" / "other.py.meta"
+        ).read_bytes() == b"PROJECT-FIXTURE-METADATA"
+
+    def test_configured_sibling_file_cannot_map_onto_reserved_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        sibling_root = tmp_path.parent / f"{tmp_path.name}-sibling"
+        sibling_root.mkdir()
+        sibling = sibling_root / "_mutmut_stats_plugin.py"
+        sibling.write_bytes(b"PROJECT-SIBLING-PLUGIN")
+        try:
+            config = _config(
+                paths_to_mutate=["src/selected.py"],
+                also_copy=[f"../{sibling_root.name}/{sibling.name}"],
+            )
+            with pytest.raises(
+                StagingNamespaceCollisionError,
+                match="pytest statistics plugin",
+            ):
+                validate_staging_namespace(config)
+        finally:
+            sibling.unlink(missing_ok=True)
+            sibling_root.rmdir()
+
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("shared_filename", [True, False])
+    def test_configured_sibling_tree_cannot_overlap_automatic_project_namespace(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        shared_filename: bool,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        selected = project / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        local_root = project / "shared"
+        local_root.mkdir()
+        local_name = "common.py" if shared_filename else "local.py"
+        (local_root / local_name).write_text("ORIGIN = 'local'\n", encoding="utf-8")
+        sibling_root = tmp_path / "shared"
+        sibling_root.mkdir()
+        sibling_name = "common.py" if shared_filename else "sibling.py"
+        (sibling_root / sibling_name).write_text("ORIGIN = 'sibling'\n", encoding="utf-8")
+        config = _config(
+            paths_to_mutate=["src/selected.py"],
+            extra_paths=["../shared"],
+        )
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match=r"shared.*automatic project input|common\.py.*another live staging input",
+        ):
+            validate_staging_namespace(config)
+
+        assert not (project / "mutants").exists()
+
+    def test_two_configured_roots_cannot_form_one_hybrid_staging_namespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        for parent, filename in (("left", "left.py"), ("right", "right.py")):
+            source_root = tmp_path / parent / "shared"
+            source_root.mkdir(parents=True)
+            (source_root / filename).write_text(f"ORIGIN = {parent!r}\n", encoding="utf-8")
+        config = _config(
+            also_copy=["../left/shared", "../right/shared"],
+        )
+
+        with pytest.raises(StagingNamespaceCollisionError, match="configured staging input"):
+            validate_staging_namespace(config)
+
+        assert not (project / "mutants").exists()
+
+    def test_repeated_configuration_of_same_live_root_remains_unambiguous(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        (shared / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        validate_staging_namespace(
+            _config(
+                also_copy=["shared"],
+                extra_paths=["shared"],
+            )
+        )
+
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize(
+        ("config_field", "target_name", "nested_name"),
+        [
+            ("extra_paths", "shared", "payload.py"),
+            ("also_copy", "shared.py", None),
+        ],
+    )
+    def test_missing_sibling_cannot_erase_automatic_live_input_before_copy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        config_field: str,
+        target_name: str,
+        nested_name: str | None,
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        selected = project / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        local_input = project / target_name
+        if nested_name is None:
+            local_input.write_text("ORIGIN = 'automatic'\n", encoding="utf-8")
+        else:
+            local_input.mkdir()
+            (local_input / nested_name).write_text("ORIGIN = 'automatic'\n", encoding="utf-8")
+        missing_sibling = tmp_path / target_name
+        assert not missing_sibling.exists()
+
+        staging = project / "mutants"
+        staging.mkdir()
+        sentinel = staging / "sentinel.bin"
+        sentinel.write_bytes(b"PREEXISTING-STAGING")
+        config = _config(
+            paths_to_mutate=["src/selected.py"],
+            **{config_field: [f"../{target_name}"]},
+        )
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match=r"automatic project input",
+        ):
+            copy_src_dir(config)
+
+        assert sentinel.read_bytes() == b"PREEXISTING-STAGING"
+        assert [path.relative_to(staging) for path in staging.rglob("*")] == [Path("sentinel.bin")]
+
+    def test_disjoint_missing_configured_input_remains_optional(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "selected.py"
+        source.parent.mkdir()
+        source.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+
+        validate_staging_namespace(
+            _config(
+                paths_to_mutate=["src/selected.py"],
+                also_copy=["optional-missing.cfg"],
+            )
+        )
+
+        assert not (tmp_path / "mutants").exists()
+
+    def test_missing_nested_duplicate_of_same_configured_tree_remains_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        tests_root = tmp_path / "tests"
+        tests_root.mkdir()
+        (tests_root / "test_live.py").write_text("def test_live(): pass\n", encoding="utf-8")
+
+        validate_staging_namespace(
+            _config(
+                also_copy=["tests", "tests/optional_missing"],
+            )
+        )
+
+        assert not (tmp_path / "mutants").exists()
+
+    def test_extra_path_import_root_cannot_shadow_internal_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        sibling_root = tmp_path.parent / f"{tmp_path.name}-extra"
+        sibling_root.mkdir()
+        plugin = sibling_root / "_mutmut_stats_plugin.py"
+        plugin.write_bytes(b"PROJECT-SIBLING-PLUGIN")
+        try:
+            config = _config(
+                paths_to_mutate=["src/selected.py"],
+                extra_paths=[f"../{sibling_root.name}"],
+            )
+            with pytest.raises(
+                StagingNamespaceCollisionError,
+                match="pytest statistics plugin",
+            ):
+                validate_staging_namespace(config)
+        finally:
+            plugin.unlink(missing_ok=True)
+            sibling_root.rmdir()
+
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("method_name", ["run", "dry_run"])
+    def test_programmatic_entrypoints_reject_namespace_before_state_writes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        method_name: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        (tmp_path / "src" / "mod.py.meta").write_text("fixture", encoding="utf-8")
+        monkeypatch.setattr("mutmut_win.orchestrator._ensure_supported_pytest", lambda: None)
+        orchestrator = MutationOrchestrator(
+            _config(paths_to_mutate=["src/mod.py"]),
+            runner=MagicMock(),
+            executor=MagicMock(),
+        )
+
+        with pytest.raises(StagingNamespaceCollisionError):
+            getattr(orchestrator, method_name)()
+
+        assert not (tmp_path / "mutants").exists()
+        assert not (tmp_path / ".mutmut-cache").exists()
+
+    @pytest.mark.parametrize("directory_name", ["build", "dist", "html", "bug_reporting", "_docs"])
+    def test_generic_tool_directory_name_is_excluded_only_at_workspace_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        directory_name: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        root_tool_file = tmp_path / directory_name / "artifact.py"
+        root_tool_file.parent.mkdir()
+        root_tool_file.write_text("ROOT_TOOL_STATE = True\n", encoding="utf-8")
+        nested_source = tmp_path / "src" / "package" / directory_name / "feature.py"
+        nested_source.parent.mkdir(parents=True)
+        nested_source.write_text("VALUE = 1\n", encoding="utf-8")
+
+        copy_src_dir(_config(paths_to_mutate=["src"]))
+
+        assert not (tmp_path / "mutants" / directory_name / "artifact.py").exists()
+        assert (tmp_path / "mutants" / "src" / "package" / directory_name / "feature.py").is_file()
+
+    def test_hidden_tool_directory_remains_excluded_when_nested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        nested_tool_state = tmp_path / "src" / "package" / ".claude" / "secret.txt"
+        nested_tool_state.parent.mkdir(parents=True)
+        nested_tool_state.write_text("TOKEN=sentinel\n", encoding="utf-8")
+        source = tmp_path / "src" / "package" / "feature.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+
+        copy_src_dir(_config(paths_to_mutate=["src"]))
+
+        assert not (tmp_path / "mutants" / "src" / "package" / ".claude").exists()
+        assert (tmp_path / "mutants" / "src" / "package" / "feature.py").is_file()
+
+    def test_deleted_automatic_package_directory_restores_import_parity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        def find_spec_is_absent(import_root: Path) -> bool:
+            probe = subprocess.run(  # noqa: S603 - fixed interpreter and probe
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    (
+                        "import importlib.util, sys; "
+                        f"sys.path.insert(0, {str(import_root)!r}); "
+                        "print(importlib.util.find_spec('ghostpkg') is None)"
+                    ),
+                ],
+                cwd=tmp_path,
+                capture_output=True,
+                encoding="utf-8",
+                check=True,
+                timeout=30,
+            )
+            return probe.stdout.strip() == "True"
+
+        package = tmp_path / "ghostpkg"
+        package.mkdir()
+        (package / "old.py").write_text("VALUE = 'stale'\n", encoding="utf-8")
+        config = _config(paths_to_mutate=["ghostpkg"])
+
+        copy_src_dir(config)
+        staged_package = tmp_path / "mutants" / "ghostpkg"
+        assert (staged_package / "old.py").is_file()
+        assert not find_spec_is_absent(tmp_path)
+        assert not find_spec_is_absent(tmp_path / "mutants")
+
+        (package / "old.py").unlink()
+        package.rmdir()
+        copy_src_dir(config)
+
+        assert (tmp_path / "mutants").is_dir()
+        assert not staged_package.exists()
+        assert find_spec_is_absent(tmp_path)
+        assert find_spec_is_absent(tmp_path / "mutants")
+
+    def test_empty_automatic_namespace_is_materialized_on_first_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        namespace = tmp_path / "empty_namespace"
+        namespace.mkdir()
+
+        copy_src_dir(_config(paths_to_mutate=["."]))
+
+        staged_namespace = tmp_path / "mutants" / "empty_namespace"
+        assert staged_namespace.is_dir()
+        probe = subprocess.run(  # noqa: S603 - fixed interpreter and probe
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                (
+                    "import importlib.util, sys; "
+                    f"sys.path.insert(0, {str(tmp_path / 'mutants')!r}); "
+                    "print(importlib.util.find_spec('empty_namespace') is not None)"
+                ),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+            timeout=30,
+        )
+        assert probe.stdout.strip() == "True"
+
+    def test_empty_configured_namespace_tracks_live_topology(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        selected = project / "src" / "selected.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        external_root = tmp_path / "external"
+        namespace = external_root / "configured_namespace"
+        namespace.mkdir(parents=True)
+        config = _config(
+            paths_to_mutate=["src/selected.py"],
+            extra_paths=["../external"],
+        )
+
+        copy_src_dir(config)
+        copy_also_copy_files(config)
+
+        staged_external = project / "mutants" / "external"
+        staged_namespace = staged_external / "configured_namespace"
+        assert staged_namespace.is_dir()
+
+        namespace.rmdir()
+        copy_src_dir(config)
+        copy_also_copy_files(config)
+
+        assert external_root.is_dir()
+        assert staged_external.is_dir()
+        assert not staged_namespace.exists()
+
+    def test_empty_cleanup_preserves_explicit_configured_mirror_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "selected.py"
+        source.parent.mkdir()
+        source.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        configured = tmp_path / "fixtures"
+        configured_package = configured / "ghostpkg"
+        configured_package.mkdir(parents=True)
+        (configured_package / "payload.txt").write_text("fixture\n", encoding="utf-8")
+        config = _config(
+            paths_to_mutate=["src/selected.py"],
+            also_copy=["fixtures"],
+        )
+
+        copy_src_dir(config)
+        copy_also_copy_files(config)
+        staged_configured = tmp_path / "mutants" / "fixtures"
+        staged_package = staged_configured / "ghostpkg"
+        assert (staged_package / "payload.txt").is_file()
+
+        (configured_package / "payload.txt").unlink()
+        configured_package.rmdir()
+        copy_src_dir(config)
+        copy_also_copy_files(config)
+
+        assert configured.is_dir()
+        assert staged_configured.is_dir()
+        assert not staged_package.exists()
+        assert list(staged_configured.iterdir()) == []
+
     def test_automatic_root_mirror_excludes_dotenv_secrets_but_keeps_template(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -388,6 +1014,48 @@ class TestCopyAlsoCopyFiles:
             assert (tmp_path / "mutants" / "extra.cfg").exists()
         finally:
             os.chdir(original_cwd)
+
+    def test_explicit_caller_owned_state_exclusion_cannot_be_reintroduced(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        database = tmp_path / "custom.db"
+        database.write_bytes(b"live database")
+        staged = tmp_path / "mutants" / "custom.db"
+        staged.parent.mkdir()
+        staged.write_bytes(b"stale database")
+
+        copy_also_copy_files(
+            _config(also_copy=["custom.db"]),
+            excluded_paths=(database,),
+        )
+
+        assert not staged.exists()
+
+    def test_directory_mirror_prunes_nested_caller_owned_state_exclusion(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        database = fixtures / "custom.db"
+        database.write_bytes(b"live database")
+        (fixtures / "payload.txt").write_text("bound input\n", encoding="utf-8")
+        staged = tmp_path / "mutants" / "fixtures"
+        staged.mkdir(parents=True)
+        (staged / "custom.db").write_bytes(b"stale database")
+
+        copy_also_copy_files(
+            _config(also_copy=["fixtures"]),
+            excluded_paths=(database,),
+        )
+
+        assert not (staged / "custom.db").exists()
+        assert (staged / "payload.txt").read_text(encoding="utf-8") == "bound input\n"
 
     def test_skips_nonexistent_path(self, tmp_path: Path) -> None:
         original_cwd = Path.cwd()
@@ -565,6 +1233,60 @@ class TestGetMutantName:
         result = get_mutant_name(path, "x_f__mutmut_1")
         assert result == "mypkg.mod.x_f__mutmut_1"
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path casing contract")
+    def test_uppercase_source_root_and_init_stem_match_runtime_name(self) -> None:
+        path = Path("SRC") / "pkg" / "__INIT__.PY"
+        result = get_mutant_name(path, "value__mutmut_1")
+        assert result == "pkg.value__mutmut_1"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path casing contract")
+    def test_uppercase_source_root_init_mutant_is_activated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        relative_source = Path("SRC") / "pkg" / "__INIT__.PY"
+        relative_source.parent.mkdir(parents=True)
+        relative_source.write_text("def value():\n    return 1\n", encoding="utf-8")
+        config = _config(paths_to_mutate=["SRC"])
+
+        assert list(walk_source_files(config)) == [relative_source]
+
+        generated = Path("mutants") / relative_source
+        generated.parent.mkdir(parents=True)
+        local_names, warnings, took_fast_path = create_mutants_for_file(
+            relative_source,
+            generated,
+        )
+        assert local_names
+        assert warnings == []
+        assert took_fast_path is False
+
+        qualified_name = get_mutant_name(relative_source, local_names[0])
+        import_code = (
+            "import sys; "
+            f"sys.path.insert(0, {str((tmp_path / 'mutants' / 'SRC').resolve())!r}); "
+            "import pkg; "
+            "print(pkg.value())"
+        )
+
+        def run_with(mutant_name: str) -> str:
+            env = os.environ.copy()
+            env["MUTANT_UNDER_TEST"] = mutant_name
+            completed = subprocess.run(  # noqa: S603 - fixed interpreter and code
+                [sys.executable, "-c", import_code],
+                cwd=tmp_path,
+                env=env,
+                capture_output=True,
+                encoding="utf-8",
+                check=True,
+                timeout=30,
+            )
+            return completed.stdout.strip()
+
+        assert qualified_name.startswith("pkg.")
+        assert ".__INIT__." not in qualified_name
+        assert run_with(qualified_name) != run_with("")
+
 
 # ---------------------------------------------------------------------------
 # write_all_mutants_to_file
@@ -618,6 +1340,59 @@ class TestCreateMutantsForFile:
         assert output.exists()
         assert len(names) > 0
         assert warns == []
+
+    def test_pep263_cp1252_source_is_generated_and_importable(self, tmp_path: Path) -> None:
+        source_text = "# coding: cp1252\nLABEL = 'café'\n\ndef add(value):\n    return value + 1\n"
+        src = tmp_path / "legacy.py"
+        src.write_bytes(source_text.encode("cp1252"))
+        output = tmp_path / "mutants" / "legacy.py"
+
+        names, warns, _ = create_mutants_for_file(src, output)
+
+        assert names
+        assert warns == []
+        compile(output.read_bytes(), str(output), "exec")
+        assert b"caf\xe9" in output.read_bytes()
+
+    def test_generated_unicode_identifiers_upgrade_internal_staging_cookie(
+        self, tmp_path: Path
+    ) -> None:
+        source_text = (
+            "# coding: cp1252\nclass Café:\n    def add(self, value):\n        return value + 1\n"
+        )
+        src = tmp_path / "legacy_class.py"
+        src.write_bytes(source_text.encode("cp1252"))
+        output = tmp_path / "mutants" / "legacy_class.py"
+
+        names, warns, _ = create_mutants_for_file(src, output)
+
+        assert names
+        assert warns == []
+        staged = output.read_bytes()
+        assert b"coding: utf-8" in staged.splitlines()[0]
+        compile(staged, str(output), "exec")
+
+    def test_utf8_fallback_counts_only_lf_delimited_pep263_lines(self, tmp_path: Path) -> None:
+        source_text = (
+            "# marker contains NEL: a\x85b\n"
+            "# coding: latin-1\n"
+            "class Café:\n"
+            "    def add(self, value):\n"
+            "        return value + 1\n"
+        )
+        src = tmp_path / "legacy_nel.py"
+        src.write_bytes(source_text.encode("latin-1"))
+        output = tmp_path / "mutants" / "legacy_nel.py"
+
+        names, warns, _ = create_mutants_for_file(src, output)
+
+        assert names
+        assert warns == []
+        staged = output.read_bytes()
+        first_line, cookie_line, _body = staged.split(b"\n", maxsplit=2)
+        assert b"a\xc2\x85b" in first_line
+        assert cookie_line.rstrip(b"\r") == b"# coding: utf-8"
+        compile(staged, str(output), "exec")
 
     def test_returns_qualified_method_names(self, tmp_path: Path) -> None:
         src = tmp_path / "foo.py"

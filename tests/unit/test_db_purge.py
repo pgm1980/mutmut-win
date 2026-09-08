@@ -13,12 +13,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mutmut_win.db import create_db, delete_results_not_in, load_results, save_result
+
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _seed(db_path: Path, names: list[str]) -> None:

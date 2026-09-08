@@ -46,17 +46,19 @@ def _apply_project(tmp_path: Path) -> tuple[Path, bytes, MagicMock]:
 
     mutants = tmp_path / "mutants" / "src"
     mutants.mkdir(parents=True)
-    (mutants / "mod.py").write_bytes(
+    generated = (
         b"def x_foo__mutmut_orig() -> int:\r\n"
         b"    return 1\r\n\r\n"
         b"def x_foo__mutmut_1() -> int:\r\n"
         b"    return 2\r\n"
     )
+    (mutants / "mod.py").write_bytes(generated)
     (mutants / "mod.py.meta").write_text(
         json.dumps(
             {
                 "exit_code_by_key": {"mod.x_foo__mutmut_1": 0},
                 "source_hash": hashlib.sha256(original).hexdigest(),
+                "generated_hash": hashlib.sha256(generated).hexdigest(),
             }
         ),
         encoding="utf-8",
@@ -207,7 +209,7 @@ def test_apply_replaces_backup_safely_and_ignores_predictable_apply_tmp(
     assert not backup.is_symlink()
     assert not backup.samefile(backup_sentinel)
     _assert_still_references(predictable_tmp, apply_tmp_sentinel, kind)
-    assert source.read_bytes() == b"\r\ndef foo() -> int:\r\n    return 2\r\n"
+    assert source.read_bytes() == b"def foo() -> int:\r\n    return 2\r\n"
 
 
 def test_replace_failure_keeps_target_and_cleans_private_sibling(tmp_path: Path) -> None:

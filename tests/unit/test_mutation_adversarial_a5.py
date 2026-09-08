@@ -8,6 +8,7 @@ import os
 from typing import Any
 
 import libcst as cst
+import pytest
 
 from mutmut_win.constants import Profile
 from mutmut_win.mutation import mutate_file_contents, pragma_no_mutate_lines
@@ -65,11 +66,15 @@ def f(
         function = namespace["f"]
 
         assert names
-        assert events == ["default", "annotation", "return"]
+        # PEP 649 makes annotations lazy on CPython 3.14: only the default is
+        # evaluated when the public wrapper is defined.
+        assert events == ["default"]
         assert generated.count("record(") == 3
         assert function.__doc__ == "public documentation"
         assert function.__defaults__ == (1,)
-        assert function.__annotations__ == {"x": int, "return": int}
+        annotations = function.__annotations__
+        assert events == ["default", "annotation", "return"]
+        assert annotations == {"x": int, "return": int}
         assert str(inspect.signature(function)) == "(x: int = 1) -> int"
         assert function() == 2
 
@@ -208,6 +213,27 @@ class TestCommentOnlyPragmas:
         source = "def broken(\n# pragma: no mutate start\n"
 
         assert pragma_no_mutate_lines(source) == set()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "if True:\nvalue = 1\n",
+            "if True:\n\tvalue = 1\n        other = 2\n",
+        ],
+    )
+    def test_indentation_failures_defer_to_the_cst_parser(self, source: str) -> None:
+        assert pragma_no_mutate_lines(source) == set()
+
+    @pytest.mark.parametrize(
+        "lookalike",
+        [
+            "# pragma: no mutated",
+            "# pragma: no mutate_start",
+            "# pragma: no mutate-block",
+        ],
+    )
+    def test_pragma_prefix_lookalikes_are_not_directives(self, lookalike: str) -> None:
+        assert pragma_no_mutate_lines(f"value = 1  {lookalike}\n") == set()
 
     def test_pragma_lookalikes_in_strings_are_ignored(self) -> None:
         source = """\

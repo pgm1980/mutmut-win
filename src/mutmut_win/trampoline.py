@@ -1,6 +1,15 @@
 """Templates and helpers for generating mutation trampoline functions."""
 
 CLASS_NAME_SEPARATOR = "ǁ"
+#: Prefix for the collision-safe encoding used only when a source function or
+#: class name itself contains the reserved ``__mutmut_`` delimiter.  Ordinary
+#: names retain their historical ``x_`` / ``xǁ`` IDs byte-for-byte.
+COLLISION_SAFE_NAME_PREFIX = "xq"
+
+
+def _encoded_source_name(name: str) -> str:
+    """Encode one Python identifier without using the mutant delimiter."""
+    return name.encode("utf-8").hex()
 
 
 def create_trampoline_lookup(
@@ -70,6 +79,9 @@ def mangle_function_name(
     if CLASS_NAME_SEPARATOR in name:
         msg = f"Function name must not contain '{CLASS_NAME_SEPARATOR}': {name!r}"
         raise ValueError(msg)
+    if class_name and CLASS_NAME_SEPARATOR in class_name:
+        msg = f"Class name must not contain '{CLASS_NAME_SEPARATOR}': {class_name!r}"
+        raise ValueError(msg)
     if (
         not isinstance(definition_ordinal, int)
         or isinstance(definition_ordinal, bool)
@@ -77,14 +89,37 @@ def mangle_function_name(
     ):
         msg = f"Definition ordinal must be a positive integer: {definition_ordinal!r}"
         raise ValueError(msg)
-    if class_name:
-        if CLASS_NAME_SEPARATOR in class_name:
-            msg = f"Class name must not contain '{CLASS_NAME_SEPARATOR}': {class_name!r}"
-            raise ValueError(msg)
+    # Decide from the complete legacy prefix plus the generated delimiter, not
+    # only from the raw source component.  A valid identifier can contain the
+    # delimiter, end in ``__mutmut`` and complete it when the suffix is added,
+    # or start in ``_mutmut_`` and complete it across the top-level ``x_``
+    # prefix.  Any of those forms makes the first delimiter ambiguous and can
+    # route apply/show to another source definition (MW221-025 / CX221-005).
+    legacy_mangled_base = (
+        f"x{CLASS_NAME_SEPARATOR}{class_name}{CLASS_NAME_SEPARATOR}{name}"
+        if class_name
+        else f"x_{name}"
+    )
+    needs_collision_safe_encoding = (
+        "__mutmut_" in legacy_mangled_base or legacy_mangled_base.endswith("__mutmut")
+    )
+    if needs_collision_safe_encoding:
+        encoded_name = _encoded_source_name(name)
+        if class_name:
+            encoded_class = _encoded_source_name(class_name)
+            prefix = (
+                f"{COLLISION_SAFE_NAME_PREFIX}{CLASS_NAME_SEPARATOR}"
+                f"{encoded_class}{CLASS_NAME_SEPARATOR}"
+            )
+        else:
+            prefix = f"{COLLISION_SAFE_NAME_PREFIX}_"
+        mangled = f"{prefix}{encoded_name}"
+    elif class_name:
         prefix = f"x{CLASS_NAME_SEPARATOR}{class_name}{CLASS_NAME_SEPARATOR}"
+        mangled = f"{prefix}{name}"
     else:
         prefix = "x_"
-    mangled = f"{prefix}{name}"
+        mangled = f"{prefix}{name}"
     if definition_ordinal > 1:
         mangled += f"{CLASS_NAME_SEPARATOR}{definition_ordinal}"
     return mangled
@@ -100,7 +135,7 @@ from typing import ClassVar
 MutantDict = Annotated[dict[str, Callable], "Mutant"] # type: ignore
 
 
-def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None): # type: ignore
+def _mutmut_trampoline(orig, mutants, call_args, call_kwargs): # type: ignore
     \"""Forward call to original or mutated function, depending on the environment\"""
     import os # type: ignore
     mutant_under_test = os.environ.get('MUTANT_UNDER_TEST') # type: ignore
@@ -113,7 +148,6 @@ def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None): 
     elif mutant_under_test == 'stats': # type: ignore
         from mutmut_win.hit_recording import record_trampoline_hit # type: ignore
         record_trampoline_hit(orig.__module__ + '.' + orig.__name__) # type: ignore
-        # (for class methods, orig is bound and thus does not need the explicit self argument)
         result = orig(*call_args, **call_kwargs) # type: ignore
         return result # type: ignore
     prefix = orig.__module__ + '.' + orig.__name__ + '__mutmut_' # type: ignore
@@ -121,11 +155,7 @@ def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None): 
         result = orig(*call_args, **call_kwargs) # type: ignore
         return result # type: ignore
     mutant_name = mutant_under_test.rpartition('.')[-1] # type: ignore
-    if self_arg is not None: # type: ignore
-        # call to a class method where self is not bound
-        result = mutants[mutant_name](self_arg, *call_args, **call_kwargs) # type: ignore
-    else:
-        result = mutants[mutant_name](*call_args, **call_kwargs) # type: ignore
+    result = mutants[mutant_name](*call_args, **call_kwargs) # type: ignore
     return result # type: ignore
 
 """

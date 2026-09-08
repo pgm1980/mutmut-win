@@ -283,6 +283,105 @@ class TestCreateMutations:
         # Type annotations should not be mutated
         assert all(not isinstance(m.original_node, cst.Annotation) for m in mutations)
 
+    def test_single_quoted_docstrings_are_not_mutation_targets(self) -> None:
+        code = """\
+'module docs'
+
+class C:
+    'class docs'
+
+    def method(self):
+        'method docs'
+        return 'runtime payload'
+
+def outer():
+    def inner():
+        'nested docs'
+        return 'nested payload'
+    return inner()
+"""
+        _module, mutations = create_mutations(code)
+        mutated_strings = {
+            node.evaluated_value
+            for mutation in mutations
+            if isinstance((node := mutation.original_node), cst.SimpleString)
+        }
+
+        assert (
+            not {
+                "module docs",
+                "class docs",
+                "method docs",
+                "nested docs",
+            }
+            & mutated_strings
+        )
+        assert {"runtime payload", "nested payload"} <= mutated_strings
+
+    def test_concatenated_constant_str_docstring_is_not_a_mutation_target(self) -> None:
+        code = """\
+def f():
+    "constant " "docs"
+    return "runtime payload"
+"""
+        _module, mutations = create_mutations(code)
+        mutated_strings = {
+            node.evaluated_value
+            for mutation in mutations
+            if isinstance((node := mutation.original_node), cst.SimpleString)
+        }
+
+        assert not {"constant ", "docs"} & mutated_strings
+        assert "runtime payload" in mutated_strings
+
+    def test_semicolon_docstring_is_not_a_mutation_target(self) -> None:
+        code = """\
+def f():
+    "real docs"; payload = "runtime payload"
+    return payload
+"""
+        _module, mutations = create_mutations(code)
+        mutated_strings = {
+            node.evaluated_value
+            for mutation in mutations
+            if isinstance((node := mutation.original_node), cst.SimpleString)
+        }
+
+        assert "real docs" not in mutated_strings
+        assert "runtime payload" in mutated_strings
+
+    def test_leading_bytes_expression_remains_a_mutation_target(self) -> None:
+        code = """\
+def f():
+    b"runtime bytes"
+    return "runtime payload"
+"""
+        _module, mutations = create_mutations(code)
+        mutated_strings = {
+            node.evaluated_value
+            for mutation in mutations
+            if isinstance((node := mutation.original_node), cst.SimpleString)
+        }
+
+        assert b"runtime bytes" in mutated_strings
+        assert "runtime payload" in mutated_strings
+
+    def test_leading_f_string_concatenation_remains_a_mutation_target(self) -> None:
+        code = """\
+def f(value):
+    f"{value}" "runtime tail"
+    return "runtime payload"
+"""
+        _module, mutations = create_mutations(code)
+        mutated_strings = {
+            node.evaluated_value
+            for mutation in mutations
+            if isinstance((node := mutation.original_node), cst.SimpleString)
+        }
+
+        assert "runtime tail" in mutated_strings
+        assert "runtime payload" in mutated_strings
+
 
 # --- mutate_file_contents -----------------------------------------------------
 

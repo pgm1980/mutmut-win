@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,10 @@ def _snapshot_process_tree(pid: int) -> list[psutil.Process]:
             if child.pid not in seen:
                 members.append(child)
                 seen.add(child.pid)
-    except (psutil.AccessDenied, psutil.NoSuchProcess):
+    except (
+        psutil.AccessDenied,
+        psutil.NoSuchProcess,
+    ):
         pass
 
     # On Windows, an orphan keeps the exited parent's PID as its PPID.  A
@@ -226,15 +230,25 @@ def _run_type_check_process(
     type_check_command: list[str], *, timeout: float
 ) -> subprocess.CompletedProcess[str]:
     """Run a checker with bounded process-tree cleanup and bounded output."""
-    from mutmut_win.process.worker import _contained_creationflags, _resume_after_containment
+    from mutmut_win.process.worker import (
+        _contained_creationflags,
+        _resume_after_containment,
+        configure_ephemeral_pytest_environment,
+    )
 
     with (
+        tempfile.TemporaryDirectory(
+            prefix="mutmut-win-typecheck-runtime-",
+            ignore_cleanup_errors=True,
+        ) as runtime_name,
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stdout_capture,
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stderr_capture,
     ):
         job_handle = _create_type_checker_job()
+        checker_environment = _type_checker_environment()
+        configure_ephemeral_pytest_environment(checker_environment, Path(runtime_name))
         popen_kwargs: dict[str, Any] = {
-            "env": _type_checker_environment(),
+            "env": checker_environment,
             "stdout": stdout_capture.writer_fd,
             "stderr": stderr_capture.writer_fd,
         }

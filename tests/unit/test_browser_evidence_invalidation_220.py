@@ -48,6 +48,7 @@ async def test_browser_marks_invalidated_completed_run_stale_and_not_release_rea
         ["pkg.mod.x_f__mutmut_1"],
         basis_fingerprint="a" * 64,
         basis_config_json=_basis_config(),
+        is_full_run=True,
     )
     save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
@@ -81,6 +82,7 @@ async def test_browser_keeps_normal_completed_run_status_compatible(
         ["pkg.mod.x_f__mutmut_1"],
         basis_fingerprint="a" * 64,
         basis_config_json=_basis_config(),
+        is_full_run=True,
     )
     save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
@@ -103,7 +105,7 @@ async def test_browser_marks_completed_run_with_incomplete_basis_not_release_rea
 ) -> None:
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
-    run_id = start_run(db_path, ["pkg.mod.x_f__mutmut_1"])
+    run_id = start_run(db_path, ["pkg.mod.x_f__mutmut_1"], is_full_run=True)
     save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
 
@@ -131,6 +133,7 @@ async def test_browser_marks_legacy_generic_type_checker_basis_not_release_ready
         ["pkg.mod.x_f__mutmut_1"],
         basis_fingerprint="a" * 64,
         basis_config_json=_legacy_type_check_basis_config(),
+        is_full_run=True,
     )
     save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
@@ -158,6 +161,7 @@ async def test_browser_surfaces_malformed_persisted_basis_as_corrupt_evidence(
         ["pkg.mod.x_f__mutmut_1"],
         basis_fingerprint="a" * 64,
         basis_config_json=_basis_config(),
+        is_full_run=True,
     )
     save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
@@ -178,6 +182,36 @@ async def test_browser_surfaces_malformed_persisted_basis_as_corrupt_evidence(
         assert "execution_basis_complete=false" in status_text
         assert "release_ready=false" in status_text
         assert "invalid run basis" in status_text
+        assert banner.has_class("evidence-invalidated")
+
+
+@pytest.mark.asyncio
+async def test_browser_marks_subset_run_and_displayed_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
+    run_id = start_run(
+        db_path,
+        ["pkg.mod.x_f__mutmut_1"],
+        basis_fingerprint="a" * 64,
+        basis_config_json=_basis_config(),
+        is_full_run=False,
+    )
+    save_result(db_path, "pkg.mod.x_f__mutmut_1", "killed", 1, 0.1)
+    finish_run(db_path, run_id, "completed")
+
+    app = ResultBrowser(db_path=db_path)
+    async with app.run_test():
+        banner = app.query_one("#run_status", Static)
+        status_text = str(banner.render())
+
+        assert "SUBSET RUN" in status_text
+        assert "NOT RELEASE-READY" in status_text
+        assert "execution_basis_complete=true" in status_text
+        assert "release_ready=false" in status_text
+        assert "run_scope=subset" in status_text
         assert banner.has_class("evidence-invalidated")
 
 

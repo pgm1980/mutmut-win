@@ -24,6 +24,7 @@ all-empty measurement therefore raises instead of filtering everything.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -92,29 +93,33 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
             subprocess- or xdist-based suites, whose execution the bridge
             cannot see). Bare ``Exception`` until issue #114 / A4-QX-023.
     """
-    data_file = Path("mutants").absolute() / ".coverage.mutmut"
-    if data_file.exists():
-        data_file.unlink()  # fresh measurement, no --append semantics
+    # Coverage output is coordination state, never executable staging input.
+    # A fresh external directory also prevents stale/parallel data from being
+    # merged into the current line authority.
+    with tempfile.TemporaryDirectory(
+        prefix="mutmut-win-coverage-output-",
+        ignore_cleanup_errors=True,
+    ) as output_name:
+        data_file = (Path(output_name) / ".coverage.mutmut").absolute()
+        exit_code = runner.run_coverage_collection(data_file)
+        if exit_code != 0:
+            raise CoverageCollectionError(
+                f"coverage collection run failed with exit code {exit_code} — "
+                f"the test suite must pass before mutate_only_covered_lines can "
+                f"measure it."
+            )
+        if not data_file.exists():
+            raise CoverageCollectionError(
+                "coverage collection produced no data file — coverage did not record anything."
+            )
 
-    exit_code = runner.run_coverage_collection(data_file)
-    if exit_code != 0:
-        raise CoverageCollectionError(
-            f"coverage collection run failed with exit code {exit_code} — "
-            f"the test suite must pass before mutate_only_covered_lines can "
-            f"measure it."
-        )
-    if not data_file.exists():
-        raise CoverageCollectionError(
-            "coverage collection produced no data file — coverage did not record anything."
-        )
-
-    cov = coverage.Coverage(data_file=str(data_file))
-    cov.load()
-    coverage_data = cov.get_data()
-    measured = {
-        os.path.normcase(f): set(coverage_data.lines(f) or [])
-        for f in coverage_data.measured_files()
-    }
+        cov = coverage.Coverage(data_file=str(data_file))
+        cov.load()
+        coverage_data = cov.get_data()
+        measured = {
+            os.path.normcase(f): set(coverage_data.lines(f) or [])
+            for f in coverage_data.measured_files()
+        }
 
     covered_lines: dict[str, set[int]] = {}
     for filename in source_files:

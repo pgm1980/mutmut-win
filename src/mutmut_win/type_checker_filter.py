@@ -17,12 +17,17 @@ Functions:
 
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import libcst as cst
 from libcst.metadata import PositionProvider
 
-from mutmut_win.type_checking import TypeCheckingError
+from mutmut_win.trampoline import CLASS_NAME_SEPARATOR, COLLISION_SAFE_NAME_PREFIX
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from mutmut_win.type_checking import TypeCheckingError
 
 
 def to_mutants_relative(path: Path, mutants_dir: Path) -> Path | None:
@@ -49,7 +54,10 @@ def to_mutants_relative(path: Path, mutants_dir: Path) -> Path | None:
         # resolve() reconciles drive-letter case, 8.3 short names and
         # symlinks on both sides before the containment check.
         return candidate.resolve().relative_to(mutants_dir.resolve())
-    except (ValueError, OSError):
+    except (
+        ValueError,
+        OSError,
+    ):
         return None
 
 
@@ -65,7 +73,17 @@ def is_mutated_method_name(name: str) -> bool:
     Returns:
         ``True`` if *name* matches a trampoline-generated pattern.
     """
-    return name.startswith(("x_", "xǁ")) and "__mutmut" in name
+    return (
+        name.startswith(
+            (
+                "x_",
+                f"x{CLASS_NAME_SEPARATOR}",
+                f"{COLLISION_SAFE_NAME_PREFIX}_",
+                f"{COLLISION_SAFE_NAME_PREFIX}{CLASS_NAME_SEPARATOR}",
+            )
+        )
+        and "__mutmut" in name
+    )
 
 
 @dataclass

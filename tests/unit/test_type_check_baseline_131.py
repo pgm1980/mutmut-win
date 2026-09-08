@@ -317,6 +317,23 @@ class TestFilterHardening:
             _, caught = _filter_with_type_checker(tasks, {}, ["mypy", "--output=json", "."])
         assert caught == {"mod.x_f__mutmut_2"}
 
+    def test_pep263_staged_source_uses_its_declared_encoding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        staged = tmp_path / "mutants" / "src" / "mod.py"
+        staged.parent.mkdir(parents=True)
+        source = "# coding: cp1252\n# marker: café\n" + _STAGED
+        staged.write_bytes(source.encode("cp1252"))
+        mutant2_line = _line_of(source, "def x_f__mutmut_2") + 1
+        errors = [TypeCheckingError(Path("src/mod.py"), mutant2_line, "mutation broke it")]
+        tasks = [MutationTask(mutant_name="mod.x_f__mutmut_2")]
+
+        with patch("mutmut_win.type_checking.run_type_checker", return_value=errors):
+            _, caught = _filter_with_type_checker(tasks, {}, ["mypy", "--output=json", "."])
+
+        assert caught == {"mod.x_f__mutmut_2"}
+
     def test_unreadable_file_does_not_stop_the_filter(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -14,7 +14,7 @@ import contextlib
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -28,7 +28,7 @@ from mutmut_win.orchestrator import (
     _split_reusable_tasks,
     _tests_fingerprint,
 )
-from mutmut_win.stats import MutmutStats
+from mutmut_win.stats import MutmutStats, RunBasisEvidence
 
 # ---------------------------------------------------------------------------
 # The reusable-verdict set is a conscious decision
@@ -99,6 +99,23 @@ class TestTestsFingerprint:
         assert "m2" in with_context
         assert with_context["m2"] != with_context["m1"]
         assert all(len(fingerprint) == 64 for fingerprint in with_context.values())
+
+    def test_non_authoritative_hint_fingerprints_the_full_suite_basis(self) -> None:
+        hinted = MutationTask(
+            mutant_name="m1",
+            tests=["tests/test_a.py::test_x"],
+            test_selection_is_authoritative=False,
+        )
+        full = MutationTask(mutant_name="m1", tests=[])
+
+        [hinted_fingerprint] = _build_tests_fingerprints(
+            [hinted], context_fingerprint="context-v1"
+        ).values()
+        [full_fingerprint] = _build_tests_fingerprints(
+            [full], context_fingerprint="context-v1"
+        ).values()
+
+        assert hinted_fingerprint == full_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +323,7 @@ class TestReuseEndToEnd:
         monkeypatch.setattr(
             stats_mod,
             "_installed_distribution_basis",
-            lambda _root, _seen: _DependencyBasis("test-environment", True),
+            lambda _root, _seen, **_kwargs: _DependencyBasis("test-environment", True),
         )
 
     def test_unchanged_second_run_dispatches_nothing(
@@ -330,6 +347,66 @@ class TestReuseEndToEnd:
         assert summary_b.killed == summary_a.killed  # identical buckets
         assert summary_b.total_mutants == summary_a.total_mutants
         assert f"Reused {dispatched_a} cached verdicts" in capsys.readouterr().out
+
+    def test_initial_ambient_instability_disables_historical_verdict_reuse(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _first, executor_a = _orchestrate(tmp_path)
+        dispatched = len(executor_a.captured)
+        assert dispatched > 0
+        capsys.readouterr()
+        initial = RunBasisEvidence("a" * 64, True, "c" * 64, True)
+        ambient_changed = RunBasisEvidence("b" * 64, True, "c" * 64, True)
+
+        with patch(
+            "mutmut_win.orchestrator.build_run_basis_evidence",
+            side_effect=[initial, ambient_changed, ambient_changed, ambient_changed],
+        ):
+            result, executor_b = _orchestrate(tmp_path)
+
+        assert executor_b.start.call_count == 1
+        assert len(executor_b.captured) == dispatched
+        assert result.execution_basis_complete is False
+        output = capsys.readouterr().out
+        assert "cached verdict reuse is disabled" in output
+        assert "Reused" not in output
+
+    def test_unchanged_diagnostic_basis_cannot_authorize_future_reuse(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An incomplete-but-stable snapshot must not mint future capability."""
+        _first, executor_a = _orchestrate(tmp_path)
+        dispatched = len(executor_a.captured)
+        assert dispatched > 0
+        capsys.readouterr()
+
+        diagnostic = RunBasisEvidence("b" * 64, False, "c" * 64, True)
+        with patch(
+            "mutmut_win.orchestrator.build_run_basis_evidence",
+            return_value=diagnostic,
+        ):
+            diagnostic_result, executor_b = _orchestrate(tmp_path)
+
+        assert executor_b.start.call_count == 1
+        assert len(executor_b.captured) == dispatched
+        assert diagnostic_result.execution_basis_complete is False
+        assert all(
+            result.tests_fingerprint is None for result in load_results(tmp_path / "reuse.sqlite")
+        )
+        output = capsys.readouterr().out
+        assert "remained diagnostic-only" in output
+        assert "Reused" not in output
+
+        # A later complete basis must execute again.  It cannot resurrect the
+        # diagnostic run's freshly produced verdicts from the historical table.
+        _third, executor_c = _orchestrate(tmp_path)
+        assert executor_c.start.call_count == 1
+        assert len(executor_c.captured) == dispatched
+        assert "Reused" not in capsys.readouterr().out
 
     def test_source_change_rerons_only_that_file(self, tmp_path: Path) -> None:
         _orchestrate(tmp_path)
@@ -381,7 +458,8 @@ class TestReuseEndToEnd:
         assert executor_a.start.call_count == 1
         dispatched = len(executor_a.captured)
         assert dispatched > 0
-        assert all(not task.tests for task in executor_a.captured)
+        assert all(task.test_selection_is_authoritative is False for task in executor_a.captured)
+        assert any(task.tests for task in executor_a.captured)
 
         second, executor_b = _orchestrate(tmp_path)
         assert executor_b.start.call_count == 0

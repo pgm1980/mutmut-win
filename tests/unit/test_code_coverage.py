@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import coverage
 import pytest
 
+import mutmut_win.code_coverage as code_coverage_module
 from mutmut_win.code_coverage import gather_coverage, get_covered_lines_for_file
 from mutmut_win.exceptions import CoverageCollectionError
 
@@ -81,22 +82,20 @@ class TestGatherCoverage:
         assert covered[os.path.normcase(measured_path)] == {1, 2, 5}
         assert get_covered_lines_for_file("src/mod.py", covered) == {1, 2, 5}
 
-    def test_collection_uses_fresh_data_file_inside_mutants(
+    def test_collection_uses_fresh_data_file_outside_mutants(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
         mutants_dir = tmp_path / "mutants"
         mutants_dir.mkdir()
-        expected_data_file = mutants_dir / ".coverage.mutmut"
-        expected_data_file.write_bytes(b"stale coverage data")
+        legacy_data_file = mutants_dir / ".coverage.mutmut"
+        legacy_data_file.write_bytes(b"stale coverage data")
         measured_path = str((mutants_dir / "src" / "mod.py").absolute())
 
         runner = MagicMock()
 
         def fake_collection(data_file: Path) -> int:
-            # Path equality deliberately follows the host filesystem's case
-            # semantics: case-only spellings are equivalent on Windows.
-            assert data_file == expected_data_file
+            assert not data_file.is_relative_to(mutants_dir)
             assert not data_file.exists()
             self._write_data_file(data_file, {measured_path: [2, 7]})
             return 0
@@ -106,6 +105,81 @@ class TestGatherCoverage:
         covered = gather_coverage(runner, ["src/mod.py"])
 
         assert covered == {os.path.normcase(measured_path): {2, 7}}
+        assert legacy_data_file.read_bytes() == b"stale coverage data"
+
+    def test_external_temp_directory_contract_is_deterministic_and_cleanup_tolerant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The coordination directory must stay external and tolerate cleanup races."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        output_dir = tmp_path / "external-coverage-output"
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+        calls: list[tuple[str, bool]] = []
+
+        class FakeTemporaryDirectory:
+            def __init__(self, *, prefix: str, ignore_cleanup_errors: bool) -> None:
+                calls.append((prefix, ignore_cleanup_errors))
+
+            def __enter__(self) -> str:
+                output_dir.mkdir()
+                return str(output_dir)
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        monkeypatch.setattr(
+            code_coverage_module.tempfile,
+            "TemporaryDirectory",
+            FakeTemporaryDirectory,
+        )
+        runner = MagicMock()
+
+        def fake_collection(data_file: Path) -> int:
+            self._write_data_file(data_file, {measured_path: [4]})
+            return 0
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        assert gather_coverage(runner, ["src/mod.py"]) == {os.path.normcase(measured_path): {4}}
+        assert calls == [("mutmut-win-coverage-output-", True)]
+
+    def test_measured_file_with_no_lines_is_handled_as_empty_coverage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CoverageData.lines may return None and must not crash collection."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        class FakeCoverageData:
+            def measured_files(self) -> set[str]:
+                return {measured_path}
+
+            def lines(self, filename: str) -> None:
+                assert filename == measured_path
+
+        class FakeCoverage:
+            def __init__(self, *, data_file: str) -> None:
+                assert data_file.endswith(".coverage.mutmut")
+
+            def load(self) -> None:
+                return None
+
+            def get_data(self) -> FakeCoverageData:
+                return FakeCoverageData()
+
+        monkeypatch.setattr(code_coverage_module.coverage, "Coverage", FakeCoverage)
+        runner = MagicMock()
+
+        def fake_collection(data_file: Path) -> int:
+            data_file.write_bytes(b"coverage proof")
+            return 0
+
+        runner.run_coverage_collection.side_effect = fake_collection
+
+        with pytest.raises(CoverageCollectionError, match="measured no coverage"):
+            gather_coverage(runner, ["src/mod.py"])
 
     def test_nonzero_exit_raises_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

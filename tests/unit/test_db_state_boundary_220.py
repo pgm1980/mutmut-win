@@ -28,6 +28,7 @@ from mutmut_win.db import (
     load_results,
     save_result,
     start_run,
+    validate_cache_path,
 )
 from mutmut_win.exceptions import UnsafeWorkspaceStateError
 from mutmut_win.stats import canonical_run_basis_config
@@ -153,6 +154,294 @@ def test_sidecar_swap_after_connect_fails_before_schema_write(
 
     sidecar.unlink()
     assert sentinel.read_bytes() == b"valuable external bytes"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar access errors")
+@pytest.mark.parametrize("operation", ["lstat", "resolve"])
+@pytest.mark.parametrize("following_state", ["absent", "regular"])
+def test_sidecar_access_denial_rechecks_before_accepting_safe_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    following_state: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    real_access = getattr(Path, operation)
+    denied = False
+
+    def transient_access(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal denied
+        if path == sidecar and not denied:
+            denied = True
+            if following_state == "absent":
+                sidecar.unlink()
+            raise PermissionError(13, "SQLite sidecar lifecycle", str(path), 5)
+        return real_access(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, transient_access)
+
+    validate_cache_path(database)
+
+    assert denied
+    assert sidecar.exists() is (following_state == "regular")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar access errors")
+@pytest.mark.parametrize("operation", ["lstat", "resolve"])
+def test_sidecar_persistent_access_denial_fails_closed_after_bounded_rechecks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    real_access = getattr(Path, operation)
+    calls = 0
+
+    def denied_access(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        if path == sidecar:
+            calls += 1
+            raise PermissionError(13, "persistent access denial", str(path), 5)
+        return real_access(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, denied_access)
+
+    with pytest.raises(UnsafeWorkspaceStateError, match=r"cannot .* SQLite sidecar") as caught:
+        validate_cache_path(database)
+
+    assert calls == 3
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert caught.value.__cause__.winerror == 5
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar access errors")
+@pytest.mark.parametrize("operation", ["lstat", "resolve"])
+@pytest.mark.parametrize("target", ["database", "parent"])
+def test_database_and_parent_access_denial_does_not_grant_sidecar_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    target: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    denied_path = database if target == "database" else database.parent
+    real_access = getattr(Path, operation)
+    calls = 0
+
+    def denied_access(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        if path == denied_path:
+            calls += 1
+            raise PermissionError(13, "access denial", str(path), 5)
+        return real_access(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, denied_access)
+
+    with pytest.raises(UnsafeWorkspaceStateError, match="cannot"):
+        validate_cache_path(database)
+
+    assert calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar access errors")
+@pytest.mark.parametrize("operation", ["lstat", "resolve"])
+@pytest.mark.parametrize("winerror", [None, 32, 33])
+def test_sidecar_unconfirmed_access_errors_do_not_grant_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    winerror: int | None,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    real_access = getattr(Path, operation)
+    calls = 0
+
+    def denied_access(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        if path == sidecar:
+            calls += 1
+            raise PermissionError(13, "unconfirmed access error", str(path), winerror)
+        return real_access(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, denied_access)
+
+    with pytest.raises(UnsafeWorkspaceStateError, match=r"cannot .* SQLite sidecar"):
+        validate_cache_path(database)
+
+    assert calls == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar access errors")
+@pytest.mark.parametrize("following_state", ["directory", "hardlink"])
+def test_sidecar_access_denial_rechecks_file_safety_before_accepting_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    following_state: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    sentinel = tmp_path / "sentinel.bin"
+    sentinel.write_bytes(b"unchanged fixture")
+    real_resolve = Path.resolve
+    denied = False
+
+    def transient_resolve(path: Path, strict: bool = False) -> Path:
+        nonlocal denied
+        if path == sidecar and not denied:
+            denied = True
+            sidecar.unlink()
+            if following_state == "directory":
+                sidecar.mkdir()
+            else:
+                os.link(sentinel, sidecar)
+            raise PermissionError(13, "SQLite sidecar lifecycle", str(path), 5)
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", transient_resolve)
+
+    expected = "not a regular file" if following_state == "directory" else "hardlink"
+    with pytest.raises(UnsafeWorkspaceStateError, match=expected):
+        validate_cache_path(database)
+
+    assert denied
+    assert sentinel.read_bytes() == b"unchanged fixture"
+
+
+def _stat_with_link_count(metadata: os.stat_result, link_count: int) -> os.stat_result:
+    values = list(metadata)
+    values[3] = link_count
+    return os.stat_result(
+        values,
+        {
+            name: getattr(metadata, name)
+            for name in ("st_file_attributes", "st_reparse_tag")
+            if hasattr(metadata, name)
+        },
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar deletion metadata")
+@pytest.mark.parametrize("following_state", ["absent", "regular"])
+def test_sidecar_zero_links_rechecks_before_accepting_safe_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    following_state: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    real_lstat = Path.lstat
+    observed_zero = False
+
+    def transient_lstat(path: Path) -> os.stat_result:
+        nonlocal observed_zero
+        metadata = real_lstat(path)
+        if path == sidecar and not observed_zero:
+            observed_zero = True
+            if following_state == "absent":
+                sidecar.unlink()
+            return _stat_with_link_count(metadata, 0)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", transient_lstat)
+
+    validate_cache_path(database)
+
+    assert observed_zero
+    assert sidecar.exists() is (following_state == "regular")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar deletion metadata")
+@pytest.mark.parametrize(
+    ("target", "link_count", "expected_calls"),
+    [("sidecar", 0, 3), ("database", 0, 1), ("sidecar", 2, 1), ("database", 2, 1)],
+)
+def test_zero_links_or_multiple_links_fail_closed_with_only_bounded_sidecar_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    link_count: int,
+    expected_calls: int,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    changed_path = sidecar if target == "sidecar" else database
+    real_lstat = Path.lstat
+    calls = 0
+
+    def changed_lstat(path: Path) -> os.stat_result:
+        nonlocal calls
+        metadata = real_lstat(path)
+        if path == changed_path:
+            calls += 1
+            return _stat_with_link_count(metadata, link_count)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", changed_lstat)
+
+    with pytest.raises(UnsafeWorkspaceStateError) as caught:
+        validate_cache_path(database)
+
+    assert calls == expected_calls
+    if target == "sidecar" and link_count == 0:
+        assert "no links" in str(caught.value)
+        assert "hardlink" not in str(caught.value)
+    elif link_count > 1:
+        assert "hardlink" in str(caught.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar deletion metadata")
+@pytest.mark.parametrize("following_state", ["directory", "hardlink"])
+def test_sidecar_zero_links_rechecks_file_safety_before_accepting_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    following_state: str,
+) -> None:
+    database = tmp_path / "cache.db"
+    database.touch()
+    sidecar = Path(f"{database}-journal")
+    sidecar.touch()
+    sentinel = tmp_path / "sentinel.bin"
+    sentinel.write_bytes(b"unchanged fixture")
+    real_lstat = Path.lstat
+    observed_zero = False
+
+    def transient_lstat(path: Path) -> os.stat_result:
+        nonlocal observed_zero
+        metadata = real_lstat(path)
+        if path == sidecar and not observed_zero:
+            observed_zero = True
+            sidecar.unlink()
+            if following_state == "directory":
+                sidecar.mkdir()
+            else:
+                os.link(sentinel, sidecar)
+            return _stat_with_link_count(metadata, 0)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", transient_lstat)
+
+    expected = "not a regular file" if following_state == "directory" else "hardlink \\(2 links\\)"
+    with pytest.raises(UnsafeWorkspaceStateError, match=expected):
+        validate_cache_path(database)
+
+    assert observed_zero
+    assert sentinel.read_bytes() == b"unchanged fixture"
 
 
 def test_load_results_turns_invalid_json_into_corrupt_cache_error(tmp_path: Path) -> None:

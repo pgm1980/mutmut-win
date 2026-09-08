@@ -68,8 +68,10 @@ atomic STARTUPINFOEX Job-list assignment, add suspended creation and bounded
 failure cleanup, and replace the multiprocessing bootstrap pipe with seekable
 temporary storage. The POSIX adaptation starts the child in a new session,
 uses seekable bootstrap storage plus a separate parent-liveness pipe, and adds
-bounded process-group cleanup. These changes are audited for CPython
-3.12-3.14 and fail closed outside that runtime range.
+bounded process-group cleanup.
+
+The phrase "Portions adapted from CPython 3.12-3.14" describes source provenance only; it does not declare a supported runtime range.
+The supported and audited product runtime is Windows with exactly CPython 3.14.7; retained POSIX implementation code is outside the product contract.
 
 Copyright (c) 2001-2024 Python Software Foundation; All Rights Reserved
 

@@ -55,7 +55,10 @@ def _wait_for_pid(path: Path, process: subprocess.Popen[bytes], timeout: float =
         if path.is_file():
             try:
                 pid = int(path.read_text(encoding="ascii"))
-            except (OSError, ValueError):
+            except (
+                OSError,
+                ValueError,
+            ):
                 # A ready marker is a content-bearing synchronization
                 # primitive, not merely a pathname.  Keep waiting if an
                 # antivirus/indexer or a non-atomic older publisher exposes a

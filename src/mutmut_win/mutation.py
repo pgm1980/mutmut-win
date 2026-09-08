@@ -5,14 +5,14 @@ import re
 import tokenize
 import warnings
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import libcst as cst
 import libcst.matchers as m
 from libcst.metadata import (
     MetadataWrapper,
+    ParentNodeProvider,
     PositionProvider,
     QualifiedNameProvider,
     QualifiedNameSource,
@@ -21,6 +21,9 @@ from libcst.metadata import (
 from mutmut_win.constants import Profile
 from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
 
 NEVER_MUTATE_FUNCTION_NAMES = {
     "__getattribute__",
@@ -81,6 +84,25 @@ def mutate_file_contents(
     return combine_mutations_to_source(module, mutations)
 
 
+def parse_module_preserving_newlines(source: str) -> cst.Module:
+    """Parse source without losing a final bare CR during later code generation.
+
+    LibCST recognises CR line endings but marks a module ending in bare CR as
+    having no trailing newline. Correct that flag before replacing any nodes;
+    the original newline spelling is already present in the CST.
+
+    Args:
+        source: Decoded Python source with its original physical newlines.
+
+    Returns:
+        Parsed module with an accurate trailing-newline flag.
+    """
+    module = cst.parse_module(source)
+    if source.endswith("\r") and not module.has_trailing_newline:
+        module = module.with_changes(has_trailing_newline=True)
+    return module
+
+
 def create_mutations(
     code: str,
     covered_lines: set[int] | None = None,
@@ -96,7 +118,7 @@ def create_mutations(
     """
     ignored_lines = pragma_no_mutate_lines(code)
 
-    module = cst.parse_module(code)
+    module = parse_module_preserving_newlines(code)
 
     metadata_wrapper = MetadataWrapper(module)
     visitor = MutationVisitor(
@@ -151,7 +173,7 @@ class OuterFunctionProvider(cst.BatchableMetadataProvider[cst.CSTNode]):
 class OuterFunctionVisitor(cst.CSTVisitor):
     """Mark all nodes as children of `top_level_node`."""
 
-    def __init__(self, provider: "OuterFunctionProvider", top_level_node: cst.CSTNode) -> None:
+    def __init__(self, provider: OuterFunctionProvider, top_level_node: cst.CSTNode) -> None:
         self.provider = provider
         self.top_level_node = top_level_node
         super().__init__()
@@ -169,7 +191,12 @@ class MutationVisitor(cst.CSTVisitor):
 
     The created mutations will be accessible at `self.mutations`."""
 
-    METADATA_DEPENDENCIES = (PositionProvider, OuterFunctionProvider, QualifiedNameProvider)
+    METADATA_DEPENDENCIES = (
+        PositionProvider,
+        OuterFunctionProvider,
+        ParentNodeProvider,
+        QualifiedNameProvider,
+    )
 
     def __init__(
         self,
@@ -197,6 +224,13 @@ class MutationVisitor(cst.CSTVisitor):
         if id(node) in self._skip_subtree_ids:
             return False
         if self._skip_node_and_children(node):
+            return False
+
+        if isinstance(node, cst.Expr) and self._is_docstring_expression(node):
+            # Quote style does not determine whether a string is a docstring.
+            # Mutating a leading single-quoted string statement changes only a
+            # private implementation's ignored ``__doc__`` and creates a
+            # structurally unkillable equivalent mutant (MW221-027).
             return False
 
         # Declaration identifiers are not runtime name reads.  Applying the
@@ -227,6 +261,38 @@ class MutationVisitor(cst.CSTVisitor):
             self._class_stack.append(node.name.value)
         # continue to mutate children
         return True
+
+    def _is_docstring_expression(self, node: cst.Expr) -> bool:
+        if not isinstance(node.value, (cst.SimpleString, cst.ConcatenatedString)):
+            return False
+        # Python only assigns ``__doc__`` for a constant ``str`` expression.
+        # Bytes literals evaluate to ``bytes`` and a concatenation containing
+        # an f-string has no constant value, so both remain mutation targets.
+        if not isinstance(node.value.evaluated_value, str):
+            return False
+        statement = self.get_metadata(ParentNodeProvider, node, None)
+        if isinstance(statement, cst.SimpleStatementLine):
+            if not statement.body or statement.body[0] is not node:
+                return False
+            body = self.get_metadata(ParentNodeProvider, statement, None)
+            if isinstance(body, cst.Module):
+                return bool(body.body and body.body[0] is statement)
+            if isinstance(body, cst.IndentedBlock):
+                owner = self.get_metadata(ParentNodeProvider, body, None)
+                return (
+                    isinstance(owner, (cst.FunctionDef, cst.ClassDef))
+                    and bool(body.body)
+                    and body.body[0] is statement
+                )
+            return False
+        if isinstance(statement, cst.SimpleStatementSuite):
+            owner = self.get_metadata(ParentNodeProvider, statement, None)
+            return (
+                isinstance(owner, (cst.FunctionDef, cst.ClassDef))
+                and bool(statement.body)
+                and statement.body[0] is node
+            )
+        return False
 
     def on_leave(self, original_node: cst.CSTNode) -> None:
         """Pop the enclosing-class stack when leaving a ``ClassDef``.
@@ -280,7 +346,7 @@ class MutationVisitor(cst.CSTVisitor):
         """
         qualified_names = self.get_metadata(QualifiedNameProvider, node.func, set())
         return any(
-            qualified_name.name == "typing.cast"
+            qualified_name.name in {"typing.cast", "typing_extensions.cast"}
             and qualified_name.source is QualifiedNameSource.IMPORT
             for qualified_name in qualified_names
         )
@@ -537,12 +603,6 @@ def combine_mutations_to_source(
                         definition_ordinal = definition_counts[method_definition_key]
                     method_mutants = mutations_within_function.get(method)
                     if not isinstance(method, cst.FunctionDef) or not method_mutants:
-                        mutated_body.append(method)
-                        continue
-                    if not (method.params.posonly_params or method.params.params):
-                        # ``def m(*args)``-style methods have no named first
-                        # parameter the wrapper could bind the instance to —
-                        # leave them unmutated (issue #76 / A1-MT-001/003).
                         mutated_body.append(method)
                         continue
                     try:
@@ -809,20 +869,26 @@ def _docstring_statement(function: cst.FunctionDef) -> cst.BaseStatement | None:
     """Return a standalone copy of the public function's docstring statement."""
 
     def is_docstring(expression: cst.BaseSmallStatement) -> bool:
-        return isinstance(expression, cst.Expr) and isinstance(
-            expression.value, (cst.SimpleString, cst.ConcatenatedString)
+        return (
+            isinstance(expression, cst.Expr)
+            and isinstance(expression.value, (cst.SimpleString, cst.ConcatenatedString))
+            and isinstance(expression.value.evaluated_value, str)
         )
 
     if isinstance(function.body, cst.IndentedBlock):
         if not function.body.body:
             return None
         first = function.body.body[0]
-        if (
-            isinstance(first, cst.SimpleStatementLine)
-            and len(first.body) == 1
-            and is_docstring(first.body[0])
-        ):
-            return first
+        if isinstance(first, cst.SimpleStatementLine) and first.body:
+            first_small_statement = first.body[0]
+            if is_docstring(first_small_statement):
+                if len(first.body) == 1:
+                    return first
+                # A physical line may contain real statements after the
+                # leading docstring. Copy only the string into the wrapper;
+                # the selected private implementation executes the rest.
+                assert isinstance(first_small_statement, cst.Expr)  # noqa: S101
+                return cst.SimpleStatementLine([cst.Expr(first_small_statement.value)])
         return None
 
     if isinstance(function.body, cst.SimpleStatementSuite) and function.body.body:
@@ -852,16 +918,11 @@ def create_trampoline_wrapper(
     synchronous generators delegate through ``yield from`` and retain their
     generator-function identity.  Async generators are conservatively excluded
     before this helper is called because Python has no transparent async
-    ``yield from`` equivalent.  Callers guarantee that methods have a named
-    first parameter (others are left unmutated).
+    ``yield from`` equivalent.  Methods whose complete positional signature is
+    ``*args`` are supported as well: descriptor binding places the instance in
+    that tuple and the wrapper forwards it without guessing a ``self`` name.
     """
     named_params = [*function.params.posonly_params, *function.params.params]
-    # A @staticmethod has no instance/class parameter, so it is dispatched like a
-    # free function: every parameter is forwarded and no self_arg is passed (W5).
-    is_static = class_name is not None and _is_static_only(function)
-    instance_bound = class_name is not None and not is_static
-    self_name = named_params[0].name.value if instance_bound else None
-
     used_names = {
         param.name.value
         for param in [
@@ -877,8 +938,12 @@ def create_trampoline_wrapper(
     args_local_name = _fresh_wrapper_name("_mutmut_args", used_names)
     kwargs_local_name = _fresh_wrapper_name("_mutmut_kwargs", used_names)
 
-    forwarded_params = named_params[1:] if instance_bound else named_params
-    args: list[cst.Element | cst.StarredElement] = [cst.Element(p.name) for p in forwarded_params]
+    # Private implementations and lookup entries are raw functions.  Forward
+    # every positional parameter, including an instance method's first one,
+    # through the same argument list.  A legal unbound call such as
+    # ``C.m(None, value)`` must not confuse ``None`` with a no-instance
+    # sentinel (MW221-023).
+    args: list[cst.Element | cst.StarredElement] = [cst.Element(p.name) for p in named_params]
     if isinstance(function.params.star_arg, cst.Param):
         args.append(cst.StarredElement(function.params.star_arg.name))
 
@@ -901,19 +966,11 @@ def create_trampoline_wrapper(
         # for top level, simply return the name
         if class_name is None:
             return cst.Name(func_name)
-        # a @staticmethod has no instance to dispatch through — resolve the
-        # original through the module-level reference captured immediately
-        # after class creation.  Rebinding the public class name later must not
-        # break saved class aliases or their static methods.
-        if is_static:
-            return cst.Name(f"{mangled_name}_orig_ref")
-        # Bind the captured private function as a descriptor.  Looking it up on
-        # the runtime instance used to fail for legal unbound calls such as
-        # ``C.m(object())`` and could be shadowed by an ``object`` parameter.
-        return cst.Call(
-            func=cst.Attribute(cst.Name(f"{mangled_name}_orig_ref"), cst.Name("__get__")),
-            args=[cst.Arg(cst.Name(cast("str", self_name)))],
-        )
+        # Methods (including @staticmethod) use the raw module-level reference
+        # captured immediately after class creation.  Rebinding the public
+        # class name later therefore cannot break saved class aliases, and the
+        # complete argument list above retains ordinary descriptor semantics.
+        return cst.Name(f"{mangled_name}_orig_ref")
 
     result: cst.BaseExpression = cst.Call(
         func=cst.Name(trampoline_name),
@@ -924,7 +981,6 @@ def create_trampoline_wrapper(
             cst.Arg(cst.Name(f"{mangled_name}_mutants")),
             cst.Arg(cst.Name(args_local_name)),
             cst.Arg(cst.Name(kwargs_local_name)),
-            cst.Arg(cst.Name("None" if self_name is None else self_name)),
         ],
     )
     # Plain synchronous functions simply return the selected implementation's
@@ -1001,15 +1057,17 @@ def _pragma_no_mutate_suffix(line: str) -> str | None:
     (an unknown word degrades to ``""`` / plain, preserving the original
     single-line behaviour).
     """
-    if "# pragma:" not in line:
+    marker = re.search(
+        r"#\s*pragma:\s*no\s+mutate(?=$|\s)(?:\s+(?P<suffix>\S+))?",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if marker is None:
         return None
-    after_pragma = line.partition("# pragma:")[-1]
-    if "no mutate" not in after_pragma:
-        return None
-    tail = after_pragma.partition("no mutate")[-1].split()
-    if not tail:
+    suffix = marker.group("suffix")
+    if suffix is None:
         return ""
-    word = tail[0].lower()
+    word = suffix.lower()
     return word if word in {"start", "end", "block"} else ""
 
 
@@ -1043,7 +1101,10 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     - ``# pragma: no mutate start`` … ``# pragma: no mutate end`` — the inclusive
       range between the two markers; a dangling ``start`` skips to end-of-file.
     """
-    lines = source.split("\n")
+    # Tokenize follows Python's universal-newline view; the CST input remains
+    # untouched so comments, string literals and continuations retain bytes.
+    scanner_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    lines = scanner_source.split("\n")
     ignored: set[int] = set()
     open_start: int | None = None
     # Tokenization is essential here: scanning raw source text mistakes pragma
@@ -1054,10 +1115,13 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     try:
         comment_tokens = [
             token
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            for token in tokenize.generate_tokens(io.StringIO(scanner_source).readline)
             if token.type == tokenize.COMMENT
         ]
-    except tokenize.TokenError:
+    except (
+        tokenize.TokenError,
+        SyntaxError,
+    ):
         # pragma_no_mutate_lines runs before libcst parsing.  An incomplete
         # token stream (unclosed bracket/string, etc.) must not replace the
         # parser's established graceful-error path with an earlier TokenError.

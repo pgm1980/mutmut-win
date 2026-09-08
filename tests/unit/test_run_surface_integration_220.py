@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -28,6 +29,7 @@ from mutmut_win.db import (
     validate_cache_path,
 )
 from mutmut_win.exceptions import (
+    AmbiguousMutantNameError,
     CleanTestFailedError,
     OrchestratorError,
     UnsafeWorkspaceStateError,
@@ -249,6 +251,14 @@ def test_exclusive_takeover_closes_prior_hard_crash_before_new_plan(
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
     old_run_id = start_run(db_path, ["old-pending"])
+    save_result(
+        db_path,
+        "old-pending",
+        "killed",
+        1,
+        0.1,
+        tests_fingerprint="f" * 64,
+    )
     orchestrator = _orchestrator(tmp_path)
 
     def pipeline() -> MutationRunResult:
@@ -262,6 +272,8 @@ def test_exclusive_takeover_closes_prior_hard_crash_before_new_plan(
         rows = conn.execute("SELECT run_id, status FROM mutation_run ORDER BY sequence").fetchall()
     assert rows[0] == (old_run_id, "aborted")
     assert rows[1][1] == "aborted"
+    [historical] = load_results(db_path)
+    assert historical.tests_fingerprint is None
 
 
 def test_force_cannot_delete_shared_state_while_workspace_lock_is_held(
@@ -664,6 +676,7 @@ def _persist_verified_completed_run(tmp_path: Path) -> tuple[Path, MutmutConfig]
         ["pkg.module.x_value__mutmut_1"],
         basis_fingerprint=fingerprint,
         basis_config_json=canonical_run_basis_config(config),
+        is_full_run=True,
     )
     save_result(db_path, "pkg.module.x_value__mutmut_1", "killed", 1, 0.1)
     finish_run(db_path, run_id, "completed")
@@ -689,14 +702,14 @@ def test_cicd_export_requires_live_source_test_and_config_basis(
 
     initial = CliRunner().invoke(cli, ["export-cicd-stats"])
     artifact = tmp_path / "mutants" / "mutmut-cicd-stats.json"
-    assert initial.exit_code == 0
+    assert initial.exit_code == 0, initial.output
     assert artifact.is_file()
 
     (tmp_path / relative_path).write_text(replacement, encoding="utf-8")
     stale = CliRunner().invoke(cli, ["export-cicd-stats"])
 
     assert stale.exit_code == 1
-    assert "inputs changed since the latest mutation run" in stale.output
+    assert "inputs changed since the latest mutation run" in stale.output, stale.output
     assert not artifact.exists()
 
 
@@ -742,6 +755,45 @@ def test_initial_run_basis_must_be_a_stable_snapshot(
     assert load_current_run(orchestrator._db_path) is None
 
 
+def test_initial_ambient_basis_instability_runs_without_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = _orchestrator(tmp_path)
+    first = RunBasisEvidence("a" * 64, True, "c" * 64, True)
+    second = RunBasisEvidence("b" * 64, True, "c" * 64, True)
+
+    def pipeline() -> MutationRunResult:
+        orchestrator._start_current_run(_tasks("m1"))
+        save_result(
+            orchestrator._db_path,
+            "m1",
+            "killed",
+            1,
+            0.1,
+            tests_fingerprint="f" * 64,
+        )
+        return MutationRunResult(total_mutants=1, killed=1)
+
+    monkeypatch.setattr(orchestrator, "_run_pipeline", pipeline)
+    with patch(
+        "mutmut_win.orchestrator.build_run_basis_evidence",
+        side_effect=[first, second, second, second],
+    ):
+        result = orchestrator.run()
+
+    current = load_current_run(orchestrator._db_path)
+    assert current is not None
+    assert current.status == "completed"
+    assert current.basis_fingerprint is None
+    assert current.basis_config_json is None
+    assert current.evidence_invalidated is True
+    assert result.execution_basis_complete is False
+    [historical] = load_results(orchestrator._db_path)
+    assert historical.tests_fingerprint is None
+
+
 def test_pipeline_sys_path_mutation_is_restored_before_completion_basis(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -780,7 +832,14 @@ def test_incomplete_execution_basis_runs_without_reuse_but_cannot_authorize_expo
 
     def pipeline() -> MutationRunResult:
         orchestrator._start_current_run(_tasks("m1"))
-        save_result(orchestrator._db_path, "m1", "killed", 1, 0.1)
+        save_result(
+            orchestrator._db_path,
+            "m1",
+            "killed",
+            1,
+            0.1,
+            tests_fingerprint="f" * 64,
+        )
         return MutationRunResult(total_mutants=1, killed=1)
 
     monkeypatch.setattr(
@@ -799,7 +858,7 @@ def test_incomplete_execution_basis_runs_without_reuse_but_cannot_authorize_expo
     assert result.execution_basis_complete is False
     exported = CliRunner().invoke(cli, ["export-cicd-stats"])
     assert exported.exit_code == 1
-    assert "execution basis was incomplete" in exported.output
+    assert "evidence was invalidated" in exported.output
 
 
 def test_mid_run_source_drift_is_recorded_failed_not_completed(
@@ -829,6 +888,144 @@ def test_mid_run_source_drift_is_recorded_failed_not_completed(
     current = load_current_run(orchestrator._db_path)
     assert current is not None
     assert current.status == "failed"
+    [historical] = load_results(orchestrator._db_path)
+    assert historical.tests_fingerprint is None
+
+
+def test_mid_run_ambient_drift_preserves_results_without_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = _orchestrator(tmp_path)
+    initial = RunBasisEvidence("a" * 64, True, "c" * 64, True)
+    ambient_changed = RunBasisEvidence("b" * 64, True, "c" * 64, True)
+
+    def pipeline() -> MutationRunResult:
+        orchestrator._start_current_run(_tasks("m1"))
+        save_result(
+            orchestrator._db_path,
+            "m1",
+            "killed",
+            1,
+            0.1,
+            tests_fingerprint="f" * 64,
+        )
+        return MutationRunResult(total_mutants=1, killed=1)
+
+    monkeypatch.setattr(orchestrator, "_run_pipeline", pipeline)
+    with patch(
+        "mutmut_win.orchestrator.build_run_basis_evidence",
+        side_effect=[initial, initial, ambient_changed, ambient_changed],
+    ):
+        result = orchestrator.run()
+
+    current = load_current_run(orchestrator._db_path)
+    assert current is not None
+    assert current.status == "completed"
+    assert current.evidence_invalidated is True
+    assert current.basis_fingerprint is None
+    assert current.basis_config_json is None
+    assert result.execution_basis_complete is False
+    [current_result] = current.completed_results
+    assert current_result.tests_fingerprint is None
+    [historical] = load_results(orchestrator._db_path)
+    assert historical.tests_fingerprint is None
+    exported = CliRunner().invoke(cli, ["export-cicd-stats"])
+    assert exported.exit_code == 1
+    assert "evidence was invalidated" in exported.output
+
+
+def test_ambient_deauthorization_failure_leaves_run_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = _orchestrator(tmp_path)
+    initial = RunBasisEvidence("a" * 64, True, "c" * 64, True)
+    ambient_changed = RunBasisEvidence("b" * 64, True, "c" * 64, True)
+
+    def pipeline() -> MutationRunResult:
+        orchestrator._start_current_run(_tasks("m1"))
+        save_result(
+            orchestrator._db_path,
+            "m1",
+            "killed",
+            1,
+            0.1,
+            tests_fingerprint="f" * 64,
+        )
+        return MutationRunResult(total_mutants=1, killed=1)
+
+    monkeypatch.setattr(orchestrator, "_run_pipeline", pipeline)
+    with (
+        patch(
+            "mutmut_win.orchestrator.build_run_basis_evidence",
+            side_effect=[initial, initial, ambient_changed, ambient_changed],
+        ),
+        patch(
+            "mutmut_win.orchestrator.deauthorize_active_run_evidence",
+            side_effect=sqlite3.OperationalError("deauthorization unavailable"),
+        ),
+        pytest.raises(OrchestratorError, match="remains running for revoke-first recovery"),
+    ):
+        orchestrator.run()
+
+    current = load_current_run(orchestrator._db_path)
+    assert current is not None
+    assert current.status == "running"
+
+
+def test_revocation_failure_leaves_run_recoverable_instead_of_terminal_poison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = _orchestrator(tmp_path)
+    monkeypatch.setattr(
+        "mutmut_win.orchestrator.build_run_basis_evidence",
+        lambda *_args, **_kwargs: RunBasisEvidence("a" * 64, True),
+    )
+
+    def failing_pipeline() -> MutationRunResult:
+        orchestrator._start_current_run(_tasks("m1"))
+        save_result(
+            orchestrator._db_path,
+            "m1",
+            "killed",
+            1,
+            0.1,
+            tests_fingerprint="f" * 64,
+        )
+        raise OrchestratorError("late pipeline failure")
+
+    monkeypatch.setattr(orchestrator, "_run_pipeline", failing_pipeline)
+    with (
+        patch(
+            "mutmut_win.orchestrator.invalidate_cached_reuse_for_run",
+            side_effect=sqlite3.OperationalError("revocation unavailable"),
+        ),
+        pytest.raises(OrchestratorError, match="late pipeline failure"),
+    ):
+        orchestrator.run()
+
+    abandoned = load_current_run(orchestrator._db_path)
+    assert abandoned is not None
+    assert abandoned.status == "running"
+    [temporarily_poisoned] = load_results(orchestrator._db_path)
+    assert temporarily_poisoned.tests_fingerprint == "f" * 64
+
+    successor = _orchestrator(tmp_path)
+
+    def empty_pipeline() -> MutationRunResult:
+        successor._start_current_run([])
+        return MutationRunResult(total_mutants=0)
+
+    monkeypatch.setattr(successor, "_run_pipeline", empty_pipeline)
+    successor.run()
+
+    [recovered] = load_results(orchestrator._db_path)
+    assert recovered.tests_fingerprint is None
 
 
 def test_successful_apply_invalidates_latest_run_and_removes_export_artifact(
@@ -846,6 +1043,10 @@ def test_successful_apply_invalidates_latest_run_and_removes_export_artifact(
 
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+        patch(
+            "mutmut_win.cli.resolve_mutant",
+            return_value=("pkg.mod.x_f__mutmut_1", MagicMock()),
+        ),
         patch("mutmut_win.cli.apply_mutant") as apply_mock,
     ):
         applied = CliRunner().invoke(cli, ["apply", "pkg.mod.x_f__mutmut_1"])
@@ -892,6 +1093,7 @@ def test_apply_purges_legacy_evidence_before_source_change_and_export_fails_clos
 
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+        patch("mutmut_win.cli.resolve_mutant", return_value=(mutant_name, MagicMock())),
         patch("mutmut_win.cli.apply_mutant", side_effect=source_change) as apply_mock,
     ):
         applied = CliRunner().invoke(cli, ["apply", mutant_name])
@@ -923,6 +1125,10 @@ def test_failed_apply_conservatively_invalidates_evidence_and_artifact(
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
         patch(
+            "mutmut_win.cli.resolve_mutant",
+            return_value=("pkg.mod.x_f__mutmut_1", MagicMock()),
+        ),
+        patch(
             "mutmut_win.cli.apply_mutant",
             side_effect=FileNotFoundError("mutant missing"),
         ),
@@ -936,6 +1142,50 @@ def test_failed_apply_conservatively_invalidates_evidence_and_artifact(
     assert not artifact.exists()
 
 
+@pytest.mark.parametrize(
+    "resolution_error",
+    [
+        FileNotFoundError("mutant missing"),
+        AmbiguousMutantNameError("pattern matches two mutants"),
+    ],
+)
+def test_unresolved_apply_preserves_run_evidence_and_ci_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resolution_error: Exception,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
+    run_id = start_run(
+        db_path,
+        ["pkg.mod.x_f__mutmut_1"],
+        basis_fingerprint="a" * 64,
+        basis_config_json=canonical_run_basis_config(MutmutConfig()),
+        is_full_run=True,
+    )
+    save_result(db_path, "pkg.mod.x_f__mutmut_1", "survived", 0, 0.1)
+    finish_run(db_path, run_id, "completed")
+    artifact = tmp_path / "mutants" / "mutmut-cicd-stats.json"
+    artifact.parent.mkdir()
+    artifact.write_text('{"trusted": true}\n', encoding="utf-8")
+
+    with (
+        patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+        patch("mutmut_win.cli.resolve_mutant", side_effect=resolution_error),
+        patch("mutmut_win.cli.invalidate_latest_run_evidence") as invalidate,
+        patch("mutmut_win.cli.apply_mutant") as apply_mock,
+    ):
+        applied = CliRunner().invoke(cli, ["apply", "pkg.mod.*"])
+
+    current = load_current_run(db_path)
+    assert applied.exit_code == 1
+    assert current is not None
+    assert current.evidence_invalidated is False
+    assert artifact.read_text(encoding="utf-8") == '{"trusted": true}\n'
+    invalidate.assert_not_called()
+    apply_mock.assert_not_called()
+
+
 def test_apply_does_not_touch_source_when_evidence_invalidation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -947,6 +1197,10 @@ def test_apply_does_not_touch_source_when_evidence_invalidation_fails(
 
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
+        patch(
+            "mutmut_win.cli.resolve_mutant",
+            return_value=("pkg.mod.x_f__mutmut_1", MagicMock()),
+        ),
         patch(
             "mutmut_win.cli.invalidate_latest_run_evidence",
             side_effect=UnsafeWorkspaceStateError("database unavailable"),
@@ -989,9 +1243,15 @@ def test_browser_overlays_current_snapshot_on_stale_meta(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
+    generated = tmp_path / "mutants" / "src" / "mod.py"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("def value():\n    return 1\n", encoding="utf-8")
     sfd = SourceFileMutationData(
         path="src/mod.py",
         exit_code_by_key={"historic": 0, "m1": 0, "m2": 1},
+        source_hash="a" * 64,
+        generation_fingerprint="b" * 64,
+        generated_hash=hashlib.sha256(generated.read_bytes()).hexdigest(),
     )
     sfd.save()
     save_result(db_path, "historic", "survived", 0, 0.2)
@@ -1018,9 +1278,15 @@ def test_browser_keeps_partial_metadata_and_surfaces_unmapped_current_names(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
+    generated = tmp_path / "mutants" / "src" / "partial.py"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("def value():\n    return 1\n", encoding="utf-8")
     SourceFileMutationData(
         path="src/partial.py",
         exit_code_by_key={"m1": 0, "historic": 0},
+        source_hash="a" * 64,
+        generation_fingerprint="b" * 64,
+        generated_hash=hashlib.sha256(generated.read_bytes()).hexdigest(),
     ).save()
     run_id = start_run(db_path, ["m1", "m2"])
     save_result(db_path, "m1", "survived", 0, 0.1)

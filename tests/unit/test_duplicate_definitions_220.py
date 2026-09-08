@@ -16,6 +16,7 @@ from mutmut_win.models import SourceFileMutationData
 from mutmut_win.mutant_diff import apply_mutant, get_diff_for_mutant
 from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.test_mapping import (
+    FunctionDefinitionLocation,
     function_definition_location_from_key,
     orig_function_and_class_names_from_key,
     tests_for_mutant_names,
@@ -98,6 +99,7 @@ def _stage_duplicate_module(
         path="src/mod.py",
         exit_code_by_key=dict.fromkeys(qualified_names),
         source_hash=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        generated_hash=hashlib.sha256(staged_path.read_bytes()).hexdigest(),
     )
     metadata.save()
     return MutmutConfig(paths_to_mutate=["src"]), source_path, qualified_names
@@ -129,6 +131,89 @@ def test_ordinal_encoding_is_reversible_and_first_definition_is_backward_compati
         "m",
         "C",
     )
+
+
+def test_reserved_mutant_delimiter_uses_reversible_collision_safe_encoding() -> None:
+    top = mangle_function_name(name="f__mutmut_1", class_name=None)
+    boundary = mangle_function_name(name="f__mutmut", class_name=None)
+    prefix_boundary = mangle_function_name(name="_mutmut_target", class_name=None)
+    method = mangle_function_name(
+        name="m__mutmut_2",
+        class_name="C__mutmut_3",
+        definition_ordinal=2,
+    )
+
+    assert "__mutmut_" not in top
+    assert "__mutmut_" not in boundary
+    assert "__mutmut_" not in prefix_boundary
+    assert "__mutmut_" not in method
+    assert function_definition_location_from_key(
+        f"pkg.{top}__mutmut_7"
+    ) == FunctionDefinitionLocation(
+        "f__mutmut_1",
+        None,
+        1,
+    )
+    assert function_definition_location_from_key(
+        f"pkg.{boundary}__mutmut_7"
+    ) == FunctionDefinitionLocation(
+        "f__mutmut",
+        None,
+        1,
+    )
+    assert function_definition_location_from_key(
+        f"pkg.{prefix_boundary}__mutmut_7"
+    ) == FunctionDefinitionLocation(
+        "_mutmut_target",
+        None,
+        1,
+    )
+    location = function_definition_location_from_key(f"pkg.{method}__mutmut_1")
+    assert (location.function_name, location.class_name, location.definition_ordinal) == (
+        "m__mutmut_2",
+        "C__mutmut_3",
+        2,
+    )
+    assert is_typecheck_mutant_name(f"{top}__mutmut_1")
+    assert is_typecheck_mutant_name(f"{method}__mutmut_1")
+
+
+def test_reserved_delimiter_functions_have_distinct_runtime_mutants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = """\
+def f(value):
+    return value + 1
+
+def f__mutmut_1(value):
+    return value * 2
+"""
+    generated, names = mutate_file_contents("collision.py", source, active_profile=Profile.BASIC)
+    namespace: dict[str, object] = {"__name__": "collision"}
+    exec(compile(generated, "collision.py", "exec", dont_inherit=True), namespace)  # noqa: S102
+
+    by_source_name: dict[str, list[str]] = {}
+    for name in names:
+        location = function_definition_location_from_key(f"collision.{name}")
+        by_source_name.setdefault(location.function_name, []).append(name)
+
+    assert set(by_source_name) == {"f", "f__mutmut_1"}
+    assert len(names) == len(set(names))
+    first = cast("object", namespace["f"])
+    second = cast("object", namespace["f__mutmut_1"])
+    assert first(3) == 4  # type: ignore[operator]
+    assert second(3) == 6  # type: ignore[operator]
+
+    monkeypatch.setenv("MUTANT_UNDER_TEST", f"collision.{by_source_name['f'][0]}")
+    assert first(3) != 4  # type: ignore[operator]
+    assert second(3) == 6  # type: ignore[operator]
+
+    monkeypatch.setenv(
+        "MUTANT_UNDER_TEST",
+        f"collision.{by_source_name['f__mutmut_1'][0]}",
+    )
+    assert first(3) == 4  # type: ignore[operator]
+    assert second(3) != 6  # type: ignore[operator]
 
 
 @pytest.mark.parametrize("ordinal", [0, -1, True, 1.5, "2"])
@@ -290,8 +375,10 @@ def test_show_diff_uses_the_exact_duplicate_source_occurrence(
     assert "+    return 21" in second_function_diff
     assert "return 10" not in second_function_diff
     assert "@@ -4" in second_function_diff
-    assert "-    return 50" in third_method_diff
-    assert "+    return 51" in third_method_diff
+    # The shared show diff now uses the real source indentation, so it is
+    # directly patchable even for a class method.
+    assert "-        return 50" in third_method_diff
+    assert "+        return 51" in third_method_diff
     assert "return 30" not in third_method_diff
     assert "return 40" not in third_method_diff
     assert "@@ -17" in third_method_diff

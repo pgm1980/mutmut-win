@@ -23,11 +23,10 @@ build/
 # Mutation staging area (generated copies, never reviewed source)
 mutants/
 
-# Reference fixture projects from mutmut 3.5.0 — third-party style fixtures,
-# not our code (mirrors the ruff exclude and the pytest collect_ignore).
-# The release-gate wrapper scans a repository-root mirror and verifies this
-# policy skip against the exact Git-owned target manifest.
-tests/e2e_projects/
+# All Sdist-shipped E2E fixtures are scanned.  Some started as upstream
+# reference fixtures, while stress_test, simple_lib, and source_layout are
+# project-authored; one broad exclusion hid both classes and was not a safe
+# release boundary.
 
 # Gitignored scratchpad for one-off verification scripts
 _issues/

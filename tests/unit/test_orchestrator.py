@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError
+from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError, OrchestratorError
 from mutmut_win.models import (
     MutationRunResult,
     MutationTask,
+    SourceFileMutationData,
     TaskCompleted,
     TaskStarted,
 )
@@ -23,6 +26,7 @@ from mutmut_win.orchestrator import (
     _increment_summary,
     _update_source_data,
     _update_summary_and_persist,
+    _validate_generated_staging,
 )
 from mutmut_win.stats import RunBasisEvidence
 
@@ -80,6 +84,25 @@ def _make_executor(events: list[Any] | None = None) -> MagicMock:
     return executor
 
 
+def test_generated_staging_validation_rejects_post_generation_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    staged = tmp_path / "mutants" / "src" / "mod.py"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"VALUE = 1\n")
+    data = SourceFileMutationData(
+        path="src/mod.py",
+        generated_hash=hashlib.sha256(staged.read_bytes()).hexdigest(),
+    )
+    _validate_generated_staging({data.path: data})
+
+    staged.write_bytes(b"VALUE = 2\n")
+
+    with pytest.raises(OrchestratorError, match="stale, or inconsistent"):
+        _validate_generated_staging({data.path: data})
+
+
 # ---------------------------------------------------------------------------
 # _apply_timeouts (pure helper)
 # ---------------------------------------------------------------------------
@@ -111,13 +134,33 @@ class TestApplyTimeouts:
         # 360°-B3 (#130): tests=[] + non-empty durations used to budget a
         # FULL-SUITE run with a single-test MEAN — a guaranteed timeout
         # flood (e.g. empty mapping from broken hit recording). The mean
-        # still feeds the fast-first SORT; the budget is the full-suite
+        # still feeds the MUTANT-TASK sort; the budget is the full-suite
         # fallback.
         tasks = [_task()]  # no tests assigned
         stats = {"tests/test_a.py::test_x": 2.0, "tests/test_b.py::test_y": 4.0}
         result = _apply_timeouts(tasks, stats, 2.0, startup_floor=5.0, clean_wall_seconds=100.0)
         assert result[0].estimated_time == pytest.approx(3.0)  # mean keeps sorting
         assert result[0].timeout_seconds == pytest.approx(200.0)  # clean_wall x mult
+
+    def test_non_authoritative_scheduling_hint_keeps_full_suite_budget(self) -> None:
+        tasks = [
+            _task(
+                tests=["tests/test_a.py::test_x"],
+                test_selection_is_authoritative=False,
+            )
+        ]
+        stats = {"tests/test_a.py::test_x": 2.0, "tests/test_b.py::test_y": 98.0}
+
+        result = _apply_timeouts(
+            tasks,
+            stats,
+            2.0,
+            startup_floor=5.0,
+            clean_wall_seconds=100.0,
+        )
+
+        assert result[0].estimated_time == pytest.approx(2.0)
+        assert result[0].timeout_seconds == pytest.approx(200.0)
 
     def test_does_not_mutate_original_tasks(self) -> None:
         original = _task()
@@ -397,6 +440,98 @@ class TestMutationOrchestratorInit:
         orch = MutationOrchestrator(_config(), db_path=db)
         assert orch._db_path == db
 
+    def test_generation_excludes_complete_sqlite_namespace_from_staging(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A custom DB's live sidecars must never enter executable staging."""
+        import mutmut_win.file_setup as file_setup
+
+        database = tmp_path / "run-state.db"
+        captured: dict[str, tuple[Path, ...]] = {}
+
+        def capture_copy(_config: MutmutConfig, *, excluded_paths: tuple[Path, ...]) -> None:
+            captured["excluded"] = excluded_paths
+
+        monkeypatch.setattr(file_setup, "copy_src_dir", capture_copy)
+        monkeypatch.setattr(
+            file_setup,
+            "copy_also_copy_files",
+            lambda _config, **_kwargs: None,
+        )
+        monkeypatch.setattr(file_setup, "setup_source_paths", lambda: None)
+        monkeypatch.setattr(file_setup, "walk_source_files", lambda _config: iter(()))
+        monkeypatch.setattr(
+            file_setup,
+            "persist_config_fingerprint",
+            lambda _config, _coverage_basis: None,
+        )
+
+        orch = MutationOrchestrator(_config(), db_path=database, runner=_make_runner())
+        tasks, source_data, fast_path_names = orch._generate_mutants()
+
+        absolute = database.absolute()
+        assert captured["excluded"] == (
+            absolute,
+            absolute.with_name(f"{absolute.name}-journal"),
+            absolute.with_name(f"{absolute.name}-wal"),
+            absolute.with_name(f"{absolute.name}-shm"),
+        )
+        assert tasks == []
+        assert source_data == {}
+        assert fast_path_names == set()
+
+    def test_generation_preserves_parent_and_spawn_import_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generation must not expose executable staging to engine workers."""
+        from multiprocessing.spawn import get_preparation_data
+        from pathlib import Path
+
+        import mutmut_win.process as process
+
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "example.py"
+        source.parent.mkdir()
+        source.write_text("def answer():\n    return 42\n", encoding="utf-8")
+
+        parent_sys_path = sys.path.copy()
+        spawn_sys_path: list[str] = []
+
+        def fake_run_generation_supervised(
+            file_args: list[Any],
+            **_kwargs: Any,
+        ) -> list[tuple[str, list[str], None, list[str], bool]]:
+            assert len(file_args) == 1
+            preparation = get_preparation_data("mutmut-win-generation-path-regression")
+            prepared_path = preparation["sys_path"]
+            assert isinstance(prepared_path, list)
+            spawn_sys_path.extend(prepared_path)
+            return [(file_args[0][0], [], None, [], False)]
+
+        monkeypatch.setattr(
+            process,
+            "run_generation_supervised",
+            fake_run_generation_supervised,
+        )
+        orch = MutationOrchestrator(
+            _config(paths_to_mutate=["src"]),
+            runner=_make_runner(),
+            db_path=tmp_path / "run-state.db",
+        )
+
+        orch._generate_mutants()
+
+        assert sys.path == parent_sys_path
+        mutants_root = (tmp_path / "mutants").resolve()
+        assert spawn_sys_path
+        assert not any(
+            Path(entry).resolve().is_relative_to(mutants_root) for entry in spawn_sys_path if entry
+        )
+
 
 # ---------------------------------------------------------------------------
 # MutationOrchestrator.run — early-exit cases
@@ -469,10 +604,11 @@ class TestMutationOrchestratorRunForcedFailCheck:
 
 
 class TestMutationOrchestratorRunHappyPath:
-    def test_returns_correct_total_mutants(
+    def test_returns_correct_total_mutants_after_restoring_parent_import_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        parent_sys_path = sys.path.copy()
         src = tmp_path / "src"
         src.mkdir()
         (src / "target.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
@@ -484,6 +620,10 @@ class TestMutationOrchestratorRunHappyPath:
         captured_tasks: list[MutationTask] = []
 
         def fake_start(tasks: list[MutationTask]) -> None:
+            # A Windows spawn worker inherits this list.  If ``mutants/src``
+            # survives generation, lazy engine imports create bytecode after
+            # the executable staging tree has already been frozen.
+            assert sys.path == parent_sys_path
             captured_tasks.extend(tasks)
 
         executor = MagicMock()

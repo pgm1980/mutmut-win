@@ -99,8 +99,6 @@ def _real_path_snapshot(
         leaf = lexical.lstat()
     except (OSError, RuntimeError) as exc:
         raise PytestBoundaryError(f"Could not inspect {description}: {lexical}") from exc
-    if not _same_path(lexical, resolved):
-        raise PytestBoundaryError(f"{description} must not contain link indirection: {lexical}")
     if stat.S_ISLNK(leaf.st_mode) or _is_reparse_point(leaf):
         raise PytestBoundaryError(f"{description} must not be a link or reparse point: {lexical}")
     if kind == "directory" and not stat.S_ISDIR(leaf.st_mode):
@@ -178,7 +176,11 @@ def _mapped_test_start(
     if path.is_absolute():
         try:
             path = path.resolve(strict=False).relative_to(project_root)
-        except (OSError, RuntimeError, ValueError):
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+        ):
             # Explicit external tests are identity-bound separately. They must
             # not move pytest's authoritative staging configuration boundary.
             return None
@@ -217,7 +219,11 @@ def _common_start(staging_root: Path, starts: list[Path]) -> Path:
     try:
         common = Path(os.path.commonpath([str(path) for path in starts])).resolve(strict=False)
         common.relative_to(staging_root)
-    except (OSError, RuntimeError, ValueError):
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+    ):
         return staging_root
     return common
 
@@ -254,7 +260,10 @@ def _load_config_candidate(candidate: Path) -> object | None:
     )
     try:
         return load_config_dict_from_file(resolved)
-    except (KeyboardInterrupt, SystemExit):
+    except (
+        KeyboardInterrupt,
+        SystemExit,
+    ):
         raise
     except BaseException as exc:
         raise PytestBoundaryError(
@@ -461,11 +470,10 @@ def _validate_bound_path(
     _reject_indirected_components(path, description)
     try:
         resolved = path.resolve(strict=True)
+        resolved_stat = resolved.stat()
         leaf = path.lstat()
     except (OSError, RuntimeError) as exc:
         raise PytestBoundaryError(f"{description} escaped or disappeared.") from exc
-    if not _same_path(path, resolved):
-        raise PytestBoundaryError(f"{description} was redirected after it was frozen.")
     if stat.S_ISLNK(leaf.st_mode) or _is_reparse_point(leaf):
         raise PytestBoundaryError(f"{description} became a link or reparse point.")
     if kind == "directory" and not stat.S_ISDIR(leaf.st_mode):
@@ -478,6 +486,8 @@ def _validate_bound_path(
         raise PytestBoundaryError(f"{description} has no usable frozen identity.")
     if _usable_identity(leaf, description) != (expected_dev, expected_ino):
         raise PytestBoundaryError(f"{description} identity changed after it was frozen.")
+    if _usable_identity(resolved_stat, description) != (expected_dev, expected_ino):
+        raise PytestBoundaryError(f"{description} was redirected after it was frozen.")
     return resolved
 
 

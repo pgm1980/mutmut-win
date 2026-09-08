@@ -8,7 +8,7 @@ this boundary.  Passing the Job in ``STARTUPINFOEX`` makes membership part of
 ``CreateProcessW`` itself -- the child is never observable outside the Job.
 
 The module also provides a narrow ``subprocess.Popen`` adapter.  It mirrors the
-CPython 3.12-3.14 Windows handle plumbing and replaces only the final process
+CPython 3.14.7 Windows handle plumbing and replaces only the final process
 creation call.  Unknown runtimes and unsupported startup attributes fail
 closed rather than silently falling back to post-start assignment.
 """
@@ -37,12 +37,12 @@ _ERROR_INSUFFICIENT_BUFFER = 122
 
 
 def require_atomic_spawn_runtime() -> None:
-    """Fail closed outside the CPython versions audited by this adapter."""
-    version = sys.version_info[:2]
-    if sys.implementation.name != "cpython" or not (3, 12) <= version < (3, 15):
+    """Fail closed outside the sole supported runtime and platform."""
+    version = tuple(sys.version_info[:3])
+    if sys.platform != "win32" or sys.implementation.name != "cpython" or version != (3, 14, 7):
         raise ProcessContainmentError(
             "Atomic Windows process containment is audited only for "
-            "CPython 3.12-3.14; refusing unknown process internals."
+            "Windows with CPython 3.14.7; refusing unsupported process internals."
         )
 
 
@@ -285,7 +285,7 @@ class AtomicJobPopen(subprocess.Popen[bytes]):
         self._atomic_job_handle = job_handle
         super().__init__(*args, **kwargs)
 
-    # This is the CPython 3.12-3.14 Windows implementation with only the final
+    # This is the CPython 3.14.7 Windows implementation with only the final
     # CreateProcess call replaced.  Keeping it local avoids a process-global
     # monkeypatch of ``_winapi.CreateProcess`` that would race unrelated threads.
     def _execute_child(

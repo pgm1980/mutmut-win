@@ -143,6 +143,26 @@ class TestLoadConfig:
 
         assert config.pytest_add_cli_args == ["-k", "ratio%case"]
 
+    def test_setup_cfg_hash_is_literal_in_pytest_expression(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npytest_add_cli_args = -k foo#bar\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(tmp_path)
+
+        assert config.pytest_add_cli_args == ["-k", "foo#bar"]
+
+    def test_setup_cfg_hash_is_literal_in_windows_path(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\ntype_check_command = checker C:\\work\\x#y.py\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(tmp_path)
+
+        assert config.type_check_command == ["checker", r"C:\work\x#y.py"]
+
     def test_malformed_setup_cfg_is_a_domain_config_error(self, tmp_path: Path) -> None:
         (tmp_path / "setup.cfg").write_text(
             "missing section header\nkey = value\n",

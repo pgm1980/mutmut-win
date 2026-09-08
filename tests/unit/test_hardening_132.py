@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -216,6 +217,52 @@ class TestExtraPathsStagingParity:
         staged = str((tmp_path / "mutants" / "libs" / "shared").absolute())
         assert staged in python_path.split(os.pathsep)
 
+    def test_runner_env_never_adds_unstaged_absolute_external_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        external = tmp_path / "external"
+        (project / "mutants").mkdir(parents=True)
+        external.mkdir()
+        (external / "live_probe.py").write_text("VALUE = 'UNSTAGED-LIVE'\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("PYTHONPATH", str(external.absolute()))
+
+        runner = PytestRunner(
+            MutmutConfig(paths_to_mutate=["src"], extra_paths=[str(external.absolute())])
+        )
+
+        isolated_env = runner._mutants_env()
+        paths = isolated_env["PYTHONPATH"].split(os.pathsep)
+        assert str(external.absolute()) not in paths
+        probe = subprocess.run(
+            [sys.executable, "-c", "import live_probe"],
+            cwd=project,
+            env=isolated_env,
+            capture_output=True,
+            check=False,
+        )
+        assert probe.returncode != 0
+
+    def test_runner_env_maps_absolute_project_entry_to_staged_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        live = project / "libs" / "shared"
+        staged = project / "mutants" / "libs" / "shared"
+        live.mkdir(parents=True)
+        staged.mkdir(parents=True)
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("PYTHONPATH", str(live.absolute()))
+
+        runner = PytestRunner(
+            MutmutConfig(paths_to_mutate=["src"], extra_paths=[str(live.absolute())])
+        )
+
+        paths = runner._mutants_env()["PYTHONPATH"].split(os.pathsep)
+        assert str(staged.absolute()) in paths
+        assert str(live.absolute()) not in paths
+
     def test_worker_env_points_dotdot_siblings_at_the_staged_copy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -263,6 +310,72 @@ class TestExtraPathsStagingParity:
         staged = str((project / "mutants" / "benchmarks").absolute())
         assert staged in paths
         assert str(sibling.absolute()) not in paths
+
+    def _assert_worker_absolute_extra_path_mapping(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        absolute_inside_project: bool,
+    ) -> None:
+        from queue import Queue
+
+        from mutmut_win.models import MutationTask
+        from mutmut_win.process.worker import worker_main
+
+        project = tmp_path / "project"
+        live = project / "libs" / "shared" if absolute_inside_project else tmp_path / "external"
+        staged = project / "mutants" / "libs" / "shared"
+        (project / "mutants").mkdir(parents=True)
+        live.mkdir(parents=True)
+        if absolute_inside_project:
+            staged.mkdir(parents=True)
+        monkeypatch.chdir(project)
+        monkeypatch.setenv("PYTHONPATH", str(live.absolute()))
+
+        captured_env: dict[str, str] = {}
+
+        def fake_popen(_cmd: list[str], **kwargs: object) -> MagicMock:
+            env = kwargs.get("env", {})
+            captured_env.update(env)  # type: ignore[arg-type]
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.wait.return_value = 0
+            proc.poll.return_value = 0
+            return proc
+
+        task_q: Queue[object] = Queue()
+        event_q: Queue[object] = Queue()
+        task_q.put(MutationTask(mutant_name="src/foo.py::bar__mutmut_1").model_dump())
+        task_q.put(None)
+        config_data = frozen_worker_config(
+            {
+                "paths_to_mutate": ["src/"],
+                "tests_dir": ["tests/"],
+                "extra_paths": [str(live.absolute())],
+                "pytest_add_cli_args": [],
+                "pytest_add_cli_args_test_selection": [],
+                "timeout_multiplier": 10.0,
+                "infinite_loop_detection": False,
+            }
+        )
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]
+
+        paths = captured_env.get("PYTHONPATH", "").split(os.pathsep)
+        assert str(live.absolute()) not in paths
+        if absolute_inside_project:
+            assert str(staged.absolute()) in paths
+
+    def test_worker_env_omits_unstaged_absolute_external_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._assert_worker_absolute_extra_path_mapping(tmp_path, monkeypatch, False)
+
+    def test_worker_env_maps_absolute_project_entry_to_staged_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._assert_worker_absolute_extra_path_mapping(tmp_path, monkeypatch, True)
 
 
 class TestIlConstantSingleSource:

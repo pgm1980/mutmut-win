@@ -29,7 +29,9 @@ from mutmut_win.db import (
     DEFAULT_DB_PATH,
     begin_run,
     create_db,
+    deauthorize_active_run_evidence,
     finish_run,
+    invalidate_cached_reuse_for_run,
     load_current_run,
     mark_reused_results,
     save_result,
@@ -41,6 +43,8 @@ from mutmut_win.exceptions import (
     CleanTestFailedError,
     ForcedFailError,
     OrchestratorError,
+    StaleStagingError,
+    UnsafeStagingError,
     UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
@@ -53,6 +57,7 @@ from mutmut_win.stats import (
     MutmutStats,
     RunBasisEvidence,
     build_run_basis_evidence,
+    build_staging_context_evidence,
     build_stats_context_fingerprint,
     canonical_run_basis_config,
     collect_or_load_stats,
@@ -75,6 +80,51 @@ _MIN_TIMEOUT: float = 5.0
 #: (the budget scales with the measured clean-run wall time above this) —
 #: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
+
+
+def _only_ambient_basis_changed(
+    previous: RunBasisEvidence,
+    current: RunBasisEvidence,
+) -> bool:
+    """Return whether both snapshots prove the same complete project core."""
+
+    return (
+        previous.core_complete
+        and current.core_complete
+        and previous.core_digest is not None
+        and previous.core_digest == current.core_digest
+    )
+
+
+def _validate_generated_staging(
+    source_data_by_file: dict[str, SourceFileMutationData],
+) -> None:
+    """Prove every executable generated module against its persisted digest."""
+
+    from mutmut_win.file_setup import read_verified_generated_bytes
+
+    for path, data in sorted(source_data_by_file.items()):
+        try:
+            read_verified_generated_bytes(path, data.generated_hash)
+        except (OSError, StaleStagingError, UnsafeStagingError) as exc:
+            raise OrchestratorError(
+                f"generated staging for {path} is missing, stale, or inconsistent: {exc}"
+            ) from exc
+
+
+def _validate_staging_unchanged(
+    expected: RunBasisEvidence,
+    source_data_by_file: dict[str, SourceFileMutationData],
+) -> None:
+    """Reject any stable executable staging drift since generation completed."""
+
+    _validate_generated_staging(source_data_by_file)
+    current = build_staging_context_evidence()
+    if not current.complete or current != expected:
+        raise OrchestratorError(
+            "executable staging files changed after mutant generation; the run cannot "
+            "authorize cached verdicts, score gates, or CI/CD export"
+        )
 
 
 class MutationOrchestrator:
@@ -107,6 +157,7 @@ class MutationOrchestrator:
         mutant_names: tuple[str, ...] | None = None,
         no_progress: bool = False,
         purge_stale_results: bool = False,
+        is_full_run: bool = False,
         rerun_all: bool = False,
         workspace_lock: WorkspaceRunLock | None = None,
     ) -> None:
@@ -120,6 +171,11 @@ class MutationOrchestrator:
         # (--mutant-names/--since-commit) know only a slice of the valid set
         # and must never purge.
         self._purge_stale_results = purge_stale_results
+        # Release authority is stricter than cache retention: only the CLI
+        # knows whether its invocation covered the entire configured mutant
+        # universe.  The default is deliberately fail-closed for direct API
+        # callers and browser-triggered subset retests.
+        self._is_full_run = is_full_run
         # Issue #119 / external QA RUN-001: --rerun-all disables result
         # reuse — every dispatchable mutant executes even when a cached
         # verdict could be reused.
@@ -130,6 +186,7 @@ class MutationOrchestrator:
         self._workspace_lock = workspace_lock
         self._active_run_id: str | None = None
         self._run_plan_finalized = False
+        self._allow_cache_reuse = True
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -159,6 +216,17 @@ class MutationOrchestrator:
         # This is an execution-environment precondition, not run state. Check
         # it before locks, database creation, basis capture, or staging writes.
         _ensure_supported_pytest()
+
+        from mutmut_win.file_setup import validate_staging_namespace
+
+        # A direct API caller must receive the same no-side-effect namespace
+        # preflight as the CLI. In particular, do this before lock-directory
+        # creation, database creation, or begin_run can make an invalid run
+        # look like a real attempt (CX221-038).
+        validate_staging_namespace(
+            self._config,
+            excluded_paths=self._basis_excluded_paths(),
+        )
 
         from mutmut_win.process.run_lock import (
             DatabaseRunLocks,
@@ -218,6 +286,19 @@ class MutationOrchestrator:
             excluded_paths=excluded_paths,
         )
         if first != second:
+            if _only_ambient_basis_changed(first, second):
+                print(
+                    "The ambient interpreter, dependency, or environment basis changed "
+                    "while it was being fingerprinted. The run will continue for "
+                    "diagnostics only; verdict reuse, --min-score, and CI/CD export "
+                    "remain disabled."
+                )
+                return RunBasisEvidence(
+                    digest=second.digest,
+                    complete=False,
+                    core_digest=second.core_digest,
+                    core_complete=True,
+                )
             raise OrchestratorError(
                 "source, test, configuration, dependency, or environment inputs changed "
                 "while their run basis "
@@ -247,6 +328,7 @@ class MutationOrchestrator:
 
         self._recover_abandoned_run()
         basis_evidence = self._stable_run_basis_evidence()
+        self._allow_cache_reuse = basis_evidence.complete
         basis_fingerprint = basis_evidence.digest if basis_evidence.complete else None
         basis_config_json = (
             canonical_run_basis_config(self._config) if basis_evidence.complete else None
@@ -265,6 +347,7 @@ class MutationOrchestrator:
             self._db_path,
             basis_fingerprint=basis_fingerprint,
             basis_config_json=basis_config_json,
+            is_full_run=self._is_full_run,
         )
         self._run_plan_finalized = False
         original_sys_path = sys.path.copy()
@@ -272,25 +355,44 @@ class MutationOrchestrator:
             try:
                 result = self._run_pipeline()
             finally:
-                # ``setup_source_paths`` installs the generated staging roots
-                # for child-test discovery. They are part of the stats/verdict
-                # context, but never of the immutable live-workspace basis.
-                # Restore the caller's exact ordered import path before the
-                # pre-completion evidence is captured.
+                # Child-test discovery receives generated roots through the
+                # runner's explicit environment.  Keep this final defensive
+                # restore so neither generation nor a future helper can leak
+                # staging into the long-lived orchestration interpreter.
                 sys.path[:] = original_sys_path
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as interrupt:
             # Ctrl-C is an interrupted proof regardless of the pipeline
             # phase in which it lands. Preserve the original interrupt while
             # making the latest run snapshot truthful.
             if self._active_run_id is not None:
-                with contextlib.suppress(Exception):
-                    finish_run(self._db_path, self._active_run_id, "interrupted")
+                try:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                except Exception as exc:
+                    # A terminal row would make recovery skip this run while
+                    # its streamed historical verdicts still carry reuse
+                    # capability. Leave it running so the next lock owner
+                    # must retry revoke-first recovery.
+                    interrupt.add_note(
+                        "cached-verdict reuse revocation failed; the run remains running "
+                        f"for recovery: {exc}"
+                    )
+                else:
+                    with contextlib.suppress(Exception):
+                        finish_run(self._db_path, self._active_run_id, "interrupted")
             raise
-        except BaseException:
+        except BaseException as failure:
             # Cleanup must never mask the original failure.
             if self._active_run_id is not None:
-                with contextlib.suppress(Exception):
-                    finish_run(self._db_path, self._active_run_id, "failed")
+                try:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                except Exception as exc:
+                    failure.add_note(
+                        "cached-verdict reuse revocation failed; the run remains running "
+                        f"for recovery: {exc}"
+                    )
+                else:
+                    with contextlib.suppress(Exception):
+                        finish_run(self._db_path, self._active_run_id, "failed")
             raise
 
         if self._active_run_id is None:
@@ -305,29 +407,93 @@ class MutationOrchestrator:
         else:
             terminal_status = "completed"
         if terminal_status == "completed":
+            execution_basis_deauthorized = False
             try:
                 live_basis = self._stable_run_basis_evidence()
             except OrchestratorError:
+                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
                 raise
-            if live_basis != basis_evidence:
+            basis_changed = live_basis != basis_evidence
+            if basis_changed and not _only_ambient_basis_changed(
+                basis_evidence,
+                live_basis,
+            ):
+                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
                 raise OrchestratorError(
-                    "source, test, configuration, dependency, or environment inputs changed "
-                    "during the mutation run; "
+                    "source, test, configuration, or project-contained import "
+                    "inputs changed during the mutation run; "
                     "the run was recorded as failed and cannot authorize CI/CD export"
                 )
+
+            # A diagnostic-only basis never grants a reusable verdict, even
+            # when its two end snapshots happen to be byte-for-byte equal.
+            # Otherwise freshly executed rows from this run retain their
+            # tests_fingerprint and silently regain authority in a later,
+            # stable run.  Revoke both the current-run and historical
+            # fingerprints atomically before publishing the terminal state.
+            if basis_changed or not basis_evidence.complete:
+                try:
+                    deauthorize_active_run_evidence(
+                        self._db_path,
+                        self._active_run_id,
+                    )
+                except Exception as exc:
+                    reason = (
+                        "ambient execution inputs changed"
+                        if basis_changed
+                        else "the initial execution basis was diagnostic-only"
+                    )
+                    raise OrchestratorError(
+                        f"{reason} and its evidence authority could not be revoked; "
+                        "the run remains running for revoke-first recovery"
+                    ) from exc
+                execution_basis_deauthorized = True
+                if basis_changed:
+                    print(
+                        "The ambient interpreter, dependency, or environment basis "
+                        "changed during this run. Diagnostic results were preserved, "
+                        "but verdict reuse, --min-score, and CI/CD export are disabled."
+                    )
+                else:
+                    print(
+                        "The initial execution basis remained diagnostic-only. "
+                        "Results were preserved, but every current and historical "
+                        "verdict-reuse capability was revoked."
+                    )
+        else:
+            execution_basis_deauthorized = False
+            try:
+                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+            except Exception as exc:
+                raise OrchestratorError(
+                    "could not revoke cached-verdict reuse after an incomplete run; "
+                    "the run remains running for revoke-first recovery"
+                ) from exc
         try:
             finish_run(self._db_path, self._active_run_id, terminal_status)
         except Exception as exc:
             # ``completed`` refuses pending work. Preserve that evidence by
             # closing the run as failed, then surface a clean domain failure.
+            try:
+                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+            except Exception as revoke_exc:
+                raise OrchestratorError(
+                    f"could not finalize mutation run {self._active_run_id!r}; "
+                    "cached-verdict reuse revocation also failed, so the run remains "
+                    f"running for recovery: {revoke_exc}"
+                ) from exc
             with contextlib.suppress(Exception):
                 finish_run(self._db_path, self._active_run_id, "failed")
             raise OrchestratorError(
                 f"could not finalize mutation run {self._active_run_id!r}: {exc}"
             ) from exc
-        result.execution_basis_complete = terminal_status == "completed" and basis_evidence.complete
+        result.execution_basis_complete = (
+            terminal_status == "completed"
+            and basis_evidence.complete
+            and not execution_basis_deauthorized
+        )
         return result
 
     def _recover_abandoned_run(self) -> None:
@@ -335,6 +501,12 @@ class MutationOrchestrator:
         current = load_current_run(self._db_path)
         if current is None or current.status != "running":
             return
+        try:
+            invalidate_cached_reuse_for_run(self._db_path, current.run_id)
+        except Exception as exc:
+            raise OrchestratorError(
+                "could not revoke cached-verdict reuse from an abandoned prior run"
+            ) from exc
         finish_run(self._db_path, current.run_id, "aborted")
         print(
             "Recovered an unfinished prior mutation run as aborted "
@@ -359,6 +531,7 @@ class MutationOrchestrator:
                         path,
                         data.source_hash,
                         data.generation_fingerprint,
+                        data.generated_hash,
                     )
                     for path, data in sorted(source_data_by_file.items())
                 ],
@@ -393,7 +566,16 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------
         # Step 1: Generate mutants for all source files.
         # ------------------------------------------------------------------
-        all_tasks, source_data_by_file, fast_path_names = self._generate_mutants()
+        # Generation must leave the orchestration interpreter's import path
+        # byte-for-byte unchanged.  A Windows spawn worker inherits this list;
+        # any staged root would make lazy engine imports create ``__pycache__``
+        # files after the executable-staging snapshot was frozen.  Restore the
+        # exact parent path defensively before any snapshot or verdict producer.
+        parent_sys_path = sys.path.copy()
+        try:
+            all_tasks, source_data_by_file, fast_path_names = self._generate_mutants()
+        finally:
+            sys.path[:] = parent_sys_path
 
         if not all_tasks:
             self._start_current_run([], source_data_by_file)
@@ -401,6 +583,16 @@ class MutationOrchestrator:
             return MutationRunResult(
                 total_mutants=0,
                 duration_seconds=time.monotonic() - wall_start,
+            )
+
+        # Publish the deterministic startup blocker before freezing executable
+        # staging.  It is imported by every child interpreter and therefore
+        # belongs in the stable evidence rather than an exclusion list.
+        self._runner.write_pth_blocker()
+        staging_evidence = build_staging_context_evidence()
+        if not staging_evidence.complete:
+            raise OrchestratorError(
+                "the complete executable staging tree could not be fingerprinted"
             )
 
         # The COMPLETE generation set, captured before any filtering — the
@@ -447,6 +639,7 @@ class MutationOrchestrator:
         if not all_tasks:
             # Every mutant was caught by the type checker — a legitimate,
             # successful run, not an IndexError (issue #93 / A3-OS-010).
+            _validate_staging_unchanged(staging_evidence, source_data_by_file)
             create_db(self._db_path)
             self._maybe_purge_stale(all_generated_names)
             _persist_type_check_kills(self._db_path, type_checked_names)
@@ -467,7 +660,6 @@ class MutationOrchestrator:
         # Explicit staging setup (issue #116 / A2-RN-010): the .pth blocker
         # is written ONCE here instead of as a side effect of every env
         # build; it covers all phases and the workers (same staging dir).
-        self._runner.write_pth_blocker()
         print("Running clean test suite…")
         clean_start = time.monotonic()
         clean_exit = self._runner.run_clean_test()
@@ -504,6 +696,7 @@ class MutationOrchestrator:
             if tail:
                 msg += f"\n--- pytest output (tail) ---\n{tail}"
             raise CleanTestFailedError(msg)
+        _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
         # ------------------------------------------------------------------
         # Step 3: Collect per-test timing stats (load from cache if available).
@@ -516,7 +709,9 @@ class MutationOrchestrator:
         mutmut_stats: MutmutStats = collect_or_load_stats(
             self._runner,
             context_fingerprint=stats_context,
+            allow_cache_reuse=self._allow_cache_reuse,
         )
+        _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
@@ -553,6 +748,7 @@ class MutationOrchestrator:
             if tail:
                 msg += f"\n--- pytest output (tail) ---\n{tail}"
             raise ForcedFailError(msg)
+        _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
         # ------------------------------------------------------------------
         # Step 5: Assign specific tests and compute timeouts.
@@ -579,13 +775,24 @@ class MutationOrchestrator:
             all_tasks,
             context_fingerprint=mutmut_stats.context_fingerprint,
         )
-        if not context_allows_result_reuse(mutmut_stats.context_fingerprint):
+        context_reuse_allowed = context_allows_result_reuse(mutmut_stats.context_fingerprint)
+        if not self._allow_cache_reuse:
+            print(
+                "The initial execution basis was diagnostic-only — "
+                "cached verdict reuse is disabled for this run."
+            )
+        elif not context_reuse_allowed:
             print(
                 "Execution inputs could not be hashed completely — "
                 "cached verdict reuse is disabled for this run."
             )
         reused_results: list[MutationResult] = []
-        if not self._rerun_all and fast_path_names:
+        if (
+            self._allow_cache_reuse
+            and context_reuse_allowed
+            and not self._rerun_all
+            and fast_path_names
+        ):
             reused_results, all_tasks = _split_reusable_tasks(
                 all_tasks, fast_path_names, tests_fp_by_name, self._db_path
             )
@@ -593,6 +800,13 @@ class MutationOrchestrator:
             if self._active_run_id is None:  # pragma: no cover - invariant guard
                 raise OrchestratorError("cannot attribute reused results without an active run")
             mark_reused_results(self._db_path, self._active_run_id, reused_results)
+            for reused in reused_results:
+                _update_source_data(
+                    reused.mutant_name,
+                    reused.exit_code,
+                    reused.duration,
+                    source_data_by_file,
+                )
             print(
                 f"Reused {len(reused_results)} cached verdicts from the previous run "
                 f"({len(all_tasks)} dispatched; --rerun-all forces execution)."
@@ -602,6 +816,7 @@ class MutationOrchestrator:
             # Everything was verdicted without dispatch (no tests, type-check
             # kills and/or reused cached verdicts) — a legitimate, successful
             # run (cf. #93). Reused rows are already persisted.
+            _validate_staging_unchanged(staging_evidence, source_data_by_file)
             create_db(self._db_path)
             self._maybe_purge_stale(all_generated_names)
             _persist_type_check_kills(self._db_path, type_checked_names)
@@ -728,6 +943,13 @@ class MutationOrchestrator:
         # counter reach the total while leaving the real mutant unverdicted.
         summary.run_aborted = _executor_aborted(executor) or (not interrupted and completed < total)
 
+        # A valid pre-run snapshot is not enough: another process or a crash
+        # can replace generated bytes while workers are running.  A completed
+        # run may authorize reuse/export only when the exact generated modules
+        # still match their metadata after the last worker exits.
+        if not interrupted and not summary.run_aborted:
+            _validate_staging_unchanged(staging_evidence, source_data_by_file)
+
         # ------------------------------------------------------------------
         # Step 8: Persist SourceFileMutationData meta files.
         # ------------------------------------------------------------------
@@ -756,18 +978,31 @@ class MutationOrchestrator:
         Returns:
             ``MutationRunResult`` with only ``total_mutants`` set.
         """
-        from mutmut_win.file_setup import walk_source_files
+        from mutmut_win.file_setup import (
+            _decode_python_source,
+            validate_staging_namespace,
+            walk_source_files,
+        )
         from mutmut_win.mutation import mutate_file_contents
 
+        validate_staging_namespace(
+            self._config,
+            excluded_paths=self._basis_excluded_paths(),
+        )
         total = 0
         walked: list[str] = []
+        seen_sources: set[Path] = set()
         for src_file in walk_source_files(self._config):
             rel_path = str(src_file)
             walked.append(rel_path)
             if self._config.should_ignore_for_mutation(rel_path):
                 continue
             try:
-                code = src_file.read_text(encoding="utf-8")
+                resolved_source = src_file.resolve(strict=True)
+                if resolved_source in seen_sources:
+                    continue
+                seen_sources.add(resolved_source)
+                code, _source_encoding = _decode_python_source(src_file.read_bytes())
                 _mutated_code, mutant_names = mutate_file_contents(
                     rel_path,
                     code,
@@ -831,7 +1066,7 @@ class MutationOrchestrator:
 
         1. Copy source files to ``mutants/`` staging directory.
         2. Copy ``also_copy`` files/directories into ``mutants/``.
-        3. Fix ``sys.path`` so test processes import the mutated code.
+        3. Purge inherited runtime caches from executable staging.
         4. Optionally gather coverage data (``mutate_only_covered_lines``).
         5. For each source file call ``create_mutants_for_file`` to generate
            mutated output and build the ``MutationTask`` list.
@@ -845,17 +1080,24 @@ class MutationOrchestrator:
             copy_also_copy_files,
             copy_src_dir,
             get_mutant_name,
-            setup_source_paths,
+            purge_staging_runtime_artifacts,
             walk_source_files,
         )
 
-        # Step 1-3: Prepare the mutants/ directory and sys.path.
+        # Step 1-3: Prepare the mutants/ directory.  The orchestration process
+        # itself must keep importing the live engine; pytest children receive
+        # explicit staged paths from ``MutantTestRunner._mutants_env``.
         # The result database is mutable run-control state, not executable
         # project input. Exclude this exact configured path from automatic
         # staging while preserving arbitrary SQLite fixtures used by tests.
-        copy_src_dir(self._config, excluded_paths=(self._db_path,))
-        copy_also_copy_files(self._config)
-        setup_source_paths()
+        # The live SQLite namespace consists of the database plus its journal,
+        # WAL and shared-memory sidecars.  The run-basis digest already excludes
+        # all four; staging must use the exact same boundary or a custom DB at
+        # the project root can race while a sidecar is copied (MW221-037).
+        excluded_paths = self._basis_excluded_paths()
+        copy_src_dir(self._config, excluded_paths=excluded_paths)
+        copy_also_copy_files(self._config, excluded_paths=excluded_paths)
+        purge_staging_runtime_artifacts()
         # Freeze pytest's config/root/conftest boundary before optional
         # coverage, which is itself the first real pytest phase.
         self._runner.prepare_pytest_boundary()
@@ -878,9 +1120,20 @@ class MutationOrchestrator:
         # Step 4: Optionally gather coverage to restrict which lines are mutated.
         covered_lines_map: dict[str, set[int]] | None = None
         if self._config.mutate_only_covered_lines:
+            # Coverage is already executable project code.  Freeze the exact
+            # unmutated staging tree before that first phase so a test/plugin
+            # cannot edit a fixture/config/module and have the post-coverage
+            # state silently blessed as the generation basis.
+            self._runner.write_pth_blocker()
+            precoverage_evidence = build_staging_context_evidence()
+            if not precoverage_evidence.complete:
+                raise OrchestratorError(
+                    "the complete pre-coverage staging tree could not be fingerprinted"
+                )
             covered_lines_map = self._gather_coverage(
                 [rel for rel, _ in source_files],
             )
+            _validate_staging_unchanged(precoverage_evidence, {})
 
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}
@@ -988,6 +1241,11 @@ class MutationOrchestrator:
                 f"universe fingerprint:\n{details}"
             )
             raise OrchestratorError(msg)
+
+        # Catch a mismatched file/meta pair (including the crash window between
+        # their two atomic publications) before type checking or clean tests
+        # execute any generated module.
+        _validate_generated_staging(source_data)
 
         from mutmut_win.file_setup import persist_config_fingerprint
 
@@ -1227,7 +1485,7 @@ def _apply_timeouts(
     timeout every suite that takes longer than a minute.
 
     ``estimated_time`` stays free of the floor: it means "estimated TEST
-    runtime" and feeds the fast-first sort.
+    runtime" and feeds the independent mutant-task sort.
 
     Args:
         tasks: Original mutation tasks (not mutated in-place).
@@ -1249,15 +1507,15 @@ def _apply_timeouts(
         else:
             estimated = 0.0
 
-        if task.tests and estimated > 0:
+        if task.tests and task.test_selection_is_authoritative and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
         else:
             # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
             # FULL suite (no node-id args) — budget it like one. The old
             # mean-of-all-durations budget was a guaranteed timeout flood
             # whenever the mapping was empty (broken hit recording, package
-            # never imported by tests). The mean still feeds the fast-first
-            # sort via ``estimated_time``.
+            # never imported by tests). The mean still feeds the independent
+            # mutant-task sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
 
         updated.append(
@@ -1283,20 +1541,24 @@ def _assign_tests_to_tasks(
     Returns:
         New list of ``MutationTask`` instances with ``tests`` populated.
     """
-    # A partial mapping is not merely unable to prove ``no tests``. It also
-    # cannot safely narrow a mutant to the tests it happened to observe: a
-    # subprocess/xdist-only hit may be the missing test that kills it. Empty
-    # assignments deliberately select pytest's full suite in the worker.
-    if not stats.mapping_is_authoritative:
-        return [task.model_copy(update={"tests": []}) for task in tasks]
-
     result: list[MutationTask] = []
     for task in tasks:
         assigned = tests_for_mutant_names(
             [task.mutant_name],
             stats.tests_by_mangled_function_name,
         )
-        result.append(task.model_copy(update={"tests": sorted(assigned)}))
+        # A partial mapping is still a useful mutant-task scheduling hint, but
+        # never an authorization to omit or reorder tests inside pytest. Only
+        # an in-memory authority proof may narrow collection or produce a
+        # ``no tests`` verdict.
+        result.append(
+            task.model_copy(
+                update={
+                    "tests": sorted(assigned),
+                    "test_selection_is_authoritative": stats.mapping_is_authoritative,
+                }
+            )
+        )
     return result
 
 
@@ -1335,7 +1597,7 @@ def _filter_with_type_checker(
 
     import libcst as cst
 
-    from mutmut_win.file_setup import get_mutant_name
+    from mutmut_win.file_setup import _decode_python_source, get_mutant_name
     from mutmut_win.type_checker_filter import (
         FailedTypeCheckMutant,
         MutatedMethodsCollector,
@@ -1387,8 +1649,7 @@ def _filter_with_type_checker(
 
     for path, errors_of_file in errors_by_path.items():
         try:
-            with (mutants_dir / path).open(encoding="utf-8") as f:
-                source = f.read()
+            source, _encoding = _decode_python_source((mutants_dir / path).read_bytes())
         except OSError:
             continue
 
@@ -1576,7 +1837,7 @@ def _build_tests_fingerprints(
     stat_cache: dict[str, str] = {}
     return {
         task.mutant_name: _tests_fingerprint(
-            task.tests,
+            task.tests if task.test_selection_is_authoritative else [],
             stat_cache,
             context_fingerprint=context_fingerprint,
         )

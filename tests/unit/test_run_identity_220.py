@@ -166,6 +166,7 @@ def test_existing_run_schema_migrates_old_rows_as_finalized_plans(tmp_path: Path
     assert current.basis_fingerprint is None
     assert current.basis_config_json is None
     assert current.evidence_invalidated is False
+    assert current.is_full_run is False
 
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         run_columns = {row[1] for row in conn.execute("PRAGMA table_info(mutation_run)").fetchall()}
@@ -173,6 +174,7 @@ def test_existing_run_schema_migrates_old_rows_as_finalized_plans(tmp_path: Path
         "basis_fingerprint",
         "basis_config_json",
         "evidence_invalidated",
+        "is_full_run",
         "plan_digest",
     } <= run_columns
 
@@ -189,6 +191,7 @@ def test_run_basis_round_trips_with_the_modern_run_snapshot(tmp_path: Path) -> N
         ["m1"],
         basis_fingerprint=fingerprint,
         basis_config_json=config_json,
+        is_full_run=True,
     )
     current = load_current_run(db_path)
 
@@ -196,6 +199,18 @@ def test_run_basis_round_trips_with_the_modern_run_snapshot(tmp_path: Path) -> N
     assert current.run_id == run_id
     assert current.basis_fingerprint == fingerprint
     assert current.basis_config_json == config_json
+    assert current.is_full_run is True
+
+
+def test_new_run_scope_defaults_fail_closed_to_subset(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+
+    run_id = start_run(db_path, ["m1"])
+    current = load_current_run(db_path)
+
+    assert current is not None
+    assert current.run_id == run_id
+    assert current.is_full_run is False
 
 
 @pytest.mark.parametrize(
@@ -458,9 +473,10 @@ def test_parallel_start_has_exactly_one_winner(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
 
-    assert len(winners) == 1
-    assert len(errors) == 3
-    assert all(isinstance(error, RunStateError) for error in errors)
+    error_details = [(type(error).__name__, str(error), repr(error.__cause__)) for error in errors]
+    assert len(winners) == 1, (winners, error_details)
+    assert len(errors) == 3, error_details
+    assert all(isinstance(error, RunStateError) for error in errors), error_details
     current = load_current_run(db_path)
     assert current is not None
     assert current.run_id == winners[0]

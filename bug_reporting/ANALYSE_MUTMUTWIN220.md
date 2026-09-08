@@ -1,9 +1,15 @@
 # Adversariales 360-Grad-Review: mutmut-win 2.20.0 → 2.21.0
 
+> **Nachtrag 2026-09-01:** v2.21.0 wurde nach diesem Abschlussstand tatsächlich
+> veröffentlicht. Der verbindliche Product-Owner-Scope, die korrigierte
+> Fixclaim-Zählung und die Wiedereröffnung von MW220-108/-115 stehen in Abschnitt
+> 19. Alle vorherigen „Tag/Release absent“-Aussagen sind historische
+> Momentaufnahmen und kein aktueller LIVE-State.
+
 **Review-Stand:** 2026-09-01
 **Arbeitsbaum:** `<repository root>`
 **Git-Basis:** PR #134 wurde als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` mit Tree `761e264a91a52bda4c284f3f36fe53954d7fff2b` in `main` integriert; aktuelle Reparatur auf `fix/v2.21.0-release-blockers`
-**Status:** 115 Befunde (30 P0, 56 P1, 29 P2; MW220-001 bis -115) bestätigt. MW220-001 bis -111 waren auf dem integrierten Kandidatentree lokal belegt; die tatsächlich angelaufene GitHub-CI deckte anschließend MW220-112 bis -114 als neue Releaseblocker auf. Alle drei sind auf `fix/v2.21.0-release-blockers` implementiert und zusammen mit der vollständigen lokalen Cross-Platform-Matrix verifiziert. Der abschließende Report-Vertragsaudit fand und schloss zusätzlich MW220-115. Alle vor diesen Fixes erzeugten integrierten Artefakte und Finalclaims sind ungültig; Follow-up-Integration und integrierter Rebuild stehen noch aus. Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder Releasepublikation entfernt; Tag und GitHub-Release sind derzeit nicht vorhanden.
+**Status:** Das formale Register umfasst exakt 115 Befunde (30 P0, 56 P1, 29 P2), lückenlos MW220-001 bis MW220-115 und keine weitere MW220-ID. MW220-001 bis -111 waren auf dem integrierten Kandidatentree lokal belegt; die tatsächlich angelaufene GitHub-CI deckte anschließend MW220-112 bis -114 als neue Releaseblocker auf. Alle drei sind auf `fix/v2.21.0-release-blockers` implementiert und zusammen mit der vollständigen lokalen Cross-Platform-Matrix verifiziert. Der abschließende Report-Vertragsaudit fand und schloss zusätzlich MW220-115. Alle vor diesen Fixes erzeugten integrierten Artefakte und Finalclaims sind ungültig; Follow-up-Integration und integrierter Rebuild stehen noch aus. Ein vorzeitig erzeugter Tag `v2.21.0` wurde vor jeder Releasepublikation entfernt; Tag und GitHub-Release waren in diesem historischen Berichtstand noch nicht vorhanden.
 **Leitprinzip:** Ein Mutant darf nur bei autoritativem Mapping als `no tests` gelten. Ein technisch vollständig ausgeführter Plan kann auch bei nicht vollständig inventarisierbarer Umgebung `completed` sein; Wiederverwendung und CI-/Release-Autorität benötigen jedoch eine nachweislich vollständige Test-, Source-, Konfigurations-, Abhängigkeits-, Environment-, Import- und Prozessbasis.
 
 ## 1. Historisches Gesamturteil vor der Korrektur
@@ -387,7 +393,7 @@ Timeout-/Fehlerpfade räumten Bäume auf, erfolgreiche Clean-, Typechecker- oder
 
 Die aktuelle Hit-Erhebung kann selektive Zuordnungen nicht end-to-end autoritativ beweisen. Die Closure erfindet daher keine Selektivität: Mapping bleibt explizit nichtautoritativ und führt stets zur Vollsuite. Sichere Wiederverwendung bleibt dennoch erreichbar, aber nur bei unverändertem Source-/Universe-Fast-Path und einem beweisbar vollständigen Kontextdigest. Der finale Reaudit MW220-073 erweiterte diesen Vertrag über Projekt- und Konfigurationsbytes hinaus auf installierte und editierbare Abhängigkeiten, geerbte Environment-Werte, den geordneten effektiven Importpfad einschließlich `.pth`/unregistrierter Module sowie Runtime/Executable. Kann irgendein Bestandteil nicht vollständig inventarisiert werden, werden weder Stats-Mapping noch Verdicts wiederverwendet. `src/mutmut_win/stats.py` und `src/mutmut_win/orchestrator.py` trennen damit Mappingautorität, Kontextvollständigkeit und Reuse-Gültigkeit; `tests/unit/test_result_reuse_119.py` und `tests/unit/test_dependency_basis_220.py` pinnen den Vertrag.
 
-Der reale Closure-Repro für GitHub Issue #133 bestätigt diesen Pfad zusammen mit dem vorhandenen #130/360-B3-Vollsuite-Budget. In einem isolierten detached Consumer-Snapshot `8296cd9ac1a06cce50f0841ebd1c6ffaa4828823` lief der v2.21.0-Kandidat gegen exakt `llm_fusion_mcp.eval.verifiers.math_matcher.x_verify__mutmut_1`. Obwohl 73 Mappingkanten für 100 Tests beobachtet wurden, blieb das Mapping nichtautoritativ und die Task erhielt das Vollsuite-Budget `max(60, clean_wall × 30)`: bei geloggten 3,7 s Clean-Wall nominal rund 111 s. Run `c4705ab1-229a-42b5-b343-0fe692a6d257` endete mit Orchestrator-Exit 0, `completed 1/1`, `pending 0`, `reused 0`; der Mutant wurde nach 1,8833385 s mit Test-Exit 1 getötet, ohne Timeout-/Suspicious-/Skip-/No-tests-Diagnose. SQLite `quick_check` und die CLI-Zähler waren konsistent. Der damalige uncommittete 227-Mutanten-Arbeitsbaum ist nicht bytegenau rekonstruierbar; verwendet wurden der letzte Commit vor Issue-Erstellung, die dokumentierte Ad-hoc-Testeingrenzung und `clean_run_timeout=900`. Der fachlich diskriminierende `\boxed{42}`-Node-ID war im beobachteten Mapping enthalten. Damit reproduziert v2.21.0 den gemeldeten Timeout-Flood nicht; es ist kein zusätzlicher MW220-116-Produktionsfix erforderlich.
+Der reale Closure-Repro für GitHub Issue #133 bestätigt diesen Pfad zusammen mit dem vorhandenen #130/360-B3-Vollsuite-Budget. In einem isolierten detached Consumer-Snapshot `8296cd9ac1a06cce50f0841ebd1c6ffaa4828823` lief der v2.21.0-Kandidat gegen exakt `llm_fusion_mcp.eval.verifiers.math_matcher.x_verify__mutmut_1`. Obwohl 73 Mappingkanten für 100 Tests beobachtet wurden, blieb das Mapping nichtautoritativ und die Task erhielt das Vollsuite-Budget `max(60, clean_wall × 30)`: bei geloggten 3,7 s Clean-Wall nominal rund 111 s. Run `c4705ab1-229a-42b5-b343-0fe692a6d257` endete mit Orchestrator-Exit 0, `completed 1/1`, `pending 0`, `reused 0`; der Mutant wurde nach 1,8833385 s mit Test-Exit 1 getötet, ohne Timeout-/Suspicious-/Skip-/No-tests-Diagnose. SQLite `quick_check` und die CLI-Zähler waren konsistent. Der damalige uncommittete 227-Mutanten-Arbeitsbaum ist nicht bytegenau rekonstruierbar; verwendet wurden der letzte Commit vor Issue-Erstellung, die dokumentierte Ad-hoc-Testeingrenzung und `clean_run_timeout=900`. Der fachlich diskriminierende `\boxed{42}`-Node-ID war im beobachteten Mapping enthalten. Damit reproduziert v2.21.0 den gemeldeten Timeout-Flood nicht; es ist kein zusätzlicher Produktionsfix außerhalb des geschlossenen 115er-MW220-Registers erforderlich.
 
 ## 15. Closure der 49 Befunde
 
@@ -711,9 +717,71 @@ Die Befunde MW220-001 bis -111 besitzen gezielte Regressionen oder deterministis
 | getrackter fail-closed Semgrep-Wrapper | serieller Vollscan implementiert; 70 Wrappertests und wiederholte reale Windows-Läufe grün; letzter exakter Kandidatenlauf: 218 Manifestdateien / 49 Policy-Skips / 168 Targets / 342 Regeln / 20 allowgelistete Findings / 0 Fehler oder Fixpoint-Timeouts |
 | E2E-Umgebungsisolation | reparierter Post-MW220-115-Lauf vor/nach exakt identisch: 5.119 Dateien / 126.091.419 Bytes / SHA-256 `8e5a29550f9f8a61811a63687c90c31aa962ddc8e8ab0f34af34334da9553268` |
 | dokumentierter Dogfooding-Pilot | reparierter Baum: 90 total, 86 killed, 4 äquivalente Survivors, 0 timeout/suspicious/skipped/no-tests/type-check-caught/segfault/unchecked, 95,6 %, 81,0 s |
-| GitHub Issue #133 Consumer-Repro | historischer Snapshot `8296cd9a…`, genau ein `x_verify`-Mutant: completed 1/1, killed nach 1,8833385 s, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; Closure über MW220-047 plus #130/360-B3, kein MW220-116 |
+| GitHub Issue #133 Consumer-Repro | historischer Snapshot `8296cd9a…`, genau ein `x_verify`-Mutant: completed 1/1, killed nach 1,8833385 s, 0 pending/reused/timeout/suspicious/skipped/no-tests, Orchestrator-Exit 0; Closure über MW220-047 plus #130/360-B3, kein weiterer formaler MW220-Befund außerhalb des 115er-Registers |
 | Git-owned Kandidateninventar | 409 Dateien; Gitleaks über Worktree und 280-Commit-Historie ohne Befund; finaler Export-/Buildinventar nach Integration ausstehend |
 | Branch-/PR-Publikation | PR #134 integriert als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf`; Reparaturbranch und Follow-up-PR noch nicht integriert |
 | GitHub-CI | tatsächlich ausgeführt; Quality `99647140872`, Ubuntu-Boundary `99647141304` und Windows-Security `99647141196` deckten MW220-112 bis -114 auf; kein PASS |
 
-**Aktuelles technisches Urteil: Release-NO-GO nur noch bis zur Veröffentlichungskette.** 115 Befunde sind bestätigt; MW220-112 bis -115 sind implementiert, und die vollständige lokale Cross-Platform-Matrix ist grün. PR #134 ist zwar als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` integriert, seine Artefakte sind durch den nachfolgenden Reparaturbranch nicht mehr releaseautoritativ. `v2.21.0`-Tag und GitHub-Release sind absent; der vorzeitige Tag wurde entfernt. Erst Follow-up-Integration, integrierter Doppelbuild, installierte Artefaktsmokes und erneuter Live-Ref-Check erlauben Tag und Release. Eine Billing-bedingt ausbleibende weitere Remote-CI bleibt akzeptierte Evidenzlücke und kein PASS. Der lokale Legacy-ZIP-Baum ist nicht autoritativ.
+**Aktuelles technisches Urteil dieses historischen Abschlussstands: Release-NO-GO nur noch bis zur Veröffentlichungskette.** 115 Befunde sind bestätigt; MW220-112 bis -115 sind implementiert, und die vollständige lokale Cross-Platform-Matrix ist grün. PR #134 ist zwar als `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` integriert, seine Artefakte sind durch den nachfolgenden Reparaturbranch nicht mehr releaseautoritativ. `v2.21.0`-Tag und GitHub-Release waren zu diesem Zeitpunkt absent; der vorzeitige Tag war entfernt. Erst Follow-up-Integration, integrierter Doppelbuild, installierte Artefaktsmokes und erneuter Live-Ref-Check erlaubten Tag und Release. Eine Billing-bedingt ausbleibende weitere Remote-CI blieb akzeptierte Evidenzlücke und kein PASS. Der lokale Legacy-ZIP-Baum ist nicht autoritativ. Der tatsächlich danach eingetretene Release- und Reauditstand steht im folgenden Addendum und ersetzt diese zeitgebundene Aussage.
+
+<!-- MW221_SCOPE_ADDENDUM_START -->
+
+## 19. Addendum nach Veröffentlichung: Zielscope und MW221-Reaudit
+
+Dieses Addendum bewahrt die vorstehenden MW220-Belege als historische
+Reviewevidenz, korrigiert aber ihre später überholten Live- und Scopeaussagen.
+
+### 19.1 Tatsächlicher Releasezustand
+
+v2.21.0 wurde als annotierter Tag veröffentlicht. Das Tagobjekt
+`9ef4baec9a16af4e368f8f4a66ddbf0df064ab3c` zeigt auf Commit
+`40b6af31da66f3544ab9d1a38d34511e7e02c79a` mit Tree
+`9fe800a9849fe35cf87f57b2f098ee02a08cd76a`; der GitHub-Release wurde am
+2026-09-01 um 00:08:11 UTC publiziert. Aussagen weiter oben, Tag und Release
+seien „absent“, beschreiben ausschließlich den damaligen Vorveröffentlichungsstand.
+
+### 19.2 Verbindliche Scopekorrektur
+
+Der Product Owner hat Windows plus **exakt CPython 3.14.7** als einziges
+Zielsystem festgelegt. Python 3.12/3.13, Linux/POSIX und macOS sind keine
+Laufzeitziele. Die früher in Projektmetadaten, CI und Dokumentation versprochene
+Breite war kein PO-Ziel. Deshalb werden die POSIX-spezifischen MW220-064,
+MW220-065 und MW220-075 im aktuellen Releaseentscheid als nicht anwendbar
+geführt. Die Windows-3.12- und POSIX-Arity-Ausfälle des MW221-Reaudits sind reale
+Vertragsbrüche des alten Metadatenvertrags, aber keine Defekte des korrigierten
+Zielsystems.
+
+### 19.3 Revidierte Fixclaim-Zählung
+
+Das externe MW221-Ledger enthält 115 eindeutige MW220-IDs. Seine Chat-Summe
+„72 voll, 30 mit Restgrenzen, 8 regressiert, 4 teilweise, 1 misframed, 1
+unverifizierbar“ ergibt 116; die Datei selbst enthält 29 Restgrenzen. Nach
+Zielscope-Korrektur gilt: 75 verifiziert, 29 mit Restgrenze, 4 regressiert, 3
+teilweise, 1 falsch gerahmt, 3 nicht anwendbar. Damit sind 104 von 115 Claims
+auf dem Zielsystem substanziell verifiziert.
+
+### 19.4 Wiedereröffnung MW220-108 und MW220-115
+
+MW220-108 und MW220-115 waren nur teilweise dauerhaft geschlossen. Nach dem
+Release behaupteten `.sprint/state.md`, `MEMORY.md` und die LIVE-Serena-Memories
+weiterhin, v2.21.0 sei nicht veröffentlicht. Der zugehörige Test verlangte
+zugleich feste Kandidatenwerte und Erfolgsprosa. Er konnte dadurch ehrliche
+Zustandsübergänge nicht abbilden und prüfte Selbstzertifikate statt Realität.
+Dieser Regressionspfad ist als MW221-019 bestätigt. Der v2.21.1-Kandidat ersetzt
+die Pins durch strukturelle Zustandsinvarianten und führt den tatsächlichen
+v2.21.0-Release als Historie.
+
+### 19.5 Aktueller Nachfolger
+
+Die vollständige Nachfolger-Adjudikation, die konkreten Commit-/Tree-Belege
+und der jeweilige Abschlussstand stehen in
+`bug_reporting/ANALYSE_MUTMUTWIN221.md`, der zugehörigen Roadmap und
+`.sprint/state.md`. Dieses historische MW220-Addendum behauptet keinen
+unveränderlichen aktuellen Publikationszustand des Nachfolgers. Vor dessen
+Verwendung sind das annotierte Tag und der zugehörige GitHub-Release samt
+Artefakten live zu prüfen. Neue Reauditbefunde ändern weder die historische
+115er-ID-Menge noch die oben zeitgebunden dokumentierten Ergebnisse.
+Eine billingbedingt nicht ausgeführte neue GitHub-CI trägt ausschließlich
+den Status `NOT_EXECUTED`; sie ist weder PASS noch FAIL.
+
+<!-- MW221_SCOPE_ADDENDUM_END -->

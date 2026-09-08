@@ -115,7 +115,11 @@ def test_output_publish_without_meta_commit_cannot_authorize_fast_path(
             "mutmut_win.file_setup.write_all_mutants_to_file",
             side_effect=publish_different_valid_output,
         ),
-        patch.object(SourceFileMutationData, "save", side_effect=OSError("meta commit failed")),
+        patch.object(
+            SourceFileMutationData,
+            "save_generation_metadata",
+            side_effect=OSError("meta commit failed"),
+        ),
         pytest.raises(OSError, match="meta commit failed"),
     ):
         create_mutants_for_file(source, output, allow_fast_path=False)

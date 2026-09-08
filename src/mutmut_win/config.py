@@ -49,6 +49,10 @@ def _split_cli_string(value: str) -> list[str]:
     lex = shlex.shlex(value, posix=True)
     lex.whitespace_split = True
     lex.escape = ""  # keep Windows backslashes literal
+    # Configuration values are already bounded by TOML/INI syntax.  Treating
+    # ``#`` as an additional shell comment silently truncates valid pytest
+    # expressions and Windows paths (for example ``-k foo#bar``).
+    lex.commenters = ""
     try:
         return list(lex)
     except ValueError as exc:
@@ -141,9 +145,9 @@ class MutmutConfig(BaseModel):
     extra_paths: list[str] = Field(
         default_factory=list,
         description=(
-            "Sibling directories to copy into mutants/ AND add to the worker's "
-            "PYTHONPATH. Use when tests import from packages outside the wheel "
-            "(e.g. a sibling ``benchmarks/`` directory). See issue #69."
+            "Relative project or explicit ../ sibling directories to copy into "
+            "mutants/ AND add to the staged test PYTHONPATH. External absolute "
+            "and Windows anchored-relative paths are not accepted. See issue #69."
         ),
     )
     max_children: int = Field(
@@ -386,7 +390,7 @@ class MutmutConfig(BaseModel):
             True if the file should be skipped.
         """
         path_str = str(path)
-        if not path_str.endswith(".py"):
+        if not path_str.casefold().endswith(".py"):
             return True
         return any(fnmatch.fnmatch(path_str, pattern) for pattern in self.do_not_mutate)
 
@@ -463,7 +467,10 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     def _get(key: str, default: object) -> object:
         try:
             result = parser.get("mutmut", key)
-        except (NoOptionError, NoSectionError):
+        except (
+            NoOptionError,
+            NoSectionError,
+        ):
             return default
         if isinstance(default, list):
             # Multi-line values: split on newlines; single-line: split on commas

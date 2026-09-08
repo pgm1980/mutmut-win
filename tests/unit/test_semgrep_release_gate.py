@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
@@ -234,10 +235,11 @@ class Project:
 def project(tmp_path: Path) -> Project:
     repository = tmp_path / "repository"
     files = {
-        ".semgrepignore": b"tests/e2e_projects/\n",
+        ".semgrepignore": b"# all shipped fixtures are scanned\n",
+        "benchmarks/perf.py": b"def benchmark():\n    return 1\n",
         "src/package/a.py": b"value = b'\\x00\\xff'\n",
         "tests/test_a.py": b"def test_a():\r\n    assert True\r\n",
-        "tests/e2e_projects/vendor.py": b"exec(input())\n",
+        "tests/e2e_projects/stress_test/src/stress_lib/a.py": b"return_value = 1\n",
         "scripts/helper.py": b"print('helper')\n",
     }
     for relative_path, content in files.items():
@@ -246,7 +248,7 @@ def project(tmp_path: Path) -> Project:
         path.write_bytes(content)
     tools_directory = tmp_path / "tools"
     tools_directory.mkdir()
-    python_prefix = repository / ".venv"
+    python_prefix = tmp_path / "external-project-environment"
     scripts_directory = python_prefix / ("Scripts" if os.name == "nt" else "bin")
     scripts_directory.mkdir(parents=True)
     (python_prefix / "pyvenv.cfg").write_text("home = controlled\n")
@@ -289,6 +291,12 @@ def _run(
             "PATH": str(Path(project.tools["semgrep"]).parent),
             "SEMGREP_APP_TOKEN": "must-not-leak",
             "semgrep_registry_url": "must-not-leak-case-insensitively",
+            "GITHUB_TOKEN": "github-secret-must-not-leak",
+            "aws_secret_access_key": "aws-secret-must-not-leak-case-insensitively",
+            "NPM_TOKEN": "npm-secret-must-not-leak",
+            "DATABASE_URL": "database-secret-must-not-leak",
+            "SENTINEL_SECRET": "generic-secret-must-not-leak",
+            "ComSpec": "C:/attacker/cmd.exe",
             "GIT_INDEX_FILE": "foreign-index",
             "git_config_count": "1",
             "GIT_CONFIG_KEY_0": "core.excludesFile",
@@ -303,10 +311,14 @@ def _run(
             "tmpdir": "inherited-temp-must-not-leak",
             "UV_INDEX": "https://counterfeit.invalid/simple",
             "XDG_CONFIG_HOME": "inherited-xdg-must-not-leak",
+            "https_proxy": "http://approved-proxy.invalid:8080",
+            "requests_ca_bundle": "C:/approved/ca-bundle.pem",
         }
         if environment is None
         else environment
     )
+    parent_environment = dict(parent_environment)
+    parent_environment.setdefault("UV_PROJECT_ENVIRONMENT", str(project.python_prefix))
     return gate.run_release_gate(
         project.repository,
         runner=runner,
@@ -337,12 +349,14 @@ def _parse(
     )
 
 
-def test_production_contracts_and_twenty_findings_are_fully_pinned() -> None:
+def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
     assert gate.SEMGREP_VERSION == "1.175.0"
+    assert gate.SCAN_ROOTS == ("src", "tests", "scripts", "benchmarks")
+    assert gate.POLICY_SKIP_PREFIXES == ()
     assert (
         gate.RuleContract(
-            count=342,
-            ids_sha256="90e5e07621bf32da358a4f056b15c1a14f48b8929a6a03099108fd5b12c198f6",
+            count=346,
+            ids_sha256="4318213bc02b54092f7fe2b48fffe7afd77cdb92399df23c14b20a3b856a3feb",
         )
         == gate.DEFAULT_RULE_CONTRACT
     )
@@ -361,11 +375,40 @@ def test_production_contracts_and_twenty_findings_are_fully_pinned() -> None:
         )
         == gate.DEFAULT_BUNDLE_CONTRACT
     )
-    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 20
-    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 20
-    assert gate.DEFAULT_FINDING_ALLOWLIST[0].start_line == 74
+    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 22
+    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 22
+    assert gate.DEFAULT_FINDING_ALLOWLIST[0].path == "tests/integration/test_kill_proc_tree.py"
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c"
+    )
+    architecture_finding = gate.FindingSignature(
+        path="tests/test_architecture.py",
+        check_id="python.lang.security.audit.non-literal-import.non-literal-import",
+        start_line=100,
+        start_col=20,
+        end_line=100,
+        end_col=46,
+        lines_sha256="d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
+        file_sha256="04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09",
+    )
+    assert [
+        finding
+        for finding in gate.DEFAULT_FINDING_ALLOWLIST
+        if finding.path == "tests/test_architecture.py"
+    ] == [architecture_finding]
+    repository = Path(__file__).resolve().parents[2]
+    assert (
+        gate._finding_signature(
+            {
+                "path": "tests/test_architecture.py",
+                "check_id": "python.lang.security.audit.non-literal-import.non-literal-import",
+                "start": {"line": 100, "col": 20},
+                "end": {"line": 100, "col": 46},
+                "extra": {},
+            },
+            repository,
+        )
+        == architecture_finding
     )
 
 
@@ -392,7 +435,7 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
 
     assert evidence["status"] == "pass"
     assert evidence["targets"] == {
-        "count": 3,
+        "count": 5,
         "paths": project.targets,
         "sha256": gate._sequence_digest(project.targets),
     }
@@ -420,6 +463,9 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert dump_command[0] == project.tools["semgrep"]
     assert "--dump-command-for-core" in dump_command
     assert dump_command[dump_command.index("--config") + 1] == "auto"
+    # Semgrep 1.175 refuses registry-backed ``auto`` configuration when
+    # ``--metrics off`` is present.  The bootstrap has no credentials and its
+    # downloaded rules are content-pinned before the offline scan.
     assert "--metrics" not in dump_command
     assert "--disable-nosem" in dump_command
     assert {key.upper() for key in dump_environment if key.upper().startswith("SEMGREP_")} == {
@@ -427,6 +473,20 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     }
     assert all(not key.upper().startswith("UV_") for key in dump_environment)
     assert all(not key.upper().startswith("GIT_") for key in dump_environment)
+    for secret_name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+        "GITHUB_TOKEN",
+        "NPM_TOKEN",
+        "SEMGREP_APP_TOKEN",
+        "SEMGREP_REGISTRY_URL",
+        "SENTINEL_SECRET",
+    ):
+        assert secret_name not in {key.upper() for key in dump_environment}
+    assert dump_environment["HTTPS_PROXY"] == "http://approved-proxy.invalid:8080"
+    assert dump_environment["REQUESTS_CA_BUNDLE"] == "C:/approved/ca-bundle.pem"
+    assert dump_environment["PATH"] == str(Path(project.tools["semgrep"]).parent)
+    assert "COMSPEC" not in {key.upper() for key in dump_environment}
     assert dump_environment["PYTHONDONTWRITEBYTECODE"] == "1"
     assert dump_environment["PYTHONNOUSERSITE"] == "1"
     assert dump_environment["PYTHONSAFEPATH"] == "1"
@@ -447,6 +507,27 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert Path(dump_environment["TMP"]) == isolation_root / "temp"
     assert Path(dump_environment["TMPDIR"]) == isolation_root / "temp"
     assert Path(dump_environment["XDG_CONFIG_HOME"]) != Path("inherited-xdg-must-not-leak")
+    owned_environment_names = {
+        "APPDATA",
+        "HOME",
+        "LOCALAPPDATA",
+        "PATH",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONSAFEPATH",
+        "SEMGREP_SETTINGS_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    }
+    assert {key.upper() for key in dump_environment} <= (
+        gate._REMOTE_PARENT_ENV_ALLOWLIST | owned_environment_names
+    )
 
     assert scan_command[0] == project.tools["semgrep"]
     assert "auto" not in scan_command
@@ -461,6 +542,14 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     assert scan_environment["SEMGREP_SEND_METRICS"] == "off"
     assert scan_environment["UV_OFFLINE"] == "1"
     assert "SEMGREP_APP_TOKEN" not in scan_environment
+    for secret_name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+        "GITHUB_TOKEN",
+        "NPM_TOKEN",
+        "SENTINEL_SECRET",
+    ):
+        assert secret_name not in {key.upper() for key in scan_environment}
     for name in (
         "SEMGREP_APP_URL",
         "SEMGREP_FAIL_OPEN_URL",
@@ -489,7 +578,22 @@ def test_success_uses_remote_dump_then_exact_offline_local_bundle(project: Proje
     git_calls = [call for call in runner.calls if call not in semgrep_calls]
     assert git_calls
     for _command, _cwd, git_environment in git_calls:
-        assert all(not key.upper().startswith("GIT_") for key in git_environment)
+        assert {key.upper() for key in git_environment if key.upper().startswith("GIT_")} == {
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_SYSTEM",
+        }
+        assert git_environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        for name in (
+            "APPDATA",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "HOME",
+            "LOCALAPPDATA",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+        ):
+            assert git_environment[name] == os.devnull
 
 
 def test_success_evidence_is_canonical_and_ignores_timing(project: Project) -> None:
@@ -715,6 +819,26 @@ def test_finding_line_hash_is_stable_across_crlf_and_lf(project: Project) -> Non
     assert crlf == lf == (TEST_FINDING,)
 
 
+def test_finding_file_hash_preserves_non_ascii_line_separators(project: Project) -> None:
+    source = project.repository / "tests" / "test_a.py"
+    source.write_text(
+        "def test_a():\n    assert True\n# marker\nassert False\n",
+        encoding="utf-8",
+    )
+    baseline = gate._finding_signature(_result(), project.repository)
+
+    source.write_text(
+        "def test_a():\n    assert True\n# marker\u2028assert False\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(gate.GateError, match="finding mismatch"):
+        _parse(
+            project,
+            _payload(project.targets),
+            allowlist=(baseline,),
+        )
+
+
 @pytest.mark.parametrize(
     "results",
     [
@@ -822,23 +946,19 @@ def test_scanned_targets_are_exact_safe_and_collision_free(
     assert error.value.code in {"semgrep-json", "semgrep-targets", "unsafe-path"}
 
 
-def test_only_semgrepignore_and_e2e_policy_skips_are_allowed(project: Project) -> None:
+def test_only_semgrepignore_skip_is_allowed_when_all_product_sources_are_scanned(
+    project: Project,
+) -> None:
     payload = _payload(
         project.targets,
-        paths_extra={
-            "skipped": [
-                {"path": ".semgrepignore"},
-                {"path": "tests/e2e_projects"},
-                {"path": "tests\\e2e_projects\\vendor.py"},
-            ]
-        },
+        paths_extra={"skipped": [{"path": ".semgrepignore"}]},
     )
     _parse(project, payload)
     paths = payload["paths"]
     assert isinstance(paths, dict)
     skipped = paths["skipped"]
     assert isinstance(skipped, list)
-    skipped.append({"path": "src/hidden.py"})
+    skipped.append({"path": "tests/e2e_projects/stress_test/src/stress_lib/a.py"})
     with pytest.raises(gate.GateError) as error:
         _parse(project, payload)
     assert error.value.code == "unexpected-policy-skip"
@@ -916,6 +1036,47 @@ def test_inventory_rejects_unsafe_and_out_of_scope_paths(raw_path: str, code: st
     with pytest.raises(gate.GateError) as error:
         gate._validate_inventory([gate.SEMGREP_IGNORE_FILE, raw_path])
     assert error.value.code == code
+
+
+def test_git_inventory_ignores_only_versioned_per_directory_rules() -> None:
+    command = gate._inventory_command("git", Path("C:/repository"))
+
+    assert "--exclude-per-directory=.gitignore" in command
+    assert "--exclude-standard" not in command
+    assert command[-5:] == (*gate.SCAN_ROOTS, gate.SEMGREP_IGNORE_FILE)
+
+
+def test_git_environment_rejects_ambient_config_and_exclude_roots() -> None:
+    environment = gate._git_environment(
+        {
+            "PATH": "controlled-tools",
+            "home": "attacker-home",
+            "XdG_CoNfIg_HoMe": "attacker-xdg",
+            "USERPROFILE": "attacker-profile",
+            "GIT_CONFIG_GLOBAL": "attacker-config",
+            "git_config_count": "1",
+            "GIT_CONFIG_KEY_0": "core.excludesFile",
+            "GIT_CONFIG_VALUE_0": "attacker-ignore",
+        }
+    )
+
+    assert environment["PATH"] == "controlled-tools"
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert {key.upper() for key in environment if key.upper().startswith("GIT_")} == {
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_SYSTEM",
+    }
+    for name in (
+        "APPDATA",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "HOME",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+    ):
+        assert environment[name] == os.devnull
 
 
 def test_inventory_rejects_case_unicode_collisions_and_bad_git_output() -> None:
@@ -1013,7 +1174,7 @@ def test_symlink_and_reparse_sources_are_rejected(
 
 
 def test_missing_relative_nonregular_and_linked_executables_are_rejected(
-    project: Project, tmp_path: Path
+    project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = FakeRunner(project.repository, project.inventory, _payload(project.targets))
     with pytest.raises(gate.GateError) as missing:
@@ -1048,29 +1209,71 @@ def test_missing_relative_nonregular_and_linked_executables_are_rejected(
     try:
         link.symlink_to(project.tools["semgrep"])
     except OSError:
-        return
+        link.write_bytes(b"placeholder\n")
+        regular_stat = link.lstat()
+        values = list(regular_stat)
+        values[0] = stat.S_IFLNK | 0o777
+        symlink_stat = os.stat_result(values)
+        original_lstat = Path.lstat
+
+        def controlled_lstat(path: Path) -> os.stat_result:
+            if os.path.normcase(str(path)) == os.path.normcase(str(link)):
+                return symlink_stat
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", controlled_lstat)
     with pytest.raises(gate.GateError) as linked:
         gate._find_executable("semgrep", lambda _name: str(link))
     assert linked.value.code == "link-or-reparse"
 
     outside_prefix = tmp_path / "outside-prefix"
-    outside_prefix.mkdir()
+    outside_scripts = outside_prefix / ("Scripts" if os.name == "nt" else "bin")
+    outside_scripts.mkdir(parents=True)
+    (outside_prefix / "pyvenv.cfg").write_text("home = outside\n")
     with pytest.raises(gate.GateError) as outside:
         gate._bind_semgrep_to_project_environment(
             project.tools["semgrep"],
             project.repository,
             outside_prefix,
             project.python_base_prefix,
+            str(outside_prefix),
         )
     assert outside.value.code == "unsafe-executable"
 
 
-def test_semgrep_is_bound_to_active_exact_repository_virtualenv(project: Project) -> None:
+def test_semgrep_binding_accepts_resolved_executable_alias_identity(
+    project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alias_scripts = tmp_path / "alias-scripts"
+    alias_scripts.mkdir()
+    alias_executable = alias_scripts / Path(project.tools["semgrep"]).name
+    alias_executable.write_bytes(b"alias placeholder\n")
+    alias_key = os.path.normcase(str(alias_executable.absolute()))
+    real_executable = Path(project.tools["semgrep"]).resolve(strict=True)
+    original_resolve = Path.resolve
+
+    def controlled_resolve(path: Path, strict: bool = False) -> Path:
+        if os.path.normcase(str(path.absolute())) == alias_key:
+            return real_executable
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", controlled_resolve)
+    gate._bind_semgrep_to_project_environment(
+        str(alias_executable),
+        project.repository,
+        project.python_prefix,
+        project.python_base_prefix,
+        str(project.python_prefix),
+    )
+
+
+def test_semgrep_is_bound_to_declared_external_virtualenv(project: Project) -> None:
     gate._bind_semgrep_to_project_environment(
         project.tools["semgrep"],
         project.repository,
         project.python_prefix,
         project.python_base_prefix,
+        str(project.python_prefix),
     )
     with pytest.raises(gate.GateError, match="active virtual environment"):
         gate._bind_semgrep_to_project_environment(
@@ -1078,18 +1281,85 @@ def test_semgrep_is_bound_to_active_exact_repository_virtualenv(project: Project
             project.repository,
             project.python_prefix,
             project.python_prefix,
+            str(project.python_prefix),
         )
 
     sibling_prefix = project.repository.parent / "sibling-venv"
     sibling_scripts = sibling_prefix / ("Scripts" if os.name == "nt" else "bin")
     sibling_scripts.mkdir(parents=True)
     (sibling_prefix / "pyvenv.cfg").write_text("home = sibling\n")
-    with pytest.raises(gate.GateError, match=r"repository \.venv"):
+    with pytest.raises(gate.GateError, match="does not match UV_PROJECT_ENVIRONMENT"):
         gate._bind_semgrep_to_project_environment(
             project.tools["semgrep"],
             project.repository,
-            sibling_prefix,
+            project.python_prefix,
             project.python_base_prefix,
+            str(sibling_prefix),
+        )
+
+    repository_prefix = project.repository / ".venv"
+    repository_scripts = repository_prefix / ("Scripts" if os.name == "nt" else "bin")
+    repository_scripts.mkdir(parents=True)
+    (repository_prefix / "pyvenv.cfg").write_text("home = checkout-local\n")
+    repository_semgrep = repository_scripts / Path(project.tools["semgrep"]).name
+    repository_semgrep.write_bytes(b"checkout-local semgrep")
+    with pytest.raises(gate.GateError, match="must be disjoint"):
+        gate._bind_semgrep_to_project_environment(
+            str(repository_semgrep),
+            project.repository,
+            repository_prefix,
+            project.python_base_prefix,
+            str(repository_prefix),
+        )
+
+    ancestor_prefix = project.repository.parent
+    ancestor_scripts = ancestor_prefix / ("Scripts" if os.name == "nt" else "bin")
+    ancestor_scripts.mkdir(exist_ok=True)
+    (ancestor_prefix / "pyvenv.cfg").write_text("home = checkout-ancestor\n")
+    ancestor_semgrep = ancestor_scripts / Path(project.tools["semgrep"]).name
+    ancestor_semgrep.write_bytes(b"checkout-ancestor semgrep")
+    with pytest.raises(gate.GateError, match="must be disjoint"):
+        gate._bind_semgrep_to_project_environment(
+            str(ancestor_semgrep),
+            project.repository,
+            ancestor_prefix,
+            project.python_base_prefix,
+            str(ancestor_prefix),
+        )
+
+    with pytest.raises(gate.GateError, match="must name the active external"):
+        gate._bind_semgrep_to_project_environment(
+            project.tools["semgrep"],
+            project.repository,
+            project.python_prefix,
+            project.python_base_prefix,
+            None,
+        )
+
+    with pytest.raises(gate.GateError, match="must be absolute"):
+        gate._bind_semgrep_to_project_environment(
+            project.tools["semgrep"],
+            project.repository,
+            project.python_prefix,
+            project.python_base_prefix,
+            "relative-environment",
+        )
+
+
+def test_release_gate_requires_the_declared_external_virtualenv(project: Project) -> None:
+    runner = FakeRunner(project.repository, project.inventory, _payload(project.targets))
+
+    with pytest.raises(gate.GateError, match="must name the active external"):
+        gate.run_release_gate(
+            project.repository,
+            runner=runner,
+            executable_finder=project.finder,
+            rule_contract=TEST_RULE_CONTRACT,
+            bundle_contract=TEST_BUNDLE_CONTRACT,
+            finding_allowlist=(TEST_FINDING,),
+            environment={"PATH": str(Path(project.tools["semgrep"]).parent)},
+            python_prefix=project.python_prefix,
+            python_base_prefix=project.python_base_prefix,
         )
 
 
@@ -1100,6 +1370,25 @@ def test_release_scan_is_serial_but_rule_bootstrap_remains_sharded() -> None:
 
     assert bootstrap[bootstrap.index("--jobs") + 1] == gate.SEMGREP_BOOTSTRAP_JOBS == "4"
     assert scan[scan.index("--jobs") + 1] == gate.SEMGREP_SCAN_JOBS == "1"
+
+
+def test_semgrep_targets_avoid_unsupported_pep758_multi_except_syntax() -> None:
+    """Keep Python 3.14 formatting inside Semgrep 1.175's parser subset."""
+    repository = Path(__file__).resolve().parents[2]
+    unsupported: list[str] = []
+
+    for root_name in gate.SCAN_ROOTS:
+        for path in sorted((repository / root_name).rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
+                    continue
+                segment = ast.get_source_segment(source, node.type)
+                if segment is not None and not segment.lstrip().startswith("("):
+                    unsupported.append(f"{path.relative_to(repository).as_posix()}:{node.lineno}")
+
+    assert unsupported == []
 
 
 def test_temporary_mirror_must_be_external(

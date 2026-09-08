@@ -57,11 +57,11 @@ if sys.platform.startswith("linux"):
 
 
 def _require_supported_runtime() -> None:
-    version = sys.version_info[:2]
-    if sys.implementation.name != "cpython" or not (3, 12) <= version < (3, 15):
-        raise ProcessContainmentError(
-            "Pre-interpreter POSIX session containment is audited only for CPython 3.12-3.14."
-        )
+    """Reject the retained POSIX backend outside the Windows-only product contract."""
+    raise ProcessContainmentError(
+        "POSIX process containment is unsupported; mutmut-win supports only "
+        "Windows with CPython 3.14.7."
+    )
 
 
 def _arm_linux_parent_death_signal(expected_parent_pid: int) -> None:

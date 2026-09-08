@@ -1,5 +1,10 @@
 # mutmut-win
 
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
+
 **Windows-native mutation testing for Python.**
 
 mutmut-win runs your test suite against automatically generated code
@@ -11,13 +16,21 @@ Based on [mutmut 3.5.0](https://github.com/boxed/mutmut), rebuilt for
 Windows: upstream mutmut explicitly blocks Windows
 ([mutmut#397](https://github.com/boxed/mutmut/issues/397)).
 
-**Requirements:** CPython 3.12–3.14, pytest ≥ 8.2 and < 10 in the target project
-(the worker hands tests to pytest via the `@argfile` syntax, available
-since 8.2 — older versions abort with a clear error before the first
-mutant), Windows 10/11 or Windows Server 2016+ (primary targets; the POSIX code
-paths are kept functional for WSL/Linux CI). The process-containment backends
-deliberately fail closed on other Python implementations and on unvalidated
-Python versions.
+**Requirements:** exactly CPython 3.14.7 on Windows 10/11 or Windows Server
+2016+, plus pytest ≥ 8.2 and < 10 in the target project (the worker hands tests
+to pytest via the `@argfile` syntax, available since 8.2 — older versions abort
+with a clear error before the first mutant). Other Python versions,
+implementations, and operating systems (including WSL/Linux and macOS) are
+explicitly unsupported. Internal non-Windows code paths do not constitute a
+runtime-support commitment.
+
+The workspace must be on a local Windows filesystem that exposes stable file
+identity to Python. mutmut-win deliberately fails closed when `st_ino == 0` or
+when a reparse/alias boundary cannot be proven to name the same object. Some
+exFAT, SMB/network-share, OneDrive Files On-Demand, junction, or other reparse
+layouts may therefore be rejected; Windows support does not imply that every
+such filesystem topology is supported. Move the checkout to a local
+identity-capable volume rather than disabling the safety check.
 
 ---
 
@@ -34,13 +47,16 @@ Python versions.
 - **Runs only a test basis it can prove safe.** A stats run records which tests
   execute which function, but the current collector cannot prove that hits
   from every subprocess, thread, or native launcher were observed. Its mapping
-  is therefore diagnostic only and every mutant runs the full selected suite.
-  Full-suite verdicts are still reused when the complete source/test/config/
-  dependency context digest is unchanged.
+  is therefore never allowed to omit or reorder tests. Observed durations may
+  schedule independent mutant tasks, while pytest keeps its native order and
+  stops at the first failure; a survivor still traverses the full selected
+  suite. Full-suite verdicts are reused only when
+  the complete source/test/config/dependency context digest is unchanged.
 - **Budgets time honestly.** Each task gets a self-calibrating timeout:
   a *measured* per-process startup floor (interpreter + imports +
-  collection, derived from your own clean run) plus the scaled runtime of
-  its assigned tests. The model is printed at the start of every run.
+  collection, derived from your own clean run) plus the scaled runtime of its
+  authoritative assignment or, for diagnostic mappings, the complete suite.
+  The model is printed at the start of every run.
 - **Detects infinite loops.** A psutil-based sampling classifier
   separates real non-termination (CPU pegged, no output progress, no I/O
   activity) from genuinely slow tests, with persisted forensics and a
@@ -83,19 +99,25 @@ mutmut-compatible: if you know mutmut, you know mutmut-win.
 
 ## Installation
 
-mutmut-win is distributed via the Git repository — PyPI publishing is
-not part of the release sequence (see *Release policy* below). Install
-a pinned release tag:
+mutmut-win is distributed via immutable Git release tags — PyPI publishing is
+not part of the release sequence (see *Release policy* below). This source tree
+defines the package version used by both commands below. Apply the canonical
+external-publication verification contract at the top of this document before
+using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1" --dev
 ```
+
+Do not use the pinned dependency unless the required external tag/release
+verification succeeds. The existing v2.21.0 tag remains immutable release
+provenance and is never moved.
 
 ## Quick start
 
@@ -134,7 +156,7 @@ uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.0" --de
 | `mutmut-win show <MUTANT>` | Unified diff of one mutant, plus infinite-loop forensics if any |
 | `mutmut-win apply <MUTANT>` | Apply a mutant to the source file (backup + atomic write + staleness check) |
 | `mutmut-win browse [--show-killed]` | TUI result browser (files → mutants → diff) |
-| `mutmut-win tests-for-mutant <MUTANT>` | Tests mapped to a mutant |
+| `mutmut-win tests-for-mutant <MUTANT>` | Diagnostic observed-test hints for a mutant (not an exclusive selection) |
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
 
@@ -161,7 +183,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
 | `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
-| `--min-score N` | Exit 1 if the score is below N percent or the execution basis is incomplete (CI gate) |
+| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
 | `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
@@ -224,7 +246,7 @@ max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited (0 
 infinite_loop_detection = true
 infinite_loop_cpu_threshold = 70.0    # mean CPU% over the window
 infinite_loop_output_threshold = 1024 # max output growth (bytes) in window
-infinite_loop_running_ratio = 0.8     # POSIX-only process-status signal
+infinite_loop_running_ratio = 0.8     # process-status signal; inactive on Windows
 infinite_loop_window_seconds = 10.0   # rolling sample window
 ```
 
@@ -247,10 +269,28 @@ Notes:
   tests import a root *package* literally named `src`/`source`
   (`import src.foo`) is therefore not supported; the layout convention
   wins.
+- **`extra_paths` never authorizes live imports.** Use a project-relative path
+  or an explicit sibling such as `../benchmarks`; it is copied below
+  `mutants/` and only that staged copy enters the test subprocesses'
+  `PYTHONPATH`. External absolute paths, Windows root-/drive-relative paths and
+  an inherited ambient `PYTHONPATH` are deliberately ignored. An absolute path
+  inside the project is accepted and canonicalized to its staged relative
+  location, including Windows case and 8.3 aliases.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of
   silently filtering every mutant.
+- Test observations that cannot prove complete coverage of subprocesses,
+  threads, or xdist workers are never allowed to omit or reorder tests. Their
+  durations may schedule independent mutant tasks, while pytest keeps the
+  project's native order and stops at the first failure. A survivor still runs
+  the complete configured suite; timeouts and reusable-verdict fingerprints
+  remain bound to that full suite.
+- Source, test, configuration, and project-import drift is terminal. If only
+  ambient interpreter, environment, or external dependency metadata changes
+  during a run, diagnostic results remain visible but their basis and reuse
+  authority are revoked atomically; score gates and CI export then fail closed
+  until a fresh full run completes.
 - Every phase uses one immutable pytest config/root boundary selected from the
   staged `tests_dir` targets. `tests_dir` accepts paths or node IDs only;
   `-c`, root/confcut overrides, `--`, user `@argfiles`, NULs and line breaks are
@@ -309,11 +349,10 @@ The same formula backs `run --min-score`, `results`, and
 (`export-cicd-stats`) exits 1 — an empty result set in a gate context
 means the pipeline ran nothing.
 
-Note that the denominator *excludes* `skipped`, `no tests` and
-unchecked mutants: the score measures how well your tests kill the
-mutants they can actually reach. A run with many `no tests` mutants can
-therefore show a high score over a small base — read the bucket counts
-next to it, not the percentage alone.
+The denominator excludes `skipped`, historical or future-authoritative
+`no tests`, and unchecked mutants. The current non-authoritative mapper never
+creates new `no tests` verdicts: an unobserved mutant runs the full suite.
+Always read the bucket counts next to the percentage.
 
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:
@@ -345,11 +384,15 @@ mutmut-win results
 mutmut-win run --force --paths-to-mutate src/pkg/parser.py
 ```
 
-**CI gate** — machine-readable, fail under threshold:
+**CI gate** — complete configured mutant universe, machine-readable, fail under threshold:
 
 ```bash
-mutmut-win run --since-commit origin/main --min-score 80 --output json --no-progress
+mutmut-win run --min-score 80 --output json --no-progress
 ```
+
+Incremental `--since-commit`, targeted `--paths-to-mutate`, and named-mutant
+runs are diagnostic subsets. They cannot be combined with `--min-score` or
+presented as a project-wide score gate.
 
 **Triage survivors** — inspect, write the missing test, re-run one mutant:
 
@@ -375,9 +418,11 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
 3. **Map & budget**: a stats run records per-test durations and a diagnostic
    test↔function mapping. The current collector cannot prove completeness
    across subprocesses, threads and native launchers, so on-disk mappings are
-   always loaded as non-authoritative: every mutant receives the full selected
-   suite and no cached flag can create selective or `no tests` verdicts. A
-   measured startup floor plus the full-suite time determines the budget.
+   always loaded as non-authoritative: observed durations may order independent
+   mutant tasks, but pytest's native item order is unchanged, every survivor
+   receives the full selected suite, and no cached flag can create selective or
+   `no tests` verdicts. A measured startup floor plus the full-suite time
+   determines both budget and reuse identity.
 4. **Plan & execute**: the exact generated universe is committed as the
    current run plan before dispatch. Spawn-based workers activate one mutant
    at a time via `MUTANT_UNDER_TEST` and run its tests. Subprocess output is
@@ -386,9 +431,8 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
    Objects provide mandatory kernel containment: ordinary subprocesses are born
    atomically inside the Job, while pool-worker interpreters are born there
    suspended, receive their bootstrap data through pre-populated seekable
-   storage, and resume only after containment succeeds. POSIX uses isolated
-   process sessions/groups; cleanup paths use tree termination and bounded
-   joins.
+   storage, and resume only after containment succeeds. Cleanup paths use tree
+   termination and bounded joins.
    Results are accepted only for planned names and persisted atomically into
    the current SQLite snapshot.
 
@@ -406,11 +450,11 @@ uv lock --check
 uv sync --locked --only-group build --no-install-project
 uv sync --locked --extra dev --group build --group security --no-build-isolation
 
-uv run --no-sync pytest              # full suite (unit + integration + architecture)
-uv run --no-sync ruff check .        # lint
-uv run --no-sync ruff format .       # format
-uv run --no-sync mypy src/ scripts/  # type check
-uv run --no-sync lint-imports        # layer contracts
+uv run --no-sync pytest -p no:cacheprovider      # full suite, no checkout cache
+uv run --no-sync ruff check --no-cache .         # lint
+uv run --no-sync ruff format --no-cache .        # format
+uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/  # type check
+uv run --no-sync lint-imports --no-cache  # layer contracts, no checkout-local cache
 
 uv sync --locked --only-group security --no-install-project
 uv run --no-sync python -I scripts/semgrep_release_gate.py  # pinned, fail-closed security gate
@@ -428,11 +472,16 @@ audit, the tracked fail-closed Semgrep wrapper, import-linter, reproducible
 Wheel/sdist builds plus installed-artifact smoke tests, and a dogfooding
 pilot). The fixed sequence is: explicit version decision and version bump
 (`pyproject.toml` + `uv.lock`) on the release branch → final gates → merge to
-`main` → annotated tag `vX.Y.Z` → GitHub release with notes. PyPI publishing is not part of that
-sequence. Breaking changes wait for a major version; deprecations warn
+`main` → repeat the final gates on the integrated commit → build and verify the
+reproducible release artifacts → annotated tag `vX.Y.Z` → GitHub release with
+notes. Final and integrated gates use a fresh absolute
+`UV_PROJECT_ENVIRONMENT` and `HYPOTHESIS_STORAGE_DIRECTORY`, both outside the
+checkout, plus the cacheless command forms above, so generated tool state cannot
+conceal or perturb release inputs. PyPI
+publishing is not part of that sequence. Breaking changes wait for a major version; deprecations warn
 for at least one minor release first (current example:
 `--treat-timeout-as-kill`).
-<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
 
 ## History and project status
 
@@ -477,9 +526,13 @@ adversarial hardening pass, including the fail-closed release, dependency,
 artifact, and security contracts documented in the repository. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
-**Status:** the codebase identifies itself as v2.21.0. Release readiness follows
+**Status:** the codebase version and active installation references agree.
+Publication authority is defined only by the canonical neutral contract at the
+top of this file. Release readiness follows
 only from the evidence regenerated on the final corrected tree; an older
-dogfooding score or historical green gate is not sufficient.
+dogfooding score or historical green gate is not sufficient. If GitHub CI
+cannot start because of billing, its status is `NOT_EXECUTED`: an evidence gap,
+neither PASS nor FAIL. The actually executed v2.21.0 CI was red, not a PASS.
 
 ## License
 

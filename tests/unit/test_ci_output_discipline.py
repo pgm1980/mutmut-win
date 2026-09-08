@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
@@ -22,11 +23,16 @@ from mutmut_win.models import MutationRunResult
 from mutmut_win.orchestrator import _ensure_tolerant_stdout, _print_live_progress
 
 if TYPE_CHECKING:
-    import pytest
+    from pathlib import Path
+
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
 
 
 class TestPureJsonStdout:
-    def test_json_loads_stdout_works(self) -> None:
+    def test_json_loads_stdout_works(
+        self,
+        isolated_cli_workspace: Path,
+    ) -> None:
         orchestrator = MagicMock()
 
         def noisy_run() -> MutationRunResult:
@@ -48,6 +54,7 @@ class TestPureJsonStdout:
         assert payload["score"] == 100.0
         # The prose still exists — on stderr, where CI logs pick it up.
         assert "clean test suite" in result.stderr
+        assert len(list(isolated_cli_workspace.glob(".mutmut-win-*.run.lock.guard"))) == 1
 
 
 class TestEmojiEncodingSafety:

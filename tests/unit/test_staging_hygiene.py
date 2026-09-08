@@ -14,12 +14,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
+from mutmut_win.exceptions import UnsafeStagingError
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     copy_also_copy_files,
@@ -30,8 +34,6 @@ from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -105,7 +107,7 @@ class TestNestingGuards:
         assert not (tmp_path / "mutants" / "mutants").exists()
 
 
-class TestDeletionSync:
+class TestDeletedSourceSync:
     def test_deleted_source_disappears_from_staging_with_its_meta(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -128,18 +130,233 @@ class TestDeletionSync:
         # The surviving source is untouched.
         assert (project / "mutants" / "src" / "mod.py").exists()
 
-    def test_unmanaged_artifacts_survive_the_sync(
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only replacement semantics")
+class TestReadOnlyStagingPublication:
+    _READ_ONLY = stat.S_IREAD
+    _WRITABLE = stat.S_IREAD | stat.S_IWRITE
+
+    def test_read_only_python_source_can_be_staged_then_generated(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        source = project / "src" / "mod.py"
+        staged = project / "mutants" / "src" / "mod.py"
+        source.chmod(self._READ_ONLY)
+        try:
+            copy_src_dir(MutmutConfig(paths_to_mutate=["src"]))
+            assert stat.S_IMODE(staged.stat().st_mode) & stat.S_IWRITE == 0
+
+            mutant_names, _duration, _fast_path = create_mutants_for_file(source, staged)
+
+            assert mutant_names
+            assert "__mutmut" in staged.read_text(encoding="utf-8")
+            assert stat.S_IMODE(source.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            source.chmod(self._WRITABLE)
+            if staged.exists():
+                staged.chmod(self._WRITABLE)
+
+    def test_read_only_also_copy_file_refreshes_and_preserves_source_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        source = project / "runtime.cfg"
+        staged = project / "mutants" / "runtime.cfg"
+        source.write_text("OLD", encoding="utf-8")
+        source.chmod(self._READ_ONLY)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["runtime.cfg"])
+        try:
+            copy_also_copy_files(config)
+            assert staged.read_text(encoding="utf-8") == "OLD"
+            assert stat.S_IMODE(staged.stat().st_mode) & stat.S_IWRITE == 0
+
+            source.chmod(self._WRITABLE)
+            source.write_text("NEW-CONTENT", encoding="utf-8")
+            source.chmod(self._READ_ONLY)
+            copy_also_copy_files(config)
+
+            assert staged.read_text(encoding="utf-8") == "NEW-CONTENT"
+            assert stat.S_IMODE(staged.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            source.chmod(self._WRITABLE)
+            if staged.exists():
+                staged.chmod(self._WRITABLE)
+
+    def test_failed_atomic_text_publish_restores_old_read_only_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = _project(tmp_path, monkeypatch)
+        target = project / "mutants" / "generated.py"
+        target.parent.mkdir()
+        target.write_text("OLD", encoding="utf-8")
+        target.chmod(self._READ_ONLY)
+        modes_seen: list[int] = []
+
+        def fail_publish(_path: Path, _payload: bytes) -> None:
+            modes_seen.append(stat.S_IMODE(target.stat().st_mode))
+            raise OSError("synthetic publication failure")
+
+        monkeypatch.setattr(file_setup, "atomic_write_bytes", fail_publish)
+        try:
+            with pytest.raises(OSError, match="synthetic publication failure"):
+                file_setup._atomic_write_text(target, "NEW")
+
+            assert modes_seen
+            assert modes_seen[0] & stat.S_IWRITE
+            assert target.read_text(encoding="utf-8") == "OLD"
+            assert stat.S_IMODE(target.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            target.chmod(self._WRITABLE)
+
+    def test_read_only_hardlink_publish_is_rejected_without_external_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = _project(tmp_path, monkeypatch)
+        source = project / "replacement.txt"
+        outside = tmp_path / "outside.txt"
+        target = project / "mutants" / "linked.txt"
+        target.parent.mkdir()
+        source.write_text("REPLACEMENT", encoding="utf-8")
+        outside.write_text("EXTERNAL", encoding="utf-8")
+        os.link(outside, target)
+        outside.chmod(self._READ_ONLY)
+        try:
+            with pytest.raises(UnsafeStagingError, match="hardlinks"):
+                file_setup._copy_with_retry(source, target, max_attempts=1)
+
+            assert outside.read_text(encoding="utf-8") == "EXTERNAL"
+            assert target.samefile(outside)
+            assert stat.S_IMODE(outside.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            outside.chmod(self._WRITABLE)
+            if target.exists():
+                target.chmod(self._WRITABLE)
+
+    def test_read_only_hardlink_cleanup_is_rejected_without_external_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = _project(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.txt"
+        ghost = project / "mutants" / "ghost.txt"
+        ghost.parent.mkdir()
+        outside.write_text("EXTERNAL", encoding="utf-8")
+        os.link(outside, ghost)
+        outside.chmod(self._READ_ONLY)
+        try:
+            with pytest.raises(UnsafeStagingError, match="hardlinks"):
+                file_setup._retry_readonly_removal(
+                    os.unlink,
+                    str(ghost),
+                    PermissionError("synthetic Windows read-only failure"),
+                )
+
+            assert outside.read_text(encoding="utf-8") == "EXTERNAL"
+            assert ghost.samefile(outside)
+            assert stat.S_IMODE(outside.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            outside.chmod(self._WRITABLE)
+            if ghost.exists():
+                ghost.chmod(self._WRITABLE)
+
+    def test_failed_read_only_cleanup_restores_old_mode(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = _project(tmp_path, monkeypatch)
+        ghost = project / "mutants" / "ghost.txt"
+        ghost.parent.mkdir()
+        ghost.write_text("OLD", encoding="utf-8")
+        ghost.chmod(self._READ_ONLY)
+        modes_seen: list[int] = []
+
+        def fail_delete(_raw_path: str) -> None:
+            modes_seen.append(stat.S_IMODE(ghost.stat().st_mode))
+            raise OSError("synthetic deletion failure")
+
+        try:
+            with pytest.raises(OSError, match="synthetic deletion failure"):
+                file_setup._retry_readonly_removal(
+                    fail_delete,
+                    str(ghost),
+                    PermissionError("synthetic Windows read-only failure"),
+                )
+
+            assert modes_seen
+            assert modes_seen[0] & stat.S_IWRITE
+            assert ghost.read_text(encoding="utf-8") == "OLD"
+            assert stat.S_IMODE(ghost.stat().st_mode) & stat.S_IWRITE == 0
+        finally:
+            ghost.chmod(self._WRITABLE)
+
+
+class TestDeletionSync:
+    def test_deleted_root_module_disappears_from_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        helper = project / "helper.py"
+        helper.write_text("VALUE = 1\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["."])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "helper.py"
+        assert staged.is_file()
+
+        helper.unlink()
+        copy_src_dir(cfg)
+
+        assert not staged.exists()
+
+    def test_unmanaged_artifacts_are_removed_from_tool_owned_staging(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         project = _project(tmp_path, monkeypatch)
         cfg = MutmutConfig(paths_to_mutate=["src"])
         copy_src_dir(cfg)
-        notes = project / "mutants" / "src" / "notes.txt"  # not *.py — never touched
+        notes = project / "mutants" / "src" / "notes.txt"
         notes.write_text("keep me", encoding="utf-8")
 
         copy_src_dir(cfg)
 
-        assert notes.exists()
+        assert not notes.exists()
+
+    def test_deleted_non_python_fixture_disappears_from_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        fixture = project / "fixtures" / "runtime.json"
+        fixture.parent.mkdir()
+        fixture.write_text('{"value": 1}\n', encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "fixtures" / "runtime.json"
+        assert staged.is_file()
+
+        staged.chmod(0o444)
+        fixture.chmod(0o666)
+        fixture.unlink()
+        copy_src_dir(cfg)
+
+        assert not staged.exists()
 
 
 class TestRestoreInvalidation:
@@ -233,6 +450,11 @@ class TestConfigFingerprint:
         names_fast, _, fast_flag = create_mutants_for_file(source, output)
         assert names_fast == names_first  # sanity: fast path active
         assert fast_flag is True
+        normalized = json.loads(sfd.meta_path.read_text(encoding="utf-8"))
+        assert set(normalized["exit_code_by_key"].values()) == {None}
+        assert normalized["durations_by_key"] == {}
+        assert normalized["estimated_durations_by_key"] == {}
+        assert normalized["type_check_error_by_key"] == {}
 
         names_forced, _, forced_flag = create_mutants_for_file(
             source, output, allow_fast_path=False
@@ -468,9 +690,12 @@ class TestWave3StagingHygiene:
         staged = project / "mutants" / "src" / "mod.py"
         staged.write_text("# trampolined output\n", encoding="utf-8")
         source_hash = hashlib.sha256((project / "src" / "mod.py").read_bytes()).hexdigest()
-        staged.with_name(staged.name + ".meta").write_text(
-            json.dumps({"source_hash": source_hash}), encoding="utf-8"
-        )
+        SourceFileMutationData(
+            path="src/mod.py",
+            source_hash=source_hash,
+            generation_fingerprint="a" * 64,
+            generated_hash=hashlib.sha256(staged.read_bytes()).hexdigest(),
+        ).save_generation_metadata()
 
         copy_src_dir(cfg)  # source unchanged since the first mirror
 
@@ -497,6 +722,163 @@ class TestWave3StagingHygiene:
 
         assert not (staged_tests / "test_gone.py").exists()  # deletion synced
         assert "assert True" in (staged_tests / "test_keep.py").read_text(encoding="utf-8")
+
+    def test_also_copy_deletes_read_only_child_from_existing_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.mkdir()
+        live = fixtures / "runtime.json"
+        live.write_text('{"value": 1}\n', encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures/"])
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "fixtures" / "runtime.json"
+        staged.chmod(0o444)
+        live.unlink()
+
+        copy_also_copy_files(cfg)
+
+        assert not staged.exists()
+
+    def test_legitimate_meta_fixture_is_independent_of_same_named_companion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        live = project / "runtime"
+        live_meta = project / "runtime.meta"
+        live.write_text("runtime one\n", encoding="utf-8")
+        live_meta.write_text('{"fixture": 1}\n', encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        live.write_text("runtime two\n", encoding="utf-8")
+        live_meta.write_text('{"fixture": 2}\n', encoding="utf-8")
+
+        import mutmut_win.file_setup as file_setup_module
+
+        real_walk = file_setup_module.os.walk
+
+        def meta_first_walk(*args: object, **kwargs: object):
+            for root, dirs, files in real_walk(*args, **kwargs):
+                files.sort(key=lambda name: (not name.casefold().endswith(".meta"), name))
+                yield root, dirs, files
+
+        with patch("mutmut_win.file_setup.os.walk", side_effect=meta_first_walk):
+            copy_src_dir(cfg)
+
+        assert (project / "mutants" / "runtime").read_text(encoding="utf-8") == "runtime two\n"
+        assert (project / "mutants" / "runtime.meta").read_text(encoding="utf-8") == (
+            '{"fixture": 2}\n'
+        )
+
+    def test_deleted_meta_fixture_does_not_survive_live_companion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        live = project / "data"
+        live_meta = project / "data.meta"
+        live.write_text("runtime\n", encoding="utf-8")
+        live_meta.write_text('{"fixture": true}\n', encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged_meta = project / "mutants" / "data.meta"
+        assert staged_meta.is_file()
+
+        live_meta.unlink()
+        copy_src_dir(cfg)
+
+        assert not staged_meta.exists()
+
+    @pytest.mark.parametrize("source_name", ["other.py", "OTHER.PY"])
+    def test_retained_meta_fixture_survives_deleted_unselected_python_companion(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source_name: str,
+    ) -> None:
+        """CX221-067: expected user metadata owns its bytes independently."""
+        project = _project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.mkdir()
+        live_source = fixtures / source_name
+        live_source.write_text("VALUE = 1\n", encoding="utf-8")
+        live_meta = fixtures / f"{source_name}.meta"
+        live_meta.write_bytes(b"LEGITIMATE-USER-FIXTURE")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged_source = project / "mutants" / "fixtures" / source_name
+        staged_meta = staged_source.with_name(f"{source_name}.meta")
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+        live_source.unlink()
+        copy_src_dir(cfg)
+
+        assert not staged_source.exists()
+        assert live_meta.read_bytes() == b"LEGITIMATE-USER-FIXTURE"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+    @pytest.mark.parametrize("mirror_field", ["also_copy", "extra_paths"])
+    def test_configured_meta_fixture_survives_automatic_python_companion_cleanup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mirror_field: str,
+    ) -> None:
+        """The automatic mirror must not delete another mirror's metadata."""
+        project = tmp_path / "project"
+        project.mkdir()
+        _project(project, monkeypatch)
+        live_source = project / "other.py"
+        live_source.write_text("VALUE = 1\n", encoding="utf-8")
+        external = tmp_path / "external"
+        external.mkdir()
+        live_meta = external / "other.py.meta"
+        live_meta.write_bytes(b"CONFIGURED-USER-FIXTURE")
+        cfg = MutmutConfig(
+            paths_to_mutate=["src"],
+            **{mirror_field: ["../external/other.py.meta"]},
+        )
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged_meta = project / "mutants" / "other.py.meta"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+        live_source.unlink()
+        copy_src_dir(cfg)
+
+        assert not (project / "mutants" / "other.py").exists()
+        assert live_meta.read_bytes() == b"CONFIGURED-USER-FIXTURE"
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+        copy_also_copy_files(cfg)
+        assert staged_meta.read_bytes() == live_meta.read_bytes()
+
+    def test_missing_extra_path_removes_owned_non_python_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text(
+            "def f(a):\n    return a + 1\n",
+            encoding="utf-8",
+        )
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        (shared / "runtime.json").write_text('{"value": 1}\n', encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], extra_paths=["../shared"])
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "shared" / "runtime.json"
+        assert staged.is_file()
+
+        staged.chmod(0o444)
+        (shared / "runtime.json").unlink()
+        shared.rmdir()
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+
+        assert not (project / "mutants" / "shared").exists()
 
     def test_also_copy_skips_unchanged_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -583,19 +965,26 @@ class TestWave3StagingHygiene:
         src.write_text("x", encoding="utf-8")
         assert _mirror_is_stale(src, tmp_path / "missing.py") is True
 
-    def test_mirror_meta_owned_equal_content_hash_is_not_stale(self, tmp_path: Path) -> None:
+    def test_mirror_meta_owned_equal_content_hash_is_not_stale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Generated staging is preserved only when metadata proves the exact
         # current source bytes; equal timestamps are not sufficient.
         from mutmut_win.file_setup import _mirror_is_stale
 
         src = tmp_path / "a.py"
-        tgt = tmp_path / "staged.py"
+        tgt = tmp_path / "mutants" / "staged.py"
+        tgt.parent.mkdir()
         src.write_text("x", encoding="utf-8")
         tgt.write_text("trampolined", encoding="utf-8")
         source_hash = hashlib.sha256(src.read_bytes()).hexdigest()
-        tgt.with_name(tgt.name + ".meta").write_text(
-            json.dumps({"source_hash": source_hash}), encoding="utf-8"
-        )
+        monkeypatch.chdir(tmp_path)
+        SourceFileMutationData(
+            path="staged.py",
+            source_hash=source_hash,
+            generation_fingerprint="a" * 64,
+            generated_hash=hashlib.sha256(tgt.read_bytes()).hexdigest(),
+        ).save_generation_metadata()
         os.utime(src, (1_000, 1_000))
         os.utime(tgt, (1_000, 1_000))
         assert _mirror_is_stale(src, tgt) is False
@@ -639,6 +1028,9 @@ class TestForceHonesty:
         import mutmut_win.cli as cli_module
 
         monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text("def value():\n    return 1\n", encoding="utf-8")
         (tmp_path / "mutants").mkdir()
         (tmp_path / "mutants" / "stuck.py").write_text("x", encoding="utf-8")
         monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)  # deletion "fails"

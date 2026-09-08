@@ -6,7 +6,8 @@ target-level handshake can assign the worker to a Job Object.  This module is
 the narrow, version-guarded variant of CPython's ``popen_spawn_win32.Popen``
 needed by mutmut-win: create the interpreter with ``CREATE_SUSPENDED``, assign
 its process handle to the parent-owned kill-on-close Job, then resume the
-primary thread.  CPython 3.12-3.14 share the internal protocol used here.
+primary thread.  The private protocol is audited specifically for CPython
+3.14.7 on Windows.
 """
 
 from __future__ import annotations
@@ -28,12 +29,12 @@ _CONTAINMENT_ABORT_EXIT_CODE = 70
 
 
 def _require_supported_runtime() -> None:
-    """Fail closed outside the audited CPython spawn-backend range."""
-    version = sys.version_info[:2]
-    if sys.implementation.name != "cpython" or not (3, 12) <= version < (3, 15):
+    """Fail closed outside the sole supported runtime and platform."""
+    version = tuple(sys.version_info[:3])
+    if sys.platform != "win32" or sys.implementation.name != "cpython" or version != (3, 14, 7):
         raise ProcessContainmentError(
             "Race-free Windows worker containment is audited only for "
-            "CPython 3.12-3.14; refusing to use unknown private "
+            "Windows with CPython 3.14.7; refusing to use unsupported private "
             "multiprocessing internals."
         )
 

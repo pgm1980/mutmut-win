@@ -128,6 +128,21 @@ C = "rebound"
         with patch.dict(os.environ, {"MUTANT_UNDER_TEST": f"m.{target}"}):
             assert saved_class().add(2) != 3
 
+    def test_unbound_method_accepts_none_in_clean_and_mutant_paths(self) -> None:
+        """MW221-023: ``None`` is a legal first argument, not a sentinel."""
+        source = """\
+class C:
+    def add(self, value):
+        return value + 1
+"""
+        _generated, names, namespace = _exec_generated(source)
+        target = next(name for name in names if "add__mutmut" in name)
+        saved_class = namespace["C"]
+
+        assert saved_class.add(None, 2) == 3
+        with patch.dict(os.environ, {"MUTANT_UNDER_TEST": f"m.{target}"}):
+            assert saved_class.add(None, 2) != 3
+
     def test_static_private_namespace_collision_skips_only_that_function(self) -> None:
         source = """\
 def f():
@@ -142,3 +157,47 @@ x_f__mutmut_orig = "user-owned"
         assert not any("x_f__mutmut" in name for name in names)
         assert namespace["f"]() == 2
         assert namespace["x_f__mutmut_orig"] == "user-owned"
+
+
+class TestWrapperDocstringSemantics:
+    def test_leading_fstring_concatenation_side_effect_runs_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = """\
+calls = []
+
+
+def side_effect():
+    calls.append("hit")
+    return "prefix"
+
+
+def value():
+    f"{side_effect()}" "tail"
+    return 1 + 1
+"""
+        _generated, names, namespace = _exec_generated(source)
+        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+
+        assert names
+        assert namespace["value"]() == 2
+        assert namespace["calls"] == ["hit"]
+
+    def test_indented_semicolon_docstring_is_preserved_without_double_execution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = """\
+calls = []
+
+
+def value():
+    "real docs"; calls.append("hit")
+    return 1 + 1
+"""
+        _generated, names, namespace = _exec_generated(source)
+        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+
+        assert names
+        assert namespace["value"].__doc__ == "real docs"
+        assert namespace["value"]() == 2
+        assert namespace["calls"] == ["hit"]

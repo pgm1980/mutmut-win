@@ -86,6 +86,51 @@ class TestStaticMethodMutation:
         os.environ.pop("MUTANT_UNDER_TEST", None)
         assert ns["C"].calc(1, 2, 3) == 6  # type: ignore[attr-defined]
 
+    def test_parameterless_staticmethod_is_mutated_and_dispatches(self) -> None:
+        namespace, names = _exec(
+            "class C:\n    @staticmethod\n    def answer():\n        return 1 + 1\n"
+        )
+        answer_mutants = [name for name in names if "answer" in name]
+        assert answer_mutants
+        os.environ.pop("MUTANT_UNDER_TEST", None)
+        assert namespace["C"].answer() == 2  # type: ignore[attr-defined]
+        try:
+            os.environ["MUTANT_UNDER_TEST"] = "m." + answer_mutants[0]
+            assert namespace["C"].answer() != 2  # type: ignore[attr-defined]
+        finally:
+            os.environ.pop("MUTANT_UNDER_TEST", None)
+
+    def test_star_args_staticmethod_is_mutated_and_dispatches(self) -> None:
+        namespace, names = _exec(
+            "class C:\n"
+            "    @staticmethod\n"
+            "    def total(*values):\n"
+            "        return values[0] + values[1]\n"
+        )
+        total_mutants = [name for name in names if "total" in name]
+        assert total_mutants
+        os.environ.pop("MUTANT_UNDER_TEST", None)
+        assert namespace["C"].total(2, 3) == 5  # type: ignore[attr-defined]
+        try:
+            os.environ["MUTANT_UNDER_TEST"] = "m." + total_mutants[0]
+            assert namespace["C"].total(2, 3) != 5  # type: ignore[attr-defined]
+        finally:
+            os.environ.pop("MUTANT_UNDER_TEST", None)
+
+    def test_star_args_instance_method_forwards_bound_instance(self) -> None:
+        namespace, names = _exec(
+            "class C:\n    def total(*values):\n        return values[1] + values[2]\n"
+        )
+        total_mutants = [name for name in names if "total" in name]
+        assert total_mutants
+        os.environ.pop("MUTANT_UNDER_TEST", None)
+        assert namespace["C"]().total(2, 3) == 5  # type: ignore[attr-defined]
+        try:
+            os.environ["MUTANT_UNDER_TEST"] = "m." + total_mutants[0]
+            assert namespace["C"]().total(2, 3) != 5  # type: ignore[attr-defined]
+        finally:
+            os.environ.pop("MUTANT_UNDER_TEST", None)
+
     def test_instance_method_with_args_unaffected(self) -> None:
         # the instance path (self + extra params) whose condition W5 split must
         # still drop self and forward the rest correctly

@@ -1,52 +1,24 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-09-01. Source of truth for sprint state is `.sprint/state.md`;
+<!-- PUBLICATION_STATE_START -->
+<!-- PUBLICATION_STATE: external-live-check-required -->
+Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+<!-- PUBLICATION_STATE_END -->
+
+> Last refresh: 2026-09-08. Source of truth for sprint state is `.sprint/state.md`;
 > source of truth for issues is the GitHub repo. This file is the human-readable
 > at-a-glance snapshot.
 
+<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
+
 <!-- LIVE_STATE_START -->
 
-> **STATUS: v2.21.0 follow-up candidate in finalization.** PR #134 was integrated as
-> merge commit `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf` with candidate tree
-> `761e264a91a52bda4c284f3f36fe53954d7fff2b`. The authoritative repair branch
-> is `fix/v2.21.0-release-blockers`, based on that merge. The adversarial
-> 360-degree review, fixes and local release evidence are tracked in
-> `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
-> `bug_reporting/BUGFIXUNG_ROADMAP.md`. GitHub CI did run and exposed MW220-112,
-> MW220-113 and MW220-114; it is not a PASS. Their focused fixes and the local
-> final matrix are green. The final report-contract audit additionally found and
-> closed MW220-115. Pre-fix artifacts remain invalidated. A premature `v2.21.0`
-> tag was removed before any release, and publication remains pending.
-
-## What it is
-Windows-native Python mutation-testing tool. Port of upstream `mutmut 3.5.0`
-adapted to Windows: native subprocess + Job Object orphan-protection, no POSIX
-fork dependency, in-process pytest stats collection, libcst-based mutation
-generation. Infinite-loop detection uses a psutil-based sampling classifier
-(CPU + progress signals, process status on POSIX only) with persisted forensics
-and a platform-aware confidence band.
-
-- Python >= 3.12,<3.15 (CPython 3.12–3.14)
-- Stack: click (CLI), libcst (mutations), pydantic v2 (config), textual (TUI),
-  coverage (coverage-guided), psutil (IL detection), SQLite (results),
-  pytest (test runner).
-- Distributed via Git release tags (NOT on PyPI — DOC-001/external QA;
-  the release policy excludes PyPI publishing). Console script:
-  `mutmut-win`.
-
-## Where we are
-
-- **Release target:** v2.21.0; MW220-112, MW220-113, MW220-114 and MW220-115 are
-  implemented on `fix/v2.21.0-release-blockers`; final candidate publication is
-  in progress after PR #134 integration.
-- **Authoritative review state:** `bug_reporting/ANALYSE_MUTMUTWIN220.md` and
-  `bug_reporting/BUGFIXUNG_ROADMAP.md`.
-- **Remote state:** PR #134 is integrated at `55d25dfff2225ffb3e4a2b56ead4a3c190d054cf`;
-  the annotated tag and GitHub release remain absent and must be live-read again
-  immediately before any further remote write.
-- **Release sequence:** version bump on the release branch, final gates, merge
-  to `main`, annotated tag, then GitHub release.
-  <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> annotated-tag -> github-release -->
+<!-- RELEASE_PHASE: candidate_validated -->
+<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_TARGET: v2.21.1 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
+<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 

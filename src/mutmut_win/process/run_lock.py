@@ -125,7 +125,11 @@ class RunLockOwner:
         """Return stable human-readable PID/start-time diagnostics."""
         try:
             started = datetime.fromtimestamp(self.process_start_time, tz=UTC).isoformat()
-        except (OSError, OverflowError, ValueError):
+        except (
+            OSError,
+            OverflowError,
+            ValueError,
+        ):
             started = f"unix:{self.process_start_time:.6f}"
         return (
             f"PID {self.pid}, process started {started}, "
@@ -437,7 +441,10 @@ def _owner_status(owner: RunLockOwner) -> _OwnerStatus:
                 return _OwnerStatus.DEAD
     except psutil.NoSuchProcess:
         return _OwnerStatus.DEAD
-    except (psutil.AccessDenied, psutil.Error):
+    except (
+        psutil.AccessDenied,
+        psutil.Error,
+    ):
         return _OwnerStatus.UNKNOWN
 
     # A reused PID names a different process.  The identity that wrote the
@@ -629,7 +636,10 @@ class WorkspaceRunLock:
                     released_owner = replace(owner, state="released")
                     try:
                         released_identity = _write_owner(self.path, released_owner)
-                    except (OSError, RunLockError):
+                    except (
+                        OSError,
+                        RunLockError,
+                    ):
                         logger.warning(
                             "Could not publish released run-lock metadata at %s", self.path
                         )
@@ -659,7 +669,10 @@ class WorkspaceRunLock:
                                 and _file_identity(current_stat) == released_identity
                             ):
                                 self.path.unlink()
-                        except (OSError, RunLockCorruptError):
+                        except (
+                            OSError,
+                            RunLockCorruptError,
+                        ):
                             logger.warning(
                                 "Could not remove released run-lock metadata at %s", self.path
                             )

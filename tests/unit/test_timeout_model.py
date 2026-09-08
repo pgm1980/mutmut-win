@@ -98,7 +98,7 @@ class TestApplyTimeoutsWithFloor:
         assert result.timeout_seconds >= _MIN_TIMEOUT
 
     def test_estimated_time_stays_free_of_the_floor(self) -> None:
-        # estimated_time feeds the fast-first sort and means "estimated
+        # estimated_time feeds the independent mutant-task sort and means "estimated
         # TEST runtime" — adding the constant floor would not break the
         # ordering but would corrupt the field's meaning.
         task = _task(tests=["t1"])
@@ -113,7 +113,7 @@ class TestApplyTimeoutsWithFloor:
 
     def test_mean_path_budget_is_the_full_suite_fallback(self) -> None:
         # Issue #130 / 360°-B3: tests=[] with nonempty stats still runs the
-        # FULL suite (no node-id args) — the mean only feeds the fast-first
+        # FULL suite (no node-id args) — the mean only feeds the mutant-task
         # sort; budgeting it like a single average test was a guaranteed
         # timeout flood.
         task = _task()

@@ -9,6 +9,7 @@ CI success (exit 0), and ``--debug`` was a dead flag while the run-level
 
 from __future__ import annotations
 
+import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,7 @@ from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.config import load_config
+from mutmut_win.models import MutationRunResult
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -184,6 +186,150 @@ class TestSinceCommitTruth:
         assert result.exit_code == 0, result.output
         assert captured["paths"] == ["src/mod.py"]  # nested test dir excluded
 
+    def test_non_ascii_changed_path_is_read_from_nul_terminated_git_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "grüße.py"
+        source.parent.mkdir()
+        source.write_text("x = 1\n", encoding="utf-8")
+        captured: dict[str, Any] = {}
+
+        def fake_orchestrator(config: Any, **_kwargs: Any) -> MagicMock:
+            captured["paths"] = list(config.paths_to_mutate)
+            instance = MagicMock()
+            instance.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            return instance
+
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout="src/grüße.py\0".encode(),
+            stderr=b"",
+        )
+        with (
+            patch("subprocess.run", return_value=completed) as git_diff,
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/grüße.py"]
+        assert git_diff.call_args.args[0] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
+
+    def test_uppercase_python_suffix_is_a_windows_mutation_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "MODULE.PY"
+        source.parent.mkdir()
+        source.write_text("x = 1\n", encoding="utf-8")
+        captured: dict[str, Any] = {}
+
+        def fake_orchestrator(config: Any, **_kwargs: Any) -> MagicMock:
+            captured["paths"] = list(config.paths_to_mutate)
+            instance = MagicMock()
+            instance.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            return instance
+
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout=b"src/MODULE.PY\0",
+            stderr=b"",
+        )
+        with (
+            patch("subprocess.run", return_value=completed),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/MODULE.PY"]
+
+    def test_tests_dir_node_id_excludes_its_file_from_since_commit_targets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text("x = 1\n", encoding="utf-8")
+        test_file = tmp_path / "tests" / "test_mod.py"
+        test_file.parent.mkdir()
+        test_file.write_text("def test_x(): pass\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\n'
+            'tests_dir = ["tests/test_mod.py::test_x"]\n',
+            encoding="utf-8",
+        )
+        captured: dict[str, Any] = {}
+
+        def fake_orchestrator(config: Any, **_kwargs: Any) -> MagicMock:
+            captured["paths"] = list(config.paths_to_mutate)
+            instance = MagicMock()
+            instance.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            return instance
+
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout=b"src/mod.py\0tests/test_mod.py\0",
+            stderr=b"",
+        )
+        with (
+            patch("subprocess.run", return_value=completed),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_tests_dir_comparison_uses_windows_case_insensitive_semantics(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir()
+        source.write_text("x = 1\n", encoding="utf-8")
+        test_file = tmp_path / "Tests" / "test_mod.py"
+        test_file.parent.mkdir()
+        test_file.write_text("def test_x(): pass\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        captured: dict[str, Any] = {}
+
+        def fake_orchestrator(config: Any, **_kwargs: Any) -> MagicMock:
+            captured["paths"] = list(config.paths_to_mutate)
+            instance = MagicMock()
+            instance.run.return_value = MutationRunResult(total_mutants=1, killed=1)
+            return instance
+
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=0,
+            stdout=b"src/mod.py\0Tests/test_mod.py\0",
+            stderr=b"",
+        )
+        with (
+            patch("subprocess.run", return_value=completed),
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
     def test_diff_includes_the_working_tree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -213,7 +359,7 @@ class TestSinceCommitTruth:
             result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
 
         assert result.exit_code == 0, result.output
-        assert seen["cmd"][:4] == ["git", "diff", "--name-only", "HEAD~1"]
+        assert seen["cmd"][:5] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
         assert "HEAD~1..HEAD" not in seen["cmd"]
 
 

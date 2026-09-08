@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 
 import pytest
 from hypothesis import given
@@ -136,6 +137,10 @@ class TestMutateQuantifiers:
         assert _mutate_quantifiers(r"(?=bar)") == []
         assert _mutate_quantifiers(r"(?:ab)") == []
         assert _mutate_quantifiers(r"(?<=x)y") == []
+
+    def test_quantifier_glyphs_inside_character_class_are_literals(self) -> None:
+        assert _mutate_quantifiers(r"[?+*]") == []
+        assert _mutate_quantifiers(r"[a{2}]") == []
 
 
 class TestMutateCharClasses:
@@ -629,6 +634,14 @@ class TestIsValidRegex:
 
     def test_empty_is_valid(self) -> None:
         assert _is_valid_regex(r"") is True
+
+    def test_ambiguous_warning_is_rechecked_even_after_re_cache_hit(self) -> None:
+        re.purge()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            re.compile("[[]")
+
+        assert _is_valid_regex("[[]") is False
 
 
 class TestHypothesisProperties:

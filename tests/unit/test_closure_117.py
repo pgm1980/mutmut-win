@@ -11,10 +11,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
 from mutmut_win.models import MutationResult
+
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
 
 
 def _results_rows() -> list[MutationResult]:
