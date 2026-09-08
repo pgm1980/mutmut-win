@@ -29,6 +29,30 @@
 Die fokussierten Implementierungs- und Diagnoseläufe des Vorgängers sind
 ergänzende Evidenz. Sie erfüllen die folgenden Releasegates nicht vorab.
 
+Der zweite begrenzte Kandidatenpilot auf
+`adeb09bbbb0b206132a0f2a161a3e8b36c38c9d5` wurde unabhängig mit 356 Kills aus
+392 frischen Mutanten, 90,81632653061224 Prozent, vollständiger gültiger Basis
+und quieszentem Abschluss bestätigt. Auswahl und Nenner blieben gegenüber dem
+ersten Pilot mit 276 Kills und 116 Überlebenden unverändert; dessen FAIL bleibt
+erhalten. Umfang und exakter Nachweis stehen in `bug_reporting/RELEASE_2_21_2.md`.
+Der Sechs-Funktionen-Pilot ersetzt weder die allgemeine Mutationstest-DoD für
+alle neuen/geänderten Codebereiche noch die integrierte Wiederholung.
+
+## Eng begrenzte PO-Ausnahme vom 8. September 2026
+
+Für v2.21.2 hat der Product Owner ausschließlich den folgenden Fall als
+`NOT_EXECUTED` wegen der dokumentierten automatischen Policy-Abweisung
+akzeptiert, sofern alle übrigen Releasegates bestanden werden:
+
+`tests/unit/test_run_surface_integration_220.py::test_mid_run_ambient_drift_preserves_results_without_authority`
+
+Die Ausnahme gilt für Kandidat und integrierte Wiederholung. Der Fall wird
+nicht ausgeführt, umgangen oder als PASS ausgewiesen. Die vollständige übrige
+Zielsystemsuite mit Coverage und sämtliche weiteren Gates bleiben Pflicht.
+Keine weitere lokale Testausnahme, Deselektion oder Verringerung des
+Mutationstestumfangs ist damit genehmigt. Alle Abschlusscheckboxen bleiben bis
+zum tatsächlich nachgewiesenen Abschluss offen.
+
 ## Integrations- und Releasegates
 
 Alle Syncs und Gates laufen mit einer frisch angelegten absoluten
@@ -39,8 +63,9 @@ eigener `.gitignore` oder `.hypothesis`-Cachebytes.
 
 - [ ] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
   `main` nach den vollständigen Kandidatengates.
-- [ ] Vollständige strikte Suite mit Coverage auf dem integrierten Commit unter
-  Windows und exakt CPython 3.14.7: `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning`;
+- [ ] Vollständige übrige strikte Suite mit Coverage auf dem integrierten Commit
+  unter Windows und exakt CPython 3.14.7, mit ausschließlich der oben
+  autorisierten Ausnahme: `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning --deselect=tests/unit/test_run_surface_integration_220.py::test_mid_run_ambient_drift_preserves_results_without_authority`;
   keine unerklärten Fehler, Threadwarnungen oder Skips akzeptieren. Jede nicht
   ausgeführte Prüfung bleibt als Evidenzlücke sichtbar.
 - [ ] `uv run --no-sync ruff check --no-cache .`,

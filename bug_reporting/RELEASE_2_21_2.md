@@ -38,10 +38,46 @@ belegte fehlende Testassertionen für vollständige Anzeigezeilen,
 Hashbeiträge, Zähler, Attribution und Übergangsdetails. Die ergänzten
 Tests verwenden bekannte Eingabebytes und ein unabhängiges HMAC-Oracle
 sowie veröffentlichte Berichtsdaten. Sie ändern keinen Produktcode.
-Die Wirkung muss eine neue Kampagne mit denselben sechs Funktionsbereichen,
-demselben Operatorprofil und unverändertem Mutantennenner belegen.
-Ein ausreichender Pilot-Score ersetzt weiterhin keine vollständige
-Modulabdeckung oder integrierte Releasequalifikation.
+Die zweite Kampagne auf Kandidat
+`adeb09bbbb0b206132a0f2a161a3e8b36c38c9d5` behielt dieselben sechs
+Funktionsbereiche, dasselbe Operatorprofil und den Nenner von 392 frischen
+Mutanten bei. Sie endete mit 356 Kills und 36 Überlebenden, entsprechend
+90,81632653061224 Prozent. Die unabhängige Prüfung bestätigte vollständige,
+gültige Ergebnisbasis, unveränderte gebundene Eingaben, keine Timeouts oder
+Suspicious-Ergebnisse und einen quieszenten Prozessabschluss. Damit ist die
+80-Prozent-Schwelle innerhalb dieses begrenzten Kandidatenpiloten bestanden.
+Der erste FAIL und seine Belege bleiben unverändert erhalten.
+
+Externes Nachweisartefakt unterhalb des Release-Evidence-Roots:
+`candidate-adeb09b/dogfood-mutation/independent-review.json`, SHA-256
+`5a0d8efbd578e3d0be2da328e4caaf954557df18f036b56568b36996051901fe`.
+Dieser Bericht erteilt keine integrierte Releaseautorität.
+
+Der Pilot umfasst `_frame_signature`, `_transition` einschließlich seiner
+verschachtelten Helfer, `observed_sha256`, `_Capture.record_update`,
+`_ObservedHash.update` und `_print_timeout_model`. Er ersetzt weder die
+allgemeine Mutationstest-DoD für alle neuen/geänderten Codebereiche noch die
+integrierte Wiederholung. Weitere geänderte Bereiche in `basis_diagnostics.py`,
+`cli.py`, `orchestrator.py` und `stats.py` liegen außerhalb seiner
+Mutantenauswahl; daraus folgt keine Aussage über deren vorhandene Unit-Test-
+oder Laufzeitcoverage. Die übrige Änderungsscope-Qualifikation bleibt offen.
+
+## PO-Entscheidung zur einzelnen lokalen Testlücke
+
+Der Product Owner hat am **8. September 2026** für **v2.21.2** ausdrücklich
+die folgende einzelne Ausnahme akzeptiert, sofern alle übrigen Releasegates
+bestanden werden:
+
+`tests/unit/test_run_surface_integration_220.py::test_mid_run_ambient_drift_preserves_results_without_authority`
+
+Dieser Fall bleibt wegen der dokumentierten automatischen Policy-Abweisung
+`NOT_EXECUTED`. Er wird weder ausgeführt noch umgangen oder als PASS geführt.
+Die Ausnahme gilt ausschließlich für die Kandidatenprüfung und deren
+integrierte Wiederholung. Die vollständige übrige Zielsystemsuite mit Coverage
+und sämtliche anderen Releasegates bleiben erforderlich. Die Entscheidung
+erteilt keine weitere lokale Testausnahme, keine weitere Deselektion und keine
+Verringerung des Mutationstestumfangs. Sie ist keine vorgezogene Attestierung
+der noch offenen Gates oder Publikationsbereitschaft.
 
 ## Offene Qualifikation
 
@@ -59,9 +95,10 @@ außerhalb des Checkouts. Qualitätsbefehle sind `uv run --no-sync ruff check --
 `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/` und
 `uv run --no-sync lint-imports --no-cache`.
 
-Vollständige Zielsystemtests, Coverage, gelockter Dependency-Audit, kanonisches
-Semgrep-Gate, nativer Release-Wrapper, Dogfood, Doppelbuild und getrennte
-Installationssmokes bleiben erforderlich. Nicht ausgeführte Prüfungen sind
+Die vollständige übrige Zielsystemsuite unter der oben genau benannten
+PO-Ausnahme, Coverage, gelockter Dependency-Audit, kanonisches Semgrep-Gate,
+nativer Release-Wrapper, Dogfood, Doppelbuild und getrennte Installationssmokes
+bleiben erforderlich. Nicht ausgeführte Prüfungen sind
 `NOT_EXECUTED`, keine bestandenen Tests. Das gilt auch für eine billingbedingt
 nicht gestartete GitHub-CI. Eine früher verweigerte Prüfung wird nicht durch
 eine andere Aufrufweise umgangen oder als PASS ausgewiesen.
