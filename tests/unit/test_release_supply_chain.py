@@ -3142,6 +3142,7 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
         (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
     )
     roadmap_path = _release_report_paths(project_version)[1]
+    lock_job = workflow.split("\n  lock:\n", 1)[1].split("\n  quality:\n", 1)[0]
     quality_job = workflow.split("\n  quality:\n", 1)[1].split("\n  security:\n", 1)[0]
     security_job = workflow.split("\n  security:\n", 1)[1].split("\n  tests:\n", 1)[0]
     tests_job = workflow.split("\n  tests:\n", 1)[1].split("\n  pytest-compat:\n", 1)[0]
@@ -3151,6 +3152,7 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     artifacts_job = workflow.split("\n  artifacts:\n", 1)[1]
 
     supported_runtime_jobs = (
+        lock_job,
         quality_job,
         security_job,
         tests_job,
@@ -3286,6 +3288,12 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
         "          -p no:cacheprovider\n"
         "          -W error::pytest.PytestUnhandledThreadExceptionWarning"
     ) in tests_job
+    if project_version == "2.21.2":
+        # The PO exception names exactly one node for this release.
+        assert re.findall(r"--deselect(?:=|\s+)(\S+)", tests_job) == [
+            "tests/unit/test_run_surface_integration_220.py::"
+            "test_mid_run_ambient_drift_preserves_results_without_authority"
+        ]
     pytest_floor_command = "uv run --isolated --frozen --no-dev --no-cache"
     assert workflow.count(pytest_floor_command) == 1
     pytest_floor_lock = _PROJECT_ROOT / ".github" / "pytest-8.2.2-windows-py314.txt"

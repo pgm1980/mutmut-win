@@ -14,6 +14,7 @@ live geprüfte GitHub-Zustand. Diese Datei ist kein Selbstnachweis bestandener G
 | Timeout-Anzeige | bestätigter Darstellungsfehler, Implementierung im Kandidaten | CLI zeigt die tatsächlich zugewiesenen Taskbudgets einschließlich Fallbackformel und gegebenenfalls Spannweite; Budgetzuweisung und Ergebnisklassifikation bleiben gleich. |
 | Basisdiagnose | opt-in Diagnosefunktion, Implementierung im Kandidaten | `--basis-diagnostics` zeichnet die realen Hashbeiträge und aufeinanderfolgenden Übergänge auf; neue absolute Ausgabedatei außerhalb der gemessenen Wurzeln, Veröffentlichung nach dem Lauf. |
 | Historische Basisentwertungen | kein bestätigter Produktbug | Nicht reproduziert; historische Ursache unbekannt. Diagnosevollständigkeit ist getrennt von Basisvollständigkeit und Ergebnisautorität. |
+| CI-Prüfaufbau | belegte Workflow-/Testkorrektur | Der Lock-Job stellt Windows und CPython 3.14.7 bereit. Ein bestehender Test akzeptiert beide zulässigen Meldungen derselben atomaren Schreibsperre; seine Cleanup-Assertions bleiben erhalten. |
 
 Die Diagnose ergänzt Observerdaten. Sie kann die Laufzeit erhöhen, ist kein
 atomarer Beweis sämtlicher zwischenzeitlicher Änderungen und ändert bei einem
@@ -80,6 +81,28 @@ Verringerung des Mutationstestumfangs. Sie ist keine vorgezogene Attestierung
 der noch offenen Gates oder Publikationsbereitschaft.
 
 ## Offene Qualifikation
+
+Der Live-Abgleich vom 8. September 2026 belegt, dass GitHub-CI-Lauf
+`34186159711` auf Main `98f053da8b20f35eb71a254b44ef06ff12cbcd86`
+tatsächlich ausgeführt wurde und fehlschlug. Im Lock-Job fehlte der benötigte
+Interpreter. Der Testjob meldete 2515 bestandene Tests, 15 Skips und einen
+Fehler: Die Meldungsassertion erwartete nur die spätere Identitätsprüfung,
+obwohl bereits die vorgelagerte Linkprüfung zulässig abweisen kann. Dieser
+Lauf ist `FAIL`, nicht billingbedingt `NOT_EXECUTED`. Der Patch korrigiert
+den Prüfaufbau und übernimmt genau die oben akzeptierte Deselektion in CI.
+Die erfolgreiche Ausführung und die bestehenden Cleanup-Assertions müssen
+am korrigierten Stand erneut belegt werden.
+
+Der lokale Suite-Lauf auf `113ee37b94feec112a0105cd744bbfea412d3373`
+endete mit 2527 bestandenen Tests, 43 ausgewiesenen Skips, genau einer
+autorisierten Deselektion und einem Fehler bei der Checkout-Zeilenendprüfung.
+Während des Laufs wurde ausschließlich die gebundene Datei
+`.serena/project.yml` umgeschrieben; ihre CRLF-Zeilenenden lösten den Fehler
+aus. Der Lauf beendete seine Prozesse quieszent und erreichte 85,46 Prozent
+Coverage, bleibt aber wegen Testfehler und Eingabedrift `FAIL`.
+Die finale Prüfung erfolgt in einem separaten sauberen Worktree ohne
+Serena-Aktivierung. Wegen fehlendem FS-MCP und der beobachteten Serena-
+Migration werden interne Datei-, Git- und statische AST-Werkzeuge verwendet.
 
 Der verbindliche Umfang mit neun offenen Releasegates steht in
 `_docs/sprint backlogs/sprint_40_backlog.md`. Geprüfte Kandidaten-, Integrations-

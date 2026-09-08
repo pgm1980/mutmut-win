@@ -135,7 +135,11 @@ class TestSaveStats:
 
         monkeypatch.setattr(atomic_file_module, "_open_random_sibling", swap_parent_then_open)
 
-        with pytest.raises(UnsafeAtomicWriteError, match="parent changed"):
+        # Link validation may reject the parent before its identity is compared.
+        with pytest.raises(
+            UnsafeAtomicWriteError,
+            match=r"atomic-write parent (?:changed|must be a real directory)",
+        ):
             save_stats(MutmutStats(), mutants_dir=staging)
 
         assert swapped

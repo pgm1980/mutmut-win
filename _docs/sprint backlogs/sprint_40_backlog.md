@@ -98,5 +98,9 @@ PyPI-Publishing ist kein Teil des Produkt- oder Releasevertrags.
 
 Eine billingbedingt nicht gestartete GitHub-CI wird als `NOT_EXECUTED`
 dokumentiert. Das ist eine akzeptierte Evidenzlücke, aber weder PASS noch FAIL.
+Der am 8. September live geprüfte Main-Lauf `34186159711` wurde dagegen
+ausgeführt und ist `FAIL`. Die beiden belegten Prüfaufbaufehler und ihre
+Korrekturen stehen im Release-Dossier; aktuelle CI wird anhand ihrer
+tatsächlichen Ausführung bewertet.
 
 <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
