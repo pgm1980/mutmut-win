@@ -761,6 +761,45 @@ def _assert_released_provenance_identity(
     } <= set(housekeeping_paths)
 
 
+def _assert_postrelease_governance_identity(
+    *,
+    checkout_branch: str,
+    head_commit: str,
+    head_parents: tuple[str, ...],
+    head_paths: tuple[str, ...],
+    housekeeping_commit: str,
+) -> None:
+    """Allow one main-branch test-only correction above a separately checked H."""
+    assert checkout_branch == "main"
+    assert all(
+        isinstance(value, str) and _GIT_OBJECT_ID.fullmatch(value)
+        for value in (head_commit, housekeeping_commit, *head_parents)
+    )
+    assert head_commit != housekeeping_commit
+    assert head_parents == (housekeeping_commit,)
+    assert head_paths == ("tests/unit/test_release_supply_chain.py",)
+
+
+def _released_changed_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
+    """Read the complete changed-path set between two already validated IDs."""
+    assert _GIT_OBJECT_ID.fullmatch(base_commit)
+    assert _GIT_OBJECT_ID.fullmatch(head_commit)
+    return tuple(
+        name.decode("utf-8", errors="strict")
+        for name in _git(
+            "diff-tree",
+            "--no-commit-id",
+            "--no-renames",
+            "--name-only",
+            "-r",
+            "-z",
+            base_commit,
+            head_commit,
+        ).split(b"\0")
+        if name
+    )
+
+
 def _assert_released_checkout_matches_state(state: dict[str, str | bool]) -> None:
     """Resolve exact Git objects for a machine-declared released state."""
     assert state["phase"] == "released"
@@ -775,23 +814,28 @@ def _assert_released_checkout_matches_state(state: dict[str, str | bool]) -> Non
         _git("rev-list", "--parents", "-n", "1", integrated_commit).decode("ascii").split()
     )
     housekeeping_line = _git("rev-list", "--parents", "-n", "1", "HEAD").decode("ascii").split()
-    housekeeping_paths = tuple(
-        name.decode("utf-8", errors="strict")
-        for name in _git(
-            "diff-tree",
-            "--no-commit-id",
-            "--name-only",
-            "-r",
-            "-z",
-            integrated_commit,
-            head_commit,
-        ).split(b"\0")
-        if name
-    )
     assert integrated_line
     assert integrated_line[0] == integrated_commit
     assert housekeeping_line
     assert housekeeping_line[0] == head_commit
+    assert all(_GIT_OBJECT_ID.fullmatch(value) for value in housekeeping_line)
+    housekeeping_commit = head_commit
+    if tuple(housekeeping_line[1:]) != (integrated_commit,):
+        assert len(housekeeping_line) == 2
+        housekeeping_commit = housekeeping_line[1]
+        _assert_postrelease_governance_identity(
+            checkout_branch=_git("branch", "--show-current").decode("utf-8").strip(),
+            head_commit=head_commit,
+            head_parents=tuple(housekeeping_line[1:]),
+            head_paths=_released_changed_paths(housekeeping_commit, head_commit),
+            housekeeping_commit=housekeeping_commit,
+        )
+        housekeeping_line = (
+            _git("rev-list", "--parents", "-n", "1", housekeeping_commit).decode("ascii").split()
+        )
+        assert housekeeping_line
+        assert housekeeping_line[0] == housekeeping_commit
+    housekeeping_paths = _released_changed_paths(integrated_commit, housekeeping_commit)
     _assert_released_provenance_identity(
         current_sprint=str(state["current_sprint"]),
         candidate_commit=candidate_commit,
@@ -806,7 +850,7 @@ def _assert_released_checkout_matches_state(state: dict[str, str | bool]) -> Non
         tag_tree=_git("rev-parse", "--verify", "--end-of-options", f"{tag_ref}^{{tree}}")
         .decode("ascii")
         .strip(),
-        housekeeping_commit=head_commit,
+        housekeeping_commit=housekeeping_commit,
         housekeeping_parents=tuple(housekeeping_line[1:]),
         housekeeping_paths=housekeeping_paths,
     )
@@ -1099,11 +1143,23 @@ def test_sprint_backlog_contract_distinguishes_candidate_and_released() -> None:
     current_sprint = "39"
     target_version = "2.21.1"
     candidate_branch = "fix/v2.21.1-windows314"
-    backlog = (_PROJECT_ROOT / _sprint_backlog_relative_path(current_sprint)).read_text(
-        encoding="utf-8"
-    )
     branch_line = f"| **Branch** | `{candidate_branch}` |"
     main_line = "| **Branch** | `main` |"
+    backlog = "\n".join(
+        [
+            f"# Sprint {current_sprint} Backlog",
+            f"| **Ziel** | v{target_version} |",
+            "| **Scope** | Windows und exakt CPython 3.14.7 |",
+            branch_line,
+            "| **Analyse** | `bug_reporting/ANALYSE_MUTMUTWIN221.md` |",
+            "| **Roadmap** | `bug_reporting/BUGFIXUNG_ROADMAP.md` |",
+            "billingbedingt nicht gestartete GitHub-CI wird als `NOT_EXECUTED`",
+            "weder PASS noch FAIL",
+            _RELEASE_SEQUENCE,
+            *(f"- [ ] Gate {index}" for index in range(1, 10)),
+            "",
+        ]
+    )
 
     for phase in ("in_progress", "candidate_validated"):
         _assert_sprint_backlog_matches_lifecycle(
@@ -1156,6 +1212,37 @@ def test_sprint_backlog_contract_distinguishes_candidate_and_released() -> None:
                 branch="main",
                 phase="released",
             )
+
+    for phase in ("in_progress", "candidate_validated", "released"):
+        is_released = phase == "released"
+        valid_backlog = released if is_released else backlog
+        valid_branch = "main" if is_released else candidate_branch
+        valid_line = main_line if is_released else branch_line
+        wrong_line = branch_line if is_released else main_line
+        checked = "- [x] " if is_released else "- [ ] "
+        wrong_checked = "- [ ] " if is_released else "- [x] "
+        for invalid_backlog in (
+            valid_backlog.replace(checked, wrong_checked, 1),
+            valid_backlog.replace(valid_line, wrong_line, 1),
+            valid_backlog.replace(valid_line, f"{valid_line}\n{wrong_line}", 1),
+            valid_backlog.replace(checked, "- ", 1),
+            valid_backlog + f"{checked}Unexpected tenth gate\n",
+        ):
+            with pytest.raises(AssertionError):
+                _assert_sprint_backlog_matches_lifecycle(
+                    invalid_backlog,
+                    current_sprint=current_sprint,
+                    target_version=target_version,
+                    branch=valid_branch,
+                    phase=phase,
+                )
+    _assert_sprint_backlog_matches_lifecycle(
+        released.replace("- [x] ", "- [X] "),
+        current_sprint=current_sprint,
+        target_version=target_version,
+        branch="main",
+        phase="released",
+    )
 
 
 def test_live_branch_contract_rejects_stale_or_implicit_refs() -> None:
@@ -1298,6 +1385,173 @@ def test_released_provenance_requires_annotated_tag_and_direct_housekeeping_pare
     for override in invalid_variants:
         with pytest.raises(AssertionError):
             _assert_released_provenance_identity(**(valid | override))
+
+
+def test_postrelease_governance_identity_accepts_one_test_only_child() -> None:
+    _assert_postrelease_governance_identity(
+        checkout_branch="main",
+        head_commit="5" * 40,
+        head_parents=("4" * 40,),
+        head_paths=("tests/unit/test_release_supply_chain.py",),
+        housekeeping_commit="4" * 40,
+    )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param({"checkout_branch": ""}, id="detached"),
+        pytest.param({"checkout_branch": "fix/v2.21.1-repair"}, id="wrong-branch"),
+        pytest.param({"head_commit": "4" * 40}, id="self-parent"),
+        pytest.param({"head_parents": ()}, id="missing-parent"),
+        pytest.param({"head_parents": ("3" * 40,)}, id="wrong-parent"),
+        pytest.param({"head_parents": ("4" * 40, "3" * 40)}, id="multiple-parents"),
+        pytest.param({"head_paths": ()}, id="empty-diff"),
+        pytest.param({"head_paths": ("src/mutmut_win/cli.py",)}, id="product-diff"),
+        pytest.param({"head_paths": ("MEMORY.md",)}, id="docs-diff"),
+        pytest.param(
+            {"head_paths": ("tests/unit/test_release_supply_chain.py", "src/mutmut_win/cli.py")},
+            id="additional-product-diff",
+        ),
+        pytest.param(
+            {"head_paths": ("tests/unit/test_release_supply_chain.py", "MEMORY.md")},
+            id="additional-doc-diff",
+        ),
+        pytest.param(
+            {"head_paths": ("tests/unit/test_release_supply_chain.py", "tests/unit/test_db.py")},
+            id="additional-test-diff",
+        ),
+        pytest.param(
+            {"head_paths": ("tests/unit/test_release_supply_chain.py",) * 2},
+            id="duplicate-path",
+        ),
+        pytest.param({"head_commit": "5" * 39}, id="short-head-id"),
+        pytest.param({"head_commit": "A" * 40}, id="uppercase-head-id"),
+        pytest.param({"head_parents": ("not-an-id",)}, id="invalid-parent-id"),
+        pytest.param({"housekeeping_commit": "not-an-id"}, id="invalid-housekeeping-id"),
+    ],
+)
+def test_postrelease_governance_identity_rejects_outside_exception(override: dict) -> None:
+    valid = {
+        "checkout_branch": "main",
+        "head_commit": "5" * 40,
+        "head_parents": ("4" * 40,),
+        "head_paths": ("tests/unit/test_release_supply_chain.py",),
+        "housekeeping_commit": "4" * 40,
+    }
+    with pytest.raises(AssertionError):
+        _assert_postrelease_governance_identity(**(valid | override))
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        "H",
+        "G",
+        "second-G",
+        "wrong-H-parent",
+        "wrong-G-parent",
+        "multiple-G-parents",
+        "missing-G-parent",
+        "product-G-diff",
+        "empty-G-diff",
+        "malformed-G-id",
+    ],
+)
+def test_released_checkout_checks_housekeeping_behind_at_most_one_governance_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    topology: str,
+) -> None:
+    candidate, base, integrated, housekeeping, governance = (digit * 40 for digit in "12345")
+    tree = "a" * 40
+    docs = (
+        ".serena/memories/current_state.md",
+        ".serena/memories/project_overview.md",
+        ".sprint/state.md",
+        "MEMORY.md",
+        "_docs/sprint backlogs/sprint_39_backlog.md",
+        "bug_reporting/ANALYSE_MUTMUTWIN221.md",
+        "bug_reporting/BUGFIXUNG_ROADMAP.md",
+    )
+    test_path = ("tests/unit/test_release_supply_chain.py",)
+    head = housekeeping if topology == "H" else governance
+    head_parents = (integrated,) if topology == "H" else (housekeeping,)
+    housekeeping_parents = (base,) if topology == "wrong-H-parent" else (integrated,)
+    correction_paths = ("src/mutmut_win/cli.py",) if topology == "product-G-diff" else test_path
+    if topology == "second-G":
+        head, head_parents = "6" * 40, (governance,)
+    elif topology == "wrong-G-parent":
+        head_parents = (base,)
+    elif topology == "multiple-G-parents":
+        head_parents = (housekeeping, base)
+    elif topology == "missing-G-parent":
+        head_parents = ()
+    elif topology == "empty-G-diff":
+        correction_paths = ()
+    elif topology == "malformed-G-id":
+        head = "invalid-head"
+
+    responses = {
+        ("rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"): head.encode(),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            integrated,
+        ): f"{integrated} {base} {candidate}".encode(),
+        ("rev-list", "--parents", "-n", "1", "HEAD"): " ".join((head, *head_parents)).encode(),
+        ("rev-list", "--parents", "-n", "1", housekeeping): " ".join(
+            (housekeeping, *housekeeping_parents)
+        ).encode(),
+        ("rev-list", "--parents", "-n", "1", governance): f"{governance} {housekeeping}".encode(),
+        ("rev-list", "--parents", "-n", "1", base): f"{base} {'0' * 40}".encode(),
+        ("branch", "--show-current"): b"main",
+        ("cat-file", "-t", "refs/tags/v2.21.1"): b"tag",
+        (
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            "refs/tags/v2.21.1^{commit}",
+        ): integrated.encode(),
+        ("rev-parse", "--verify", "--end-of-options", "refs/tags/v2.21.1^{tree}"): tree.encode(),
+        ("rev-parse", "--verify", "--end-of-options", f"{candidate}^{{tree}}"): tree.encode(),
+    }
+    for first, last, paths in (
+        (integrated, housekeeping, docs),
+        (integrated, governance, (*docs, *test_path)),
+        (integrated, base, docs),
+        (housekeeping, governance, correction_paths),
+        (base, governance, correction_paths),
+        (governance, "6" * 40, test_path),
+    ):
+        responses[
+            ("diff-tree", "--no-commit-id", "--no-renames", "--name-only", "-r", "-z", first, last)
+        ] = b"\0".join(path.encode() for path in paths) + (b"\0" if paths else b"")
+    calls = []
+
+    def fake_git(*args: str) -> bytes:
+        calls.append(args)
+        if args not in responses:
+            raise RuntimeError(f"Unexpected Git query in fixture: {args}")
+        return responses[args]
+
+    monkeypatch.setitem(globals(), "_git", fake_git)
+    state = {
+        "phase": "released",
+        "release_tag": "v2.21.1",
+        "current_sprint": "39",
+        "candidate_commit": candidate,
+        "candidate_tree": tree,
+        "integrated_commit": integrated,
+        "integrated_tree": tree,
+    }
+    if topology in {"H", "G"}:
+        _assert_released_checkout_matches_state(state)
+        assert any(call[-2:] == (integrated, housekeeping) for call in calls)
+    else:
+        with pytest.raises(AssertionError):
+            _assert_released_checkout_matches_state(state)
 
 
 def test_checkout_identity_accepts_source_and_byte_identical_integration() -> None:
