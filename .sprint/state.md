@@ -1,17 +1,17 @@
 ---
 current_sprint: "39"
-sprint_goal: "v2.21.1: candidate validated"
-branch: "fix/v2.21.1-windows314"
+sprint_goal: "v2.21.1: released"
+branch: "main"
 started_at: "2026-09-02"
-phase: "candidate_validated"
-candidate_commit: ""
-candidate_tree: ""
-integrated_commit: ""
-integrated_tree: ""
-release_tag: ""
-housekeeping_done: false
+phase: "released"
+candidate_commit: "e48fda5e7cf0f633f4180b72e891db502605fa30"
+candidate_tree: "b5fce8e29500b33a677094aaa17b3674f1e86bd1"
+integrated_commit: "e91d338f9457b9d6526463fb0f835fab5d82736e"
+integrated_tree: "b5fce8e29500b33a677094aaa17b3674f1e86bd1"
+release_tag: "v2.21.1"
+housekeeping_done: true
 memory_updated: true
-github_issues_closed: false
+github_issues_closed: true
 sprint_backlog_written: true
 semgrep_passed: true
 tests_passed: true
@@ -27,10 +27,10 @@ Publication status for v2.21.1 is external mutable state. These immutable bytes 
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: candidate_validated -->
-<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.1 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 

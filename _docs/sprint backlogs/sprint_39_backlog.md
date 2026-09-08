@@ -5,7 +5,7 @@
 | **Ziel** | v2.21.1 |
 | **Baseline** | veröffentlichtes v2.21.0-Tag, Commit `40b6af31da66f3544ab9d1a38d34511e7e02c79a`, Tree `9fe800a9849fe35cf87f57b2f098ee02a08cd76a` |
 | **Scope** | Windows und exakt CPython 3.14.7 |
-| **Branch** | `fix/v2.21.1-windows314` |
+| **Branch** | `main` |
 | **Analyse** | `bug_reporting/ANALYSE_MUTMUTWIN221.md` |
 | **Roadmap** | `bug_reporting/BUGFIXUNG_ROADMAP.md` |
 | **Start** | 2026-09-02 |
@@ -41,22 +41,22 @@ Verzeichnis. Hypothesis 6.151.10 schreibt Cachebytes, aber keine eigene
 `.gitignore`. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
 `.gitignore` noch `.hypothesis`-Cachebytes enthalten.
 
-- [ ] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
+- [x] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
   `main`.
-- [ ] Vollständige strikte Suite mit Coverage auf dem integrierten `main`-Commit
+- [x] Vollständige strikte Suite mit Coverage auf dem integrierten `main`-Commit
   unter Windows und exakt CPython 3.14.7 mit `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning` wiederholen; keine
   unerklärten Fehler, Threadwarnungen oder Skips akzeptieren.
-- [ ] `uv run --no-sync ruff check --no-cache .`,
+- [x] `uv run --no-sync ruff check --no-cache .`,
   `uv run --no-sync ruff format --no-cache --check .`,
   `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/`,
   `uv run --no-sync lint-imports --no-cache` sowie `uv lock --check` auf dem
   quieszenten integrierten `main`-Commit wiederholen.
-- [ ] Vollständigen gelockten Dependency-Export und Pip-Audit auf dem
+- [x] Vollständigen gelockten Dependency-Export und Pip-Audit auf dem
   integrierten Commit ohne bekannte Advisories wiederholen.
-- [ ] Kanonisches Semgrep-Gate auf dem integrierten Commit mit null unerwarteten
+- [x] Kanonisches Semgrep-Gate auf dem integrierten Commit mit null unerwarteten
   Findings, Errors, übersprungenen Regeln und Fixpoint-Timeouts wiederholen;
   exakte Allowlisttreffer bleiben sichtbar.
-- [ ] Kanonischen nativen Release-Wrapper auf dem integrierten Commit wiederholen:
+- [x] Kanonischen nativen Release-Wrapper auf dem integrierten Commit wiederholen:
   `uv sync --locked --only-group release --no-install-project`, danach
   `uv run --no-sync python -I scripts/release_native_gate.py`. Der Wrapper prüft
   die exakt drei manifestgebundenen nativen ZIP-Werkzeuge actionlint 1.7.12,
@@ -65,12 +65,12 @@ Verzeichnis. Hypothesis 6.151.10 schreibt Cachebytes, aber keine eigene
   --no-ignores` in den Personas `regular` und `pedantic`; Git for Windows wird
   aus dem systemweiten HKLM-Vertrag statt Caller-PATH bezogen. Zizmor ist kein viertes Manifestasset; die lokale Bootstrapumgebung wird frisch gelockt
   synchronisiert.
-- [ ] Dokumentierten Dogfood-Piloten auf dem integrierten Commit ohne Recovery-/
+- [x] Dokumentierten Dogfood-Piloten auf dem integrierten Commit ohne Recovery-/
   Problem-Buckets und mit mindestens 80 Prozent Pilot-Score wiederholen.
-- [ ] Reproduzierbarer Doppelbuild, identische Artefaktinventare und SHA-256
+- [x] Reproduzierbarer Doppelbuild, identische Artefaktinventare und SHA-256
   sowie installierte Wheel-/Sdist-Smokes auf dem Zielsystem; beide Smoke-Venvs
   liegen getrennt unterhalb von `RUNNER_TEMP`, niemals im Release-Checkout.
-- [ ] Annotiertes Tag und GitHub-Release erst nach allen lokalen Belegen.
+- [x] Annotiertes Tag und GitHub-Release erst nach allen lokalen Belegen.
 
 Publikation erfolgt ausschließlich über das annotierte Git-Tag und die
 zugehörigen GitHub-Release-Artefakte. PyPI-Publishing ist kein Teil des

@@ -13,10 +13,10 @@ Publication status for v2.21.1 is external mutable state. These immutable bytes 
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: candidate_validated -->
-<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.1 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.1-windows314` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
