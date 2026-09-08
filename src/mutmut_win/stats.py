@@ -33,6 +33,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.atomic_file import atomic_write_bytes
+from mutmut_win.basis_diagnostics import (
+    component,
+    component_scope,
+    is_observing,
+    observed_sha256,
+    record_error,
+    record_event,
+    record_token,
+    register_input_root,
+    snapshot,
+)
 from mutmut_win.constants import (
     WORKSPACE_EXCLUDED_DIR_NAMES,
     WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
@@ -293,6 +304,7 @@ def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     return all(getattr(left, field) == getattr(right, field) for field in fields)
 
 
+@component("metadata", identity=("include_timestamps", "include_link_count"))
 def _hash_runtime_metadata(
     hasher: Any,
     metadata: os.stat_result,
@@ -330,6 +342,7 @@ def _hash_runtime_metadata(
     for field_name in fields:
         if not hasattr(metadata, field_name):
             continue
+        record_event("metadata-field", field=field_name, value=getattr(metadata, field_name))
         hasher.update(field_name.encode("ascii"))
         hasher.update(b"=")
         hasher.update(str(getattr(metadata, field_name)).encode("ascii", errors="replace"))
@@ -365,6 +378,26 @@ def _absolute_lexical_path(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path)))  # noqa: PTH100
 
 
+def _record_file_observation(role: str, metadata: os.stat_result) -> None:
+    if is_observing():
+        record_event(
+            "file-observation",
+            role=role,
+            fields={
+                field_name: getattr(metadata, field_name)
+                for field_name in (
+                    "st_dev",
+                    "st_ino",
+                    "st_mode",
+                    "st_size",
+                    "st_mtime_ns",
+                    "st_ctime_ns",
+                )
+            },
+        )
+
+
+@component("file", identity=("path", "label", "hash_timestamps", "hash_link_count"))
 def _hash_context_file(
     hasher: Any,
     path: Path,
@@ -376,6 +409,7 @@ def _hash_context_file(
 ) -> bool:
     """Hash one regular file and verify its path/identity stayed stable."""
 
+    register_input_root(path.parent)
     hasher.update(label.encode("utf-8", errors="surrogateescape"))
     hasher.update(b"\0")
     try:
@@ -387,6 +421,7 @@ def _hash_context_file(
             return True
         with absolute.open("rb") as stream:
             before = os.fstat(stream.fileno())
+            _record_file_observation("before", before)
             if not stat.S_ISREG(before.st_mode):
                 hasher.update(b"not-regular\0")
                 return False
@@ -396,15 +431,18 @@ def _hash_context_file(
                 include_timestamps=hash_timestamps,
                 include_link_count=hash_link_count,
             )
-            while chunk := stream.read(1024 * 1024):
-                hasher.update(chunk)
+            with component_scope("content"):
+                while chunk := stream.read(1024 * 1024):
+                    hasher.update(chunk)
             after_handle = os.fstat(stream.fileno())
+            _record_file_observation("after-handle", after_handle)
             # Re-open the lexical path while the hashed handle is still live.
             # On POSIX this catches rename-and-replace; on Windows it avoids
             # comparing ``fstat().st_ctime`` with the path-stat value, whose
             # semantics differ on current CPython releases.
             with absolute.open("rb") as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
+                _record_file_observation("rebound", rebound_handle)
         if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
             after_handle,
             rebound_handle,
@@ -416,6 +454,7 @@ def _hash_context_file(
         seen.add(absolute)
         return True
     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        record_error("hash-file", exc, path=str(path))
         hasher.update(b"unreadable:")
         hasher.update(type(exc).__qualname__.encode("ascii", errors="replace"))
         hasher.update(b"\0")
@@ -449,6 +488,7 @@ def _editable_source_path(direct_url: str) -> Path | None:
     return Path(raw_path)
 
 
+@component("tree", identity=("root", "label_prefix"))
 def _hash_context_tree(
     hasher: Any,
     root: Path,
@@ -465,19 +505,19 @@ def _hash_context_tree(
 ) -> bool:
     """Hash every stable entry in one runtime-relevant tree."""
 
+    register_input_root(root)
     reuse_safe = True
     excluded = excluded or set()
 
     def record_walk_error(_error: OSError) -> None:
         nonlocal reuse_safe
+        record_error("walk", _error, root=str(root), path=str(_error.filename))
         reuse_safe = False
 
     try:
         resolved_root = root.resolve(strict=True)
-    except (
-        OSError,
-        RuntimeError,
-    ):
+    except (OSError, RuntimeError) as exc:
+        record_error("resolve-tree", exc, root=str(root))
         hasher.update(f"{label_prefix}:missing\0".encode("utf-8", errors="surrogateescape"))
         return False
     if not resolved_root.is_dir():
@@ -496,7 +536,8 @@ def _hash_context_tree(
             include_timestamps=hash_directory_timestamps,
             include_link_count=hash_link_counts,
         )
-    except OSError:
+    except OSError as exc:
+        record_error("stat-tree", exc, root=str(root))
         hasher.update(f"{label_prefix}:root-unreadable\0".encode())
         return False
 
@@ -510,7 +551,8 @@ def _hash_context_tree(
             child = directory / dirname
             try:
                 is_link = child.is_symlink() or child.is_junction()
-            except OSError:
+            except OSError as exc:
+                record_error("directory-link-status", exc, path=str(child))
                 is_link = True
             if is_link:
                 hasher.update(
@@ -540,7 +582,8 @@ def _hash_context_tree(
                     include_timestamps=hash_directory_timestamps,
                     include_link_count=hash_link_counts,
                 )
-            except (OSError, ValueError):  # fmt: skip
+            except (OSError, ValueError) as exc:  # fmt: skip
+                record_error("stat-directory", exc, path=str(child))
                 hasher.update(
                     f"{label_prefix}:directory-unreadable:{dirname}\0".encode(
                         "utf-8", errors="surrogateescape"
@@ -597,6 +640,7 @@ def build_staging_context_evidence(
     return RunBasisEvidence(hasher.hexdigest(), complete)
 
 
+@component("environment")
 def _hash_inherited_environment(hasher: Any) -> None:
     """Bind the complete inherited environment without persisting its values.
 
@@ -614,12 +658,14 @@ def _hash_inherited_environment(hasher: Any) -> None:
     for name, value in entries:
         encoded_name = name.encode("utf-8", errors="surrogateescape")
         encoded_value = value.encode("utf-8", errors="surrogateescape")
-        hasher.update(len(encoded_name).to_bytes(8, "big"))
-        hasher.update(encoded_name)
-        hasher.update(len(encoded_value).to_bytes(8, "big"))
-        hasher.update(encoded_value)
+        with component_scope("environment-entry", name=name):
+            hasher.update(len(encoded_name).to_bytes(8, "big"))
+            hasher.update(encoded_name)
+            hasher.update(len(encoded_value).to_bytes(8, "big"))
+            hasher.update(encoded_value)
 
 
+@component("runtime")
 def _hash_runtime_identity(hasher: Any, seen: set[Path]) -> bool:
     """Bind the interpreter/ABI and executable used to launch test phases."""
 
@@ -657,6 +703,15 @@ def _hash_runtime_identity(hasher: Any, seen: set[Path]) -> bool:
         "stdlib": sysconfig.get_path("stdlib"),
         "platstdlib": sysconfig.get_path("platstdlib"),
     }
+    if is_observing():
+        for name, value in identity.items():
+            record_token(
+                "runtime-field",
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8", errors="surrogateescape"
+                ),
+                name=name,
+            )
     hasher.update(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
             "utf-8", errors="surrogateescape"
@@ -710,6 +765,7 @@ def _project_core_relative_path(path: Path, project_root: Path) -> Path | None:
     return relative
 
 
+@component("project-import-core", identity=("project_root",))
 def _hash_project_import_core(
     hasher: Any,
     project_root: Path,
@@ -729,62 +785,68 @@ def _hash_project_import_core(
     generated_root = _absolute_lexical_path(project_root / "mutants")
     hasher.update(b"effective-project-import-core:v1\0")
     for index, raw_entry in enumerate(sys.path):
-        try:
-            entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
-            absolute = _absolute_lexical_path(Path(entry) if entry else project_root)
-        except (OSError, TypeError, ValueError) as exc:
-            hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
-            complete = False
-            continue
-        relative = _project_core_relative_path(absolute, project_root)
-        if relative is None:
-            continue
-        encoded_entry = entry.encode("utf-8", errors="surrogateescape")
-        encoded_absolute = str(absolute).encode("utf-8", errors="surrogateescape")
-        hasher.update(index.to_bytes(8, "big"))
-        hasher.update(len(encoded_entry).to_bytes(8, "big"))
-        hasher.update(encoded_entry)
-        hasher.update(len(encoded_absolute).to_bytes(8, "big"))
-        hasher.update(encoded_absolute)
-        hasher.update(b"\0")
-        try:
-            resolved = absolute.resolve(strict=True)
-            if _is_generated_import_root(resolved, generated_root):
-                hasher.update(b"generated-staging-bound-separately\0")
+        with component_scope("import-entry", index=index):
+            try:
+                entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
+                absolute = _absolute_lexical_path(Path(entry) if entry else project_root)
+                register_input_root(absolute)
+                record_event("import-path", index=index, entry=entry, path=str(absolute))
+            except (OSError, TypeError, ValueError) as exc:
+                record_error("project-import-entry", exc, index=index)
+                hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
+                complete = False
                 continue
-            if resolved.is_file():
-                if resolved in excluded:
-                    hasher.update(b"excluded-file\0")
+            relative = _project_core_relative_path(absolute, project_root)
+            if relative is None:
+                continue
+            encoded_entry = entry.encode("utf-8", errors="surrogateescape")
+            encoded_absolute = str(absolute).encode("utf-8", errors="surrogateescape")
+            hasher.update(index.to_bytes(8, "big"))
+            hasher.update(len(encoded_entry).to_bytes(8, "big"))
+            hasher.update(encoded_entry)
+            hasher.update(len(encoded_absolute).to_bytes(8, "big"))
+            hasher.update(encoded_absolute)
+            hasher.update(b"\0")
+            try:
+                resolved = absolute.resolve(strict=True)
+                if _is_generated_import_root(resolved, generated_root):
+                    hasher.update(b"generated-staging-bound-separately\0")
                     continue
-                if not _hash_context_file(
+                if resolved.is_file():
+                    if resolved in excluded:
+                        hasher.update(b"excluded-file\0")
+                        continue
+                    if not _hash_context_file(
+                        hasher,
+                        resolved,
+                        label=f"project-import:{index}:file",
+                        seen=seen,
+                    ):
+                        complete = False
+                    continue
+                if not resolved.is_dir():
+                    hasher.update(b"unsupported-entry\0")
+                    complete = False
+                    continue
+                root_skip_dirs = frozenset({"mutants"}) if not relative.parts else frozenset()
+                if not _hash_context_tree(
                     hasher,
                     resolved,
-                    label=f"project-import:{index}:file",
+                    label_prefix=f"project-import:{index}:{relative.as_posix() or '.'}",
                     seen=seen,
+                    excluded=excluded,
+                    skip_dirs=_CONTEXT_SKIP_DIRS,
+                    root_skip_dirs=root_skip_dirs,
                 ):
                     complete = False
-                continue
-            if not resolved.is_dir():
-                hasher.update(b"unsupported-entry\0")
+            except (OSError, RuntimeError, ValueError) as exc:
+                record_error("project-import-root", exc, index=index, path=str(absolute))
+                hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
                 complete = False
-                continue
-            root_skip_dirs = frozenset({"mutants"}) if not relative.parts else frozenset()
-            if not _hash_context_tree(
-                hasher,
-                resolved,
-                label_prefix=f"project-import:{index}:{relative.as_posix() or '.'}",
-                seen=seen,
-                excluded=excluded,
-                skip_dirs=_CONTEXT_SKIP_DIRS,
-                root_skip_dirs=root_skip_dirs,
-            ):
-                complete = False
-        except (OSError, RuntimeError, ValueError) as exc:
-            hasher.update(f"entry-error:{index}:{type(exc).__qualname__}\0".encode())
-            complete = False
     return complete
 
 
+@component("effective-import-paths", identity=("project_root",))
 def _hash_effective_import_paths(
     hasher: Any,
     project_root: Path,
@@ -827,66 +889,73 @@ def _hash_effective_import_paths(
         return None
 
     for index, raw_entry in enumerate(sys.path):
-        entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
-        absolute = _absolute_lexical_path(Path(entry) if entry else project_root)
-        encoded_entry = entry.encode("utf-8", errors="surrogateescape")
-        encoded_absolute = str(absolute).encode("utf-8", errors="surrogateescape")
-        hasher.update(index.to_bytes(8, "big"))
-        hasher.update(len(encoded_entry).to_bytes(8, "big"))
-        hasher.update(encoded_entry)
-        hasher.update(len(encoded_absolute).to_bytes(8, "big"))
-        hasher.update(encoded_absolute)
-        hasher.update(b"\0")
-        try:
-            if absolute.is_file():
-                try:
-                    resolved_file = absolute.resolve(strict=False)
-                except (OSError, RuntimeError):  # fmt: skip
-                    resolved_file = absolute
-                if resolved_file in excluded:
-                    hasher.update(b"excluded-import-file\0")
-                    continue
-                if not _hash_context_file(
-                    hasher,
-                    absolute,
-                    label=f"sys.path:{index}:file",
-                    seen=seen,
-                ):
-                    reuse_safe = False
-            elif absolute.is_dir():
-                resolved = absolute.resolve(strict=True)
-                hasher.update(b"directory\0")
-                if _is_generated_import_root(resolved, generated_root):
-                    # Staging is executable state, not an unquestioned
-                    # derivative. Hash its stable bytes once below so stale
-                    # mirrors and post-generation tampering invalidate reuse;
-                    # mutable stats/verdict outputs are deliberately omitted.
-                    resolved_generated = generated_root.resolve(strict=True)
-                    generated_content_roots.add(resolved_generated)
-                    hasher.update(b"generated-content-bound-separately\0")
-                elif covered_by(resolved, covered_trees):
-                    hasher.update(b"content-covered\0")
+        with component_scope("import-entry", index=index):
+            entry = raw_entry if isinstance(raw_entry, str) else os.fspath(raw_entry)
+            absolute = _absolute_lexical_path(Path(entry) if entry else project_root)
+            register_input_root(absolute)
+            record_event("import-path", index=index, entry=entry, path=str(absolute))
+            encoded_entry = entry.encode("utf-8", errors="surrogateescape")
+            encoded_absolute = str(absolute).encode("utf-8", errors="surrogateescape")
+            hasher.update(index.to_bytes(8, "big"))
+            hasher.update(len(encoded_entry).to_bytes(8, "big"))
+            hasher.update(encoded_entry)
+            hasher.update(len(encoded_absolute).to_bytes(8, "big"))
+            hasher.update(encoded_absolute)
+            hasher.update(b"\0")
+            try:
+                if absolute.is_file():
+                    try:
+                        resolved_file = absolute.resolve(strict=False)
+                    except (OSError, RuntimeError):  # fmt: skip
+                        resolved_file = absolute
+                    if resolved_file in excluded:
+                        hasher.update(b"excluded-import-file\0")
+                        continue
+                    if not _hash_context_file(
+                        hasher,
+                        absolute,
+                        label=f"sys.path:{index}:file",
+                        seen=seen,
+                    ):
+                        reuse_safe = False
+                elif absolute.is_dir():
+                    resolved = absolute.resolve(strict=True)
+                    hasher.update(b"directory\0")
+                    if _is_generated_import_root(resolved, generated_root):
+                        # Staging is executable state, not an unquestioned
+                        # derivative. Hash its stable bytes once below so stale
+                        # mirrors and post-generation tampering invalidate reuse;
+                        # mutable stats/verdict outputs are deliberately omitted.
+                        resolved_generated = generated_root.resolve(strict=True)
+                        generated_content_roots.add(resolved_generated)
+                        hasher.update(b"generated-content-bound-separately\0")
+                    elif covered_by(resolved, covered_trees):
+                        hasher.update(b"content-covered\0")
+                    else:
+                        content_roots[resolved] = partial_coverage_policy(resolved) or (
+                            _IMPORT_CONTEXT_SKIP_DIRS
+                        )
                 else:
-                    content_roots[resolved] = partial_coverage_policy(resolved) or (
-                        _IMPORT_CONTEXT_SKIP_DIRS
-                    )
-            else:
-                try:
-                    absolute.lstat()
-                except FileNotFoundError:
-                    # A truly absent sys.path entry is a fully observed state
-                    # and can affect resolution order. A broken link is not
-                    # equivalent and is handled by the successful lstat path.
-                    hasher.update(b"missing-import-root\0")
-                except OSError as exc:
-                    hasher.update(f"import-root-error:{type(exc).__qualname__}\0".encode("ascii"))
-                    reuse_safe = False
-                else:
-                    hasher.update(b"unsupported-import-root\0")
-                    reuse_safe = False
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            hasher.update(f"import-root-error:{type(exc).__qualname__}\0".encode("ascii"))
-            reuse_safe = False
+                    try:
+                        absolute.lstat()
+                    except FileNotFoundError:
+                        # A truly absent sys.path entry is a fully observed state
+                        # and can affect resolution order. A broken link is not
+                        # equivalent and is handled by the successful lstat path.
+                        hasher.update(b"missing-import-root\0")
+                    except OSError as exc:
+                        record_error("stat-import-root", exc, index=index, path=str(absolute))
+                        hasher.update(
+                            f"import-root-error:{type(exc).__qualname__}\0".encode("ascii")
+                        )
+                        reuse_safe = False
+                    else:
+                        hasher.update(b"unsupported-import-root\0")
+                        reuse_safe = False
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                record_error("import-root", exc, index=index, path=str(absolute))
+                hasher.update(f"import-root-error:{type(exc).__qualname__}\0".encode("ascii"))
+                reuse_safe = False
 
     # Several ordinary CPython entries overlap (the interpreter root, Lib and
     # DLLs; a venv root and its site-packages).  Their ordered path semantics
@@ -936,6 +1005,7 @@ def _hash_effective_import_paths(
     return reuse_safe
 
 
+@component("distributions", identity=("project_root",))
 def _installed_distribution_basis(
     project_root: Path,
     seen: set[Path],
@@ -949,7 +1019,7 @@ def _installed_distribution_basis(
     excluded = excluded or set()
     core_seen = core_seen if core_seen is not None else set()
     core_reuse_safe = True
-    hasher = hashlib.sha256()
+    hasher = observed_sha256(stream="distributions")
     _hash_inherited_environment(hasher)
     reuse_safe = _hash_runtime_identity(hasher, seen)
     try:
@@ -970,128 +1040,139 @@ def _installed_distribution_basis(
     try:
         distributions = list(importlib.metadata.distributions())
     except Exception as exc:  # pragma: no cover - importlib backend failure
+        record_error("enumerate-distributions", exc)
         hasher.update(f"enumeration-error:{type(exc).__qualname__}".encode("ascii"))
         return _DependencyBasis(hasher.hexdigest(), False)
 
+    @component("distribution-identity")
     def distribution_key(distribution: importlib.metadata.Distribution) -> tuple[str, str, str]:
         try:
             name = distribution.metadata.get("Name") or ""
             version = distribution.version or ""
             location = str(Path(str(distribution.locate_file(""))).resolve(strict=False))
-        except Exception:
+        except Exception as exc:
+            record_error("distribution-identity", exc)
             return ("", "", "")
+        record_event("distribution-identity", name=name, version=version, location=location)
         return (name.casefold(), version, location.casefold())
 
     for distribution in sorted(distributions, key=distribution_key):
         name, version, location = distribution_key(distribution)
-        identity = f"distribution:{name}:{version}:{location}"
-        hasher.update(identity.encode("utf-8", errors="surrogateescape"))
-        hasher.update(b"\0")
-        if not name or not version:
-            reuse_safe = False
+        with component_scope("distribution", name=name, version=version, location=location):
+            identity = f"distribution:{name}:{version}:{location}"
+            hasher.update(identity.encode("utf-8", errors="surrogateescape"))
+            hasher.update(b"\0")
+            if not name or not version:
+                reuse_safe = False
 
-        try:
-            files = distribution.files
-        except Exception as exc:
-            hasher.update(f"file-inventory-error:{type(exc).__qualname__}\0".encode("ascii"))
-            reuse_safe = False
-            files = None
-        if files is None:
-            hasher.update(b"missing-file-inventory\0")
-            reuse_safe = False
-        else:
-            for entry in sorted(files, key=lambda item: str(item).casefold()):
-                try:
-                    path = Path(str(distribution.locate_file(entry)))
-                except Exception as exc:
-                    hasher.update(
-                        f"{identity}:{entry}:locate-error:{type(exc).__qualname__}\0".encode(
-                            "utf-8", errors="surrogateescape"
+            try:
+                files = distribution.files
+            except Exception as exc:
+                record_error("distribution-file-inventory", exc, identity=identity)
+                hasher.update(f"file-inventory-error:{type(exc).__qualname__}\0".encode("ascii"))
+                reuse_safe = False
+                files = None
+            if files is None:
+                hasher.update(b"missing-file-inventory\0")
+                reuse_safe = False
+            else:
+                for entry in sorted(files, key=lambda item: str(item).casefold()):
+                    try:
+                        path = Path(str(distribution.locate_file(entry)))
+                    except Exception as exc:
+                        record_error(
+                            "distribution-locate", exc, identity=identity, entry=str(entry)
                         )
-                    )
-                    reuse_safe = False
-                    continue
-                try:
-                    resolved_path = path.resolve(strict=False)
-                except (OSError, RuntimeError):  # fmt: skip
-                    resolved_path = _absolute_lexical_path(path)
-                if resolved_path in excluded:
-                    hasher.update(f"{identity}:{entry}:excluded\0".encode())
-                    continue
-                if not _hash_context_file(
-                    hasher,
-                    path,
-                    label=f"{identity}:{entry}",
-                    seen=seen,
-                ):
-                    reuse_safe = False
-                if (
-                    core_hasher is not None
-                    and _project_core_relative_path(resolved_path, project_root) is not None
-                    and not _hash_context_file(
-                        core_hasher,
-                        resolved_path,
-                        label=f"project-distribution:{identity}:{entry}",
-                        seen=core_seen,
-                    )
-                ):
-                    core_reuse_safe = False
+                        hasher.update(
+                            f"{identity}:{entry}:locate-error:{type(exc).__qualname__}\0".encode(
+                                "utf-8", errors="surrogateescape"
+                            )
+                        )
+                        reuse_safe = False
+                        continue
+                    try:
+                        resolved_path = path.resolve(strict=False)
+                    except (OSError, RuntimeError):  # fmt: skip
+                        resolved_path = _absolute_lexical_path(path)
+                    if resolved_path in excluded:
+                        hasher.update(f"{identity}:{entry}:excluded\0".encode())
+                        continue
+                    if not _hash_context_file(
+                        hasher,
+                        path,
+                        label=f"{identity}:{entry}",
+                        seen=seen,
+                    ):
+                        reuse_safe = False
+                    if (
+                        core_hasher is not None
+                        and _project_core_relative_path(resolved_path, project_root) is not None
+                        and not _hash_context_file(
+                            core_hasher,
+                            resolved_path,
+                            label=f"project-distribution:{identity}:{entry}",
+                            seen=core_seen,
+                        )
+                    ):
+                        core_reuse_safe = False
 
-        try:
-            direct_url = distribution.read_text("direct_url.json")
-        except Exception as exc:
-            hasher.update(f"{identity}:direct-url-error:{type(exc).__qualname__}\0".encode("ascii"))
-            reuse_safe = False
-            continue
-        if direct_url is None:
-            continue
-        try:
-            direct_payload = json.loads(direct_url)
-        except JSONDecodeError:
-            hasher.update(f"{identity}:invalid-direct-url\0".encode())
-            reuse_safe = False
-            continue
-        editable = (
-            isinstance(direct_payload, dict)
-            and isinstance(direct_payload.get("dir_info"), dict)
-            and direct_payload["dir_info"].get("editable") is True
-        )
-        if not editable:
-            continue
-        editable_path = _editable_source_path(direct_url)
-        if editable_path is None:
-            hasher.update(f"{identity}:unresolved-editable\0".encode())
-            reuse_safe = False
-            continue
-        if not _hash_context_tree(
-            hasher,
-            editable_path,
-            label_prefix=f"{identity}:editable",
-            seen=seen,
-            excluded=excluded,
-        ):
-            reuse_safe = False
-        if (
-            core_hasher is not None
-            and _project_core_relative_path(editable_path, project_root) is not None
-            and not _hash_context_tree(
-                core_hasher,
-                editable_path,
-                label_prefix=f"project-editable:{identity}",
-                seen=core_seen,
-                excluded=excluded,
-                skip_dirs=_CONTEXT_SKIP_DIRS,
-                root_skip_dirs=_CONTEXT_ROOT_SKIP_DIRS,
+            try:
+                direct_url = distribution.read_text("direct_url.json")
+            except Exception as exc:
+                record_error("distribution-direct-url", exc, identity=identity)
+                hasher.update(
+                    f"{identity}:direct-url-error:{type(exc).__qualname__}\0".encode("ascii")
+                )
+                reuse_safe = False
+                continue
+            if direct_url is None:
+                continue
+            try:
+                direct_payload = json.loads(direct_url)
+            except JSONDecodeError as exc:
+                record_error("parse-direct-url", exc, identity=identity)
+                hasher.update(f"{identity}:invalid-direct-url\0".encode())
+                reuse_safe = False
+                continue
+            editable = (
+                isinstance(direct_payload, dict)
+                and isinstance(direct_payload.get("dir_info"), dict)
+                and direct_payload["dir_info"].get("editable") is True
             )
-        ):
-            core_reuse_safe = False
-        try:
-            covered_trees.append((editable_path.resolve(strict=True), _CONTEXT_ROOT_SKIP_DIRS))
-        except (
-            OSError,
-            RuntimeError,
-        ):
-            reuse_safe = False
+            if not editable:
+                continue
+            editable_path = _editable_source_path(direct_url)
+            if editable_path is None:
+                hasher.update(f"{identity}:unresolved-editable\0".encode())
+                reuse_safe = False
+                continue
+            if not _hash_context_tree(
+                hasher,
+                editable_path,
+                label_prefix=f"{identity}:editable",
+                seen=seen,
+                excluded=excluded,
+            ):
+                reuse_safe = False
+            if (
+                core_hasher is not None
+                and _project_core_relative_path(editable_path, project_root) is not None
+                and not _hash_context_tree(
+                    core_hasher,
+                    editable_path,
+                    label_prefix=f"project-editable:{identity}",
+                    seen=core_seen,
+                    excluded=excluded,
+                    skip_dirs=_CONTEXT_SKIP_DIRS,
+                    root_skip_dirs=_CONTEXT_ROOT_SKIP_DIRS,
+                )
+            ):
+                core_reuse_safe = False
+            try:
+                covered_trees.append((editable_path.resolve(strict=True), _CONTEXT_ROOT_SKIP_DIRS))
+            except (OSError, RuntimeError) as exc:
+                record_error("editable-coverage-resolution", exc, path=str(editable_path))
+                reuse_safe = False
 
     if not _hash_effective_import_paths(
         hasher,
@@ -1113,6 +1194,7 @@ def _installed_distribution_basis(
     return _DependencyBasis(hasher.hexdigest(), reuse_safe, core_reuse_safe)
 
 
+@component("context", identity=("project_root",))
 def _build_stats_context_evidence(
     config: MutmutConfig,
     project_root: Path | None = None,
@@ -1128,6 +1210,7 @@ def _build_stats_context_evidence(
     run evidence stays deterministic but prior verdicts cannot be reused.
     """
     root = (project_root or Path.cwd()).resolve()
+    register_input_root(root)
     excluded_resolved: set[Path] = set()
     for excluded in excluded_paths:
         candidate = excluded if excluded.is_absolute() else root / excluded
@@ -1139,17 +1222,26 @@ def _build_stats_context_evidence(
         ):
             excluded_resolved.add(candidate.absolute())
 
-    hasher = hashlib.sha256()
-    core_hasher = hashlib.sha256()
+    hasher = observed_sha256(stream="context")
+    core_hasher = observed_sha256(stream="core")
     core_hasher.update(b"run-basis-core:v1\0")
     project_hasher = _HashFanout(hasher, core_hasher)
+    config_values = config.model_dump(mode="json")
     config_payload = json.dumps(
-        config.model_dump(mode="json"),
+        config_values,
         sort_keys=True,
         separators=(",", ":"),
     )
-    project_hasher.update(config_payload.encode("utf-8"))
-    project_hasher.update(b"\0")
+    with component_scope("configuration"):
+        if is_observing():
+            for name, value in config_values.items():
+                record_token(
+                    "config-field",
+                    json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                    name=name,
+                )
+        project_hasher.update(config_payload.encode("utf-8"))
+        project_hasher.update(b"\0")
     # Every pytest phase is pinned to one staged local config plus root and
     # confcut boundary. Project/config/dependency bytes below determine the
     # selected file; the schema marker prevents pre-boundary evidence reuse.
@@ -1187,6 +1279,7 @@ def _build_stats_context_evidence(
             absolute = _absolute_lexical_path(
                 configured_path if configured_path.is_absolute() else root / configured_path
             )
+            register_input_root(absolute)
             prefix = f"configured:{field_name}:{configured}"
             project_hasher.update(prefix.encode("utf-8"))
             project_hasher.update(b"\0")
@@ -1220,6 +1313,7 @@ def _build_stats_context_evidence(
                     # do not exist in every project; a later appearance changes
                     # this marker to a file/tree digest and invalidates reuse.
                 except OSError as exc:
+                    record_error("stat-configured-path", exc, path=str(absolute), field=field_name)
                     project_hasher.update(
                         f"unreadable:{type(exc).__qualname__}\0".encode(
                             "utf-8", errors="surrogateescape"
@@ -1312,6 +1406,7 @@ def build_run_basis_fingerprint(
     return evidence.digest
 
 
+@snapshot
 def build_run_basis_evidence(
     config: MutmutConfig,
     project_root: Path | None = None,
@@ -1337,7 +1432,7 @@ def build_run_basis_evidence(
         separators=(",", ":"),
     )
     return RunBasisEvidence(
-        digest=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        digest=observed_sha256(payload.encode("utf-8"), stream="basis").hexdigest(),
         complete=context_evidence.complete,
         core_digest=context_evidence.core_digest,
         core_complete=context_evidence.core_complete,
