@@ -10,10 +10,10 @@ sprint_36_progress is archived.
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.2 -->
-<!-- RELEASE_BRANCH: `codex/v2.21.2` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 

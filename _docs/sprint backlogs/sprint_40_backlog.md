@@ -5,11 +5,22 @@
 | **Ziel** | v2.21.2 |
 | **Baseline** | v2.21.1, Integrationscommit `e91d338f9457b9d6526463fb0f835fab5d82736e`; anschließende Governancekorrektur `98f053da8b20f35eb71a254b44ef06ff12cbcd86` |
 | **Scope** | Windows und exakt CPython 3.14.7 |
-| **Branch** | `codex/v2.21.2` |
+| **Branch** | `main` |
 | **Analyse** | `bug_reporting/RELEASE_2_21_2.md` |
 | **Roadmap** | `bug_reporting/RELEASE_2_21_2.md` |
 | **Start** | 2026-09-08 |
 | **Statusautorität** | `.sprint/state.md` sowie der unmittelbar vor Remote-Writes live geprüfte GitHub-Zustand |
+
+## Abschluss am 2026-09-13
+
+PR #137, der geprüfte Integrationscommit `3de6a2c776bddc2792aab6dcdaab4d8a3cae5fb3`, das annotierte
+Tag `v2.21.2` und der GitHub-Release sind bestätigt. Alle neun vereinbarten
+lokalen Gates und beide frischen Download-Installationen sind abgeschlossen.
+Der datierte Abschluss mit C-/M-, Artefakt-, Download- und Issues-Belegen steht
+im aktuellen Abschnitt von `bug_reporting/RELEASE_2_21_2.md`. Eine erfolgreiche
+Hosted-CI ist gemäß der am 13. September bestätigten PO-Ausnahme nicht erforderlich;
+ausgeführte CI-FAILs und die exakte lokale NOT_EXECUTED-Ausnahme bleiben sichtbar.
+Die folgenden Pilotabsätze beschreiben die damaligen Zwischenstände.
 
 ## Arbeitsumfang
 
@@ -50,8 +61,8 @@ Die Ausnahme gilt für Kandidat und integrierte Wiederholung. Der Fall wird
 nicht ausgeführt, umgangen oder als PASS ausgewiesen. Die vollständige übrige
 Zielsystemsuite mit Coverage und sämtliche weiteren Gates bleiben Pflicht.
 Keine weitere lokale Testausnahme, Deselektion oder Verringerung des
-Mutationstestumfangs ist damit genehmigt. Alle Abschlusscheckboxen bleiben bis
-zum tatsächlich nachgewiesenen Abschluss offen.
+Mutationstestumfangs ist damit genehmigt. Alle Abschlusscheckboxen blieben bis
+zum tatsächlich nachgewiesenen Abschluss am 13. September 2026 offen.
 
 ## Integrations- und Releasegates
 
@@ -61,37 +72,37 @@ Alle Syncs und Gates laufen mit einer frisch angelegten absoluten
 Verzeichnis. Der Checkout enthält weder `.venv` noch Werkzeug-Caches mit
 eigener `.gitignore` oder `.hypothesis`-Cachebytes.
 
-- [ ] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
+- [x] Reviewed Zwei-Parent-Integration des byteidentischen Kandidatentrees in
   `main` nach den vollständigen Kandidatengates.
-- [ ] Vollständige übrige strikte Suite mit Coverage auf dem integrierten Commit
+- [x] Vollständige übrige strikte Suite mit Coverage auf dem integrierten Commit
   unter Windows und exakt CPython 3.14.7, mit ausschließlich der oben
   autorisierten Ausnahme: `uv run --no-sync pytest -q --cov=mutmut_win --cov-report=term-missing -p no:cacheprovider -W error::pytest.PytestUnhandledThreadExceptionWarning --deselect=tests/unit/test_run_surface_integration_220.py::test_mid_run_ambient_drift_preserves_results_without_authority`;
   keine unerklärten Fehler, Threadwarnungen oder Skips akzeptieren. Jede nicht
   ausgeführte Prüfung bleibt als Evidenzlücke sichtbar.
-- [ ] `uv run --no-sync ruff check --no-cache .`,
+- [x] `uv run --no-sync ruff check --no-cache .`,
   `uv run --no-sync ruff format --no-cache --check .`,
   `uv run --no-sync mypy --no-incremental --cache-dir=nul src/ scripts/`,
   `uv run --no-sync lint-imports --no-cache` sowie `uv lock --check` auf dem
   quieszenten integrierten Commit wiederholen.
-- [ ] Vollständigen gelockten Dependency-Export und Pip-Audit auf dem
+- [x] Vollständigen gelockten Dependency-Export und Pip-Audit auf dem
   integrierten Commit ohne bekannte Advisories wiederholen.
-- [ ] Kanonisches Semgrep-Gate auf dem integrierten Commit mit null unerwarteten
+- [x] Kanonisches Semgrep-Gate auf dem integrierten Commit mit null unerwarteten
   Findings, Errors, übersprungenen Regeln und Fixpoint-Timeouts wiederholen;
   exakte Allowlisttreffer bleiben sichtbar.
-- [ ] Kanonischen nativen Release-Wrapper wiederholen:
+- [x] Kanonischen nativen Release-Wrapper wiederholen:
   `uv sync --locked --only-group release --no-install-project`, danach
   `uv run --no-sync python -I scripts/release_native_gate.py`. Die drei
   manifestgebundenen nativen ZIP-Werkzeuge und das separat aus `uv.lock`
   gebundene Zizmor 1.30.0 müssen bestehen. Zizmor läuft offline mit
   `--strict-collection --no-config --no-ignores` in den Personas `regular` und
   `pedantic`; Zizmor ist kein viertes Manifestasset.
-- [ ] Geänderten Code adversarial prüfen, Regressionen und dokumentierten
+- [x] Geänderten Code adversarial prüfen, Regressionen und dokumentierten
   Dogfood-Piloten ohne Recovery-/Problem-Buckets und mit mindestens 80 Prozent
   Pilot-Score auf dem integrierten Stand belegen.
-- [ ] Reproduzierbarer Doppelbuild, identische Inventare und SHA-256 sowie
+- [x] Reproduzierbarer Doppelbuild, identische Inventare und SHA-256 sowie
   getrennte installierte Wheel-/Sdist-Smokes auf dem Zielsystem; die Umgebungen
   liegen außerhalb des Release-Checkouts.
-- [ ] Annotiertes Tag und GitHub-Release erst nach allen lokalen Belegen.
+- [x] Annotiertes Tag und GitHub-Release erst nach allen lokalen Belegen.
 
 Publikation erfolgt über annotiertes Git-Tag und GitHub-Release-Artefakte.
 PyPI-Publishing ist kein Teil des Produkt- oder Releasevertrags.

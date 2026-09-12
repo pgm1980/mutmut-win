@@ -1,21 +1,21 @@
 ---
 current_sprint: "40"
-sprint_goal: "v2.21.2: in progress"
-branch: "codex/v2.21.2"
+sprint_goal: "v2.21.2: released"
+branch: "main"
 started_at: "2026-09-08"
-phase: "in_progress"
-candidate_commit: ""
-candidate_tree: ""
-integrated_commit: ""
-integrated_tree: ""
-release_tag: ""
-housekeeping_done: false
-memory_updated: false
-github_issues_closed: false
+phase: "released"
+candidate_commit: "6f7d431071a928709d67d17cecce62e9c6d75f92"
+candidate_tree: "3086a3b3ec4ad2e983297692fea3f090d440c602"
+integrated_commit: "3de6a2c776bddc2792aab6dcdaab4d8a3cae5fb3"
+integrated_tree: "3086a3b3ec4ad2e983297692fea3f090d440c602"
+release_tag: "v2.21.2"
+housekeeping_done: true
+memory_updated: true
+github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State — Timeout-Anzeige und Basisdiagnose
@@ -27,10 +27,10 @@ Publication status for v2.21.2 is external mutable state. These immutable bytes 
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.2 -->
-<!-- RELEASE_BRANCH: `codex/v2.21.2` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 

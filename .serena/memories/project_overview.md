@@ -15,7 +15,7 @@ paths carry no WSL/Linux runtime or CI-support commitment. Mutation engine, conf
 format and workflow stay mutmut-compatible.
 
 Repo: https://github.com/pgm1980/mutmut-win.git
-Distribution: install from a pinned git tag only
+Distribution: install from a pinned git tag or the matching GitHub release wheel/sdist assets
 (`uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@vX.Y.Z" --dev`).
 PyPI publishing is deliberately NOT part of the release sequence.
 Leading install doc: `_config/mutmut-win-install.md` (referenced from CLAUDE.md);
@@ -23,10 +23,10 @@ the maintained documentation copy is `_docs/installation/mutmut-win-install.md`.
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.2 -->
-<!-- RELEASE_BRANCH: `codex/v2.21.2` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
