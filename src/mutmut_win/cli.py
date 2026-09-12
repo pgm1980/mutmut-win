@@ -286,6 +286,15 @@ def _load_result_snapshot_or_exit(
 )
 @click.option("--no-progress", is_flag=True, default=False, help="Suppress live progress output.")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug output.")
+@click.option(
+    "--basis-diagnostics",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=(
+        "Write execution-basis diagnostics after the run to a new absolute JSON path "
+        "outside project, import and runtime inputs. The parent directory must exist."
+    ),
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Count mutants without running tests.")
 @click.option(
     "--timeout-multiplier",
@@ -368,6 +377,7 @@ def run(
     since_commit: str | None,
     no_progress: bool,
     debug: bool,
+    basis_diagnostics: Path | None,
     dry_run: bool,
     timeout_multiplier: float | None,
     do_not_mutate: tuple[str, ...],
@@ -400,6 +410,14 @@ def run(
     with contextlib.ExitStack() as prose_stack:
         if output == "json":
             prose_stack.enter_context(contextlib.redirect_stdout(sys.stderr))
+
+        if basis_diagnostics is not None:
+            from mutmut_win.basis_diagnostics import diagnostics_session
+
+            try:
+                prose_stack.enter_context(diagnostics_session(basis_diagnostics))
+            except (OSError, ValueError) as exc:
+                raise click.BadParameter(str(exc), param_hint="--basis-diagnostics") from exc
 
         # A linked cache can resolve the canonical DB lock into its external
         # target, while linked staging can redirect generation writes. Reject

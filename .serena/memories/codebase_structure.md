@@ -1,4 +1,4 @@
-# Codebase Structure & Layer Architecture (v2.21.1 / Sprint 39)
+# Codebase Structure & Layer Architecture (v2.21.2 / Sprint 40)
 
 > Active structural overview for the Windows/exact-CPython-3.14.7 release
 > contract. Source files and import-linter contracts are authoritative; volatile
@@ -16,7 +16,7 @@ Bands (high → low; `:` = intentionally collaborating siblings):
 2. `orchestrator : runner : stats : mutant_diff`
 3. `file_setup : mutation : node_mutation : regex_mutation : trampoline : test_mapping : db : type_checking : type_checker_filter : code_coverage`
 4. `process`
-5. `config : models : constants : exceptions : _state : hit_recording`
+5. `config : models : constants : exceptions : _state : hit_recording : basis_diagnostics`
 
 ## Key modules
 - **orchestrator.py** — heart of the pipeline. `MutationOrchestrator` (methods:
@@ -38,7 +38,10 @@ Bands (high → low; `:` = intentionally collaborating siblings):
   Windows Job Object containment, output capture, generation supervision, run
   locking, suspended/atomic launch, and loop classification.
 - **stats.py** — per-test timing + trampoline hit map persistence
-  (mutants/mutmut-stats.json), CI stats export.
+  (mutants/mutmut-stats.json), CI stats export, canonical execution-basis hashing.
+- **basis_diagnostics.py** — opt-in observation of the real hash update streams,
+  per-session private tokens, frame transitions, and post-run external output;
+  recorder completeness is independent of result authority.
 - **config.py** — pydantic config from `[tool.mutmut]` in pyproject.toml,
   CLI-flag overrides, validation (unknown keys → did-you-mean warning).
 - **mutant_diff.py** — show/apply: unified diff, atomic apply with backup +

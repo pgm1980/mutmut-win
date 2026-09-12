@@ -836,19 +836,19 @@ class MutationOrchestrator:
 
         multiplier = self._config.timeout_multiplier
         startup_floor = _compute_startup_floor(clean_wall_seconds, mutmut_stats.duration_by_test)
-        # Issue #105 / DOG-001: the timeout model must not be a black box —
-        # the measured floor decides over timeout-vs-killed for every task.
-        total_test_time = sum(mutmut_stats.duration_by_test.values())
-        print(
-            f"Timeout model: startup floor {startup_floor:.1f}s + test time x {multiplier} "
-            f"(clean run {clean_wall_seconds:.1f}s - measured test time {total_test_time:.1f}s)"
-        )
         tasks_with_timeouts = _apply_timeouts(
             all_tasks,
             mutmut_stats.duration_by_test,
             multiplier,
             startup_floor=startup_floor,
             clean_wall_seconds=clean_wall_seconds,
+        )
+        _print_timeout_model(
+            tasks_with_timeouts,
+            multiplier,
+            startup_floor=startup_floor,
+            clean_wall_seconds=clean_wall_seconds,
+            total_test_time=sum(mutmut_stats.duration_by_test.values()),
         )
 
         # Sort by estimated_time ascending: run fast mutants first (mirrors mutmut 3.5.0).
@@ -1461,6 +1461,45 @@ def _compute_startup_floor(
     """
     raw = clean_wall_seconds - sum(duration_by_test.values())
     return min(_FALLBACK_TIMEOUT, max(_MIN_TIMEOUT, raw))
+
+
+def _print_timeout_model(
+    tasks: list[MutationTask],
+    multiplier: float,
+    *,
+    startup_floor: float,
+    clean_wall_seconds: float,
+    total_test_time: float,
+) -> None:
+    """Describe the budgets already assigned to the tasks being dispatched."""
+    if not tasks:
+        return
+
+    minimum = min(task.timeout_seconds for task in tasks)
+    maximum = max(task.timeout_seconds for task in tasks)
+    budgets = f"{minimum:.1f}s" if minimum == maximum else f"{minimum:.1f}s to {maximum:.1f}s"
+    print(f"Timeout budgets: {budgets} for {len(tasks)} dispatched task(s).")
+    print(
+        f"Timeout calibration: startup floor {startup_floor:.1f}s "
+        f"(clean run {clean_wall_seconds:.1f}s - measured test time {total_test_time:.1f}s)."
+    )
+    selected = sum(
+        bool(task.tests and task.test_selection_is_authoritative and task.estimated_time > 0)
+        for task in tasks
+    )
+    if selected:
+        print(
+            f"Timeout model: {selected} task(s) use authoritative selected-test timings: "
+            f"max({_MIN_TIMEOUT:.1f}s, startup floor {startup_floor:.1f}s "
+            f"+ selected test time x {multiplier})."
+        )
+    fallback = len(tasks) - selected
+    if fallback:
+        print(
+            f"Timeout model: {fallback} task(s) use the fallback: "
+            f"max({_FALLBACK_TIMEOUT:.1f}s, clean run {clean_wall_seconds:.1f}s "
+            f"x {multiplier})."
+        )
 
 
 def _apply_timeouts(

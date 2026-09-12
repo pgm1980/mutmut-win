@@ -1,7 +1,7 @@
 # Product Backlog — mutmut-win
 
-**Version:** 3.0.0
-**Datum:** 2026-09-07
+**Version:** 3.1.0
+**Datum:** 2026-09-08
 **Status:** Active
 
 ---
@@ -37,7 +37,8 @@
 | v2.16.0–v2.19.0 | Operatorprofile und Erweiterungen | Phasen 1–4 | Done | Profile, Advanced-/All-Operatoren, Regex-Suite und Backports |
 | v2.19.1–v2.20.0 | External-QA-Follow-ups | zwischen Sprints | Done | Cache-/Config-/Dedupe- sowie Worker-/Qualified-name-Härtung |
 | v2.21.0 | Adversariales 360°-Hardening | Sprint 38 | Done | MW220-Reviewwelle; annotiertes Tag und GitHub-Release, reale CI blieb rot und ist kein PASS |
-| v2.21.1 | Windows-/CPython-3.14.7-Follow-up | Sprint 39 | Live-State extern prüfen | MW221-/CX221-Adjudikation und Zielsystemkorrekturen; autoritativer Status in `.sprint/state.md` und auf GitHub |
+| v2.21.1 | Windows-/CPython-3.14.7-Follow-up | Sprint 39 | Historischer Release; extern prüfen | MW221-/CX221-Adjudikation und Zielsystemkorrekturen; historische Nachweise in Sprint 39 und den MW221-/CX221-Berichten |
+| v2.21.2 | Timeout-Anzeige und Basisdiagnose | Sprint 40 | in_progress | Tatsächliche Taskbudgets anzeigen und optionale Diagnose der Hashbeiträge; finale Releasegates offen |
 
 ---
 
@@ -755,12 +756,34 @@ Implementierungen und Betriebssysteme sind kein Produkt- oder Releasevertrag.
 
 **Sprint:** 39
 **Ziel:** v2.21.1
-**Status:** ausschließlich aus `.sprint/state.md` und dem externen GitHub-Zustand ableiten
+**Status:** historische Releaseevidenz in Sprint 39 und den MW221-/CX221-Berichten;
+aktuellen Publikationszustand extern auf GitHub prüfen. Der aktive Sprint-State
+bezieht sich auf den Nachfolger.
 
 Der detaillierte, unveränderlich geplante Arbeitsumfang steht in
 `_docs/sprint backlogs/sprint_39_backlog.md`. Eine billingbedingt nicht
 ausgeführte GitHub-CI wird als `NOT_EXECUTED` ausgewiesen und nicht als PASS
 umgedeutet.
+
+---
+
+### Epic 28: Timeout-Anzeige und Basisdiagnose (Sprint 40)
+
+**Beschreibung:** Bestätigte Timeout-Anzeigekorrektur und explizit aktivierbare
+Diagnose der realen Basis-Hashbeiträge in einem neuen Patch qualifizieren.
+Die tatsächliche Budgetzuweisung und die Ergebnisautorität bleiben unverändert.
+Historische Basisentwertungen gelten weiterhin als nicht reproduziert und
+ursächlich ungeklärt, ohne bestätigten Produktbug.
+
+**Sprint:** 40
+**Ziel:** v2.21.2
+**Status:** in_progress; finale Kandidaten- und Integrationsgates sowie
+Artefaktprüfung und Publikation offen.
+
+Der verbindliche Umfang steht in `_docs/sprint backlogs/sprint_40_backlog.md`;
+das neue Dossier `bug_reporting/RELEASE_2_21_2.md` trennt die Voruntersuchung von
+der noch ausstehenden Patchqualifikation. `.sprint/state.md` bildet den aktiven
+Lebenszyklus ab. Historische Belege und veröffentlichte Tags bleiben erhalten.
 
 ---
 ## Maintenance-Backlog (Audit-Reste, epic-los)
@@ -830,7 +853,8 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Maintenance 1 v2.11.0 | v2.11.0 | Epic 24 | #105–#110 | Done |
 | Maintenance 2 v2.12.0 | v2.12.0 | Epic 25 | #111–#117 | Done |
 | Maintenance 3 v2.13.0 | v2.13.0 | Epic 26 | #118–#123 | Done |
-| MW221-/CX221-Follow-up | v2.21.1 | Epic 27 | Reviewregister statt selbstzertifizierter Issues | Live-State extern prüfen |
+| MW221-/CX221-Follow-up | v2.21.1 | Epic 27 | Historische Reviewregister | Historische Releaseevidenz; Publikation extern prüfen |
+| Timeout-Anzeige und Basisdiagnose | v2.21.2 | Epic 28 | `bug_reporting/RELEASE_2_21_2.md` | in_progress |
 
 ---
 
@@ -875,7 +899,8 @@ Die vier offenen Entscheidungen aus MEMORY.md sind entschieden:
 | Sprint 36 | 47 | 47 | 100% | v2.14.0 Maintenance 4: Fable-5 360° — 28/28 Findings geschlossen |
 | Sprint 37 | — | — | — | v2.15.0 Maintenance 5: External 360° QA; separater Bericht als Spezifikation |
 | Sprint 38 | — | — | — | v2.21.0 adversariales 360°-Hardening; MW220-Register |
-| Sprint 39 | — | — | — | v2.21.1 MW221-/CX221-Follow-up; Status aus `.sprint/state.md` |
+| Sprint 39 | — | — | — | v2.21.1 MW221-/CX221-Follow-up; historische Sprint-39- und Reviewbelege |
+| Sprint 40 | — | — | — | v2.21.2 Timeout-Anzeige und Basisdiagnose; aktiver Status aus `.sprint/state.md` |
 
 **Historische numerisch erfasste Summe bis einschließlich Sprint 36:** 650 SP
 geplant — 625 SP erledigt (96 %).
@@ -924,3 +949,4 @@ extern live neu zu prüfen.
 | 2.8.0 | 2026-06-12 | Claude Code Agent | Sprint 35 implementiert (Epic 26 Done, Velocity 29/29): **15/15 externe QA-Findings geschlossen**; Result-Reuse live (Lauf B: 244 reused/12 dispatcht, Lauf C: 256 reused/**0 dispatcht**); skipped erreichbar; f-Strings in der Mutationsoberfläche (+15 Pilot-Mutanten, Verschiebung dokumentiert); Gates: 1016 passed (+65), ruff/format 0, mypy 14, semgrep 0; Pilot settled 82,8 %. Release v2.13.0 ausstehend; danach zurück in die Pause. |
 | 2.9.0 | 2026-06-12 | Claude Code Agent | Sprint 35 geschlossen (v2.13.0 released, Merge schloss #118–#123 automatisch): annotated Tag + GitHub-Release (Result-Reuse als Headline, Score-Verschiebung ausgewiesen); Versionspins (README/Install-Guide/CLAUDE.md) im Bump-Commit; **PROJEKT ZURÜCK IN DER ENTWICKLUNGSPAUSE** — 0 offene Issues, 0 Backlog-Einträge, externes QA-Archiv unter _docs/audit/. |
 | 3.0.0 | 2026-09-07 | Codex | Releaseübersicht bis v2.21.1, Sprint-39-Verweis, historische Velocitysumme und verbindliche Windows-/CPython-3.14.7-, lokale Gate-, Integrations-, Artefakt- und GitHub-Releaseverträge synchronisiert |
+| 3.1.0 | 2026-09-08 | Codex | Sprint 40 für Timeout-Anzeige und Basisdiagnose als in_progress angelegt; historische v2.21.1-Belege erhalten und neue Releasegates ausdrücklich offen gelassen |

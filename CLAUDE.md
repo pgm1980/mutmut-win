@@ -2,7 +2,7 @@
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 ## Projekt
@@ -430,7 +430,7 @@ dev = [
     "pytest-benchmark>=5.1",
     "hypothesis>=6.119",
     "import-linter>=2.1",
-    "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1",
+    "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2",
 ]
 
 [tool.pytest.ini_options]
@@ -466,7 +466,7 @@ mutmut-win MUSS als Mutation-Testing-Tool eingesetzt werden, um die Qualität de
 
 **Installation** (PyPI-Publishing ist nicht Teil der Release-Sequenz — Installation erfolgt über die Git-URL; führendes Dokument: `_config\mutmut-win-install.md`):
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.1" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2" --dev
 ```
 
 Vor der Installation ist die am Dateianfang vorgeschriebene externe

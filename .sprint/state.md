@@ -1,42 +1,54 @@
 ---
-current_sprint: "39"
-sprint_goal: "v2.21.1: released"
-branch: "main"
-started_at: "2026-09-02"
-phase: "released"
-candidate_commit: "e48fda5e7cf0f633f4180b72e891db502605fa30"
-candidate_tree: "b5fce8e29500b33a677094aaa17b3674f1e86bd1"
-integrated_commit: "e91d338f9457b9d6526463fb0f835fab5d82736e"
-integrated_tree: "b5fce8e29500b33a677094aaa17b3674f1e86bd1"
-release_tag: "v2.21.1"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "40"
+sprint_goal: "v2.21.2: in progress"
+branch: "codex/v2.21.2"
+started_at: "2026-09-08"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State — Windows/CPython-3.14.7-Follow-up
+# Sprint State — Timeout-Anzeige und Basisdiagnose
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.1 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v2.21.1 -->
-<!-- RELEASE_BRANCH: `main` -->
-<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.2 -->
+<!-- RELEASE_BRANCH: `codex/v2.21.2` -->
+<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 
 <!-- ARCHIVE_START -->
+
+## Archiv: Sprint 39 — v2.21.1
+
+Der vorherige abgeschlossene Sprint ist in
+`_docs/sprint backlogs/sprint_39_backlog.md`,
+`bug_reporting/ANALYSE_MUTMUTWIN221.md` und
+`bug_reporting/BUGFIXUNG_ROADMAP.md` dokumentiert. Sein Kandidat
+`e48fda5e7cf0f633f4180b72e891db502605fa30` wurde als
+`e91d338f9457b9d6526463fb0f835fab5d82736e` mit identischem Tree
+`b5fce8e29500b33a677094aaa17b3674f1e86bd1` integriert. Das bestehende
+annotierte Tag `v2.21.1` bleibt unverändert. Die offenen Flags dieses neuen
+Sprints sind keine Rücknahme dieser historischen Befunde oder Gates.
 
 ## Archiv: v2.20.0 — external-QA hardening
 

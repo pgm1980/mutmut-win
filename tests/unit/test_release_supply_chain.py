@@ -114,7 +114,7 @@ _LIVE_BRANCH_REF = re.compile(
     # portion inside arbitrary remote/tag-qualified refs as well as bare refs.
     r"(?<![A-Za-z0-9._-])"
     r"(?:(?:origin|refs/heads|refs/remotes/origin)/)?"
-    r"((?:feature|fix)/(?:[A-Za-z0-9._-]*[A-Za-z0-9_-])"
+    r"((?:feature|fix|codex)/(?:[A-Za-z0-9._-]*[A-Za-z0-9_-])"
     r"(?:/(?:[A-Za-z0-9._-]*[A-Za-z0-9_-]))*)"
     r"(?![A-Za-z0-9._/-])"
 )
@@ -354,6 +354,16 @@ def _publication_contract(version: str) -> str:
     )
 
 
+def _release_report_paths(version: str) -> tuple[str, str]:
+    """Keep the historical review registers separate from each new release dossier."""
+    _semver_tuple(version)
+    if version == "2.21.1":
+        return "bug_reporting/ANALYSE_MUTMUTWIN221.md", "bug_reporting/BUGFIXUNG_ROADMAP.md"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    dossier = f"bug_reporting/RELEASE_{version.replace('.', '_')}.md"
+    return dossier, dossier
+
+
 def _live_state_contract(version: str, branch: str, phase: str) -> str:
     """Return the complete closed LIVE block for one lifecycle phase."""
     return (
@@ -362,7 +372,7 @@ def _live_state_contract(version: str, branch: str, phase: str) -> str:
         f"<!-- RELEASE_PHASE_STATUS: {_PHASE_STATUS[phase]} -->\n"
         f"<!-- RELEASE_TARGET: v{version} -->\n"
         f"<!-- RELEASE_BRANCH: `{branch}` -->\n"
-        "<!-- RELEASE_ROADMAP: bug_reporting/BUGFIXUNG_ROADMAP.md -->\n"
+        f"<!-- RELEASE_ROADMAP: {_release_report_paths(version)[1]} -->\n"
         "<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->\n\n"
     )
 
@@ -387,8 +397,8 @@ def _assert_publication_references_are_structural(text: str, version: str) -> No
         rf'^pip install "mutmut-win @ git\+{git_url}"$',
         rf'^uv add "mutmut-win @ git\+{git_url}" --dev$',
         rf'^\s*"mutmut-win @ git\+{git_url}",$',
-        rf'^branch: "fix/v{escaped}-[A-Za-z0-9._/-]+"$',
-        rf"^<!-- RELEASE_BRANCH: `fix/v{escaped}-[A-Za-z0-9._/-]+` -->$",
+        rf'^branch: "(?:fix/v{escaped}-[A-Za-z0-9._/-]+|codex/v{escaped})"$',
+        rf"^<!-- RELEASE_BRANCH: `(?:fix/v{escaped}-[A-Za-z0-9._/-]+|codex/v{escaped})` -->$",
         rf'^sprint_goal: "v{escaped}: '
         rf'(?:in progress|candidate validated|released)"$',
         rf'^release_tag: "v{escaped}"$',
@@ -455,8 +465,9 @@ def _assert_sprint_backlog_matches_lifecycle(
         backlog,
         flags=re.MULTILINE,
     ) == [branch]
-    assert "| **Analyse** | `bug_reporting/ANALYSE_MUTMUTWIN221.md` |" in backlog
-    assert "| **Roadmap** | `bug_reporting/BUGFIXUNG_ROADMAP.md` |" in backlog
+    analysis_path, roadmap_path = _release_report_paths(target_version)
+    assert f"| **Analyse** | `{analysis_path}` |" in backlog
+    assert f"| **Roadmap** | `{roadmap_path}` |" in backlog
     assert "billingbedingt nicht gestartete GitHub-CI wird als `NOT_EXECUTED`" in backlog
     assert "weder PASS noch FAIL" in backlog
     assert backlog.count(_RELEASE_SEQUENCE) == 1
@@ -476,7 +487,9 @@ def _assert_sprint_state_is_coherent(
     assert re.fullmatch(r"[1-9][0-9]*", current_sprint)
     branch = state["branch"]
     assert isinstance(branch, str)
-    assert branch == "main" or re.fullmatch(r"fix/v\d+\.\d+\.\d+(?:-[A-Za-z0-9._-]+)+", branch)
+    assert branch == "main" or re.fullmatch(
+        r"(?:fix/v\d+\.\d+\.\d+(?:-[A-Za-z0-9._-]+)+|codex/v\d+\.\d+\.\d+)", branch
+    )
 
     sprint_goal = state["sprint_goal"]
     assert isinstance(sprint_goal, str)
@@ -488,7 +501,7 @@ def _assert_sprint_state_is_coherent(
     assert target_parts[:2] == package_parts[:2]
     assert package_parts[2] <= target_parts[2] <= package_parts[2] + 1
     if branch != "main":
-        assert branch.startswith(f"fix/v{target_version}-")
+        assert branch.startswith(f"fix/v{target_version}-") or branch == f"codex/v{target_version}"
 
     phase = state["phase"]
     assert isinstance(phase, str)
@@ -714,6 +727,7 @@ def _assert_checkout_matches_state(branch: str, *, require_clean: bool = False) 
 def _assert_released_provenance_identity(
     *,
     current_sprint: str,
+    target_version: str = "2.21.1",
     candidate_commit: str,
     candidate_tree: str,
     integrated_commit: str,
@@ -728,7 +742,12 @@ def _assert_released_provenance_identity(
 ) -> None:
     """Bind released housekeeping to one reviewed candidate and annotated tag."""
     sprint_backlog_path = _sprint_backlog_relative_path(current_sprint)
-    allowed_housekeeping_paths = _HOUSEKEEPING_PATHS | {sprint_backlog_path}
+    report_paths = set(_release_report_paths(target_version))
+    allowed_housekeeping_paths = (
+        (_HOUSEKEEPING_PATHS - set(_release_report_paths("2.21.1")))
+        | {sprint_backlog_path}
+        | report_paths
+    )
     object_ids = (
         candidate_commit,
         candidate_tree,
@@ -756,9 +775,7 @@ def _assert_released_provenance_identity(
         ".sprint/state.md",
         "MEMORY.md",
         sprint_backlog_path,
-        "bug_reporting/ANALYSE_MUTMUTWIN221.md",
-        "bug_reporting/BUGFIXUNG_ROADMAP.md",
-    } <= set(housekeeping_paths)
+    } | report_paths <= set(housekeeping_paths)
 
 
 def _assert_postrelease_governance_identity(
@@ -838,6 +855,7 @@ def _assert_released_checkout_matches_state(state: dict[str, str | bool]) -> Non
     housekeeping_paths = _released_changed_paths(integrated_commit, housekeeping_commit)
     _assert_released_provenance_identity(
         current_sprint=str(state["current_sprint"]),
+        target_version=str(state["release_tag"]).removeprefix("v"),
         candidate_commit=candidate_commit,
         candidate_tree=str(state["candidate_tree"]),
         integrated_commit=integrated_commit,
@@ -1023,14 +1041,15 @@ def test_live_repository_state_documents_match_release_version() -> None:
         assert text.count("<!-- RELEASE_SEQUENCE:") == 1
         assert _RELEASE_SEQUENCE in text
 
-    roadmap = _PROJECT_ROOT / "bug_reporting" / "BUGFIXUNG_ROADMAP.md"
+    roadmap_relative_path = _release_report_paths(target_version)[1]
+    roadmap = _PROJECT_ROOT / roadmap_relative_path
     assert roadmap.is_file()
     for path in (
         _PROJECT_ROOT / "MEMORY.md",
         _PROJECT_ROOT / ".serena" / "memories" / "current_state.md",
     ):
         live = _marked_region(path.read_text(encoding="utf-8"), _LIVE_START, _LIVE_END)
-        assert "bug_reporting/BUGFIXUNG_ROADMAP.md" in live
+        assert roadmap_relative_path in live
 
 
 def test_sprint_state_contract_accepts_honest_lifecycle_transitions() -> None:
@@ -1058,6 +1077,18 @@ def test_sprint_state_contract_accepts_honest_lifecycle_transitions() -> None:
         "2.21.1",
         "fix/v2.21.1-windows314",
     )
+    next_patch = in_progress | {
+        "current_sprint": "40",
+        "sprint_goal": "v2.21.2: in progress",
+        "branch": "codex/v2.21.2",
+    }
+    assert _assert_sprint_state_is_coherent(next_patch, "2.21.2") == (
+        "2.21.2",
+        "codex/v2.21.2",
+    )
+    for invalid_branch in ("codex/v2.21.1", "codex/v2.21.2-extra", "codex/other"):
+        with pytest.raises(AssertionError):
+            _assert_sprint_state_is_coherent(next_patch | {"branch": invalid_branch}, "2.21.2")
 
     candidate = in_progress | {
         "sprint_goal": "v2.21.1: candidate validated",
@@ -1247,6 +1278,7 @@ def test_sprint_backlog_contract_distinguishes_candidate_and_released() -> None:
 
 def test_live_branch_contract_rejects_stale_or_implicit_refs() -> None:
     _assert_live_branch_matches_state("Current branch: `fix/v2.21.1-repair`.", "fix/v2.21.1-repair")
+    _assert_live_branch_matches_state("Current branch: `codex/v2.21.2`.", "codex/v2.21.2")
     _assert_live_branch_matches_state("Current branch: `main`.", "main")
     _assert_live_branch_matches_state(
         "Current branch: `main`; ordinary resource path `prefix/foo`.", "main"
@@ -1254,6 +1286,10 @@ def test_live_branch_contract_rejects_stale_or_implicit_refs() -> None:
 
     with pytest.raises(AssertionError):
         _assert_live_branch_matches_state("Current branch: main.", "main")
+    with pytest.raises(AssertionError):
+        _assert_live_branch_matches_state(
+            "Current branch: `main`; old `refs/remotes/upstream/codex/v2.21.2`.", "main"
+        )
     with pytest.raises(AssertionError):
         _assert_live_branch_matches_state(
             "Current branch: `main`; old `fix/v2.21.1-repair`.", "main"
@@ -1360,6 +1396,28 @@ def test_released_provenance_requires_annotated_tag_and_direct_housekeeping_pare
         "housekeeping_paths": housekeeping_paths,
     }
     _assert_released_provenance_identity(**valid)
+
+    next_patch_paths = (
+        ".sprint/state.md",
+        "MEMORY.md",
+        "_docs/sprint backlogs/sprint_40_backlog.md",
+        "bug_reporting/RELEASE_2_21_2.md",
+    )
+    next_patch = valid | {
+        "current_sprint": "40",
+        "target_version": "2.21.2",
+        "housekeeping_paths": next_patch_paths,
+    }
+    _assert_released_provenance_identity(**next_patch)
+    for stale_paths in (
+        housekeeping_paths,
+        (*next_patch_paths, "bug_reporting/BUGFIXUNG_ROADMAP.md"),
+        next_patch_paths[:-1],
+    ):
+        with pytest.raises(AssertionError):
+            _assert_released_provenance_identity(
+                **(next_patch | {"housekeeping_paths": stale_paths})
+            )
 
     invalid_variants = (
         {"tag_object_type": "commit"},
@@ -2210,14 +2268,24 @@ def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
     state = _parse_state_frontmatter(
         (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
     )
-    if not state["tests_passed"]:
-        assert set(cx_statuses.values()) == {"IMPLEMENTED_PENDING_FINAL"}
-    _assert_review_statuses_match_lifecycle(
-        mw_statuses,
-        cx_statuses,
-        tests_passed=bool(state["tests_passed"]),
-        housekeeping_done=bool(state["housekeeping_done"]),
-    )
+    if str(state["sprint_goal"]).startswith("v2.21.1: "):
+        if not state["tests_passed"]:
+            assert set(cx_statuses.values()) == {"IMPLEMENTED_PENDING_FINAL"}
+        _assert_review_statuses_match_lifecycle(
+            mw_statuses,
+            cx_statuses,
+            tests_passed=bool(state["tests_passed"]),
+            housekeeping_done=bool(state["housekeeping_done"]),
+        )
+    else:
+        # These registers describe the completed predecessor. A new release's
+        # open gates neither reopen its findings nor certify the new candidate.
+        _assert_review_statuses_match_lifecycle(
+            mw_statuses,
+            cx_statuses,
+            tests_passed=True,
+            housekeeping_done=True,
+        )
     roadmap_ids = re.findall(
         r"^[ \t]*\|?[ \t]*(CX221-\d{3})[ \t]*\|",
         roadmap,
@@ -2752,7 +2820,14 @@ def test_active_scope_release_and_backlog_docs_are_structurally_current() -> Non
     product = (_PROJECT_ROOT / "_docs" / "product backlog" / "product_backlog.md").read_text(
         encoding="utf-8"
     )
-    sprint = (_PROJECT_ROOT / "_docs" / "sprint backlogs" / "sprint_39_backlog.md").read_text(
+    state = _parse_state_frontmatter(
+        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
+    )
+    current_sprint = str(state["current_sprint"])
+    project_version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
+    sprint = (_PROJECT_ROOT / _sprint_backlog_relative_path(current_sprint)).read_text(
         encoding="utf-8"
     )
     codebase = (_PROJECT_ROOT / ".serena" / "memories" / "codebase_structure.md").read_text(
@@ -2790,10 +2865,19 @@ def test_active_scope_release_and_backlog_docs_are_structurally_current() -> Non
     assert "Benchmark ohne Linux-Supportzusage" not in design
     assert "Windows mit exakt CPython 3.14.7" in design
 
-    assert product.startswith(
-        "# Product Backlog - mutmut-win\n".replace(" - ", " \N{EM DASH} ")
-        + "\n**Version:** 3.0.0\n**Datum:** 2026-09-07\n**Status:** Active\n"
+    product_header = re.match(
+        r"# Product Backlog \N{EM DASH} mutmut-win\n\n"
+        r"\*\*Version:\*\* (?P<version>\d+\.\d+\.\d+)\n"
+        r"\*\*Datum:\*\* (?P<date>\d{4}-\d{2}-\d{2})\n\*\*Status:\*\* Active\n",
+        product,
     )
+    assert product_header is not None
+    assert _semver_tuple(product_header.group("version")) >= (3, 0, 0)
+    assert date.fromisoformat(product_header.group("date")) >= date.fromisoformat(
+        str(state["started_at"])
+    )
+    assert f"| v{project_version} |" in product
+    assert f"_docs/sprint backlogs/sprint_{current_sprint}_backlog.md" in product
     velocity_rows = re.findall(
         r"^\| Sprint \d+ \| (?P<planned>\d+) \| (?P<done>\d+) \|",
         product,
@@ -2812,7 +2896,9 @@ def test_active_scope_release_and_backlog_docs_are_structurally_current() -> Non
     assert "historischer Snapshot, Stand 2026-09-07" in product
     assert "vor Sprint- oder Releaseabschluss\nextern live neu zu prüfen" in product
 
-    assert codebase.startswith("# Codebase Structure & Layer Architecture (v2.21.1 / Sprint 39)")
+    assert codebase.startswith(
+        f"# Codebase Structure & Layer Architecture (v{project_version} / Sprint {current_sprint})"
+    )
     assert (
         "volatile\n> LOC, module-size, file-count, and suite-count snapshots "
         "are intentionally\n> omitted" in codebase
@@ -3049,6 +3135,14 @@ def test_real_cli_unit_surfaces_use_an_external_workspace_fixture() -> None:
 
 def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    project_version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
+    state = _parse_state_frontmatter(
+        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
+    )
+    roadmap_path = _release_report_paths(project_version)[1]
+    lock_job = workflow.split("\n  lock:\n", 1)[1].split("\n  quality:\n", 1)[0]
     quality_job = workflow.split("\n  quality:\n", 1)[1].split("\n  security:\n", 1)[0]
     security_job = workflow.split("\n  security:\n", 1)[1].split("\n  tests:\n", 1)[0]
     tests_job = workflow.split("\n  tests:\n", 1)[1].split("\n  pytest-compat:\n", 1)[0]
@@ -3058,6 +3152,7 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     artifacts_job = workflow.split("\n  artifacts:\n", 1)[1]
 
     supported_runtime_jobs = (
+        lock_job,
         quality_job,
         security_job,
         tests_job,
@@ -3146,8 +3241,8 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
         ".serena/memories/suggested_commands.md",
         "_docs/architecture spec/architecture_specification.md",
         "_docs/product backlog/product_backlog.md",
-        "_docs/sprint backlogs/sprint_39_backlog.md",
-        "bug_reporting/BUGFIXUNG_ROADMAP.md",
+        _sprint_backlog_relative_path(str(state["current_sprint"])),
+        roadmap_path,
     ):
         active_contract = (_PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         assert "UV_PROJECT_ENVIRONMENT" in active_contract, relative_path
@@ -3159,7 +3254,7 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
             "lint-imports --no-cache",
         ):
             assert cacheless_contract in active_contract, (relative_path, cacheless_contract)
-        if relative_path != "bug_reporting/BUGFIXUNG_ROADMAP.md":
+        if relative_path != roadmap_path:
             operational_commands = re.findall(
                 r"`(uv run --no-sync (?:pytest|ruff check|ruff format|mypy|lint-imports)[^`]*)`",
                 active_contract,
@@ -3193,6 +3288,12 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
         "          -p no:cacheprovider\n"
         "          -W error::pytest.PytestUnhandledThreadExceptionWarning"
     ) in tests_job
+    if project_version == "2.21.2":
+        # The PO exception names exactly one node for this release.
+        assert re.findall(r"--deselect(?:=|\s+)(\S+)", tests_job) == [
+            "tests/unit/test_run_surface_integration_220.py::"
+            "test_mid_run_ambient_drift_preserves_results_without_authority"
+        ]
     pytest_floor_command = "uv run --isolated --frozen --no-dev --no-cache"
     assert workflow.count(pytest_floor_command) == 1
     pytest_floor_lock = _PROJECT_ROOT / ".github" / "pytest-8.2.2-windows-py314.txt"
@@ -3283,9 +3384,10 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     assert artifacts_job.index(hash_read) < artifacts_job.index(hash_verify)
     assert artifacts_job.index(hash_verify) < artifacts_job.index(first_install)
     assert '$observedVersion = [string]::Join("`n", @(& $Executable --version))' in artifacts_job
-    assert 'if ($observedVersion -cne "mutmut-win, version 2.21.1")' in artifacts_job
+    expected_cli_version = f"mutmut-win, version {project_version}"
+    assert f'if ($observedVersion -cne "{expected_cli_version}")' in artifacts_job
     assert 'throw "Unexpected installed version: $observedVersion"' in artifacts_job
-    assert artifacts_job.count('"mutmut-win, version 2.21.1"') == 1
+    assert artifacts_job.count(f'"{expected_cli_version}"') == 1
     for external_smoke_path in (
         wheel_environment,
         wheel_python,
