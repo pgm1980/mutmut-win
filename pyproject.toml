@@ -109,7 +109,7 @@ tests_dir = ["tests/unit/"]
 # The staged unit tree legitimately needs ~30+ minutes (2.6k tests under
 # trampolines); the 300 s default aborted every full dogfood at the clean
 # phase (found during the MBR-2026-09-14-01 mutation run).
-clean_run_timeout = 2700
+clean_run_timeout = 5400
 
 [tool.ruff]
 target-version = "py314"
