@@ -2,7 +2,7 @@
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
@@ -10,14 +10,20 @@ sprint_36_progress is archived.
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v2.21.2 -->
-<!-- RELEASE_BRANCH: `main` -->
-<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.3 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.3-lake-basis` -->
+<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_3.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
+
+Active work: MBR-2026-09-14-01 fix package (gitignore-respect Fix B + force-retry A +
+prelude observability C + atomic-write transient hardening + clean_run_timeout=2700).
+Status and evidence live in memory `mbr_2026_09_14_fix_work`. New dep:
+pathspec>=1.1.1,<2 (runtime). Full suite green pre-commit; mutation testing of
+the two new modules and the release gates are open.
 
 <!-- ARCHIVE_START -->
 

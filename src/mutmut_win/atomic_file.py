@@ -12,6 +12,7 @@ import contextlib
 import os
 import secrets
 import stat
+import time
 from pathlib import Path
 
 
@@ -25,6 +26,25 @@ class AtomicReplaceError(PermissionError):
 
 class AtomicPublicationRaceError(UnsafeAtomicWriteError):
     """A competing publisher replaced the destination before post-validation."""
+
+
+#: Bounded backoff for transient Windows filter-driver interference.  The
+#: pytest phase guard republishes its execution sentinel once per test report;
+#: under that create/replace churn, antivirus or indexer filters transiently
+#: report inconsistent leaf identities or lock the replace target (observed
+#: at roughly 1 failure per 5000 publications — MBR-2026-09-14-01 follow-up).
+#: Every retry re-runs the complete validation chain, so persistent
+#: unsafety still fails closed with the original error taxonomy.
+_SIBLING_VALIDATION_RETRY_DELAYS: tuple[float, ...] = (0.002, 0.008, 0.032, 0.064)
+_REPLACE_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.1)
+#: Parent capture faces a longer interference window: after thousands of
+#: sentinel republications into one runtime directory, filter drivers can
+#: hold the directory under scan for seconds at a time (field data:
+#: ``resolve(strict=True)`` failed for 5+ attempts on a live directory at
+#: ~14 minutes into a phase).  Patience here is safe — capture precedes any
+#: publication, so no tripwire can be raced — and the strict resolve itself
+#: stays the anti-redirect authority.
+_PARENT_CAPTURE_RETRY_DELAYS: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 FileIdentity = tuple[int, int]
@@ -84,7 +104,10 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
         resolved_parent = parent.resolve(strict=True)
         resolved_stat = resolved_parent.stat()
     except OSError as exc:
-        raise UnsafeAtomicWriteError(f"cannot resolve atomic-write parent {parent}") from exc
+        raise UnsafeAtomicWriteError(
+            f"cannot resolve atomic-write parent {parent}: "
+            f"[errno {exc.errno}, winerror {getattr(exc, 'winerror', None)}] {exc}"
+        ) from exc
     if _identity(parent_stat) != _identity(resolved_stat):
         raise UnsafeAtomicWriteError(f"atomic-write parent changed or was redirected: {parent}")
 
@@ -94,43 +117,112 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
     return identity
 
 
+def _dump_sibling_diagnostics(
+    temp_path: Path,
+    opened_stat: os.stat_result,
+    leaf_stat: os.stat_result,
+) -> None:
+    """Best-effort telemetry for sibling validation exhaustion.
+
+    Field evidence (MBR-2026-09-14-01 follow-up): under filter-driver
+    enumeration in child processes, ``os.fstat`` can report one link more
+    than the path-view ``lstat`` for the same freshly created inode.  Keep
+    the dump so exhaustion stays diagnosable in the field.
+    """
+    import json
+
+    def fields(st: os.stat_result) -> dict[str, object]:
+        return {
+            "st_mode": st.st_mode,
+            "st_dev": st.st_dev,
+            "st_ino": st.st_ino,
+            "st_nlink": st.st_nlink,
+            "st_size": st.st_size,
+            "st_file_attributes": getattr(st, "st_file_attributes", None),
+            "st_reparse_tag": getattr(st, "st_reparse_tag", None),
+        }
+
+    payload = {
+        "temp_path": str(temp_path),
+        "pid": os.getpid(),
+        "opened": fields(opened_stat),
+        "leaf": fields(leaf_stat),
+        "identity_mismatch": _identity(opened_stat) != _identity(leaf_stat),
+    }
+    try:
+        import tempfile as _tempfile
+
+        target = Path(_tempfile.gettempdir()) / "mutmut-sibling-diag.jsonl"
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+
+
 def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
 
-    for _attempt in range(32):
+    collision_attempts_left = 32
+    validation_attempts_left = len(_SIBLING_VALIDATION_RETRY_DELAYS) + 1
+    while True:
         token = secrets.token_hex(16)
         temp_path = path.with_name(f".{path.name}.mutmut-atomic-{token}.tmp")
         try:
             fd = os.open(temp_path, flags, 0o600)
         except FileExistsError:
+            collision_attempts_left -= 1
+            if collision_attempts_left <= 0:
+                raise FileExistsError(
+                    f"could not allocate a unique atomic-write sibling for {path}"
+                ) from None
             continue
 
         try:
             opened_stat = os.fstat(fd)
             leaf_stat = temp_path.lstat()
             opened_identity = _identity(opened_stat)
+            # Handle-derived link counts are not a reliable single-source
+            # safety signal on Windows (CX221-071: journals transiently
+            # reported zero links; MBR-2026-09-14-01 follow-up field data:
+            # ``os.fstat`` transiently reported TWO links for a fresh
+            # ``O_EXCL`` inode while the path view reported one, under
+            # filter-driver enumeration in child processes).  Exclusive
+            # creation, handle/path identity equality, regular-file shape
+            # and the path-view link count carry the private-sibling
+            # contract; a hardlink attack on this fresh random name would
+            # already have failed the ``O_EXCL`` creation above.
             if (
                 not stat.S_ISREG(opened_stat.st_mode)
                 or stat.S_ISLNK(leaf_stat.st_mode)
                 or _is_reparse_point(leaf_stat)
                 or opened_identity != _identity(leaf_stat)
-                or opened_stat.st_nlink != 1
                 or leaf_stat.st_nlink != 1
             ):
-                raise UnsafeAtomicWriteError(
-                    f"exclusive atomic-write sibling is not a private regular file: {temp_path}"
-                )
+                os.close(fd)
+                with contextlib.suppress(OSError):
+                    temp_path.unlink()
+                validation_attempts_left -= 1
+                if validation_attempts_left <= 0:
+                    _dump_sibling_diagnostics(temp_path, opened_stat, leaf_stat)
+                    raise UnsafeAtomicWriteError(
+                        f"exclusive atomic-write sibling is not a private regular file: {temp_path}"
+                    )
+                retry_index = len(_SIBLING_VALIDATION_RETRY_DELAYS) - validation_attempts_left
+                time.sleep(_SIBLING_VALIDATION_RETRY_DELAYS[retry_index])
+                continue
             return fd, temp_path, opened_identity
         except BaseException:
-            os.close(fd)
+            # The validation-failure path already closed and unlinked its own
+            # fd before deciding to retry or fail; suppressing the second
+            # close keeps every exit route uniform.
+            with contextlib.suppress(OSError):
+                os.close(fd)
             with contextlib.suppress(OSError):
                 temp_path.unlink()
             raise
-
-    raise FileExistsError(f"could not allocate a unique atomic-write sibling for {path}")
 
 
 def _checked_temp(path: Path, expected: FileIdentity) -> None:
@@ -261,22 +353,14 @@ def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
         os.close(fd)
 
 
-def atomic_write_bytes(
+def _atomic_write_attempt(
     path: Path,
     payload: bytes,
-    *,
-    mode: int | None = None,
-    timestamps_ns: tuple[int, int] | None = None,
+    parent_identity: FileIdentity,
+    mode: int | None,
+    timestamps_ns: tuple[int, int] | None,
 ) -> None:
-    """Atomically write bytes without ever opening an existing leaf for writing.
-
-    The immediate parent must already exist and must not contain symlink or
-    reparse-point indirection.  ``mode`` and ``timestamps_ns`` are applied to
-    the private sibling before publication, which lets atomic copies preserve
-    the stat fields used by staging freshness checks.
-    """
-    path = Path(path)
-    parent_identity = _checked_parent(path)
+    """Run one complete publication attempt with a fresh private sibling."""
     fd: int | None = None
     temp_path: Path | None = None
     temp_identity: FileIdentity | None = None
@@ -323,6 +407,64 @@ def atomic_write_bytes(
             with contextlib.suppress(OSError):
                 os.close(fd)
         _cleanup_owned_temp(temp_path, temp_identity)
+
+
+def _capture_parent_identity(path: Path) -> FileIdentity:
+    """Capture the parent identity, retrying only transient resolve failures.
+
+    Windows filter drivers can make a healthy parent momentarily
+    unresolvable (MBR-2026-09-14-01 follow-up field data: ``resolve(strict)``
+    failed for a live runtime directory mid-phase).  The capture precedes
+    any publication, so retrying it cannot race or weaken a publication
+    tripwire; a genuinely redirected or linked parent fails identically on
+    every attempt and still fails closed.
+    """
+    delays = (0.0, *_PARENT_CAPTURE_RETRY_DELAYS)
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            return _checked_parent(path)
+        except UnsafeAtomicWriteError:
+            if index == len(delays) - 1:
+                raise
+    raise AssertionError("unreachable: the retry loop always returns or raises")
+
+
+def atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int | None = None,
+    timestamps_ns: tuple[int, int] | None = None,
+) -> None:
+    """Atomically write bytes without ever opening an existing leaf for writing.
+
+    The immediate parent must already exist and must not contain symlink or
+    reparse-point indirection.  ``mode`` and ``timestamps_ns`` are applied to
+    the private sibling before publication, which lets atomic copies preserve
+    the stat fields used by staging freshness checks.
+
+    Transient Windows filter-driver interference is absorbed at three narrow
+    points, each revalidating completely: parent-identity capture, private
+    sibling creation, and the final replace (MBR-2026-09-14-01 follow-up).
+    Every other condition — publication races, mid-publication parent or
+    sibling substitution — fails immediately with the original taxonomy;
+    retrying those would weaken the attack tripwires.
+    """
+    path = Path(path)
+    parent_identity = _capture_parent_identity(path)
+    delays = (0.0, *_REPLACE_RETRY_DELAYS)
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            _atomic_write_attempt(path, payload, parent_identity, mode, timestamps_ns)
+            return
+        except AtomicReplaceError:
+            if index == len(delays) - 1:
+                raise
+    raise AssertionError("unreachable: the retry loop always returns or raises")
 
 
 def ensure_atomic_bytes(path: Path, payload: bytes) -> None:

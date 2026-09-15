@@ -1,4 +1,4 @@
-# Codebase Structure & Layer Architecture (v2.21.2 / Sprint 40)
+# Codebase Structure & Layer Architecture (v2.21.3 / Sprint 41)
 
 > Active structural overview for the Windows/exact-CPython-3.14.7 release
 > contract. Source files and import-linter contracts are authoritative; volatile
@@ -39,6 +39,14 @@ Bands (high → low; `:` = intentionally collaborating siblings):
   locking, suspended/atomic launch, and loop classification.
 - **stats.py** — per-test timing + trampoline hit map persistence
   (mutants/mutmut-stats.json), CI stats export, canonical execution-basis hashing.
+- **gitignore_boundary.py** (v2.21.3) — hierarchical .gitignore walk boundary
+  (pathspec-backed, dir pruning, git-add -f force semantics for configured entries,
+  fail-closed on unreadable ignore files); consumed by stats/file_setup walks and
+  copy phases so gitignored trees (e.g. Lean .lake, 120k files) are neither hashed,
+  staged nor copied (MBR-2026-09-14-01).
+- **stall_watchdog.py** (v2.21.3) — StallWatchdog: faulthandler repeat stack dumps on
+  60 s without observable prelude progress; never kills; armed in
+  orchestrator._run_with_identity and closed before the pipeline.
 - **basis_diagnostics.py** — opt-in observation of the real hash update streams,
   per-session private tokens, frame transitions, and post-run external output;
   recorder completeness is independent of result authority.

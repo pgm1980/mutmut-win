@@ -71,9 +71,13 @@ def test_purge_staging_runtime_artifacts_removes_only_runtime_state(
     or sys.version_info[:3] != (3, 14, 7),
     reason="requires Windows CPython 3.14.7",
 )
+@pytest.mark.skipif(
+    "mutants" in str(Path(__file__).resolve()),
+    reason="bytecode fidelity check is not meaningful in trampolined mutation staging",
+)
 def test_fresh_pycache_prefix_bypasses_staged_unchecked_hash_bytecode(
     tmp_path: Path,
-) -> None:
+    ) -> None:
     staging = tmp_path / "project" / "mutants"
     staging.mkdir(parents=True)
     source = staging / "runtime_probe.py"

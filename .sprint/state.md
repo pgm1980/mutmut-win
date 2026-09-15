@@ -1,37 +1,37 @@
 ---
-current_sprint: "40"
-sprint_goal: "v2.21.2: released"
-branch: "main"
-started_at: "2026-09-08"
-phase: "released"
-candidate_commit: "6f7d431071a928709d67d17cecce62e9c6d75f92"
-candidate_tree: "3086a3b3ec4ad2e983297692fea3f090d440c602"
-integrated_commit: "3de6a2c776bddc2792aab6dcdaab4d8a3cae5fb3"
-integrated_tree: "3086a3b3ec4ad2e983297692fea3f090d440c602"
-release_tag: "v2.21.2"
-housekeeping_done: true
+current_sprint: "41"
+sprint_goal: "v2.21.3: in progress"
+branch: "fix/v2.21.3-lake-basis"
+started_at: "2026-09-15"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
 memory_updated: true
 github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
+semgrep_passed: false
+tests_passed: false
 documentation_updated: true
 ---
 
-# Sprint State — Timeout-Anzeige und Basisdiagnose
+# Sprint State - Gitignore-Respekt, Startup-Observability, Run-Robustheit
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v2.21.2 -->
-<!-- RELEASE_BRANCH: `main` -->
-<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_2.md -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.3 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.3-lake-basis` -->
+<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_3.md -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->

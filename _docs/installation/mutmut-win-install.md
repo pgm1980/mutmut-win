@@ -2,11 +2,11 @@
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.21.2 (verbindlicher Versionsstand dieser Anleitung)
+**Version:** v2.21.3 (verbindlicher Versionsstand dieser Anleitung)
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 > **Releasehinweis:** Vor der Installation gilt der kanonische externe
@@ -29,14 +29,14 @@ Publication status for v2.21.2 is external mutable state. These immutable bytes 
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.21.2`
+Erwartete Ausgabe: `mutmut-win, version 2.21.3`
 
 Scheitert die Live-Prüfung des Tags oder stimmt sein Ziel nicht mit dem
 freigegebenen Commit überein, darf diese Installationszeile nicht ausgeführt

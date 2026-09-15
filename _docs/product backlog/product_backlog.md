@@ -1,7 +1,7 @@
 # Product Backlog — mutmut-win
 
 **Version:** 3.1.0
-**Datum:** 2026-09-08
+**Datum:** 2026-09-15
 **Status:** Active
 
 ---
@@ -38,9 +38,22 @@
 | v2.19.1–v2.20.0 | External-QA-Follow-ups | zwischen Sprints | Done | Cache-/Config-/Dedupe- sowie Worker-/Qualified-name-Härtung |
 | v2.21.0 | Adversariales 360°-Hardening | Sprint 38 | Done | MW220-Reviewwelle; annotiertes Tag und GitHub-Release, reale CI blieb rot und ist kein PASS |
 | v2.21.1 | Windows-/CPython-3.14.7-Follow-up | Sprint 39 | Historischer Release; extern prüfen | MW221-/CX221-Adjudikation und Zielsystemkorrekturen; historische Nachweise in Sprint 39 und den MW221-/CX221-Berichten |
-| v2.21.2 | Timeout-Anzeige und Basisdiagnose | Sprint 40 | in_progress | Tatsächliche Taskbudgets anzeigen und optionale Diagnose der Hashbeiträge; finale Releasegates offen |
+| v2.21.2 | Timeout-Anzeige und Basisdiagnose | Sprint 40 | Done | Tatsächliche Taskbudgets anzeigen und optionale Diagnose; veröffentlicht und extern geprüft |
+| v2.21.3 | Gitignore-Respekt und Run-Robustheit | Sprint 41 | in_progress | MBR-2026-09-14-01: .gitignore-respektierende Staging/Basis-Walks, Observability, Retry-Härtung; finale Releasegates offen | Tatsächliche Taskbudgets anzeigen und optionale Diagnose der Hashbeiträge; finale Releasegates offen |
 
 ---
+
+
+### MBR-2026-09-14-01: Gitignore-Respekt, Observability und Run-Robustheit (v2.21.3)
+
+**Sprint:** 41
+**Ziel:** v2.21.3
+**Status:** in_progress; Implementierung abgeschlossen, finale Kandidaten-
+und Integrationsgates, Mutationstesting und Publikation offen.
+
+Der verbindliche Umfang steht in \_docs/sprint backlogs/sprint_41_backlog.md\;
+das Dossier \ug_reporting/RELEASE_2_21_3.md\ trennt Ursachenanalyse
+(MBR-2026-09-14-01-Kette) und laufende Qualifikation.
 
 ## Definition of Done (DoD)
 

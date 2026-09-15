@@ -45,6 +45,7 @@ from mutmut_win.exceptions import (
     StaleStagingError,
     UnsafeStagingError,
 )
+from mutmut_win.gitignore_boundary import GitignoreBoundary
 from mutmut_win.models import SourceFileMutationData, read_owned_source_metadata
 
 if TYPE_CHECKING:
@@ -82,6 +83,21 @@ _STAGING_HELPER_MODULE_OWNERS: dict[str, str] = {
 }
 
 
+def _is_dotenv_name(name: str) -> bool:
+    """Return whether *name* is a dotenv file tests may discover upward.
+
+    Shared by staging (which keeps dotenv secrets out of ``mutants/``) and
+    the run-basis digest (which must keep binding their bytes: tests can read
+    them through upward dotenv discovery even though they are never staged,
+    MBR-2026-09-14-01 carve-out).
+    """
+    folded = name.casefold()
+    return folded == ".env" or (
+        folded.startswith(".env.")
+        and folded not in {".env.example", ".env.sample", ".env.template"}
+    )
+
+
 def _skip_automatic_root_file(name: str) -> bool:
     """Keep coordination files and dotenv secrets out of automatic staging."""
     folded = name.casefold()
@@ -89,10 +105,37 @@ def _skip_automatic_root_file(name: str) -> bool:
         folded.startswith(".mutmut-win-") and folded.endswith((".run.lock", ".run.lock.guard"))
     ):
         return True
-    return folded == ".env" or (
-        folded.startswith(".env.")
-        and folded not in {".env.example", ".env.sample", ".env.template"}
-    )
+    return _is_dotenv_name(name)
+
+
+def _configured_entry_boundary(
+    project_boundary: GitignoreBoundary,
+    project_root: Path,
+    entry: Path,
+) -> GitignoreBoundary | None:
+    """Return the boundary governing one explicitly configured entry's tree.
+
+    Explicitly named entries are force-included (``git add -f`` semantics):
+    every path component is force-entered so an entry inside an ignored
+    subtree still stages.  Ignore files at or below the entry keep governing
+    its contents.  Entries outside the project root have no project-local
+    gitignore domain and return ``None`` (nothing excluded).
+    """
+    try:
+        relative = entry.resolve(strict=False).relative_to(project_root)
+    except (OSError, ValueError):  # fmt: skip
+        return None
+    if str(relative) in {".", ""}:
+        return project_boundary
+    return project_boundary.descend_forced(*relative.parts)
+
+
+def _walk_boundary_map(
+    walk_root: Path,
+    boundary: GitignoreBoundary | None,
+) -> dict[Path, GitignoreBoundary | None]:
+    """Seed the per-directory boundary map for one os.walk invocation."""
+    return {walk_root: boundary}
 
 
 def _is_staging_skip_dir(name: str, *, at_workspace_root: bool) -> bool:
@@ -381,12 +424,19 @@ def _temporarily_writable_staging_leaf(path: Path) -> Iterator[None]:
 def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
     """Yield (root, filename) for all files in config.paths_to_mutate.
 
+    Git-ignored subtrees inside a configured mutation root are pruned
+    (MBR-2026-09-14-01): ignored files are not mutation targets.  The
+    configured entry itself is force-included, matching ``git add -f``
+    semantics elsewhere in staging.
+
     Args:
         config: Active ``MutmutConfig`` instance.
 
     Yields:
         Tuples of (root directory string, filename string).
     """
+    project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
     for path in config.paths_to_mutate:
         p = Path(path)
         if not p.is_dir():
@@ -394,8 +444,11 @@ def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
                 yield "", str(path)
                 continue
         else:
-            project_root = Path.cwd().resolve()
+            entry_boundary = _configured_entry_boundary(project_boundary, project_root, p)
+            boundaries: dict[Path, GitignoreBoundary | None] = _walk_boundary_map(p, entry_boundary)
             for root, dirs, files in os.walk(path):
+                walk_directory = Path(root)
+                boundary = boundaries.get(walk_directory)
                 # Never feed staging/cache/tool environments back into the
                 # mutation engine. Resolve children as a junction/symlink
                 # defence in addition to the fast name filter.
@@ -403,6 +456,8 @@ def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
                 at_workspace_root = Path(root).resolve() == project_root
                 for directory in dirs:
                     if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                        continue
+                    if boundary is not None and boundary.excludes_directory(directory):
                         continue
                     candidate = Path(root) / directory
                     try:
@@ -419,8 +474,12 @@ def walk_all_files(config: MutmutConfig) -> Iterator[tuple[str, str]]:
                         )
                         continue
                     safe_dirs.append(directory)
+                    if boundary is not None:
+                        boundaries[candidate] = boundary.enter(directory)
                 dirs[:] = safe_dirs
                 for filename in files:
+                    if boundary is not None and boundary.excludes_file(filename):
+                        continue
                     candidate = Path(root) / filename
                     try:
                         if _is_link_or_reparse(candidate):
@@ -467,10 +526,17 @@ def _iter_automatic_staging_inputs(
     """Yield file/directory ownership planned for the automatic root mirror."""
 
     project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
     for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
         source_root = Path(source_root_name)
         if not source_root.is_dir():
             continue
+        walk_boundary = (
+            project_boundary
+            if source_root_name == "."
+            else project_boundary.descend(source_root_name)
+        )
+        boundaries = _walk_boundary_map(source_root, walk_boundary)
         for root_str, dirs, files in os.walk(source_root):
             source_directory = Path(root_str)
             try:
@@ -481,10 +547,13 @@ def _iter_automatic_staging_inputs(
             except (OSError, ValueError):  # fmt: skip
                 dirs[:] = []
                 continue
+            boundary = boundaries.get(source_directory)
             safe_dirs: list[str] = []
             at_workspace_root = Path(root_str).resolve() == project_root
             for directory in dirs:
                 if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                    continue
+                if boundary is not None and boundary.excludes_directory(directory):
                     continue
                 candidate = Path(root_str) / directory
                 try:
@@ -497,6 +566,8 @@ def _iter_automatic_staging_inputs(
                 ):  # fmt: skip
                     continue
                 safe_dirs.append(directory)
+                if boundary is not None:
+                    boundaries[candidate] = boundary.enter(directory)
             dirs[:] = safe_dirs
             if source_root_name == "." and Path(root_str).resolve() == project_root:
                 source_roots = {name.casefold() for name in SOURCE_ROOT_NAMES}
@@ -513,6 +584,8 @@ def _iter_automatic_staging_inputs(
 
             for name in files:
                 if _skip_automatic_root_file(name):
+                    continue
+                if boundary is not None and boundary.excludes_file(name):
                     continue
                 source = Path(root_str) / name
                 try:
@@ -534,10 +607,16 @@ def _iter_configured_staging_inputs(
     config: MutmutConfig,
     excluded_resolved: frozenset[Path],
 ) -> Iterator[tuple[Path, Path]]:
-    """Yield planned file mirrors from ``also_copy`` and ``extra_paths``."""
+    """Yield planned file mirrors from ``also_copy`` and ``extra_paths``.
+
+    Explicitly configured entries are force-included (``git add -f``
+    semantics), but git-ignored subtrees *inside* a configured tree are
+    pruned exactly like Git would prune them.
+    """
 
     project_root = Path.cwd().resolve()
     mutants_root = project_root / "mutants"
+    project_boundary = GitignoreBoundary.load(project_root)
     for raw in (*config.also_copy, *config.extra_paths):
         path = Path(raw)
         destination = configured_staging_relative_path(path, project_root=project_root)
@@ -563,13 +642,26 @@ def _iter_configured_staging_inputs(
             except OSError:
                 continue
             continue
+        entry_boundary = _configured_entry_boundary(project_boundary, project_root, path)
+        boundaries = _walk_boundary_map(path, entry_boundary)
         for root_str, dirs, files in os.walk(path):
-            dirs[:] = [
-                name for name in dirs if not _is_staging_skip_dir(name, at_workspace_root=False)
-            ]
+            walk_directory = Path(root_str)
+            boundary = boundaries.get(walk_directory)
+            safe_dirs: list[str] = []
+            for name in dirs:
+                if _is_staging_skip_dir(name, at_workspace_root=False):
+                    continue
+                if boundary is not None and boundary.excludes_directory(name):
+                    continue
+                safe_dirs.append(name)
+                if boundary is not None:
+                    boundaries[walk_directory / name] = boundary.enter(name)
+            dirs[:] = safe_dirs
             relative_root = Path(root_str).relative_to(path)
             yield Path(root_str), destination / relative_root
             for name in files:
+                if boundary is not None and boundary.excludes_file(name):
+                    continue
                 source = Path(root_str) / name
                 try:
                     if source.resolve(strict=True) in excluded_resolved:
@@ -1083,6 +1175,7 @@ def copy_src_dir(
     expected_targets: set[Path] = set()
     synced_roots: list[Path] = []
     project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
     mutants_root = _validated_mutants_root()
     Path("mutants").mkdir(exist_ok=True)
     excluded_resolved: set[Path] = set()
@@ -1104,9 +1197,16 @@ def copy_src_dir(
         # distinguishable while deleted root-level imports cannot haunt the
         # next clean run.
         synced_roots.append(source_root)
+        walk_boundary = (
+            project_boundary
+            if source_root_name == "."
+            else project_boundary.descend(source_root_name)
+        )
+        boundaries = _walk_boundary_map(source_root, walk_boundary)
 
         for root_str, dirs, files in os.walk(source_root):
             source_directory = Path(root_str)
+            boundary = boundaries.get(source_directory)
             try:
                 if _is_link_or_reparse(source_directory):
                     _warn_skipped_source_link(
@@ -1123,11 +1223,14 @@ def copy_src_dir(
                 )
                 dirs[:] = []
                 continue
-            # Skip cache/venv/tooling directories (issue #129 / 360°-C4).
+            # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
+            # git-ignored subtrees (MBR-2026-09-14-01).
             safe_dirs: list[str] = []
             at_workspace_root = Path(root_str).resolve() == project_root
             for directory in dirs:
                 if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                    continue
+                if boundary is not None and boundary.excludes_directory(directory):
                     continue
                 candidate = Path(root_str) / directory
                 try:
@@ -1144,6 +1247,8 @@ def copy_src_dir(
                     )
                     continue
                 safe_dirs.append(directory)
+                if boundary is not None:
+                    boundaries[candidate] = boundary.enter(directory)
             dirs[:] = safe_dirs
             if source_root_name == "." and root_str == ".":
                 # The explicit roots above already mirrored src/source —
@@ -1163,6 +1268,8 @@ def copy_src_dir(
 
             for name in files:
                 if _skip_automatic_root_file(name):
+                    continue
+                if boundary is not None and boundary.excludes_file(name):
                     continue
                 source_path = Path(root_str) / name
                 try:
@@ -1287,6 +1394,7 @@ def _sync_tree(
     destination_root: Path,
     *,
     excluded_resolved: frozenset[Path] = frozenset(),
+    ignore_boundary: GitignoreBoundary | None = None,
 ) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
@@ -1298,20 +1406,37 @@ def _sync_tree(
     * DELETE staged files whose source disappeared — under ``copytree`` a
       removed test file kept RUNNING inside the staging forever;
     * the deletion pass never leaves *destination_root* (containment of the
-      root itself is guard 4's job in :func:`copy_also_copy_files`).
+      root itself is guard 4's job in :func:`copy_also_copy_files`);
+    * git-ignored subtrees are neither copied nor retained
+      (MBR-2026-09-14-01): the deletion pass treats an ignored live source
+      like an absent one so pre-fix staged leftovers are purged.
     """
     mutants_root = _validated_mutants_root()
     _validated_staging_destination(destination_root, mutants_root)
+    source_boundaries: dict[Path, GitignoreBoundary | None] = {source_root: ignore_boundary}
     for root_str, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if not _is_staging_skip_dir(d, at_workspace_root=False)]
+        walk_directory = Path(root_str)
+        boundary = source_boundaries.get(walk_directory)
+        safe_dirs: list[str] = []
+        boundary_pruned_content = False
+        for name in dirs:
+            if _is_staging_skip_dir(name, at_workspace_root=False):
+                continue
+            if boundary is not None and boundary.excludes_directory(name):
+                boundary_pruned_content = True
+                continue
+            safe_dirs.append(name)
+            if boundary is not None:
+                source_boundaries[walk_directory / name] = boundary.enter(name)
+        dirs[:] = safe_dirs
         rel_root = Path(root_str).relative_to(source_root)
         destination_directory = destination_root / rel_root
-        _validated_staging_destination(destination_directory, mutants_root)
-        destination_directory.mkdir(parents=True, exist_ok=True)
+        retained_files: list[str] = []
         for name in files:
+            if boundary is not None and boundary.excludes_file(name):
+                boundary_pruned_content = True
+                continue
             src_file = Path(root_str) / name
-            dst_file = destination_root / rel_root / name
-            _validated_staging_destination(dst_file, mutants_root)
             try:
                 if src_file.resolve(strict=True) in excluded_resolved:
                     continue
@@ -1319,6 +1444,18 @@ def _sync_tree(
                 # An input that cannot be resolved cannot safely defeat an
                 # exact caller-owned exclusion through a transient alias.
                 continue
+            retained_files.append(name)
+        if retained_files or safe_dirs or not boundary_pruned_content:
+            # A directory whose every child the boundary pruned has no
+            # staged representation at all (MBR-2026-09-14-01).  Directories
+            # that are merely empty, or emptied by the exact caller-owned
+            # exclusions, keep the historical mirror behaviour.
+            _validated_staging_destination(destination_directory, mutants_root)
+            destination_directory.mkdir(parents=True, exist_ok=True)
+        for name in retained_files:
+            src_file = Path(root_str) / name
+            dst_file = destination_root / rel_root / name
+            _validated_staging_destination(dst_file, mutants_root)
             if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
                 continue
             dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1326,24 +1463,33 @@ def _sync_tree(
 
     if not destination_root.is_dir():
         return
-    cleanup_candidates: list[Path] = []
+    cleanup_candidates: list[tuple[Path, bool]] = []
+    # Boundary state is tracked by destination-relative path: the staged tree
+    # mirrors the source structure, so staged rel_root == source rel_root.
+    staged_boundaries: dict[Path, GitignoreBoundary | None] = {Path(): ignore_boundary}
     for root_str, dirs, files in os.walk(destination_root):
-        safe_dirs: list[str] = []
+        staged_root = Path(root_str)
+        rel_root = staged_root.relative_to(destination_root)
+        boundary = staged_boundaries.get(rel_root)
+        staged_safe_dirs: list[str] = []
         for directory in dirs:
             if _is_staging_skip_dir(directory, at_workspace_root=False):
                 continue
             staged_directory = Path(root_str) / directory
             _validated_staging_destination(staged_directory, mutants_root)
-            safe_dirs.append(directory)
-            cleanup_candidates.append(staged_directory)
-        dirs[:] = safe_dirs
-        rel_root = Path(root_str).relative_to(destination_root)
+            directory_excluded = boundary is not None and boundary.excludes_directory(directory)
+            staged_safe_dirs.append(directory)
+            child_boundary = boundary.enter(directory) if boundary is not None else None
+            staged_boundaries[rel_root / directory] = child_boundary
+            cleanup_candidates.append((staged_directory, directory_excluded))
+        dirs[:] = staged_safe_dirs
         for name in files:
             source_file = source_root / rel_root / name
             try:
                 source_is_current = (
                     source_file.exists()
                     and source_file.resolve(strict=True) not in excluded_resolved
+                    and not (boundary is not None and boundary.excludes_file(name))
                 )
             except OSError:
                 source_is_current = False
@@ -1357,16 +1503,18 @@ def _sync_tree(
     # package shells after their live directories disappear.  For
     # ``extra_paths`` such a shell is directly import-visible and would create
     # a false PEP 420 namespace package.
-    for staged_directory in sorted(
+    for staged_directory, directory_excluded in sorted(
         cleanup_candidates,
-        key=lambda candidate: len(candidate.parts),
+        key=lambda candidate: len(candidate[0].parts),
         reverse=True,
     ):
         relative_directory = staged_directory.relative_to(destination_root)
         source_directory = source_root / relative_directory
         try:
-            source_directory_is_current = source_directory.is_dir() and not _is_link_or_reparse(
-                source_directory
+            source_directory_is_current = (
+                source_directory.is_dir()
+                and not _is_link_or_reparse(source_directory)
+                and not directory_excluded
             )
         except OSError:
             source_directory_is_current = False
@@ -1574,6 +1722,7 @@ def copy_also_copy_files(
 
     mutants_root = _validated_mutants_root()
     project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
     for path_str in paths_to_copy:
         path = Path(path_str)
         relative_destination = configured_staging_relative_path(path, project_root=project_root)
@@ -1637,7 +1786,16 @@ def copy_also_copy_files(
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
         else:
-            _sync_tree(path, destination, excluded_resolved=frozen_exclusions)
+            _sync_tree(
+                path,
+                destination,
+                excluded_resolved=frozen_exclusions,
+                ignore_boundary=_configured_entry_boundary(
+                    project_boundary,
+                    project_root,
+                    path,
+                ),
+            )
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
     # that contain relative paths. These paths are relative to the original
