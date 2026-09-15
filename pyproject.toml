@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mutmut-win"
-version = "2.21.2"
+version = "2.21.3"
 description = "Windows-native mutation testing for Python, based on mutmut 3.5.0"
 readme = "README.md"
 license = "ISC AND BSD-3-Clause AND PSF-2.0"
@@ -30,6 +30,7 @@ dependencies = [
     "click>=8.3.3",
     "coverage>=7.3.0",
     "libcst>=1.8.5",
+    "pathspec>=1.1.1,<2",
     "psutil>=5.9",
     "pydantic>=2.0.0",
     # >=8.2: the worker passes per-mutant tests via pytest's @argfile syntax
@@ -105,6 +106,10 @@ exclude = [
 [tool.mutmut]
 paths_to_mutate = ["src/mutmut_win/"]
 tests_dir = ["tests/unit/"]
+# The staged unit tree legitimately needs ~30+ minutes (2.6k tests under
+# trampolines); the 300 s default aborted every full dogfood at the clean
+# phase (found during the MBR-2026-09-14-01 mutation run).
+clean_run_timeout = 2700
 
 [tool.ruff]
 target-version = "py314"

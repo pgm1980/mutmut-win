@@ -391,7 +391,7 @@ jobs:
 
           function Assert-MutmutVersion([string] $Executable) {
               $observedVersion = [string]::Join("`n", @(& $Executable --version))
-              if ($observedVersion -cne "mutmut-win, version 2.21.2") {
+              if ($observedVersion -cne "mutmut-win, version 2.21.3") {
                   throw "Unexpected installed version: $observedVersion"
               }
           }

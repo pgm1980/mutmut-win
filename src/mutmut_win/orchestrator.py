@@ -316,39 +316,68 @@ class MutationOrchestrator:
         leaves the new plan durably running/pending for the next observer.
         """
         from mutmut_win.file_setup import validate_staging_root
+        from mutmut_win.stall_watchdog import StallWatchdog
 
-        mutants_root = validate_staging_root()
-        stale_cicd_artifact = mutants_root / "mutmut-cicd-stats.json"
+        # MBR-2026-09-14-01 (Abschnitt 8): the prelude used to be completely
+        # silent while hashing the whole execution basis, which turned a slow
+        # or wedged startup into an undiagnosable multi-minute stall.  Make
+        # the encoding tolerant up front (cp1252 consoles), report phase
+        # entries, and let the watchdog dump the stack when progress stalls.
+        _ensure_tolerant_stdout()
+        debug = bool(self._config.debug)
+        watchdog = StallWatchdog()
+        watchdog.arm()
         try:
-            stale_cicd_artifact.unlink(missing_ok=True)
-        except OSError as exc:
-            raise OrchestratorError(
-                f"could not invalidate stale CI/CD artifact {stale_cicd_artifact}: {exc}"
-            ) from exc
+            if debug:
+                print("[debug] validating staging root…", file=sys.stderr)
+            mutants_root = validate_staging_root()
+            stale_cicd_artifact = mutants_root / "mutmut-cicd-stats.json"
+            try:
+                stale_cicd_artifact.unlink(missing_ok=True)
+            except OSError as exc:
+                raise OrchestratorError(
+                    f"could not invalidate stale CI/CD artifact {stale_cicd_artifact}: {exc}"
+                ) from exc
+            watchdog.progress()
 
-        self._recover_abandoned_run()
-        basis_evidence = self._stable_run_basis_evidence()
-        self._allow_cache_reuse = basis_evidence.complete
-        basis_fingerprint = basis_evidence.digest if basis_evidence.complete else None
-        basis_config_json = (
-            canonical_run_basis_config(self._config) if basis_evidence.complete else None
-        )
-        if not basis_evidence.complete:
-            print(
-                "The complete execution basis could not be fingerprinted — "
-                "cache reuse is disabled and this run cannot authorize CI/CD export "
-                "or --min-score."
+            if debug:
+                print("[debug] recovering abandoned prior run…", file=sys.stderr)
+            self._recover_abandoned_run()
+            watchdog.progress()
+
+            print("Fingerprinting execution basis (sources, tests, dependencies)…")
+            basis_started = time.monotonic()
+            basis_evidence = self._stable_run_basis_evidence()
+            watchdog.progress()
+            print(f"Execution basis fingerprinted in {time.monotonic() - basis_started:.1f}s")
+            self._allow_cache_reuse = basis_evidence.complete
+            basis_fingerprint = basis_evidence.digest if basis_evidence.complete else None
+            basis_config_json = (
+                canonical_run_basis_config(self._config) if basis_evidence.complete else None
             )
-        # The attempt is durable before generation can mutate staging. A hard
-        # kill now leaves a visible running attempt; an ordinary generation
-        # failure becomes the latest failed run instead of silently exposing
-        # an older completed snapshot as current.
-        self._active_run_id = begin_run(
-            self._db_path,
-            basis_fingerprint=basis_fingerprint,
-            basis_config_json=basis_config_json,
-            is_full_run=self._is_full_run,
-        )
+            if not basis_evidence.complete:
+                print(
+                    "The complete execution basis could not be fingerprinted — "
+                    "cache reuse is disabled and this run cannot authorize CI/CD export "
+                    "or --min-score."
+                )
+            # The attempt is durable before generation can mutate staging. A hard
+            # kill now leaves a visible running attempt; an ordinary generation
+            # failure becomes the latest failed run instead of silently exposing
+            # an older completed snapshot as current.
+            if debug:
+                print("[debug] persisting run attempt…", file=sys.stderr)
+            self._active_run_id = begin_run(
+                self._db_path,
+                basis_fingerprint=basis_fingerprint,
+                basis_config_json=basis_config_json,
+                is_full_run=self._is_full_run,
+            )
+            watchdog.progress()
+        finally:
+            # The pipeline prints its own progress and carries per-phase
+            # timeouts; prelude watchdog protection ends here.
+            watchdog.close()
         self._run_plan_finalized = False
         original_sys_path = sys.path.copy()
         try:

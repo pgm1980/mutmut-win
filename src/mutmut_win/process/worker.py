@@ -454,14 +454,29 @@ def pytest_collection_finish(session):
         )
 
 
+_proof_published = False
+
+
 def pytest_runtest_logreport(report):
-    """Publish proof only after pytest executed a non-skipped test call."""
+    """Publish proof once after pytest executed a non-skipped test call.
+
+    The first qualifying call report publishes the execution proof with the
+    full strict atomic-publication contract.  Every later report is a no-op:
+    republishing an identical token adds no proof strength, and one complete
+    publication chain per phase (instead of one per report) keeps filter
+    drivers from being fed thousands of fresh temporary files that starved
+    the whole phase under load (MBR-2026-09-14-01 follow-up).
+    """
     if report.when != "call" or report.skipped:
+        return
+    global _proof_published
+    if _proof_published:
         return
     marker_path = os.environ.get(_PATH_ENV)
     proof = os.environ.get(_PROOF_ENV)
     if marker_path and proof:
         atomic_write_bytes(Path(marker_path), proof.encode("utf-8"))
+        _proof_published = True
 '''
 
 # pytest accepts several informational/control options that exit successfully

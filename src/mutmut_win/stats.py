@@ -48,6 +48,8 @@ from mutmut_win.constants import (
     WORKSPACE_EXCLUDED_DIR_NAMES,
     WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
 )
+from mutmut_win.file_setup import _configured_entry_boundary, _is_dotenv_name
+from mutmut_win.gitignore_boundary import GitignoreBoundary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -488,6 +490,27 @@ def _editable_source_path(direct_url: str) -> Path | None:
     return Path(raw_path)
 
 
+def _project_descended_boundary(
+    project_boundary: GitignoreBoundary,
+    project_root: Path,
+    candidate: Path,
+) -> GitignoreBoundary | None:
+    """Return the normal-descend boundary for a tree inside the project.
+
+    Unlike explicitly configured entries these trees are engine inference
+    (effective import paths, editable installs), so the ignore decision of
+    every component applies.  Trees outside the project root have no
+    project-local gitignore domain and return ``None``.
+    """
+    try:
+        relative = candidate.resolve(strict=False).relative_to(project_root)
+    except (OSError, ValueError):  # fmt: skip
+        return None
+    if str(relative) in {".", ""}:
+        return project_boundary
+    return project_boundary.descend(*relative.parts)
+
+
 @component("tree", identity=("root", "label_prefix"))
 def _hash_context_tree(
     hasher: Any,
@@ -502,8 +525,15 @@ def _hash_context_tree(
     hash_file_timestamps: bool = True,
     hash_directory_timestamps: bool = False,
     hash_link_counts: bool = False,
+    ignore_boundary: GitignoreBoundary | None = None,
 ) -> bool:
-    """Hash every stable entry in one runtime-relevant tree."""
+    """Hash every stable entry in one runtime-relevant tree.
+
+    ``ignore_boundary`` prunes git-ignored subtrees before any stat or open
+    (MBR-2026-09-14-01).  Dotenv files are the deliberate carve-out: they
+    stay part of the basis even when git-ignored because tests can read them
+    through upward dotenv discovery although they are never staged.
+    """
 
     register_input_root(root)
     reuse_safe = True
@@ -541,14 +571,20 @@ def _hash_context_tree(
         hasher.update(f"{label_prefix}:root-unreadable\0".encode())
         return False
 
+    boundaries: dict[Path, GitignoreBoundary | None] = {resolved_root: ignore_boundary}
     for root_str, dirs, files in os.walk(resolved_root, onerror=record_walk_error):
         directory = Path(root_str)
+        walk_boundary = boundaries.get(directory)
         retained_dirs: list[str] = []
         for dirname in sorted(dirs):
             folded = dirname.casefold()
             if folded in skip_dirs or (directory == resolved_root and folded in root_skip_dirs):
                 continue
             child = directory / dirname
+            if walk_boundary is not None and walk_boundary.excludes_directory(dirname):
+                continue
+            if walk_boundary is not None:
+                boundaries[child] = walk_boundary.enter(dirname)
             try:
                 is_link = child.is_symlink() or child.is_junction()
             except OSError as exc:
@@ -595,6 +631,12 @@ def _hash_context_tree(
         dirs[:] = retained_dirs
         for name in sorted(files):
             if directory == resolved_root and _skip_context_file(name):
+                continue
+            if (
+                walk_boundary is not None
+                and walk_boundary.excludes_file(name)
+                and not _is_dotenv_name(name)
+            ):
                 continue
             path = directory / name
             absolute = _absolute_lexical_path(path)
@@ -865,6 +907,9 @@ def _hash_effective_import_paths(
         resolved_project_root = project_root.resolve(strict=True)
     except (OSError, RuntimeError):  # fmt: skip
         resolved_project_root = _absolute_lexical_path(project_root)
+    # Effective import roots inside the project must not re-introduce the
+    # git-ignored trees the project walk pruned (MBR-2026-09-14-01).
+    project_boundary = GitignoreBoundary.load(project_root)
 
     def covered_by(root: Path, candidates: tuple[tuple[Path, frozenset[str]], ...]) -> bool:
         for candidate, skipped_names in candidates:
@@ -1000,6 +1045,11 @@ def _hash_effective_import_paths(
             excluded=excluded,
             skip_dirs=skip_dirs,
             root_skip_dirs=root_skip_dirs,
+            ignore_boundary=_project_descended_boundary(
+                project_boundary,
+                resolved_project_root,
+                root,
+            ),
         ):
             reuse_safe = False
     return reuse_safe
@@ -1146,12 +1196,21 @@ def _installed_distribution_basis(
                 hasher.update(f"{identity}:unresolved-editable\0".encode())
                 reuse_safe = False
                 continue
+            # An editable install inside the project mirrors the project
+            # walk's ignore boundary; external editable sources have none.
+            project_boundary = GitignoreBoundary.load(project_root)
+            editable_boundary = _project_descended_boundary(
+                project_boundary,
+                project_root,
+                editable_path,
+            )
             if not _hash_context_tree(
                 hasher,
                 editable_path,
                 label_prefix=f"{identity}:editable",
                 seen=seen,
                 excluded=excluded,
+                ignore_boundary=editable_boundary,
             ):
                 reuse_safe = False
             if (
@@ -1247,12 +1306,14 @@ def _build_stats_context_evidence(
     # selected file; the schema marker prevents pre-boundary evidence reuse.
     project_hasher.update(b"pytest-boundary:v2\0")
     seen: set[Path] = set()
+    project_boundary = GitignoreBoundary.load(root)
     core_complete = _hash_context_tree(
         project_hasher,
         root,
         label_prefix="project",
         seen=seen,
         excluded=excluded_resolved,
+        ignore_boundary=project_boundary,
     )
     reuse_safe = core_complete
     if config.type_check_command:
@@ -1339,6 +1400,13 @@ def _build_stats_context_evidence(
                 # build/html/dist are therefore source content here, exactly
                 # as copy_also_copy_files treats their child directories.
                 root_skip_dirs=frozenset(),
+                # The entry itself is force-included (git add -f semantics);
+                # ignore files at or below it still prune its contents.
+                ignore_boundary=_configured_entry_boundary(
+                    project_boundary,
+                    root,
+                    absolute,
+                ),
             ):
                 reuse_safe = False
                 core_complete = False

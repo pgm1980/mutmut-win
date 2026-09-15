@@ -2646,8 +2646,11 @@ def test_dependency_export_body_is_path_independent_and_pinned(tmp_path: Path) -
         )
     bodies = [_dependency_body(stdout), *(_dependency_body(path.read_bytes()) for path in outputs)]
     assert bodies[0] == bodies[1] == bodies[2]
+    # Pinned dependency universe. v2.21.3 (MBR-2026-09-14-01): the pin moves
+    # with the deliberate addition of the pathspec runtime dependency
+    # (>=1.1.1,<2; hierarchical .gitignore walk pruning).
     assert hashlib.sha256(bodies[0]).hexdigest() == (
-        "56d652215797acef3307d59f7ea9849c4146e9b71aa9d62f5c7427598e813da4"
+        "ac6f3bde717885b420da8a146c72400613f5c7af4bfa5200f5984b2c1d65c07e"
     )
 
 

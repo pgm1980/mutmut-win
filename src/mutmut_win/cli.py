@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 
@@ -124,6 +125,33 @@ def _fixed_workspace_root_refusal(dirname: str, *, action: str) -> str | None:
 def _force_cleanup_refusal(dirname: str) -> str | None:
     """Return a fail-closed reason when a fixed --force root is unsafe."""
     return _fixed_workspace_root_refusal(dirname, action="--force cleanup")
+
+
+#: Backoff sleeps between --force removal attempts.  ``shutil.rmtree`` with
+#: ``ignore_errors=True`` races real-time antivirus and search indexers over
+#: freshly written files: the existence check right after removal can fail
+#: although the lock lasts only milliseconds (MBR-2026-09-14-01, Nebenbefund A).
+#: Tests shrink these delays to zero instead of sleeping.
+_FORCE_CLEANUP_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
+
+
+def _remove_force_cleanup_root(path: Path) -> bool:
+    """Remove one ``--force`` root, retrying through transient filter locks.
+
+    Returns ``True`` when the root is gone.  The refusal after every retry
+    fails deliberately: partial deletions must never run as a clean slate
+    (issue #101 / A3-FD-009), and a persistent lock is indistinguishable
+    from a live cooperating process.
+    """
+    import shutil
+
+    for delay in (0.0, *_FORCE_CLEANUP_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return True
+    return False
 
 
 def _require_safe_workspace_roots(
@@ -654,8 +682,6 @@ def run(
         # read-only namespace plan have been proven safe. The workspace lock
         # acquired above continues to serialize both removals.
         if force:
-            import shutil
-
             for dirname in ("mutants", ".mutmut-cache"):
                 p = Path(dirname)
                 if p.exists():
@@ -664,11 +690,13 @@ def run(
                         click.echo(refusal, err=True)
                         _emit_json_error(json_stdout, refusal, 1)
                         sys.exit(1)
-                    shutil.rmtree(p, ignore_errors=True)
-                    # Issue #101 / A3-FD-009: rmtree(ignore_errors=True) plus an
-                    # unconditional success message sold a PARTIAL deletion
-                    # (files locked by another process) as a clean slate.
-                    if p.exists():
+                    if not _remove_force_cleanup_root(p):
+                        # Issue #101 / A3-FD-009: rmtree(ignore_errors=True)
+                        # plus an unconditional success message sold a
+                        # PARTIAL deletion (files locked by another process)
+                        # as a clean slate. Retries already absorbed the
+                        # transient antivirus/indexer races; whatever still
+                        # blocks removal now is treated as a live lock.
                         message = (
                             f"Could not fully remove {dirname}/ (files in use?); "
                             "refusing to run with stale state."
@@ -676,8 +704,7 @@ def run(
                         click.echo(message, err=True)
                         _emit_json_error(json_stdout, message, 1)
                         sys.exit(1)
-                    else:
-                        click.echo(f"Removed {dirname}/")
+                    click.echo(f"Removed {dirname}/")
 
         # Only a FULL run may purge stale DB rows (issue #96): subset runs know
         # just a slice of the valid mutant set and must never delete history.

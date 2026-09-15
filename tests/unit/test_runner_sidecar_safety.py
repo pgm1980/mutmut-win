@@ -234,6 +234,66 @@ def test_pytest_argfile_refuses_redirected_parent_before_outside_write(tmp_path:
     assert list(outside.iterdir()) == []
 
 
+def test_generated_phase_proof_publishes_once_per_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The execution proof is published exactly once per phase.
+
+    The first qualifying call report carries the full strict publication
+    contract; every later report must be a no-op. Per-report republication
+    fed filter drivers thousands of fresh temporary files per phase and
+    starved the whole run under load (MBR-2026-09-14-01 follow-up).
+    """
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+    marker_path, token = prepare_pytest_phase_guard(env, staging)
+    staging_stat = staging.stat()
+    monkeypatch.setenv(
+        "MUTMUT_PYTEST_ALLOWED_DIRS",
+        json.dumps(
+            [
+                {
+                    "path": str(staging.resolve()),
+                    "st_dev": staging_stat.st_dev,
+                    "st_ino": staging_stat.st_ino,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setenv("MUTMUT_PYTEST_ALLOWED_FILES", "[]")
+    monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PATH_ENV, env[_PYTEST_PHASE_SENTINEL_PATH_ENV])
+    monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PROOF_ENV, env[_PYTEST_PHASE_SENTINEL_PROOF_ENV])
+
+    # run_path returns a COPY of the module globals, so patching the returned
+    # namespace cannot intercept the hook; patch the source module BEFORE the
+    # plugin is published so its import binds the counting wrapper.
+    publications: list[Path] = []
+    real_atomic = atomic_file_module.atomic_write_bytes
+
+    def counting_atomic_write(path: Path, payload: bytes, **_kwargs: object) -> None:
+        if Path(path) == marker_path:
+            publications.append(Path(path))
+        real_atomic(path, payload)
+
+    monkeypatch.setattr(atomic_file_module, "atomic_write_bytes", counting_atomic_write)
+    namespace = runpy.run_path(str(staging / "_mutmut_phase_guard.py"))
+    hook = cast("Callable[[object], None]", namespace["pytest_runtest_logreport"])
+    call_report = SimpleNamespace(when="call", skipped=False)
+
+    hook(SimpleNamespace(when="setup", skipped=False))
+    hook(SimpleNamespace(when="call", skipped=True))
+    assert publications == []
+
+    hook(call_report)
+    assert publications == [marker_path]
+    assert marker_path.read_text(encoding="utf-8") == token
+
+    hook(call_report)
+    hook(call_report)
+    assert publications == [marker_path]
+
+
 def test_generated_phase_proof_detects_parent_swap_before_outside_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

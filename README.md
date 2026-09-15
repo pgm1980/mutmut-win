@@ -2,7 +2,7 @@
 
 <!-- PUBLICATION_STATE_START -->
 <!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.2 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
+Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
 <!-- PUBLICATION_STATE_END -->
 
 **Windows-native mutation testing for Python.**
@@ -106,13 +106,13 @@ external-publication verification contract at the top of this document before
 using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.2" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3" --dev
 ```
 
 Do not use the pinned dependency unless the required external tag/release
@@ -548,7 +548,20 @@ subprocess output, conservative mapping fallback, and distinct IDs for repeated
 same-named definitions. `do_not_mutate_patterns` also matches the qualified
 `Class.method` name, not only the bare method name. v2.21.0 completes this
 adversarial hardening pass, including the fail-closed release, dependency,
-artifact, and security contracts documented in the repository. Details:
+artifact, and security contracts documented in the repository. The current release
+closes the externally reported run-startup blocker (MBR-2026-09-14-01): staging
+walks, staging copies and the execution-basis fingerprint now respect
+hierarchical `.gitignore` files (git `add -f` semantics for explicitly
+configured entries; dotenv carve-out), so a correctly ignored build tree is
+no longer enumerated, copied or hashed - a 120k-file Lean `.lake` tree went
+from a 15-60 minute silent hang to seconds. The same release makes run
+startup observable (phase progress lines, per-phase durations, `--debug`
+step traces, and a stall watchdog that dumps the Python stack after 60
+seconds without progress), retries `--force` cleanup through transient file
+locks, absorbs transient Windows filter-driver interference at three narrow
+atomic-publication points, publishes the pytest phase-guard execution proof
+once per phase instead of once per test report, and documents
+`clean_run_timeout` for large staged suites. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.
