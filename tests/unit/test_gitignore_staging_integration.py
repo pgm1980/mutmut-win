@@ -31,6 +31,7 @@ def _make_project(
     gitignore: str = ".lake/\n",
     with_lake: bool = True,
     lake_files: int = 3,
+    lake_gitignore: str | None = None,
 ) -> None:
     (root / ".gitignore").write_text(gitignore, encoding="utf-8")
     (root / "src").mkdir(parents=True, exist_ok=True)
@@ -49,6 +50,9 @@ def _make_project(
         lake.mkdir(parents=True, exist_ok=True)
         for index in range(lake_files):
             (lake / f"blob_{index}.bin").write_bytes(b"\0" * 16)
+        if lake_gitignore is not None:
+            (lake.parent / ".gitignore").write_text(lake_gitignore, encoding="utf-8")
+            (lake.parent / "keep.txt").write_text("keep\n", encoding="utf-8")
 
 
 class TestAutomaticStagingInputs:
@@ -102,6 +106,32 @@ class TestConfiguredStagingInputs:
             str(source) for source, _target in _iter_configured_staging_inputs(config, frozenset())
         }
         assert any(".lake" in name and "blob_0" in name for name in planned)
+
+    def test_forced_entry_still_respects_its_own_nested_gitignore(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``git add -f`` immunises against ANCESTRAL rules, not against own ones.
+
+        The forced entry restarts the level list, so an ignore file *inside*
+        the entry keeps governing it.  Every other fixture here uses a single
+        unanchored root pattern, which matches under a truncated prefix just
+        as well as under the correct one — so a wrong prefix or a wrongly
+        reset level list stays invisible.  The anchored ``/build/`` below only
+        matches when the entry's own ignore file is resolved relative to the
+        entry itself.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        _make_project(project, lake_gitignore="/build/\n")
+        monkeypatch.chdir(project)
+        config = MutmutConfig(also_copy=["tests/test_project/.lake"])
+        planned = {
+            str(source) for source, _target in _iter_configured_staging_inputs(config, frozenset())
+        }
+        # The entry escapes the ancestral ".lake/" rule ...
+        assert any("keep.txt" in name for name in planned)
+        # ... but its own anchored rule still prunes the build subtree.
+        assert not any("blob_" in name for name in planned)
 
 
 class TestCopyAlsoCopyFiles:

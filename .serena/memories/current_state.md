@@ -1,29 +1,36 @@
-# Current State — Sprint 40, timeout display and basis diagnostics
-
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
+# Current State — Sprint 41, v2.21.3 evidence closure
 
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: candidate_validated -->
+<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
 <!-- RELEASE_TARGET: v2.21.3 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.3-lake-basis` -->
-<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_3.md -->
+<!-- RELEASE_BRANCH: `fix/v2.21.3-evidence-closure` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 
-Active work: MBR-2026-09-14-01 fix package (gitignore-respect Fix B + force-retry A +
-prelude observability C + atomic-write transient hardening + clean_run_timeout=2700).
-Status and evidence live in memory `mbr_2026_09_14_fix_work`. New dep:
-pathspec>=1.1.1,<2 (runtime). Full suite green pre-commit; mutation testing of
-the two new modules and the release gates are open.
+Active work: PR #139 on `fix/v2.21.3-evidence-closure` — closes the v2.21.3
+mutation-testing evidence gap, fixes the `_excludes` nested-gitignore defect
+found while closing it, decouples the governance suite from documentation
+files, and carries the repository cleanup (`.claude/`, `bug_reporting/`,
+`_config/fs_mcp_server.md`, `_docs/audit/`, `.opencode/`, `_misc/` removed).
+Details, methods and the resume path: memory `mbr_2026_09_14_fix_work`.
+
+Config reality check: `clean_run_timeout = 5400` (raised in daf5f34; older
+notes saying 2700 are obsolete). Runtime dep `pathspec>=1.1.1,<2`.
+
+Two standing rules established this sprint:
+- Release evidence lives ONLY in the GitHub release body. No
+  `bug_reporting/RELEASE_<version>.md` is created any more.
+- No test may require a documentation file. `.sprint/state.md` is exempt —
+  it is the sprint control document, not documentation.
+
+Open: v2.21.4 cut carrying the `_excludes` fix (the published v2.21.3 still
+has the defect; its release body documents it with a workaround).
 
 <!-- ARCHIVE_START -->
 

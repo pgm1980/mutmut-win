@@ -9,7 +9,9 @@ stall watchdog dumps the Python stack when no progress is observable.
 
 from __future__ import annotations
 
+import io
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,7 +23,11 @@ from mutmut_win.cli import cli as cli_entry
 from mutmut_win.config import MutmutConfig
 from mutmut_win.models import MutationRunResult
 from mutmut_win.orchestrator import MutationOrchestrator
-from mutmut_win.stall_watchdog import StallWatchdog
+from mutmut_win.stall_watchdog import (
+    DEFAULT_STALL_TIMEOUT_SECONDS,
+    StallWatchdog,
+    _stream_with_fileno,
+)
 from mutmut_win.stats import RunBasisEvidence
 
 
@@ -93,6 +99,20 @@ class TestForceCleanupRetry:
         assert (tmp_path / "mutants").exists()
 
 
+class TestStreamWithFileno:
+    """The fallback chain is the watchdog's only link to a real descriptor."""
+
+    def test_stream_without_fileno_falls_back_to_original_stderr(self) -> None:
+        assert _stream_with_fileno(io.StringIO()) is sys.__stderr__
+
+    def test_missing_stream_falls_back_to_original_stderr(self) -> None:
+        assert _stream_with_fileno(None) is sys.__stderr__
+
+    def test_no_usable_stream_gives_up_silently(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "__stderr__", None)
+        assert _stream_with_fileno(io.StringIO()) is None
+
+
 class TestStallWatchdog:
     def _mocked_faulthandler(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         fake = MagicMock()
@@ -122,6 +142,59 @@ class TestStallWatchdog:
         watchdog.progress()
         fake.cancel_dump_traceback_later.assert_called_once()
         assert fake.dump_traceback_later.call_count == 1
+
+    def test_default_timeout_is_pinned(self) -> None:
+        """Module-level constants are outside the mutation surface — pin them here."""
+        assert StallWatchdog().timeout == DEFAULT_STALL_TIMEOUT_SECONDS == 60.0
+
+    def test_explicit_file_is_used_as_the_dump_target(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The ``file`` argument must reach faulthandler, not just be accepted."""
+        fake = self._mocked_faulthandler(monkeypatch)
+        with (tmp_path / "evidence.log").open("w", encoding="utf-8") as stream:
+            watchdog = StallWatchdog(file=stream)
+            watchdog.arm()
+            _args, kwargs = fake.dump_traceback_later.call_args
+            assert kwargs["file"] is stream
+
+    def test_progress_rearm_passes_the_same_repeating_contract(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Re-arming must keep timeout, repeat and target — not just fire again.
+
+        Without these assertions a re-arm that drops ``repeat`` produces a
+        single dump per stall phase instead of one every interval, and the
+        degradation is invisible for 60 seconds.
+        """
+        fake = self._mocked_faulthandler(monkeypatch)
+        with (tmp_path / "evidence.log").open("w", encoding="utf-8") as stream:
+            watchdog = StallWatchdog(timeout=7.5, file=stream)
+            watchdog.arm()
+            fake.reset_mock()
+            watchdog.progress()
+            args, kwargs = fake.dump_traceback_later.call_args
+            assert args[0] == 7.5
+            assert kwargs["repeat"] is True
+            assert kwargs["file"] is stream
+
+    def test_context_manager_yields_the_watchdog(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``with StallWatchdog() as w`` must bind the instance, not None."""
+        self._mocked_faulthandler(monkeypatch)
+        with StallWatchdog() as watchdog:
+            assert isinstance(watchdog, StallWatchdog)
+            assert watchdog.armed is True
+
+    def test_arm_is_a_no_op_without_any_usable_stream(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No file descriptor anywhere must stay a silent no-op, never a crash."""
+        fake = self._mocked_faulthandler(monkeypatch)
+        monkeypatch.setattr(sys, "__stderr__", None)
+        watchdog = StallWatchdog(file=io.StringIO())
+        watchdog.arm()
+        assert watchdog.armed is False
+        fake.dump_traceback_later.assert_not_called()
 
     def test_close_disarms_and_is_repeatable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = self._mocked_faulthandler(monkeypatch)

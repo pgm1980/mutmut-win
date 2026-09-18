@@ -167,20 +167,6 @@ class GitignoreBoundary:
             subtree_excluded=self._subtree_excluded or self.excludes_directory(name),
         )
 
-    def enter_forced(self, name: str) -> GitignoreBoundary:
-        """Enter one directory as an explicitly configured entry.
-
-        Explicit configuration mirrors Git's handling of tracked files
-        (``git add -f``): ignore decisions from ancestral ignore files do not
-        reach into the entry.  Only ignore files at or below the entered
-        directory govern its contents, so the level list restarts here.
-        """
-        directory = self._directory / name
-        prefix = _candidate(self._prefix, name)
-        level = _load_ignore_level(directory, prefix)
-        levels = (level,) if level is not None else ()
-        return GitignoreBoundary(self._root, directory, prefix, levels)
-
     def descend(self, *parts: str) -> GitignoreBoundary:
         """Return the boundary at a relative path using normal enter rules."""
         current = self
@@ -225,11 +211,15 @@ class GitignoreBoundary:
         """Resolve the layered ignore decision for one candidate path."""
         if self._subtree_excluded:
             return True
-        probes = (candidate, f"{candidate}/") if directory else (candidate,)
         for level in reversed(self._levels):
+            # Git resolves every pattern relative to the directory holding the
+            # ignore file.  Matching the walk-root-relative candidate instead
+            # would both miss anchored patterns in nested files and let an
+            # ancestor path component satisfy an unanchored one.
             relative = _relative_to_base(candidate, level.base)
             if relative is None:
                 continue
+            probes = (relative, f"{relative}/") if directory else (relative,)
             decision: bool | None = None
             for pattern in level.patterns:
                 # Git applies the LAST matching pattern; within one level the

@@ -1,10 +1,5 @@
 # mutmut-win
 
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
-
 **Windows-native mutation testing for Python.**
 
 mutmut-win runs your test suite against automatically generated code
@@ -101,23 +96,22 @@ mutmut-compatible: if you know mutmut, you know mutmut-win.
 
 mutmut-win is distributed via immutable Git release tags — PyPI publishing is
 not part of the release sequence (see *Release policy* below). This source tree
-defines the package version used by both commands below. Apply the canonical
-external-publication verification contract at the top of this document before
-using either command:
+defines the package version used by both commands below. Publication state is
+external, mutable state: verify that the exact annotated tag and its matching
+GitHub release exist before using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4" --dev
 ```
 
-Do not use the pinned dependency unless the required external tag/release
-verification succeeds. The existing v2.21.0 tag remains immutable release
-provenance and is never moved.
+Do not use the pinned dependency unless that verification succeeds. Published
+tags are immutable release provenance and are never moved or deleted.
 
 ## Quick start
 
@@ -212,8 +206,7 @@ The report compares observed inputs at the start and end of a run. It includes
 paths, environment variable names and file metadata; file contents and environment
 values are represented by private comparison tokens. Recording adds CPU, memory
 and elapsed time. The report is written after the run and does not determine
-whether its mutation results are valid. See the [diagnostic report guide](_docs/basis_diagnostics.md)
-for completeness fields, comparison limits and handling recording errors.
+whether its mutation results are valid.
 
 The timeout message shows the minimum and maximum budgets actually assigned to
 pending tasks and the formula used. It reports the full-suite fallback whenever

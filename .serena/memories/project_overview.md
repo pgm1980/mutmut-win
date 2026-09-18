@@ -1,10 +1,5 @@
 # mutmut-win — Project Overview
 
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
-
 ## Purpose
 Windows-native mutation testing for Python, based on mutmut 3.5.0 (upstream explicitly
 blocks Windows, mutmut#397). Replaces the Unix-only process layer (os.fork, RLIMIT_CPU,
