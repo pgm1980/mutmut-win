@@ -101,13 +101,13 @@ external, mutable state: verify that the exact annotated tag and its matching
 GitHub release exist before using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4" --dev
 ```
 
 Do not use the pinned dependency unless that verification succeeds. Published

@@ -1,7 +1,7 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
-**Version:** v2.21.3 (verbindlicher Versionsstand dieser Anleitung)
+**Version:** v2.21.4 (verbindlicher Versionsstand dieser Anleitung)
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
 > **Releasehinweis:** Der Publikationszustand ist externer, veränderlicher
@@ -25,14 +25,14 @@
 ## Schritt 1: mutmut-win installieren
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.3" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4" --dev
 ```
 
 Verifikation:
 ```bash
 uv run mutmut-win --version
 ```
-Erwartete Ausgabe: `mutmut-win, version 2.21.3`
+Erwartete Ausgabe: `mutmut-win, version 2.21.4`
 
 Scheitert die Live-Prüfung des Tags oder stimmt sein Ziel nicht mit dem
 freigegebenen Commit überein, darf diese Installationszeile nicht ausgeführt

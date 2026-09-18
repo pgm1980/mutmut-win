@@ -1,8 +1,8 @@
 ---
-current_sprint: "41"
-sprint_goal: "v2.21.3: candidate validated"
-branch: "fix/v2.21.3-evidence-closure"
-started_at: "2026-09-15"
+current_sprint: "42"
+sprint_goal: "v2.21.4: candidate validated"
+branch: "fix/v2.21.4-nested-gitignore-resolution"
+started_at: "2026-09-18"
 phase: "candidate_validated"
 candidate_commit: ""
 candidate_tree: ""
@@ -24,8 +24,8 @@ documentation_updated: true
 
 <!-- RELEASE_PHASE: candidate_validated -->
 <!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
-<!-- RELEASE_TARGET: v2.21.3 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.3-evidence-closure` -->
+<!-- RELEASE_TARGET: v2.21.4 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.4-nested-gitignore-resolution` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
