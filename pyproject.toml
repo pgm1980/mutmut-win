@@ -90,7 +90,6 @@ include = [
     "/scripts",
     "/.semgrepignore",
     "/README.md",
-    "/_docs/basis_diagnostics.md",
     "/LICENSE",
     "/pyproject.toml",
     "/uv.lock",

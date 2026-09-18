@@ -1,17 +1,13 @@
 # mutmut-win Installation für Claude Code Python-Projekte
 
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
-
 **Zweck:** Diese Anleitung installiert und konfiguriert mutmut-win in einem bestehenden Python-Projekt.
 **Version:** v2.21.3 (verbindlicher Versionsstand dieser Anleitung)
 **Ausführung:** Sage Claude Code: *"Führe die Installation aus entsprechend mutmut-win-install.md"*
 
-> **Releasehinweis:** Vor der Installation gilt der kanonische externe
-> Publikationsvertrag am Anfang dieser Anleitung. Das v2.21.0-Tag bleibt
-> unverändert.
+> **Releasehinweis:** Der Publikationszustand ist externer, veränderlicher
+> Zustand. Prüfe vor der Installation, dass das exakte annotierte Tag und das
+> zugehörige GitHub-Release existieren. Veröffentlichte Tags bleiben unverändert
+> und werden weder verschoben noch gelöscht.
 
 ---
 
