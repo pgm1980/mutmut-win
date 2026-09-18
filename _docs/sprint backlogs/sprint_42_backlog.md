@@ -22,15 +22,15 @@ Defekt dort und in allen mitgelieferten Fixtures unsichtbar.
 
 ## Arbeitsumfang
 
-- [ ] `_excludes` löst Muster relativ zur eigenen Ignore-Datei auf; Probes aus `relative` statt aus `candidate`
-- [ ] Vier Regressionstests für verschachtelte `.gitignore`-Semantik, jeweils gegen den ungepatchten Stand als fehlschlagend nachgewiesen
-- [ ] Toten Code `enter_forced` entfernen (kein Aufrufer, kein Test, kein Export; 26 unkillbare Mutanten)
-- [ ] Mutationstesting mit gezielten Gates je Modul, Kills über Gates vereinigt, Score ≥ 80 % oder dokumentierte Survivors
-- [ ] Governance-Suite von Dokumentationsdateien entkoppeln — kein Test setzt noch eine Doku-Datei voraus
-- [ ] Vollständige lokale Gates (Vollsuite, Ruff, Format, mypy, Import-Linter, pip-audit, Semgrep, Native)
-- [ ] Version, Installationspins und Dokumente auf v2.21.4 synchronisieren
-- [ ] Kandidat reviewt und tree-identisch nach `main` integrieren, integrierte Finalgates wiederholen
-- [ ] Annotierten Tag `v2.21.4` setzen und GitHub-Release mit Notes veröffentlichen (kein PyPI)
+- [x] `_excludes` löst Muster relativ zur eigenen Ignore-Datei auf; Probes aus `relative` statt aus `candidate`
+- [x] Vier Regressionstests für verschachtelte `.gitignore`-Semantik, jeweils gegen den ungepatchten Stand als fehlschlagend nachgewiesen
+- [x] Toten Code `enter_forced` entfernen (kein Aufrufer, kein Test, kein Export; 26 unkillbare Mutanten)
+- [x] Mutationstesting mit gezielten Gates je Modul, Kills über Gates vereinigt, Score ≥ 80 % oder dokumentierte Survivors
+- [x] Governance-Suite von Dokumentationsdateien entkoppeln — kein Test setzt noch eine Doku-Datei voraus
+- [x] Vollständige lokale Gates (Vollsuite, Ruff, Format, mypy, Import-Linter, pip-audit, Semgrep, Native)
+- [x] Version, Installationspins und Dokumente auf v2.21.4 synchronisieren
+- [x] Kandidat reviewt und tree-identisch nach `main` integrieren, integrierte Finalgates wiederholen
+- [x] Annotierten Tag `v2.21.4` setzen und GitHub-Release mit Notes veröffentlichen (kein PyPI)
 
 ## Governance-Hinweis
 

@@ -1,15 +1,15 @@
 ---
 current_sprint: "42"
-sprint_goal: "v2.21.4: candidate validated"
-branch: "fix/v2.21.4-nested-gitignore-resolution"
+sprint_goal: "v2.21.4: released"
+branch: "main"
 started_at: "2026-09-18"
-phase: "candidate_validated"
-candidate_commit: ""
-candidate_tree: ""
-integrated_commit: ""
-integrated_tree: ""
-release_tag: ""
-housekeeping_done: false
+phase: "released"
+candidate_commit: "4319744ccb51b55d900aa24c49c6b2fd864911e2"
+candidate_tree: "aa9bdf1135cf622e67da42f740b50713d1a44b94"
+integrated_commit: "4d7f950679e3f78d906b3b068e01a0ee5dcb5a4b"
+integrated_tree: "aa9bdf1135cf622e67da42f740b50713d1a44b94"
+release_tag: "v2.21.4"
+housekeeping_done: true
 memory_updated: true
 github_issues_closed: true
 sprint_backlog_written: true
@@ -22,10 +22,10 @@ documentation_updated: true
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: candidate_validated -->
-<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v2.21.4 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.4-nested-gitignore-resolution` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
