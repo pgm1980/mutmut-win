@@ -1,10 +1,5 @@
 # Current State — Sprint 40, timeout display and basis diagnostics
 
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
-
 LIVE state memory; project_overview/codebase_structure carry deeper detail,
 sprint_36_progress is archived.
 

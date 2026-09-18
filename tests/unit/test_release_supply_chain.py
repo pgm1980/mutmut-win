@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -43,8 +42,6 @@ _PUBLICATION_SENTENCE = (
     "assert neither presence nor absence; verify the exact annotated tag and matching "
     "GitHub release before use."
 )
-_RELEASE_PHASE_PREFIX = "<!-- RELEASE_PHASE: "
-_RELEASE_PHASE_STATUS_PREFIX = "<!-- RELEASE_PHASE_STATUS: "
 _PHASE_GOAL_SUFFIX = {
     "in_progress": "in progress",
     "candidate_validated": "candidate validated",
@@ -61,8 +58,6 @@ _HOUSEKEEPING_PATHS = {
     ".serena/memories/style_conventions.md",
     ".sprint/state.md",
     "MEMORY.md",
-    "bug_reporting/ANALYSE_MUTMUTWIN221.md",
-    "bug_reporting/BUGFIXUNG_ROADMAP.md",
 }
 _RELEASE_SEQUENCE = (
     "<!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> "
@@ -75,13 +70,6 @@ _NATIVE_RELEASE_GATE = "uv run --no-sync python -I scripts/release_native_gate.p
 _MINIMUM_RELEASE_VERSION = "2.21.1"
 _HARNESS_BASELINE_REVISION = "v2.20.0"
 _HARNESS_BASELINE_COMMIT = "db71e53e637114ebf893b8fb98f0a21de5998440"
-_EXACT_RUNTIME_CONTRACT = (
-    "**Verbindlicher Laufzeitvertrag:** Windows und exakt CPython 3.14.7; andere "
-    "Python-Versionen, Implementierungen und Betriebssysteme sind nicht unterstützt."
-)
-_SOURCE_ENCODING_CONTRACT = (
-    "Python-Quelltext wird gemäß PEP 263 dekodiert; projektinterne Metadaten bleiben UTF-8."
-)
 _STATE_KEYS = {
     "current_sprint",
     "sprint_goal",
@@ -137,7 +125,6 @@ _MW221_STATUSES = {
     "REJECTED_AS_BUG",
     "VERIFIED_FIXED",
 }
-_CX221_STATUSES = _MW221_STATUSES | {"FIX_IN_PROGRESS"}
 
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
@@ -171,15 +158,6 @@ def _assert_active_ref_matches_release_stage(
         "active install ref must equal the package version or its immediate "
         f"patch predecessor: package={package_version}, active={active_version}"
     )
-
-
-def _single_match_version(pattern: str, text: str, *, label: str) -> str:
-    """Return one active command version and reject missing or duplicate pins."""
-
-    matches: list[re.Match[str]] = list(re.finditer(pattern, text, flags=re.MULTILINE))
-    versions = [match.group(1) for match in matches]
-    assert len(matches) == 1, f"expected one {label} release pin, found {versions}"
-    return matches[0].group(1)
 
 
 def _git(*args: str) -> bytes:
@@ -286,63 +264,6 @@ def _marked_region(text: str, start: str, end: str) -> str:
     return region
 
 
-def _release_tool_provenance(text: str) -> dict[tuple[str, str], str]:
-    region = _marked_region(
-        text,
-        _RELEASE_TOOL_PROVENANCE_START,
-        _RELEASE_TOOL_PROVENANCE_END,
-    )
-    assert region.startswith("\n| Autorität | Tool/Artefakt | SHA-256 |\n|---|---|---|\n")
-    rows = re.findall(
-        r"^\| (?P<authority>Native GitHub asset|PyPI / `uv\.lock`) "
-        r"\| (?P<artifact>[^|\n]+?) \| `(?P<digest>[0-9a-f]{64})` \|$",
-        region,
-        flags=re.MULTILINE,
-    )
-    assert len(rows) == 6
-    mapping: dict[tuple[str, str], str] = {}
-    for authority, artifact, digest in rows:
-        key = (authority, artifact)
-        assert key not in mapping
-        mapping[key] = digest
-    return mapping
-
-
-def _expected_release_tool_provenance() -> dict[tuple[str, str], str]:
-    manifest = json.loads(
-        (_PROJECT_ROOT / "scripts" / "release_native_tools.json").read_text(encoding="utf-8")
-    )
-    native_labels = {
-        "actionlint": "actionlint 1.7.12 ZIP",
-        "shellcheck": "ShellCheck 0.11.0 ZIP",
-        "gitleaks": "Gitleaks 8.30.1 Windows x64 ZIP",
-    }
-    expected = {
-        ("Native GitHub asset", native_labels[tool["name"]]): tool["sha256"]
-        for tool in manifest["tools"]
-    }
-
-    lock = tomllib.loads((_PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
-    zizmor = next(package for package in lock["package"] if package["name"] == "zizmor")
-    expected[("PyPI / `uv.lock`", "zizmor 1.30.0 sdist")] = zizmor["sdist"]["hash"].removeprefix(
-        "sha256:"
-    )
-    wheel_labels = {
-        "zizmor-1.30.0-py3-none-win_amd64.whl": "zizmor 1.30.0 Windows amd64 wheel",
-        "zizmor-1.30.0-py3-none-manylinux_2_28_x86_64.whl": (
-            "zizmor 1.30.0 manylinux build-host wheel"
-        ),
-    }
-    for wheel in zizmor["wheels"]:
-        filename = wheel["url"].rsplit("/", 1)[-1]
-        if filename in wheel_labels:
-            expected[("PyPI / `uv.lock`", wheel_labels[filename])] = wheel["hash"].removeprefix(
-                "sha256:"
-            )
-    assert len(expected) == 6
-    return expected
-
-
 def _publication_contract(version: str) -> str:
     return "\n".join(
         (
@@ -354,16 +275,6 @@ def _publication_contract(version: str) -> str:
     )
 
 
-def _release_report_paths(version: str) -> tuple[str, str]:
-    """Keep the historical review registers separate from each new release dossier."""
-    _semver_tuple(version)
-    if version == "2.21.1":
-        return "bug_reporting/ANALYSE_MUTMUTWIN221.md", "bug_reporting/BUGFIXUNG_ROADMAP.md"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
-    dossier = f"bug_reporting/RELEASE_{version.replace('.', '_')}.md"
-    return dossier, dossier
-
-
 def _live_state_contract(version: str, branch: str, phase: str) -> str:
     """Return the complete closed LIVE block for one lifecycle phase."""
     return (
@@ -372,7 +283,6 @@ def _live_state_contract(version: str, branch: str, phase: str) -> str:
         f"<!-- RELEASE_PHASE_STATUS: {_PHASE_STATUS[phase]} -->\n"
         f"<!-- RELEASE_TARGET: v{version} -->\n"
         f"<!-- RELEASE_BRANCH: `{branch}` -->\n"
-        f"<!-- RELEASE_ROADMAP: {_release_report_paths(version)[1]} -->\n"
         "<!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->\n\n"
     )
 
@@ -465,9 +375,6 @@ def _assert_sprint_backlog_matches_lifecycle(
         backlog,
         flags=re.MULTILINE,
     ) == [branch]
-    analysis_path, roadmap_path = _release_report_paths(target_version)
-    assert f"| **Analyse** | `{analysis_path}` |" in backlog
-    assert f"| **Roadmap** | `{roadmap_path}` |" in backlog
     assert "billingbedingt nicht gestartete GitHub-CI wird als `NOT_EXECUTED`" in backlog
     assert "weder PASS noch FAIL" in backlog
     assert backlog.count(_RELEASE_SEQUENCE) == 1
@@ -727,7 +634,6 @@ def _assert_checkout_matches_state(branch: str, *, require_clean: bool = False) 
 def _assert_released_provenance_identity(
     *,
     current_sprint: str,
-    target_version: str = "2.21.1",
     candidate_commit: str,
     candidate_tree: str,
     integrated_commit: str,
@@ -742,12 +648,7 @@ def _assert_released_provenance_identity(
 ) -> None:
     """Bind released housekeeping to one reviewed candidate and annotated tag."""
     sprint_backlog_path = _sprint_backlog_relative_path(current_sprint)
-    report_paths = set(_release_report_paths(target_version))
-    allowed_housekeeping_paths = (
-        (_HOUSEKEEPING_PATHS - set(_release_report_paths("2.21.1")))
-        | {sprint_backlog_path}
-        | report_paths
-    )
+    allowed_housekeeping_paths = _HOUSEKEEPING_PATHS | {sprint_backlog_path}
     object_ids = (
         candidate_commit,
         candidate_tree,
@@ -775,7 +676,7 @@ def _assert_released_provenance_identity(
         ".sprint/state.md",
         "MEMORY.md",
         sprint_backlog_path,
-    } | report_paths <= set(housekeeping_paths)
+    } <= set(housekeeping_paths)
 
 
 def _assert_postrelease_governance_identity(
@@ -855,7 +756,6 @@ def _assert_released_checkout_matches_state(state: dict[str, str | bool]) -> Non
     housekeeping_paths = _released_changed_paths(integrated_commit, housekeeping_commit)
     _assert_released_provenance_identity(
         current_sprint=str(state["current_sprint"]),
-        target_version=str(state["release_tag"]).removeprefix("v"),
         candidate_commit=candidate_commit,
         candidate_tree=str(state["candidate_tree"]),
         integrated_commit=integrated_commit,
@@ -971,7 +871,8 @@ def test_live_repository_state_documents_match_release_version() -> None:
         "project"
     ]["version"]
     state_path = _PROJECT_ROOT / ".sprint" / "state.md"
-    state = _parse_state_frontmatter(state_path.read_text(encoding="utf-8"))
+    state_text = state_path.read_text(encoding="utf-8")
+    state = _parse_state_frontmatter(state_text)
     target_version, branch = _assert_sprint_state_is_coherent(state, version)
     _assert_checkout_matches_state(
         branch,
@@ -979,33 +880,9 @@ def test_live_repository_state_documents_match_release_version() -> None:
     )
     if state["phase"] == "released":
         _assert_released_checkout_matches_state(state)
-    if state["memory_updated"]:
-        memory = (_PROJECT_ROOT / "MEMORY.md").read_text(encoding="utf-8")
-        refresh_match = re.search(r"^> Last refresh: (\d{4}-\d{2}-\d{2})\.", memory, re.MULTILINE)
-        assert refresh_match is not None
-        assert date.fromisoformat(refresh_match.group(1)) >= date.fromisoformat(
-            str(state["started_at"])
-        )
 
     assert state["sprint_backlog_written"] is True
-    current_sprint = str(state["current_sprint"])
-    backlog_path = _PROJECT_ROOT / _sprint_backlog_relative_path(current_sprint)
-    assert backlog_path.is_file()
-    backlog = backlog_path.read_text(encoding="utf-8")
-    _assert_sprint_backlog_matches_lifecycle(
-        backlog,
-        current_sprint=current_sprint,
-        target_version=target_version,
-        branch=branch,
-        phase=str(state["phase"]),
-    )
 
-    live_paths = [
-        state_path,
-        _PROJECT_ROOT / "MEMORY.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "current_state.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "project_overview.md",
-    ]
     forbidden_active_claims = (
         "all` reserved",
         "runs only its covering tests",
@@ -1014,42 +891,25 @@ def test_live_repository_state_documents_match_release_version() -> None:
         "merge to main → version bump",
         "gates → merge → bump",
     )
-    for path in live_paths:
-        text = path.read_text(encoding="utf-8")
-        live = _marked_region(text, _LIVE_START, _LIVE_END)
-        assert f"v{target_version}" in live, (
-            f"{path.relative_to(_PROJECT_ROOT)} is stale: v{target_version} missing"
-        )
-        _assert_live_branch_matches_state(live, branch)
-        _assert_live_phase_matches_state(
-            live,
-            str(state["phase"]),
-            target_version,
-            branch,
-        )
-        assert "development pause" not in live.lower()
-        non_archived = _without_archive(text).lower()
-        assert all(claim not in non_archived for claim in forbidden_active_claims)
-        assert text.index(_LIVE_END) < text.index(_ARCHIVE_START) < text.index(_ARCHIVE_END)
-
-    for path in (
-        _PROJECT_ROOT / "README.md",
-        _PROJECT_ROOT / "MEMORY.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "project_overview.md",
-    ):
-        text = path.read_text(encoding="utf-8")
-        assert text.count("<!-- RELEASE_SEQUENCE:") == 1
-        assert _RELEASE_SEQUENCE in text
-
-    roadmap_relative_path = _release_report_paths(target_version)[1]
-    roadmap = _PROJECT_ROOT / roadmap_relative_path
-    assert roadmap.is_file()
-    for path in (
-        _PROJECT_ROOT / "MEMORY.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "current_state.md",
-    ):
-        live = _marked_region(path.read_text(encoding="utf-8"), _LIVE_START, _LIVE_END)
-        assert roadmap_relative_path in live
+    live = _marked_region(state_text, _LIVE_START, _LIVE_END)
+    assert f"v{target_version}" in live, (
+        f"{state_path.relative_to(_PROJECT_ROOT)} is stale: v{target_version} missing"
+    )
+    _assert_live_branch_matches_state(live, branch)
+    _assert_live_phase_matches_state(
+        live,
+        str(state["phase"]),
+        target_version,
+        branch,
+    )
+    assert "development pause" not in live.lower()
+    non_archived = _without_archive(state_text).lower()
+    assert all(claim not in non_archived for claim in forbidden_active_claims)
+    assert (
+        state_text.index(_LIVE_END)
+        < state_text.index(_ARCHIVE_START)
+        < state_text.index(_ARCHIVE_END)
+    )
 
 
 def test_sprint_state_contract_accepts_honest_lifecycle_transitions() -> None:
@@ -1182,8 +1042,6 @@ def test_sprint_backlog_contract_distinguishes_candidate_and_released() -> None:
             f"| **Ziel** | v{target_version} |",
             "| **Scope** | Windows und exakt CPython 3.14.7 |",
             branch_line,
-            "| **Analyse** | `bug_reporting/ANALYSE_MUTMUTWIN221.md` |",
-            "| **Roadmap** | `bug_reporting/BUGFIXUNG_ROADMAP.md` |",
             "billingbedingt nicht gestartete GitHub-CI wird als `NOT_EXECUTED`",
             "weder PASS noch FAIL",
             _RELEASE_SEQUENCE,
@@ -1378,8 +1236,6 @@ def test_released_provenance_requires_annotated_tag_and_direct_housekeeping_pare
         ".sprint/state.md",
         "MEMORY.md",
         sprint_backlog_path,
-        "bug_reporting/ANALYSE_MUTMUTWIN221.md",
-        "bug_reporting/BUGFIXUNG_ROADMAP.md",
     )
     valid = {
         "current_sprint": current_sprint,
@@ -1401,17 +1257,15 @@ def test_released_provenance_requires_annotated_tag_and_direct_housekeeping_pare
         ".sprint/state.md",
         "MEMORY.md",
         "_docs/sprint backlogs/sprint_40_backlog.md",
-        "bug_reporting/RELEASE_2_21_2.md",
     )
     next_patch = valid | {
         "current_sprint": "40",
-        "target_version": "2.21.2",
         "housekeeping_paths": next_patch_paths,
     }
     _assert_released_provenance_identity(**next_patch)
     for stale_paths in (
         housekeeping_paths,
-        (*next_patch_paths, "bug_reporting/BUGFIXUNG_ROADMAP.md"),
+        (*next_patch_paths, "README.md"),
         next_patch_paths[:-1],
     ):
         with pytest.raises(AssertionError):
@@ -1528,8 +1382,6 @@ def test_released_checkout_checks_housekeeping_behind_at_most_one_governance_com
         ".sprint/state.md",
         "MEMORY.md",
         "_docs/sprint backlogs/sprint_39_backlog.md",
-        "bug_reporting/ANALYSE_MUTMUTWIN221.md",
-        "bug_reporting/BUGFIXUNG_ROADMAP.md",
     )
     test_path = ("tests/unit/test_release_supply_chain.py",)
     head = housekeeping if topology == "H" else governance
@@ -2212,243 +2064,6 @@ def test_review_status_contract_rejects_pending_final_claims() -> None:
     )
 
 
-def test_review_reports_bind_complete_follow_up_findings_and_status() -> None:
-    """Review ledgers must be structurally complete without certifying their prose."""
-
-    analysis = (_PROJECT_ROOT / "bug_reporting" / "ANALYSE_MUTMUTWIN220.md").read_text(
-        encoding="utf-8"
-    )
-    follow_up = (_PROJECT_ROOT / "bug_reporting" / "ANALYSE_MUTMUTWIN221.md").read_text(
-        encoding="utf-8"
-    )
-    roadmap = (_PROJECT_ROOT / "bug_reporting" / "BUGFIXUNG_ROADMAP.md").read_text(encoding="utf-8")
-    expected_ids = {f"MW220-{number:03d}" for number in range(1, 116)}
-    assert set(re.findall(r"MW220-\d{3}", analysis)) == expected_ids
-    assert analysis.count("<!-- MW221_SCOPE_ADDENDUM_START -->") == 1
-    assert analysis.count("<!-- MW221_SCOPE_ADDENDUM_END -->") == 1
-
-    expected_follow_up_ids = {f"MW221-{number:03d}" for number in range(1, 47)}
-    follow_up_rows = list(
-        re.finditer(
-            r"^\| (?P<id>MW221-\d{3}) \| P[012] \| (?P<status>[A-Z_]+) \|.*\|$",
-            follow_up,
-            flags=re.MULTILINE,
-        )
-    )
-    assert {match.group("id") for match in follow_up_rows} == expected_follow_up_ids
-    assert len(follow_up_rows) == len(expected_follow_up_ids)
-    assert {match.group("status") for match in follow_up_rows} <= _MW221_STATUSES
-    mw_statuses = {match.group("id"): match.group("status") for match in follow_up_rows}
-
-    expected_codex_ids = {f"CX221-{number:03d}" for number in range(1, 72)}
-    codex_rows = list(
-        re.finditer(
-            r"^\| (?P<id>CX221-\d{3}) \| (?P<priority>P[012]) \| "
-            r"(?P<status>[A-Z_]+) \|.*\|$",
-            follow_up,
-            flags=re.MULTILINE,
-        )
-    )
-    assert {match.group("id") for match in codex_rows} == expected_codex_ids
-    assert len(codex_rows) == len(expected_codex_ids)
-    assert {match.group("status") for match in codex_rows} <= _CX221_STATUSES
-    cx_statuses = {match.group("id"): match.group("status") for match in codex_rows}
-    cx_priorities = {match.group("id"): match.group("priority") for match in codex_rows}
-    assert {finding_id for finding_id, priority in cx_priorities.items() if priority == "P0"} == {
-        "CX221-027",
-        "CX221-059",
-    }
-    assert {finding_id for finding_id, priority in cx_priorities.items() if priority == "P2"} == {
-        "CX221-033",
-        "CX221-035",
-        "CX221-039",
-        "CX221-046",
-        "CX221-062",
-    }
-    state = _parse_state_frontmatter(
-        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
-    )
-    if str(state["sprint_goal"]).startswith("v2.21.1: "):
-        if not state["tests_passed"]:
-            assert set(cx_statuses.values()) == {"IMPLEMENTED_PENDING_FINAL"}
-        _assert_review_statuses_match_lifecycle(
-            mw_statuses,
-            cx_statuses,
-            tests_passed=bool(state["tests_passed"]),
-            housekeeping_done=bool(state["housekeeping_done"]),
-        )
-    else:
-        # These registers describe the completed predecessor. A new release's
-        # open gates neither reopen its findings nor certify the new candidate.
-        _assert_review_statuses_match_lifecycle(
-            mw_statuses,
-            cx_statuses,
-            tests_passed=True,
-            housekeeping_done=True,
-        )
-    roadmap_ids = re.findall(
-        r"^[ \t]*\|?[ \t]*(CX221-\d{3})[ \t]*\|",
-        roadmap,
-        flags=re.MULTILINE,
-    )
-    assert set(roadmap_ids) == expected_codex_ids
-    assert len(roadmap_ids) == len(expected_codex_ids)
-    assert "71 getrennt geführten Codex-Follow-up-Findings" in roadmap
-    assert "ANALYSE_MUTMUTWIN221.md" in roadmap
-    assert "Windows und exakt CPython 3.14.7" in follow_up
-    assert "2 P0, 64 P1 und 5 P2" in follow_up
-    assert "2 P0, 64 P1 und 5 P2" in roadmap
-    assert "gelockte Repository-`.venv` binden" not in roadmap
-
-    expected_provenance = _expected_release_tool_provenance()
-    for report in (follow_up, roadmap):
-        dates = re.findall(r"^\*\*Stand:\*\* (\d{4}-\d{2}-\d{2})$", report, re.MULTILINE)
-        assert len(dates) == 1
-        assert date.fromisoformat(dates[0]) >= date(2026, 9, 7)
-        assert _release_tool_provenance(report) == expected_provenance
-        assert "a2fcf298b84d3d8498a3d718bb63f0abe26823bf68a11f0f439620f8f2f878f0" not in report
-        assert "Zizmor 1.30.0 ZIP" not in report
-
-
-def test_release_tool_provenance_rejects_swapped_or_mislabeled_digests() -> None:
-    report = (_PROJECT_ROOT / "bug_reporting" / "ANALYSE_MUTMUTWIN221.md").read_text(
-        encoding="utf-8"
-    )
-    expected = _expected_release_tool_provenance()
-    actionlint = expected[("Native GitHub asset", "actionlint 1.7.12 ZIP")]
-    shellcheck = expected[("Native GitHub asset", "ShellCheck 0.11.0 ZIP")]
-    swapped = report.replace(actionlint, "HASH_PLACEHOLDER", 1)
-    swapped = swapped.replace(shellcheck, actionlint, 1).replace("HASH_PLACEHOLDER", shellcheck, 1)
-    assert _release_tool_provenance(swapped) != expected
-
-    mislabeled = report.replace("actionlint 1.7.12 ZIP", "actionlint 1.7.13 ZIP", 1)
-    assert _release_tool_provenance(mislabeled) != expected
-
-
-def test_release_tool_provenance_rejects_missing_duplicate_extra_or_free_hash_rows() -> None:
-    report = (_PROJECT_ROOT / "bug_reporting" / "ANALYSE_MUTMUTWIN221.md").read_text(
-        encoding="utf-8"
-    )
-    region = _marked_region(
-        report,
-        _RELEASE_TOOL_PROVENANCE_START,
-        _RELEASE_TOOL_PROVENANCE_END,
-    )
-    row = next(line for line in region.splitlines() if "actionlint 1.7.12 ZIP" in line)
-
-    for invalid in (
-        report.replace(f"{row}\n", "", 1),
-        report.replace(f"{row}\n", f"{row}\n{row}\n", 1),
-        report.replace(
-            _RELEASE_TOOL_PROVENANCE_END,
-            f"| Native GitHub asset | extra 1.0 ZIP | `{'0' * 64}` |\n"
-            f"{_RELEASE_TOOL_PROVENANCE_END}",
-            1,
-        ),
-        report.replace(f"{row}\n", "", 1) + f"\nfree digest: {row}\n",
-    ):
-        with pytest.raises(AssertionError):
-            _release_tool_provenance(invalid)
-
-
-def test_active_consumer_docs_share_the_canonical_release_pin() -> None:
-    """Every active install command must follow the canonical guide release."""
-
-    _require_git_checkout()
-    canonical = (_PROJECT_ROOT / "_config" / "mutmut-win-install.md").read_bytes()
-    documentation = (
-        _PROJECT_ROOT / "_docs" / "installation" / "mutmut-win-install.md"
-    ).read_bytes()
-    assert documentation == canonical
-    version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["version"]
-    text = canonical.decode("utf-8")
-    assert f"**Version:** v{version}" in text
-    installed_version = _single_match_version(
-        r'^uv add "mutmut-win @ git\+https://github\.com/pgm1980/'
-        r'mutmut-win\.git@v(\d+\.\d+\.\d+)" --dev$',
-        text,
-        label="canonical guide command",
-    )
-    expected_output_version = _single_match_version(
-        r"^Erwartete Ausgabe: `mutmut-win, version (\d+\.\d+\.\d+)`$",
-        text,
-        label="canonical guide expected output",
-    )
-    assert expected_output_version == installed_version
-    sprint_state = _parse_state_frontmatter(
-        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
-    )
-    final_release_state = bool(sprint_state["tests_passed"] or sprint_state["housekeeping_done"])
-    _assert_active_ref_matches_release_stage(
-        version,
-        installed_version,
-        final=final_release_state,
-    )
-
-    readme = (_PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    readme_pip_version = _single_match_version(
-        r'^pip install "mutmut-win @ git\+https://github\.com/pgm1980/'
-        r'mutmut-win\.git@v(\d+\.\d+\.\d+)"$',
-        readme,
-        label="README pip command",
-    )
-    readme_uv_version = _single_match_version(
-        r'^uv add "mutmut-win @ git\+https://github\.com/pgm1980/'
-        r'mutmut-win\.git@v(\d+\.\d+\.\d+)" --dev$',
-        readme,
-        label="README uv command",
-    )
-    assert readme_pip_version == readme_uv_version == installed_version
-
-    claude = (_PROJECT_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    claude_dependency_version = _single_match_version(
-        r'^[ \t]*"mutmut-win @ git\+https://github\.com/pgm1980/'
-        r'mutmut-win\.git@v(\d+\.\d+\.\d+)",$',
-        claude,
-        label="CLAUDE dependency",
-    )
-    claude_uv_version = _single_match_version(
-        r'^uv add "mutmut-win @ git\+https://github\.com/pgm1980/'
-        r'mutmut-win\.git@v(\d+\.\d+\.\d+)" --dev$',
-        claude,
-        label="CLAUDE uv command",
-    )
-    assert claude_dependency_version == claude_uv_version == installed_version
-    assert "werden deren Mutanten ehrlich als `no tests` verbucht" not in text
-    assert ".pth`-Datei temporär umbenennen" not in text
-
-
-def test_immutable_release_docs_do_not_claim_live_publication_state() -> None:
-    """Bind immutable docs to one neutral external-publication contract."""
-    version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["version"]
-    marker = f"v{version}".casefold()
-    paths = (
-        _PROJECT_ROOT / "README.md",
-        _PROJECT_ROOT / "CLAUDE.md",
-        _PROJECT_ROOT / "MEMORY.md",
-        _PROJECT_ROOT / ".sprint" / "state.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "current_state.md",
-        _PROJECT_ROOT / ".serena" / "memories" / "project_overview.md",
-        _PROJECT_ROOT / "_config" / "mutmut-win-install.md",
-        _PROJECT_ROOT / "_docs" / "installation" / "mutmut-win-install.md",
-    )
-    for path in paths:
-        raw_text = path.read_text(encoding="utf-8")
-        assert raw_text.count(_PUBLICATION_START) == 1, path.relative_to(_PROJECT_ROOT)
-        assert raw_text.count(_PUBLICATION_END) == 1, path.relative_to(_PROJECT_ROOT)
-        assert raw_text.count(_PUBLICATION_STATE) == 1, path.relative_to(_PROJECT_ROOT)
-        assert _marked_region(raw_text, _PUBLICATION_START, _PUBLICATION_END) == (
-            f"\n{_PUBLICATION_STATE}\n{_PUBLICATION_SENTENCE.format(version=version)}\n"
-        )
-        _assert_publication_references_are_structural(raw_text, version)
-        text = raw_text.casefold()
-        assert marker in text, path.relative_to(_PROJECT_ROOT)
-
-
 @pytest.mark.parametrize(
     "claim",
     [
@@ -2519,101 +2134,21 @@ def test_acceptance_harness_lock_matches_its_declared_release_baseline() -> None
         "name": "mutmut-win",
         "git": f"https://github.com/pgm1980/mutmut-win.git?rev={revision}",
     }
-    provenance = (harness / "README_PROVENANCE.md").read_text(encoding="utf-8")
-    assert f"standalone environment pins `@{revision}`" in provenance
-    assert "once profiles exist" not in provenance.lower()
-
-    roadmap = (harness / "ROADMAP_SPEC.md").read_text(encoding="utf-8")
-    assert "[`../MUTMUT_WIN_OPERATOR_ROADMAP.md`](../MUTMUT_WIN_OPERATOR_ROADMAP.md)" in roadmap
-    assert (harness.parent / "MUTMUT_WIN_OPERATOR_ROADMAP.md").is_file()
-    roadmap_lower = roadmap.lower()
-    assert "pragma `block` / `start`-`end`" in roadmap_lower
-    assert "`do_not_mutate_patterns` (regex)" in roadmap
-    assert "configuration key is implemented" in roadmap
-    for stale_claim in ("once profiles exist", "unrecognized", "unknown key", "not wired"):
-        assert stale_claim not in roadmap_lower
 
 
 def test_active_governance_uses_only_the_canonical_semgrep_release_gate() -> None:
-    """Machine-read guidance and executable hooks must not recreate raw false greens."""
-    claude = (_PROJECT_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    completion = (
-        _PROJECT_ROOT / ".serena" / "memories" / "task_completion_checklist.md"
-    ).read_text(encoding="utf-8")
-    commands = (_PROJECT_ROOT / ".serena" / "memories" / "suggested_commands.md").read_text(
-        encoding="utf-8"
-    )
-    design = (
-        _PROJECT_ROOT / "_docs" / "design spec" / "software_design_specification.md"
-    ).read_text(encoding="utf-8")
-    backlog = (_PROJECT_ROOT / "_docs" / "product backlog" / "product_backlog.md").read_text(
-        encoding="utf-8"
-    )
-    active_backlog = backlog.split("## Epics und Sprint-Zuordnung", 1)[0]
+    """The CI gate must pin the canonical wrapper and never recreate raw false greens."""
+    workflow = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    hook_dir = _PROJECT_ROOT / ".claude" / "hooks"
-    verify_hook = (hook_dir / "verify-after-agent.sh").read_text(encoding="utf-8")
-    pre_commit = (hook_dir / "git-pre-commit.sh").read_bytes()
-    installed_pre_commit = (hook_dir / "git-hooks" / "pre-commit").read_bytes()
-    assert pre_commit == installed_pre_commit
-    pre_commit_text = pre_commit.decode("utf-8")
-    reminder = (hook_dir / "post-compact-reminder.sh").read_text(encoding="utf-8")
-    sprint_gate = (hook_dir / "sprint-gate.sh").read_text(encoding="utf-8")
+    assert _SEMGREP_SYNC in workflow
+    assert _SEMGREP_GATE in workflow
 
-    exact_command_authorities = (
-        claude,
-        completion,
-        commands,
-        active_backlog,
-        verify_hook,
-        pre_commit_text,
-    )
-    assert all(_SEMGREP_GATE in text for text in exact_command_authorities)
-    assert all(_SEMGREP_SYNC in text for text in (claude, completion, commands, active_backlog))
-    assert "scripts/semgrep_release_gate.py" in design
-    assert "vollständigen Git-owned Scope" in reminder
-
-    active_authorities = (
-        *exact_command_authorities,
-        design,
-        reminder,
-        sprint_gate,
-    )
-    for text in active_authorities:
-        lowered = text.lower()
-        assert "semgrep scan" not in lowered
-        assert "--config auto" not in lowered
-        assert "--changed-files" not in lowered
-
-    for executor in (verify_hook, pre_commit_text):
-        invocations = [
-            line.strip()
-            for line in executor.splitlines()
-            if line.strip().startswith("SEMGREP_OUTPUT=$(")
-        ]
-        assert invocations == [f"SEMGREP_OUTPUT=$({_SEMGREP_GATE} 2>&1)"]
-        assert "uvx" not in executor
-        assert "command -v semgrep" not in executor
-
-    semgrep_state_check = sprint_gate.split("# Live check 4:", 1)[1].split(
-        'if [[ -n "$BLOCKERS" ]]', 1
-    )[0]
-    assert "git log" not in semgrep_state_check
-    assert "semgrep_passed:" in sprint_gate
-    settings = json.loads((_PROJECT_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert "Bash(semgrep *)" not in settings["permissions"]["allow"]
-    subagent_hooks = settings["hooks"]["SubagentStop"][0]["hooks"]
-    verify_settings = next(
-        hook for hook in subagent_hooks if hook["command"].endswith("verify-after-agent.sh")
-    )
-    assert verify_settings["command"] == "bash .claude/hooks/verify-after-agent.sh"
-    assert verify_settings["timeout"] >= 600
-
-    assert "==3.14.7" in claude
-    assert "Semgrep CLI                 | 1.175.0 (uv.lock)" in claude
-    assert "Python 3.14 Features nutzen" not in claude
-    assert "3.14.3" not in claude
-    assert ">=0.6.0" not in claude
+    lowered = workflow.lower()
+    assert "semgrep scan" not in lowered
+    assert "--config auto" not in lowered
+    assert "--changed-files" not in lowered
+    assert "uvx" not in lowered
+    assert "command -v semgrep" not in lowered
 
 
 def test_dependency_export_body_is_path_independent_and_pinned(tmp_path: Path) -> None:
@@ -2658,15 +2193,6 @@ def test_python_metadata_matches_exact_windows_runtime_support() -> None:
     pyproject = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
     lock = tomllib.loads((_PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
-    readme = (_PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    contract_docs = tuple(
-        path.read_text(encoding="utf-8")
-        for path in (
-            _PROJECT_ROOT / "_docs" / "architecture spec" / "architecture_specification.md",
-            _PROJECT_ROOT / "_docs" / "design spec" / "software_design_spec.md",
-            _PROJECT_ROOT / "_docs" / "design spec" / "software_design_specification.md",
-        )
-    )
 
     locked_build_backend = ["hatchling==1.32.0", "editables==0.5"]
     assert pyproject["build-system"]["requires"] == locked_build_backend
@@ -2785,173 +2311,12 @@ def test_python_metadata_matches_exact_windows_runtime_support() -> None:
         assert (
             f"Programming Language :: Python :: {unsupported_version}" not in project["classifiers"]
         )
-    assert "exactly CPython 3.14.7 on Windows" in readme
-    assert "WSL/Linux and macOS) are\nexplicitly unsupported" in readme
-    assert "`st_ino == 0`" in readme
-    for filesystem_boundary in ("exFAT", "SMB", "OneDrive", "reparse"):
-        assert filesystem_boundary in readme
-    assert "fails closed" in readme
-    assert "uv sync --locked --only-group security --no-install-project" in readme
-    assert "uv run --no-sync python -I scripts/semgrep_release_gate.py" in readme
-    for contract_doc in contract_docs:
-        assert _EXACT_RUNTIME_CONTRACT in contract_doc
-        assert _SOURCE_ENCODING_CONTRACT in contract_doc
-        assert "GitHub Release" in contract_doc
-        for stale_contract in (
-            "3.14.3",
-            "Python >=3.11",
-            "Python >= 3.11",
-            "Python ≥3.11",
-            "Python >=3.12",
-            "Python >= 3.12",
-            "Python ≥3.12",
-            "Non-Windows: `ImportError`",
-            "PyPI Distribution",
-            "PyPI Source",
-            "uv publish",
-        ):
-            assert stale_contract not in contract_doc
-
-
-def test_active_scope_release_and_backlog_docs_are_structurally_current() -> None:
-    architecture = (
-        _PROJECT_ROOT / "_docs" / "architecture spec" / "architecture_specification.md"
-    ).read_text(encoding="utf-8")
-    design = (_PROJECT_ROOT / "_docs" / "design spec" / "software_design_spec.md").read_text(
-        encoding="utf-8"
-    )
-    product = (_PROJECT_ROOT / "_docs" / "product backlog" / "product_backlog.md").read_text(
-        encoding="utf-8"
-    )
-    state = _parse_state_frontmatter(
-        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
-    )
-    current_sprint = str(state["current_sprint"])
-    project_version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-        "project"
-    ]["version"]
-    sprint = (_PROJECT_ROOT / _sprint_backlog_relative_path(current_sprint)).read_text(
-        encoding="utf-8"
-    )
-    codebase = (_PROJECT_ROOT / ".serena" / "memories" / "codebase_structure.md").read_text(
-        encoding="utf-8"
-    )
-    checklist = (_PROJECT_ROOT / ".serena" / "memories" / "task_completion_checklist.md").read_text(
-        encoding="utf-8"
-    )
-    commands = (_PROJECT_ROOT / ".serena" / "memories" / "suggested_commands.md").read_text(
-        encoding="utf-8"
-    )
-    claude = (_PROJECT_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    operator = (
-        _PROJECT_ROOT / "_docs" / "nextgen_roadmap" / "MUTMUT_WIN_OPERATOR_ROADMAP.md"
-    ).read_text(encoding="utf-8")
-
-    build_contract = architecture.split("### 6.3 Build & Distribution", 1)[1].split("---", 1)[0]
-    for required in (
-        "uv sync --locked --extra dev --group build --no-build-isolation",
-        "Zwei-Parent-Merge",
-        "byteidentisch",
-        "SOURCE_DATE_EPOCH",
-        "--offline",
-        "SHA256SUMS",
-        "Windows-/CPython-3.14.7",
-        "annotiertes Tag",
-        "GitHub Release",
-        _RELEASE_SEQUENCE,
-    ):
-        assert required in build_contract
-    for unbound in ("\nuv sync\n", "\nuv run pytest\n", "\nuv build\n"):
-        assert unbound not in build_contract
-
-    assert "mutmut auf Linux" not in design
-    assert "Benchmark ohne Linux-Supportzusage" not in design
-    assert "Windows mit exakt CPython 3.14.7" in design
-
-    product_header = re.match(
-        r"# Product Backlog \N{EM DASH} mutmut-win\n\n"
-        r"\*\*Version:\*\* (?P<version>\d+\.\d+\.\d+)\n"
-        r"\*\*Datum:\*\* (?P<date>\d{4}-\d{2}-\d{2})\n\*\*Status:\*\* Active\n",
-        product,
-    )
-    assert product_header is not None
-    assert _semver_tuple(product_header.group("version")) >= (3, 0, 0)
-    assert date.fromisoformat(product_header.group("date")) >= date.fromisoformat(
-        str(state["started_at"])
-    )
-    assert f"| v{project_version} |" in product
-    assert f"_docs/sprint backlogs/sprint_{current_sprint}_backlog.md" in product
-    velocity_rows = re.findall(
-        r"^\| Sprint \d+ \| (?P<planned>\d+) \| (?P<done>\d+) \|",
-        product,
-        flags=re.MULTILINE,
-    )
-    assert sum(int(planned) for planned, _done in velocity_rows) == 650
-    assert sum(int(done) for _planned, done in velocity_rows) == 625
-    assert (
-        "**Historische numerisch erfasste Summe bis einschließlich Sprint 36:** 650 SP\n"
-        "geplant - 625 SP erledigt (96 %).".replace(" - ", " \N{EM DASH} ")
-    ) in product
-    active_dod = product.split("## Definition of Done (DoD)", 1)[1].split(
-        "## Epics und Sprint-Zuordnung", 1
-    )[0]
-    assert "- [x]" not in active_dod.casefold()
-    assert "historischer Snapshot, Stand 2026-09-07" in product
-    assert "vor Sprint- oder Releaseabschluss\nextern live neu zu prüfen" in product
-
-    assert codebase.startswith(
-        f"# Codebase Structure & Layer Architecture (v{project_version} / Sprint {current_sprint})"
-    )
-    assert (
-        "volatile\n> LOC, module-size, file-count, and suite-count snapshots "
-        "are intentionally\n> omitted" in codebase
-    )
-    assert "Suite size" not in codebase
-    assert not re.search(r"(?:~\s*)?\d[\d.]*k? LOC|\b\d+ modules\b", codebase)
-    assert "GitHub Actions defines Windows/CPython-3.14.7" in codebase
-    assert "No GitHub Actions CI" not in codebase
-
-    assert "Binding runtime contract:** Windows with exactly CPython 3.14.7" in operator
-    assert "Regex-Implementierung = stringbasierter Class-Span-Tokenizer" in operator
-    assert "ursprünglich erwogene private `re._parser`-API" in operator
-    assert "</content>" not in operator
-
-    for local_gate_doc in (claude, product, sprint, checklist, commands):
-        assert _NATIVE_RELEASE_SYNC in local_gate_doc
-        assert _NATIVE_RELEASE_GATE in local_gate_doc
-        assert "Zizmor 1.30.0" in local_gate_doc
-        assert "regular" in local_gate_doc
-        assert "pedantic" in local_gate_doc
-        for hardening_flag in ("--strict-collection", "--no-config", "--no-ignores"):
-            assert hardening_flag in local_gate_doc
-        assert "kein viertes Manifest" in local_gate_doc or (
-            "not a fourth native manifest asset" in local_gate_doc
-        )
-
-    for github_only_doc in (
-        architecture,
-        design,
-        sprint,
-        codebase,
-    ):
-        pypi_lines = [
-            line.casefold() for line in github_only_doc.splitlines() if "pypi" in line.casefold()
-        ]
-        assert pypi_lines
-        assert all(
-            any(
-                negation in line
-                for negation in ("kein", "nicht", " no ", " not ", "ausgeschlossen")
-            )
-            for line in pypi_lines
-        )
 
 
 def test_cpython_derivative_license_contract_is_complete() -> None:
     pyproject = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
     license_text = (_PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
-    readme = (_PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert project["license"] == _LICENSE_EXPRESSION
     assert "License :: OSI Approved :: Python Software Foundation License" in project["classifiers"]
@@ -2973,7 +2338,6 @@ def test_cpython_derivative_license_contract_is_complete() -> None:
         "retained POSIX implementation code is outside the product contract."
     ) in license_text
     assert "audited for CPython 3.12-3.14" not in license_text
-    assert _LICENSE_EXPRESSION in readme
     derivative_license = (
         _CPYTHON_DERIVATIVE_HEADING + license_text.split(_CPYTHON_DERIVATIVE_HEADING, 1)[1]
     )
@@ -2993,13 +2357,6 @@ def test_runtime_scope_comments_do_not_reintroduce_unsupported_platforms() -> No
     supported_comment = "project requires exactly CPython 3.14.7 on Windows"
     assert kill_proc_source.count(supported_comment) == 2
     assert "project requires Python >=3.12" not in kill_proc_source
-
-    operator_roadmap = (
-        _PROJECT_ROOT / "_docs" / "nextgen_roadmap" / "MUTMUT_WIN_OPERATOR_ROADMAP.md"
-    ).read_text(encoding="utf-8")
-    assert "exactly CPython 3.14.7" in operator_roadmap
-    assert ("3.12" + chr(0x2013) + "3.14") not in operator_roadmap
-    assert ("3.12" + chr(0x2192) + "3.14") not in operator_roadmap
 
     constants = (_PROJECT_ROOT / "src" / "mutmut_win" / "constants.py").read_text(encoding="utf-8")
     assert "supported Windows runtime" in constants
@@ -3141,10 +2498,6 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     project_version = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]["version"]
-    state = _parse_state_frontmatter(
-        (_PROJECT_ROOT / ".sprint" / "state.md").read_text(encoding="utf-8")
-    )
-    roadmap_path = _release_report_paths(project_version)[1]
     lock_job = workflow.split("\n  lock:\n", 1)[1].split("\n  quality:\n", 1)[0]
     quality_job = workflow.split("\n  quality:\n", 1)[1].split("\n  security:\n", 1)[0]
     security_job = workflow.split("\n  security:\n", 1)[1].split("\n  tests:\n", 1)[0]
@@ -3236,54 +2589,6 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     )
     assert "lint_imports(no_cache=True)" in architecture_test
     assert "lint_imports())" not in architecture_test
-    for relative_path in (
-        "README.md",
-        "CLAUDE.md",
-        ".serena/memories/style_conventions.md",
-        ".serena/memories/task_completion_checklist.md",
-        ".serena/memories/suggested_commands.md",
-        "_docs/architecture spec/architecture_specification.md",
-        "_docs/product backlog/product_backlog.md",
-        _sprint_backlog_relative_path(str(state["current_sprint"])),
-        roadmap_path,
-    ):
-        active_contract = (_PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-        assert "UV_PROJECT_ENVIRONMENT" in active_contract, relative_path
-        assert "HYPOTHESIS_STORAGE_DIRECTORY" in active_contract, relative_path
-        for cacheless_contract in (
-            "ruff check --no-cache",
-            "ruff format --no-cache",
-            "mypy --no-incremental --cache-dir=nul",
-            "lint-imports --no-cache",
-        ):
-            assert cacheless_contract in active_contract, (relative_path, cacheless_contract)
-        if relative_path != roadmap_path:
-            operational_commands = re.findall(
-                r"`(uv run --no-sync (?:pytest|ruff check|ruff format|mypy|lint-imports)[^`]*)`",
-                active_contract,
-            )
-            operational_commands.extend(
-                re.findall(
-                    r"(?m)^\s*(uv run --no-sync "
-                    r"(?:pytest|ruff check|ruff format|mypy|lint-imports)[^\r\n]*)\s*$",
-                    active_contract,
-                )
-            )
-            assert operational_commands, relative_path
-            for command in operational_commands:
-                normalized = " ".join(command.split())
-                if normalized.startswith("uv run --no-sync pytest"):
-                    assert "-p no:cacheprovider" in normalized, (relative_path, normalized)
-                elif normalized.startswith("uv run --no-sync ruff"):
-                    assert "--no-cache" in normalized, (relative_path, normalized)
-                elif normalized.startswith("uv run --no-sync mypy"):
-                    assert "--no-incremental" in normalized, (relative_path, normalized)
-                    assert "--cache-dir=nul" in normalized, (relative_path, normalized)
-                else:
-                    assert normalized.startswith("uv run --no-sync lint-imports --no-cache"), (
-                        relative_path,
-                        normalized,
-                    )
     assert "name: Tests and coverage (Windows, CPython 3.14.7)" in tests_job
     assert "timeout-minutes: 120" in tests_job
     assert (

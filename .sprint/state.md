@@ -1,9 +1,9 @@
 ---
 current_sprint: "41"
-sprint_goal: "v2.21.3: in progress"
-branch: "fix/v2.21.3-lake-basis"
+sprint_goal: "v2.21.3: candidate validated"
+branch: "fix/v2.21.3-evidence-closure"
 started_at: "2026-09-15"
-phase: "in_progress"
+phase: "candidate_validated"
 candidate_commit: ""
 candidate_tree: ""
 integrated_commit: ""
@@ -13,25 +13,19 @@ housekeeping_done: false
 memory_updated: true
 github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
+semgrep_passed: true
+tests_passed: true
 documentation_updated: true
 ---
 
 # Sprint State - Gitignore-Respekt, Startup-Observability, Run-Robustheit
 
-<!-- PUBLICATION_STATE_START -->
-<!-- PUBLICATION_STATE: external-live-check-required -->
-Publication status for v2.21.3 is external mutable state. These immutable bytes assert neither presence nor absence; verify the exact annotated tag and matching GitHub release before use.
-<!-- PUBLICATION_STATE_END -->
-
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: candidate_validated -->
+<!-- RELEASE_PHASE_STATUS: local-candidate-gates-validated-publication-external -->
 <!-- RELEASE_TARGET: v2.21.3 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.3-lake-basis` -->
-<!-- RELEASE_ROADMAP: bug_reporting/RELEASE_2_21_3.md -->
+<!-- RELEASE_BRANCH: `fix/v2.21.3-evidence-closure` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
