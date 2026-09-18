@@ -53,7 +53,19 @@ fingerprint hashes every file of every distribution and the prelude stalls indef
 Use a SEPARATE full env (`--all-extras --all-groups`) for pytest/gates — it needs
 hatchling for the wheel/sdist test.
 
-### Results (2026-09-17, cleaned tree)
+### FINAL RESULTS (2026-09-18, after the fix below) — both modules over the 80 % target
+- `stall_watchdog.py`: **53/56 = 94.6 %**. Three survivors, all documented equivalents:
+  `_stream_with_fileno(sys.stderr)` is bit-identical to the ternary when `file=None`,
+  the matching `__init__` variant likewise, and `not self._armed` is indistinguishable
+  from the conjunction because a missing target means the watchdog was never armed.
+- `gitignore_boundary.py`: union of both gates **188/229 = 82.1 %** (229 instead of 255
+  mutants because `enter_forced` was removed). 41 survivors, led by `descend_forced` (15).
+
+Operational note: `--force` cannot remove `mutants/` while any shell holds its cwd inside
+it (Windows directory handle). The run then fail-closes with "refusing to run with stale
+state" — correct behaviour, but check your cwd first.
+
+### Baseline before the fix (2026-09-17, released v2.21.3 code)
 - `stall_watchdog.py`: **44/56 killed = 78.6 %**, 0 timeout, 0 suspicious. Reproduced
   identically before and after the repo cleanup.
   12 survivors: `_stream_with_fileno` x3 (fileno fallback chain has no direct unit test),
@@ -64,14 +76,13 @@ hatchling for the wheel/sdist test.
 - `gitignore_boundary.py` vs `test_gitignore_boundary.py`: **126/255 = 49.4 %**.
   Low by construction — the unit tests never call `descend`, `descend_forced` or
   `enter_forced`. The union with the staging gate is the meaningful number.
-- `gitignore_boundary.py` vs `test_gitignore_staging_integration.py`: **BLOCKED**.
-  The clean run fails inside the staged tree on
-  `TestRunBasisEvidence::test_ignored_tree_does_not_change_the_digest`. The same test
-  passes outside staging AND passes when the three `TestRunBasisEvidence` tests run alone
-  inside `mutants/`. So it is an ordering/state effect within the 10-test run, not a
-  deterministic digest defect. UNRESOLVED — resume here.
+- `gitignore_boundary.py` vs `test_gitignore_staging_integration.py`: **118/255 = 46.3 %**.
+  Union with the unit gate: **158/255 = 62.0 %**. One clean run failed transiently on
+  `TestRunBasisEvidence::test_ignored_tree_does_not_change_the_digest`; it did not
+  reproduce on retry nor when run alone inside `mutants/`. Transient, not a digest defect.
 
-## Open defect found 2026-09-17 (candidate for v2.21.4)
+## Defect found 2026-09-17, FIXED on `fix/v2.21.3-evidence-closure` (PR #139)
+Still present in the published v2.21.3; its release body documents it with a workaround.
 `gitignore_boundary._excludes` computes `relative = _relative_to_base(candidate, level.base)`
 but then matches patterns against `probes`, which derive from `candidate` (the
 walk-root-relative path). The level-relative path is discarded. Verified at code level.
