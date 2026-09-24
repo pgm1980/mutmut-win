@@ -836,9 +836,7 @@ def validate_staging_namespace(
     exact_owners = {
         _staging_key(Path(name)): owner for name, owner in _FIXED_STAGING_ARTIFACT_OWNERS.items()
     }
-    for source in walk_source_files(config):
-        if config.should_ignore_for_mutation(source):
-            continue
+    for source in _selected_mutation_sources(config):
         metadata_target = Path(f"{source}.meta")
         exact_owners[_staging_key(metadata_target)] = f"mutation metadata for {source}"
 
@@ -1174,6 +1172,9 @@ def copy_src_dir(
     validate_staging_namespace(config, excluded_paths=excluded_paths)
     expected_targets: set[Path] = set()
     synced_roots: list[Path] = []
+    # Retain policy (M-002): generator output survives only for files the
+    # current run still (re)generates AND only outside the coverage mode.
+    retained_generation_keys = _generation_target_keys(config)
     project_root = Path.cwd().resolve()
     project_boundary = GitignoreBoundary.load(project_root)
     mutants_root = _validated_mutants_root()
@@ -1296,16 +1297,19 @@ def copy_src_dir(
                 expected_targets.add(target_path)
 
                 if target_path.exists():
-                    if source_path.is_file() and _mirror_is_stale(source_path, target_path):
-                        meta_path = Path(str(target_path) + ".meta")
-                        owned_meta = read_owned_source_metadata(meta_path) is not None
-                        _copy_with_retry(source_path, target_path)
-                        print(f"     updated: {source_path} (source changed since last run)")
-                        # Invalidate only a proven mutation sidecar.  A project
-                        # fixture named like ``runtime.meta`` is an independent
-                        # expected target and must survive companion updates.
-                        if owned_meta and meta_path.exists():
-                            _unlink_staging_file(meta_path)
+                    if source_path.is_file():
+                        retain = _staging_key(Path(root_str) / name) in retained_generation_keys
+                        if _mirror_is_stale(source_path, target_path, retain_generated=retain):
+                            removed_sidecar = _refresh_staged_mirror(source_path, target_path)
+                            if removed_sidecar:
+                                print(
+                                    f"     restored unmutated: {source_path} "
+                                    "(not retained for this run)"
+                                )
+                            else:
+                                print(
+                                    f"     updated: {source_path} (source changed since last run)"
+                                )
                     continue
 
                 target_path.parent.mkdir(exist_ok=True, parents=True)
@@ -1325,7 +1329,72 @@ def copy_src_dir(
                 candidate.unlink()
 
 
-def _mirror_is_stale(source: Path, target: Path) -> bool:
+def _selected_mutation_sources(config: MutmutConfig) -> Iterator[Path]:
+    """Yield the mutation targets of the run with orchestrator parity.
+
+    Applies the same ``walk_source_files`` + ``resolve()`` deduplication +
+    ``should_ignore_for_mutation(str(path))`` filter that
+    ``MutationOrchestrator._generate_mutants`` uses, so reservation, retain
+    policy, and generation share one selection.
+    """
+    seen: set[Path] = set()
+    for source in walk_source_files(config):
+        resolved = source.resolve()
+        if resolved in seen or config.should_ignore_for_mutation(str(source)):
+            continue
+        seen.add(resolved)
+        yield source
+
+
+def _generation_target_keys(config: MutmutConfig) -> frozenset[tuple[str, ...]]:
+    """Return the staging keys of files the current run will (re)generate.
+
+    With ``mutate_only_covered_lines`` the set is empty: the coverage phase
+    requires unmutated bytes for every target, so no generator output is
+    retained in that mode.
+    """
+    if config.mutate_only_covered_lines:
+        return frozenset()
+    return frozenset(_staging_key(source) for source in _selected_mutation_sources(config))
+
+
+def _retain_generation_sidecar(staged: Path, *, companion_is_current: bool) -> bool:
+    """Return True if *staged* is a proven-own sidecar kept for result reuse.
+
+    A staged ``.meta`` file survives a deletion pass only when it carries
+    the engine's own metadata format (user fixtures in other shapes stay
+    untouched by this helper's verdict) and its companion file is still an
+    expected, current input — the same rule the automatic-mirror pass has
+    applied since issue #129, now shared by configured mirrors.
+    """
+    if not staged.name.casefold().endswith(".meta"):
+        return False
+    if not companion_is_current:
+        return False
+    return read_owned_source_metadata(staged) is not None
+
+
+def _refresh_staged_mirror(source: Path, target: Path) -> bool:
+    """Copy *source* over the staged *target*, invalidating an own sidecar.
+
+    Returns:
+        True if a proven-own generation sidecar next to *target* was removed.
+
+    A staged ``<name>.meta`` is only treated as a generator sidecar when no
+    live ``<source>.meta`` fixture exists — that fixture's staged copy is an
+    independent mirror target, not engine metadata.
+    """
+    meta_path = target.with_name(target.name + ".meta")
+    live_meta = source.with_name(source.name + ".meta")
+    owned_sidecar = read_owned_source_metadata(meta_path) is not None and not live_meta.exists()
+    _copy_with_retry(source, target)
+    if owned_sidecar and meta_path.exists():
+        _unlink_staging_file(meta_path)
+        return True
+    return False
+
+
+def _mirror_is_stale(source: Path, target: Path, *, retain_generated: bool = True) -> bool:
     """Return True if the staged mirror *target* must be refreshed.
 
     Two regimes (issue #129 / 360°-B6a):
@@ -1335,6 +1404,12 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
       than the source by construction) and the ``.meta`` source fingerprint
       is the staleness truth there. The mirror refreshes only when the live
       source SHA-256 differs; legacy metadata without a hash is invalidated.
+
+      With ``retain_generated=False`` (the retain policy of M-002) generator
+      output is never kept: the target is stale regardless of the hash, so
+      the caller restores the unmutated bytes for phases that require them
+      (coverage collection, deselected targets).
+
     * Plain mirror copies (no ``.meta``) were created by ``copy2`` and
       therefore normally carry the SOURCE's stat data. Any stat inequality
       refreshes immediately, while stat equality is still verified by hash.
@@ -1347,6 +1422,8 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
     meta_path = target.with_name(target.name + ".meta")
     owned_metadata = read_owned_source_metadata(meta_path)
     if owned_metadata is not None:
+        if not retain_generated:
+            return True
         recorded = owned_metadata["source_hash"]
         return not isinstance(recorded, str) or recorded != _content_hash(source)
     if (
@@ -1395,6 +1472,7 @@ def _sync_tree(
     *,
     excluded_resolved: frozenset[Path] = frozenset(),
     ignore_boundary: GitignoreBoundary | None = None,
+    retained_generation_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
@@ -1409,10 +1487,18 @@ def _sync_tree(
       root itself is guard 4's job in :func:`copy_also_copy_files`);
     * git-ignored subtrees are neither copied nor retained
       (MBR-2026-09-14-01): the deletion pass treats an ignored live source
-      like an absent one so pre-fix staged leftovers are purged.
+      like an absent one so pre-fix staged leftovers are purged;
+    * generation sidecars next to a current, expected companion survive the
+      deletion pass (M-031), and refreshing a mirror target invalidates a
+      proven-own sidecar so no stale fingerprint outlives its bytes;
+    * ``retained_generation_keys`` (staging keys relative to ``mutants/``)
+      apply the M-002 retain policy: files the run still generates keep
+      their trampolined output, everything else is restored unmutated.
     """
     mutants_root = _validated_mutants_root()
     _validated_staging_destination(destination_root, mutants_root)
+    destination_rel = destination_root.resolve().relative_to(mutants_root.resolve())
+    destination_key = _staging_key(destination_rel)
     source_boundaries: dict[Path, GitignoreBoundary | None] = {source_root: ignore_boundary}
     for root_str, dirs, files in os.walk(source_root):
         walk_directory = Path(root_str)
@@ -1456,7 +1542,14 @@ def _sync_tree(
             src_file = Path(root_str) / name
             dst_file = destination_root / rel_root / name
             _validated_staging_destination(dst_file, mutants_root)
-            if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
+            if dst_file.exists():
+                retain = (
+                    *destination_key,
+                    *_staging_key(rel_root / name),
+                ) in retained_generation_keys
+                if not _mirror_is_stale(src_file, dst_file, retain_generated=retain):
+                    continue
+                _refresh_staged_mirror(src_file, dst_file)
                 continue
             dst_file.parent.mkdir(parents=True, exist_ok=True)
             _copy_with_retry(src_file, dst_file)
@@ -1467,6 +1560,21 @@ def _sync_tree(
     # Boundary state is tracked by destination-relative path: the staged tree
     # mirrors the source structure, so staged rel_root == source rel_root.
     staged_boundaries: dict[Path, GitignoreBoundary | None] = {Path(): ignore_boundary}
+
+    def live_is_current(
+        live_path: Path,
+        live_name: str,
+        live_boundary: GitignoreBoundary | None,
+    ) -> bool:
+        try:
+            return (
+                live_path.exists()
+                and live_path.resolve(strict=True) not in excluded_resolved
+                and not (live_boundary is not None and live_boundary.excludes_file(live_name))
+            )
+        except OSError:
+            return False
+
     for root_str, dirs, files in os.walk(destination_root):
         staged_root = Path(root_str)
         rel_root = staged_root.relative_to(destination_root)
@@ -1483,20 +1591,29 @@ def _sync_tree(
             staged_boundaries[rel_root / directory] = child_boundary
             cleanup_candidates.append((staged_directory, directory_excluded))
         dirs[:] = staged_safe_dirs
+
         for name in files:
-            source_file = source_root / rel_root / name
-            try:
-                source_is_current = (
-                    source_file.exists()
-                    and source_file.resolve(strict=True) not in excluded_resolved
-                    and not (boundary is not None and boundary.excludes_file(name))
-                )
-            except OSError:
-                source_is_current = False
+            source_is_current = live_is_current(source_root / rel_root / name, name, boundary)
             if source_is_current:
                 continue
             stale_path = Path(root_str) / name
             _validated_staging_destination(stale_path, mutants_root)
+            if name.casefold().endswith(".meta"):
+                # M-031: a proven-own generation sidecar survives next to a
+                # current, expected companion (the rule the automatic mirror
+                # has always applied) so fast-path reuse keeps working in
+                # configured mirrors.
+                companion_name = name[: -len(".meta")]
+                companion_is_current = (
+                    live_is_current(
+                        source_root / rel_root / companion_name, companion_name, boundary
+                    )
+                    and stale_path.with_name(companion_name).exists()
+                )
+                if _retain_generation_sidecar(
+                    stale_path, companion_is_current=companion_is_current
+                ):
+                    continue
             _unlink_staging_file(stale_path)
 
     # Keep the configured mirror root itself stable, but do not retain nested
@@ -1638,9 +1755,8 @@ def _sync_deleted_sources(
                     continue
                 if name.casefold().endswith(".meta"):
                     companion = Path(str(staged)[: -len(".meta")]).absolute()
-                    if (
-                        companion in expected_absolute
-                        and read_owned_source_metadata(staged) is not None
+                    if _retain_generation_sidecar(
+                        staged, companion_is_current=companion in expected_absolute
                     ):
                         continue
                 _unlink_staging_file(staged)
@@ -1712,6 +1828,7 @@ def copy_also_copy_files(
     # Their distinguishing trait — being added to the worker's PYTHONPATH — is
     # implemented in process/worker.py rather than here.
     paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
+    retained_generation_keys = _generation_target_keys(config)
     excluded_resolved: set[Path] = set()
     for excluded in excluded_paths:
         try:
@@ -1782,7 +1899,14 @@ def copy_also_copy_files(
         print("     also copying", path_str)
         if path.is_file():
             _validated_staging_destination(destination, mutants_root)
-            if not destination.exists() or _mirror_is_stale(path, destination):
+            if destination.exists():
+                retain = (
+                    _staging_key(destination.resolve().relative_to(mutants_root.resolve()))
+                    in retained_generation_keys
+                )
+                if _mirror_is_stale(path, destination, retain_generated=retain):
+                    _refresh_staged_mirror(path, destination)
+            elif _mirror_is_stale(path, destination):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
         else:
@@ -1795,6 +1919,7 @@ def copy_also_copy_files(
                     project_root,
                     path,
                 ),
+                retained_generation_keys=retained_generation_keys,
             )
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
