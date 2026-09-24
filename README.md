@@ -355,7 +355,7 @@ Notes:
 | `segfault` | The test process crashed under the mutant — also a detection |
 | `survived` | **No test noticed the change — this is your test gap** |
 | `timeout` | Budget exceeded without an infinite-loop verdict |
-| `suspicious` | Unexpected pytest exit code (diagnostic tail is captured) |
+| `suspicious` | Unexpected pytest exit code, or pytest exited 0 without a verified test-call execution proof (neutralized phase, only skipped tests, or a proof publication failure — never counted as a kill); the diagnostic tail is captured |
 | `no tests` | Reserved for a future runtime-authoritative mapper; the current collector never emits this verdict |
 | `skipped` | Excluded from this run |
 
