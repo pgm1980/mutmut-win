@@ -332,9 +332,7 @@ class TestPathsToMutateCanonicalisation:
         assert again.paths_to_mutate == config.paths_to_mutate == ["src/mod.py"]
 
     @given(
-        segments=st.lists(
-            st.from_regex(r"[a-z]{1,8}", fullmatch=True), min_size=1, max_size=4
-        ),
+        segments=st.lists(st.from_regex(r"[a-z]{1,8}", fullmatch=True), min_size=1, max_size=4),
         position=st.integers(min_value=0, max_value=4),
     )
     def test_canonicalised_entries_resolve_identically_and_stay_canonical(
