@@ -3,7 +3,9 @@
 These tests verify that:
 1. A Job Object can be created with KILL_ON_JOB_CLOSE
 2. A subprocess can be assigned to a Job Object
-3. Closing the Job handle kills all assigned processes (deterministic, no timing)
+3. Closing the Job handle kills all assigned processes and their descendants
+   (deterministic PID-file synchronisation, no sleeps; the leaf process is
+   observed directly before and after the close — issue #142 / M-140)
 4. Graceful degradation works on non-Windows platforms
 5. Win32 diagnostics are accurate: real error codes (use_last_error), explicit
    argtypes/restype signatures, least-privilege OpenProcess access mask
@@ -11,11 +13,98 @@ These tests verify that:
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
+import psutil
 import pytest
+
+from tests.unit.process_tree_util import (
+    assert_tree_terminated,
+    wait_for_pid_file,
+    write_pid_file_snippet,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+#: ``subprocess`` has no CREATE_SUSPENDED constant (verified against
+#: CPython 3.14.7); the production worker uses the same literal value.
+_CREATE_SUSPENDED = 0x00000004
+
+
+def _spawn_child_and_grandchild(
+    child_pid_file: Path, leaf_pid_file: Path
+) -> subprocess.Popen[bytes]:
+    """Start a suspended root whose descendants publish their PIDs atomically.
+
+    The child writes ``os.getpid()`` (the working interpreter below the venv
+    launcher) to *child_pid_file*, then spawns the grandchild, which writes
+    its own PID — the true leaf of the tree — to *leaf_pid_file* and sleeps.
+    """
+    grandchild_code = write_pid_file_snippet() + "import time\ntime.sleep(300)\n"
+    child_code = (
+        write_pid_file_snippet()
+        + "import subprocess, sys, time\n"
+        + "subprocess.Popen([sys.executable, '-c', "
+        + repr(grandchild_code)
+        + ", sys.argv[2]])\n"
+        + "time.sleep(300)\n"
+    )
+    # S603: interpreter plus fully test-controlled scripts, no untrusted input.
+    return subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", child_code, str(child_pid_file), str(leaf_pid_file)],
+        creationflags=_CREATE_SUSPENDED,
+    )
+
+
+def _assert_tree_inside_job(job_handle: int, handles: Sequence[psutil.Process]) -> None:
+    """Assert every observed tree member is a member of the kill-on-close job.
+
+    Separates the two failure modes of the containment proof — "not inside the
+    job" (assignment broken) and "not terminated" (kill-on-close broken) — by
+    checking ``IsProcessInJob`` per process before the handle is closed.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.IsProcessInJob.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    process_query_limited_information = 0x1000
+    for handle in handles:
+        process_handle = kernel32.OpenProcess(process_query_limited_information, False, handle.pid)
+        if not process_handle:
+            pytest.fail(f"OpenProcess({handle.pid}) failed: {ctypes.get_last_error()}")
+        try:
+            inside = wintypes.BOOL()
+            if not kernel32.IsProcessInJob(process_handle, job_handle, ctypes.byref(inside)):
+                pytest.fail(f"IsProcessInJob({handle.pid}) failed: {ctypes.get_last_error()}")
+            assert inside.value, f"process {handle.pid} is not inside the kill-on-close job"
+        finally:
+            kernel32.CloseHandle(process_handle)
+
+
+def _reap_tree(handles: Sequence[psutil.Process]) -> None:
+    """Kill and reap every surviving handle (best effort, for finally blocks)."""
+    for handle in handles:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            if handle.is_running():
+                handle.kill()
+    psutil.wait_procs(list(handles), timeout=10.0)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
@@ -75,11 +164,23 @@ class TestJobObjectWindows:
         exit_code = proc.wait(timeout=10)
         assert exit_code is not None, "Process should have been killed"
 
-    def test_kill_on_close_kills_grandchild(self) -> None:
-        """Job Objects kill the entire process tree — including grandchildren.
+    def test_kill_on_close_kills_grandchild(self, tmp_path: Path) -> None:
+        """Job Objects kill the entire process tree — including the leaf.
 
-        This tests the scenario that caused the CPU overheating: a worker
-        starts a pytest subprocess, which is a grandchild of the main process.
+        Regression test for the vacuous predecessor (issue #142 / M-140): the
+        old test observed only the direct child after a fixed ``sleep(1)`` and
+        stayed green whenever the grandchild escaped the job. This version is
+        deterministic:
+
+        - the root starts suspended and is assigned to the job *before* it
+          resumes (the documented production contract of the PID-based API),
+          and it must have no children yet at assignment time;
+        - child and leaf publish their PIDs atomically; the test waits with a
+          deadline for both files;
+        - every tree member must be inside the job (``IsProcessInJob``), must
+          be alive before the close, and must be gone within 10 s after
+          exactly one ``close_job`` call;
+        - surviving processes are killed in ``finally``.
         """
         from mutmut_win.process.job_object import (
             assign_process_to_job,
@@ -87,29 +188,69 @@ class TestJobObjectWindows:
             create_kill_on_close_job,
         )
 
+        child_pid_file = tmp_path / "child.pid"
+        leaf_pid_file = tmp_path / "leaf.pid"
+
         job = create_kill_on_close_job()
-        # Start a process that itself spawns a child (grandchild of us).
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                "import subprocess, sys, time; "
-                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']); "
-                "time.sleep(300)",
-            ],
-        )
+        job_closed = False
+        proc = _spawn_child_and_grandchild(child_pid_file, leaf_pid_file)
         assert proc.pid is not None
-        assign_process_to_job(job, proc.pid)
+        handles: list[psutil.Process] = []
+        try:
+            root = psutil.Process(proc.pid)
+            assert root.children() == [], "root must be childless while suspended"
+            assign_process_to_job(job, proc.pid)
+            root.resume()
 
-        # Give the grandchild time to spawn.
-        import time
+            child_pid = wait_for_pid_file(child_pid_file, timeout=10.0)
+            leaf_pid = wait_for_pid_file(leaf_pid_file, timeout=10.0)
 
-        time.sleep(1)
+            handles = [root, *root.children(recursive=True)]
+            observed_pids = {handle.pid for handle in handles}
+            assert child_pid in observed_pids, "child PID file must name a tree member"
+            assert leaf_pid in observed_pids, "leaf PID file must name a tree member"
+            assert all(handle.is_running() for handle in handles)
+            _assert_tree_inside_job(job, handles)
 
-        # Close Job handle — must kill proc AND its grandchild.
-        close_job(job)
-        exit_code = proc.wait(timeout=10)
-        assert exit_code is not None
+            close_job(job)
+            job_closed = True
+            assert_tree_terminated(handles, timeout=10.0)
+        finally:
+            if not job_closed:
+                with contextlib.suppress(Exception):
+                    close_job(job)
+            _reap_tree(handles)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=10.0)
+
+    def test_tree_observation_detects_surviving_leaf(self, tmp_path: Path) -> None:
+        """Negative control: without a job the leaf survives — observably.
+
+        Runs the same deterministic tree setup WITHOUT any Job Object and
+        proves that ``assert_tree_terminated`` fails and names the surviving
+        leaf PID. This pins the observation helper as non-vacuous: only the
+        kill-on-close contract, not an observation gap, lets the main test
+        pass (issue #142 / M-140).
+        """
+        child_pid_file = tmp_path / "child.pid"
+        leaf_pid_file = tmp_path / "leaf.pid"
+
+        proc = _spawn_child_and_grandchild(child_pid_file, leaf_pid_file)
+        assert proc.pid is not None
+        handles: list[psutil.Process] = []
+        try:
+            psutil.Process(proc.pid).resume()
+            leaf_pid = wait_for_pid_file(leaf_pid_file, timeout=10.0)
+            root = psutil.Process(proc.pid)
+            handles = [root, *root.children(recursive=True)]
+            assert leaf_pid in {handle.pid for handle in handles}
+            with pytest.raises(AssertionError, match="survived") as excinfo:
+                assert_tree_terminated(handles, timeout=0.5)
+            assert str(leaf_pid) in str(excinfo.value)
+        finally:
+            _reap_tree(handles)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=10.0)
 
     def test_assign_dead_process_raises(self) -> None:
         """Assigning a process that has already exited should raise OSError."""
