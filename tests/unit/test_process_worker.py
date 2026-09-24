@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from _pytest.config.argparsing import Parser
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 import mutmut_win.process.worker as worker_module
 from mutmut_win.exceptions import BadTestExecutionCommandsException, ProcessContainmentError
@@ -761,3 +763,55 @@ def test_various_exit_codes_forwarded(exit_code: int, expected: int) -> None:
     event_q.get()  # TaskStarted
     completed = TaskCompleted.model_validate(event_q.get())
     assert completed.exit_code == expected
+
+
+# ---------------------------------------------------------------------------
+# Bounded, decoding-free proof consumption (M-142, issue #143)
+# ---------------------------------------------------------------------------
+
+
+class TestConsumePhaseGuard:
+    def test_non_utf8_marker_is_a_missing_proof(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        marker = tmp_path / "corrupt.sentinel"
+        marker.write_bytes(b"\xff\xfe")
+        assert consume_pytest_phase_guard(marker, "ab" * 32) is False
+        assert not marker.exists()
+
+    def test_marker_read_is_bounded_and_exact(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        token = "cd" * 32
+        marker = tmp_path / "bounded.sentinel"
+        marker.write_text(token + "trailing", encoding="ascii")
+        assert consume_pytest_phase_guard(marker, token) is False
+        assert not marker.exists()
+
+        marker.write_text(token, encoding="ascii")
+        assert consume_pytest_phase_guard(marker, token) is True
+        assert not marker.exists()
+
+    def test_directory_at_marker_path_is_a_missing_proof(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        marker = tmp_path / "sentinel-dir"
+        marker.mkdir()
+        assert consume_pytest_phase_guard(marker, "ab" * 32) is False
+
+    @example(b"")
+    @example(b"\xff\xfe")
+    @example(b"\xff" * 64)
+    @given(payload=st.binary(max_size=256))
+    @settings(max_examples=50, deadline=None)
+    def test_consume_never_raises_and_matches_exactly(self, payload: bytes) -> None:
+        import tempfile
+
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        token = "ef" * 32
+        with tempfile.TemporaryDirectory() as name:
+            marker = Path(name) / "fuzz.sentinel"
+            marker.write_bytes(payload)
+            assert consume_pytest_phase_guard(marker, token) is (payload == token.encode())
+            assert not marker.exists()

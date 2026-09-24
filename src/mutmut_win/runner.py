@@ -340,6 +340,10 @@ class PytestRunner:
 
         Returns:
             The exit code (36 on timeout, mirroring the worker convention).
+            A phase that exits 0 without an execution proof raises
+            ``OrchestratorError`` carrying the explanatory message plus the
+            captured output tail, so a proof publication failure inside the
+            child stays diagnosable (M-008).
         """
         from mutmut_win.process.output_capture import BoundedOutputCapture
         from mutmut_win.process.worker import (
@@ -415,13 +419,17 @@ class PytestRunner:
             diagnostic = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
             message = (
                 f"{phase_name} exited 0 without executing a pytest test call; "
-                "the phase was neutralized by pytest arguments/configuration "
-                "or every selected test was skipped"
+                "the phase was neutralized by pytest arguments/configuration, "
+                "every selected test was skipped, or the execution proof "
+                "could not be published"
             )
             self._last_diagnostic_output = (
                 f"{message}\n{diagnostic}" if diagnostic is not None else message
             )
-            raise OrchestratorError(message)
+            # The error carries the message plus the captured tail: a proof
+            # publication failure inside the child is only diagnosable from
+            # the plugin's stderr line within that tail (M-008).
+            raise OrchestratorError(self._last_diagnostic_output)
         if exit_code != 0:
             self._last_diagnostic_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
         return exit_code

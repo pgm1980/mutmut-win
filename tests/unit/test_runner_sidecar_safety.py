@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 import mutmut_win.atomic_file as atomic_file_module
 from mutmut_win.atomic_file import UnsafeAtomicWriteError
@@ -295,8 +297,18 @@ def test_generated_phase_proof_publishes_once_per_phase(
 
 
 def test_generated_phase_proof_detects_parent_swap_before_outside_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    """The parent-swap tripwire fires, but never escapes into pytest (M-008).
+
+    Before M-008 the UnsafeAtomicWriteError escaped the hook and became a
+    pytest INTERNALERROR (exit 3), which the score counted as killed. Now
+    the hook records the failure once, emits the prefixed diagnostic line,
+    and publishes no proof.
+    """
+    # Skip the ~15.85 s parent-capture retry ladder; the tripwire verdict
+    # itself is unaffected by the delays.
+    monkeypatch.setattr(atomic_file_module, "_PARENT_CAPTURE_RETRY_DELAYS", ())
     staging = tmp_path / "mutants"
     staging.mkdir()
     outside = tmp_path / "outside"
@@ -329,10 +341,19 @@ def test_generated_phase_proof_detects_parent_swap_before_outside_write(
     monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PATH_ENV, env[_PYTEST_PHASE_SENTINEL_PATH_ENV])
     monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PROOF_ENV, env[_PYTEST_PHASE_SENTINEL_PROOF_ENV])
 
-    with pytest.raises(UnsafeAtomicWriteError, match="parent must be a real directory"):
-        hook(SimpleNamespace(when="call", skipped=False))
+    capfd.readouterr()
+    assert hook(SimpleNamespace(when="call", skipped=False)) is None
+    captured = capfd.readouterr().err
+    assert "mutmut-win: execution proof publication failed" in captured
+    assert "UnsafeAtomicWriteError" in captured
+    assert "parent must be a real directory" in captured
 
-    assert marker_path.parent == staging.absolute()
+    # One-shot: a second qualifying report neither retries nor re-emits.
+    capfd.readouterr()
+    hook(SimpleNamespace(when="call", skipped=False))
+    assert "mutmut-win: execution proof publication failed" not in capfd.readouterr().err
+
+    assert not marker_path.exists()
     assert list(outside.iterdir()) == []
 
 
@@ -369,3 +390,282 @@ def test_real_benchmark_save_stays_outside_staging(
     assert not any(path.name.casefold() == ".benchmarks" for path in tmp_path.rglob("*"))
     assert not (staging / "Users").exists()
     assert not (tmp_path / "Users").exists()
+
+
+# ---------------------------------------------------------------------------
+# Proof publication failures inside the generated plugin (M-008, issue #143)
+# ---------------------------------------------------------------------------
+
+_FAILURE_EXAMPLES = [
+    "UnsafeAtomicWriteError",
+    "AtomicReplaceError",
+    "AtomicPublicationRaceError",
+    "PermissionError",
+    "FileNotFoundError",
+    "FileExistsError",
+    "OSError",
+    "RuntimeError",
+    "ValueError",
+]
+
+
+class _BrokenStrError(RuntimeError):
+    def __str__(self) -> str:  # pragma: no cover - exercises the fallback
+        raise RuntimeError("str() is broken")
+
+
+def _load_hook(
+    staging: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env: dict[str, str],
+    *,
+    atomic_override: object = None,
+) -> tuple[dict, object, Path]:
+    """Publish + load the real plugin and export its sentinel env.
+
+    ``atomic_override`` replaces ``atomic_write_bytes`` BEFORE the plugin is
+    loaded: the plugin binds the name at import time, so later patches on the
+    source module would no longer reach it.
+    """
+    marker_path, _token = prepare_pytest_phase_guard(env, staging)
+    staging_stat = staging.stat()
+    monkeypatch.setenv(
+        "MUTMUT_PYTEST_ALLOWED_DIRS",
+        json.dumps(
+            [
+                {
+                    "path": str(staging.resolve()),
+                    "st_dev": staging_stat.st_dev,
+                    "st_ino": staging_stat.st_ino,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setenv("MUTMUT_PYTEST_ALLOWED_FILES", "[]")
+    monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PATH_ENV, env[_PYTEST_PHASE_SENTINEL_PATH_ENV])
+    monkeypatch.setenv(_PYTEST_PHASE_SENTINEL_PROOF_ENV, env[_PYTEST_PHASE_SENTINEL_PROOF_ENV])
+    if atomic_override is not None:
+        monkeypatch.setattr(atomic_file_module, "atomic_write_bytes", atomic_override)
+    namespace = runpy.run_path(str(staging / "_mutmut_phase_guard.py"))
+    hook = namespace["pytest_runtest_logreport"]
+    return namespace, hook, marker_path
+
+
+def test_generated_phase_proof_publication_failure_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """T1: a publication failure stays inside the hook and is diagnosed once."""
+    from mutmut_win.atomic_file import AtomicPublicationRaceError
+
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+
+    attempts: list[Path] = []
+
+    def failing_atomic_write(path: Path, _payload: bytes, **_kwargs: object) -> None:
+        attempts.append(Path(path))
+        raise AtomicPublicationRaceError("race")
+
+    _namespace, hook, marker_path = _load_hook(
+        staging, monkeypatch, env, atomic_override=failing_atomic_write
+    )
+
+    capfd.readouterr()
+    assert hook(SimpleNamespace(when="call", skipped=False)) is None
+    assert not marker_path.exists()
+    assert len(attempts) == 1
+
+    err = capfd.readouterr().err
+    assert err.count("mutmut-win: execution proof publication failed") == 1
+    assert "AtomicPublicationRaceError: race" in err
+
+    # One-shot: two more qualifying reports retry nothing and stay silent.
+    capfd.readouterr()
+    hook(SimpleNamespace(when="call", skipped=False))
+    hook(SimpleNamespace(when="call", skipped=False))
+    assert len(attempts) == 1
+    assert "mutmut-win: execution proof publication failed" not in capfd.readouterr().err
+
+
+@given(exception_type=st.sampled_from(_FAILURE_EXAMPLES))
+@settings(max_examples=25, deadline=None)
+def test_generated_phase_proof_never_raises_across_exception_types(
+    exception_type: str,
+) -> None:
+    """T2: for every failure class the hook tries once, publishes nothing."""
+    import tempfile
+
+    exception_class = {
+        "UnsafeAtomicWriteError": UnsafeAtomicWriteError,
+        "AtomicReplaceError": atomic_file_module.AtomicReplaceError,
+        "AtomicPublicationRaceError": atomic_file_module.AtomicPublicationRaceError,
+        "PermissionError": PermissionError,
+        "FileNotFoundError": FileNotFoundError,
+        "FileExistsError": FileExistsError,
+        "OSError": OSError,
+        "RuntimeError": RuntimeError,
+        "ValueError": ValueError,
+    }[exception_type]
+
+    def raising_write(_path: Path, _payload: bytes, **_kwargs: object) -> None:
+        raise exception_class("boom")
+
+    emitted: list[bytes] = []
+
+    def recording_write(_fd: int, payload: bytes) -> int:
+        emitted.append(payload)
+        return len(payload)
+
+    with tempfile.TemporaryDirectory() as name:
+        staging = Path(name) / "mutants"
+        staging.mkdir()
+        with pytest.MonkeyPatch.context() as patch:
+            env: dict[str, str] = {}
+            _namespace, hook, marker_path = _load_hook(
+                staging, patch, env, atomic_override=raising_write
+            )
+            report = SimpleNamespace(when="call", skipped=False)
+            with patch.context() as scoped:
+                scoped.setattr(os, "write", recording_write)
+                assert hook(report) is None
+                assert hook(report) is None
+            assert not marker_path.exists()
+            # run_path returns a copy of the module globals, so one-shot
+            # state is proven behaviourally: exactly one attempt (recorded
+            # in the closure) and exactly one diagnostic emission.
+            assert len(emitted) == 1
+            assert b"mutmut-win: execution proof publication failed" in emitted[0]
+            assert exception_type.encode() in emitted[0]
+
+
+def test_generated_phase_proof_keyboard_interrupt_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T3: BaseException subclasses are not swallowed by the guard."""
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+
+    def interrupting_write(_path: Path, _payload: bytes, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    _namespace, hook, marker_path = _load_hook(
+        staging, monkeypatch, env, atomic_override=interrupting_write
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        hook(SimpleNamespace(when="call", skipped=False))
+    assert not marker_path.exists()
+
+
+def test_publication_diagnostic_is_robust_and_reemitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T4: broken str, failing fd 2, and unconfigure re-emission are all safe."""
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+    real_atomic = atomic_file_module.atomic_write_bytes
+
+    def broken_write(_path: Path, _payload: bytes, **_kwargs: object) -> None:
+        raise _BrokenStrError
+
+    namespace, hook, marker_path = _load_hook(
+        staging, monkeypatch, env, atomic_override=broken_write
+    )
+
+    emitted: list[bytes] = []
+
+    def recording_write(_fd: int, payload: bytes) -> int:
+        emitted.append(payload)
+        return len(payload)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "write", recording_write)
+        hook(SimpleNamespace(when="call", skipped=False))
+        assert len(emitted) == 1
+        assert b"mutmut-win: execution proof publication failed: _BrokenStrError" in emitted[0]
+        # pytest_unconfigure repeats the recorded line exactly once more.
+        namespace["pytest_unconfigure"](SimpleNamespace())
+        assert len(emitted) == 2
+        assert emitted[1] == emitted[0]
+    assert not marker_path.exists()
+
+    # After a successful publication, unconfigure writes nothing.
+    monkeypatch.setattr(atomic_file_module, "atomic_write_bytes", real_atomic)
+    fresh_env: dict[str, str] = {}
+    fresh_namespace, fresh_hook, fresh_marker = _load_hook(staging, monkeypatch, fresh_env)
+    fresh_hook(SimpleNamespace(when="call", skipped=False))
+    assert fresh_marker.exists()
+    emitted.clear()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "write", recording_write)
+        fresh_namespace["pytest_unconfigure"](SimpleNamespace())
+        assert emitted == []
+
+    # A failing os.write never lets the hook or unconfigure raise.
+    def exploding_write(_fd: int, _payload: bytes) -> int:
+        raise OSError("fd 2 is gone")
+
+    def failing_again(_path: Path, _payload: bytes, **_kwargs: object) -> None:
+        raise RuntimeError("still failing")
+
+    broken_env: dict[str, str] = {}
+    broken_namespace, broken_hook, _broken_marker = _load_hook(
+        staging, monkeypatch, broken_env, atomic_override=failing_again
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "write", exploding_write)
+        assert broken_hook(SimpleNamespace(when="call", skipped=False)) is None
+        broken_namespace["pytest_unconfigure"](SimpleNamespace())
+
+
+def test_plugin_source_pins_prefix_and_compiles() -> None:
+    """T9: the failure prefix, compile safety, and unconfigure are pinned."""
+    from mutmut_win.process.worker import (
+        _PROOF_PUBLICATION_FAILURE_PREFIX,
+        _PYTEST_PHASE_GUARD_SOURCE,
+    )
+
+    compile(_PYTEST_PHASE_GUARD_SOURCE, "_mutmut_phase_guard.py", "exec")
+    assert _PROOF_PUBLICATION_FAILURE_PREFIX in _PYTEST_PHASE_GUARD_SOURCE
+    assert "pytest_unconfigure" in _PYTEST_PHASE_GUARD_SOURCE
+    # Escape trap (U3): a non-raw triple-quoted literal would turn any
+    # backslash sequence into real control characters in the plugin.
+    assert "\\" not in _PYTEST_PHASE_GUARD_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# Expected xfail call reports count as executed (M-143, issue #143)
+# ---------------------------------------------------------------------------
+
+
+def test_generated_phase_proof_accepts_xfailed_call_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped call report with a real wasxfail reason publishes the proof."""
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+    _namespace, hook, marker_path = _load_hook(staging, monkeypatch, env)
+
+    hook(SimpleNamespace(when="call", skipped=True, wasxfail="expected failure"))
+    hook(SimpleNamespace(when="call", skipped=True, wasxfail=""))
+    assert marker_path.is_file()
+
+
+def test_generated_phase_proof_rejects_notrun_and_plain_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dynamic xfail(run=False) markers and runtime skips publish nothing."""
+    staging = tmp_path / "mutants"
+    staging.mkdir()
+    env: dict[str, str] = {}
+    _namespace, hook, marker_path = _load_hook(staging, monkeypatch, env)
+
+    hook(SimpleNamespace(when="call", skipped=True, wasxfail="[NOTRUN] reason"))
+    hook(SimpleNamespace(when="call", skipped=True, wasxfail="[NOTRUN] "))
+    hook(SimpleNamespace(when="call", skipped=True))
+    hook(SimpleNamespace(when="setup", skipped=True, wasxfail="expected failure"))
+    assert not marker_path.exists()

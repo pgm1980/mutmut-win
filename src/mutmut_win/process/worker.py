@@ -54,6 +54,20 @@ _MAX_DIAGNOSTIC_LINES: int = 50
 #: crashes (NTSTATUS) — gets its last output captured (issue #91).
 _QUIET_EXIT_CODES: frozenset[int] = frozenset({0, 1, 5, 33, 34})
 
+#: Fixed stderr prefix the generated phase-guard plugin writes when publishing
+#: the execution proof fails.  Must stay byte-identical to the literal inside
+#: ``_PYTEST_PHASE_GUARD_SOURCE`` (pinned by a contract test).
+_PROOF_PUBLICATION_FAILURE_PREFIX: str = "mutmut-win: execution proof publication failed"
+
+#: Neutralization message when pytest exits 0 without an execution proof:
+#: the phase was neutralized, every selected test was skipped, or the proof
+#: could not be published (M-008/M-143/M-145 shared wording).
+_EXIT_ZERO_WITHOUT_PROOF_MESSAGE: str = (
+    "pytest exited 0 without executing a test call; the worker phase was "
+    "neutralized by pytest arguments/configuration, every selected test was "
+    "skipped, or the execution proof could not be published"
+)
+
 # Retain the concrete class even when unit tests patch subprocess.Popen.  The
 # Windows fallback tracker must never inspect or kill a PID carried by a mock
 # or third-party Popen-like object.
@@ -454,29 +468,80 @@ def pytest_collection_finish(session):
         )
 
 
+_PUBLICATION_FAILURE_PREFIX = "mutmut-win: execution proof publication failed"
 _proof_published = False
+_proof_publication_failed = False
+_proof_publication_diagnostic = None
+
+
+def _emit_publication_diagnostic():
+    """Best-effort: repeat a recorded proof publication failure on fd 2."""
+    try:
+        if _proof_publication_diagnostic:
+            os.write(
+                2,
+                (_proof_publication_diagnostic + os.linesep).encode(
+                    "utf-8", "backslashreplace"
+                ),
+            )
+    except Exception:
+        pass
 
 
 def pytest_runtest_logreport(report):
-    """Publish proof once after pytest executed a non-skipped test call.
+    """Publish the execution proof once after a qualifying call report.
 
-    The first qualifying call report publishes the execution proof with the
-    full strict atomic-publication contract.  Every later report is a no-op:
-    republishing an identical token adds no proof strength, and one complete
-    publication chain per phase (instead of one per report) keeps filter
-    drivers from being fed thousands of fresh temporary files that starved
-    the whole phase under load (MBR-2026-09-14-01 follow-up).
+    A publication failure is recorded once (one-shot for success and
+    failure alike — no per-report retry keeps filter drivers from being fed
+    thousands of fresh temporary files), reported on file descriptor 2 with
+    a fixed prefix, and repeated in pytest_unconfigure so it stays inside
+    the captured output tail.  It never escapes into pytest: an escaping
+    hook exception would become a pytest INTERNALERROR (exit 3), which the
+    score counts as killed.  A missing proof neutralizes an otherwise clean
+    exit 0 to suspicious (35) in the worker; a non-zero exit keeps its
+    ordinary mapping.
     """
-    if report.when != "call" or report.skipped:
+    if report.when != "call":
         return
-    global _proof_published
-    if _proof_published:
+    if report.skipped:
+        # An expected xfail whose test body actually ran counts as executed
+        # (wasxfail carries the reason); xfail(run=False) — marked '[NOTRUN]'
+        # — and runtime pytest.skip() do not (M-143).
+        reason = getattr(report, "wasxfail", None)
+        if not isinstance(reason, str) or reason.startswith("[NOTRUN]"):
+            return
+    global _proof_published, _proof_publication_failed, _proof_publication_diagnostic
+    if _proof_published or _proof_publication_failed:
         return
     marker_path = os.environ.get(_PATH_ENV)
     proof = os.environ.get(_PROOF_ENV)
-    if marker_path and proof:
+    if not (marker_path and proof):
+        return
+    try:
         atomic_write_bytes(Path(marker_path), proof.encode("utf-8"))
-        _proof_published = True
+    except Exception as exc:
+        _proof_publication_failed = True
+        try:
+            _proof_publication_diagnostic = (
+                f"{_PUBLICATION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}"
+            )
+        except Exception:
+            _proof_publication_diagnostic = (
+                f"{_PUBLICATION_FAILURE_PREFIX}: {type(exc).__name__}"
+            )
+        _emit_publication_diagnostic()
+        return
+    _proof_published = True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    """Repeat a recorded publication failure so it stays in the output tail.
+
+    Fully guarded: an exception here would surface as an ordinary pytest
+    failure (exit 1, counted as killed), so this hook must never raise.
+    """
+    _emit_publication_diagnostic()
 '''
 
 # pytest accepts several informational/control options that exit successfully
@@ -833,6 +898,14 @@ def prepare_pytest_phase_guard(
     publication. A different or unverifiable competing leaf is a fatal pytest
     execution-boundary failure, never a mutant verdict.
 
+    This fatal classification covers the parent-side publication of the
+    guard plugin only. The generated plugin publishes the execution proof
+    later inside the pytest child; a failure there is reported on stderr
+    with the prefix ``mutmut-win: execution proof publication failed:`` and
+    leaves no proof, so an exit 0 is neutralized to suspicious (35) while a
+    non-zero exit keeps its ordinary mapping. It never becomes a pytest
+    internal error.
+
     Args:
         env: Child-process environment to augment.
         mutants_dir: Staging directory from which pytest loads the plugin.
@@ -861,9 +934,18 @@ def prepare_pytest_phase_guard(
 
 
 def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
-    """Return whether a matching execution proof exists, then remove it."""
+    """Return whether a matching execution proof exists, then remove it.
+
+    Reads at most ``len(expected) + 1`` bytes and compares without any
+    decoding (M-142): invalid UTF-8, truncated, or foreign bytes are simply
+    a missing proof — the marker never fails the caller's cleanup, and a
+    bloated marker file cannot be read unboundedly.
+    """
+    expected = expected_token.encode("utf-8")
     try:
-        return marker_path.read_text(encoding="utf-8") == expected_token
+        with marker_path.open("rb") as handle:
+            observed = handle.read(len(expected) + 1)
+        return observed == expected
     except OSError:
         return False
     finally:
@@ -1127,6 +1209,7 @@ def _process_task(
     # progress signal without allowing a print loop to exhaust the disk.
     capture = BoundedOutputCapture()
     last_output: str | None = None
+    neutralization_message: str | None = None
     forensics_dict: dict[str, object] | None = None
     exit_code: int = 35  # default to suspicious so the finally clause is safe
 
@@ -1230,44 +1313,55 @@ def _process_task(
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", file=sys.stderr, flush=True)
         exit_code = 35  # suspicious
     finally:
-        phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
-        if exit_code == 0 and not phase_executed:
-            exit_code = 35
-            last_output = (
-                "pytest exited 0 without executing a test call; the worker phase was "
-                "neutralized by pytest arguments/configuration or every selected test was skipped"
-            )
-        if task_job_handle is not None:
-            # Normal completion: closing the kill-on-close job reaps any
-            # background processes the tests left behind (issue #82).
-            with contextlib.suppress(Exception):
-                from mutmut_win.process.job_object import close_job
+        # M-142: the proof check must never prevent the cleanup below it —
+        # user test code can overwrite the marker with arbitrary bytes.
+        try:
+            phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
+            if exit_code == 0 and not phase_executed:
+                exit_code = 35
+                # M-145: keep the explanation as a message; the captured tail
+                # is appended only after capture.close() below, so the pytest
+                # output of the neutralized phase stays diagnosable.
+                neutralization_message = _EXIT_ZERO_WITHOUT_PROOF_MESSAGE
+        finally:
+            if task_job_handle is not None:
+                # Normal completion: closing the kill-on-close job reaps any
+                # background processes the tests left behind (issue #82).
+                with contextlib.suppress(Exception):
+                    from mutmut_win.process.job_object import close_job
 
-                close_job(task_job_handle)
-            tree_cleanup_done = True
-        elif proc is not None and not tree_cleanup_done:
-            # POSIX has no Job Object. Successful tests may still leave
-            # background descendants, so normal completion needs the same
-            # explicit process-group/PPID cleanup as timeout paths. A mocked
-            # Windows Popen can also reach this branch in unit tests.
-            _kill_proc_tree(proc)
-            tree_cleanup_done = True
-        if monitor is not None:
-            with contextlib.suppress(Exception):
-                monitor.shutdown()
-        capture.close_writer()
-        capture.close()
-        # Read diagnostics for every anomalous exit (if not already read by
-        # the timeout path). Issue #91: exit 2 is a collection-error kill and
-        # NTSTATUS codes are crashes — their forensics ARE the pytest output;
-        # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
-        # diagnostic value.
-        if exit_code not in _QUIET_EXIT_CODES and last_output is None:
-            last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
-        if tests_argfile is not None and tests_argfile.exists():
-            with contextlib.suppress(OSError):
-                tests_argfile.unlink()
-        runtime_context.cleanup()
+                    close_job(task_job_handle)
+                tree_cleanup_done = True
+            elif proc is not None and not tree_cleanup_done:
+                # POSIX has no Job Object. Successful tests may still leave
+                # background descendants, so normal completion needs the same
+                # explicit process-group/PPID cleanup as timeout paths. A mocked
+                # Windows Popen can also reach this branch in unit tests.
+                _kill_proc_tree(proc)
+                tree_cleanup_done = True
+            if monitor is not None:
+                with contextlib.suppress(Exception):
+                    monitor.shutdown()
+            capture.close_writer()
+            capture.close()
+            # Read diagnostics for every anomalous exit (if not already read by
+            # the timeout path). Issue #91: exit 2 is a collection-error kill and
+            # NTSTATUS codes are crashes — their forensics ARE the pytest output;
+            # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
+            # diagnostic value.
+            if neutralization_message is not None:
+                tail = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+                last_output = (
+                    f"{neutralization_message}\n{tail}"
+                    if tail is not None
+                    else neutralization_message
+                )
+            elif exit_code not in _QUIET_EXIT_CODES and last_output is None:
+                last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+            if tests_argfile is not None and tests_argfile.exists():
+                with contextlib.suppress(OSError):
+                    tests_argfile.unlink()
+            runtime_context.cleanup()
 
     duration = time.monotonic() - start
 
