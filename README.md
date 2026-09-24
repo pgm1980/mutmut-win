@@ -294,7 +294,14 @@ Notes:
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   Code exercised only in test-spawned subprocesses or pytest-xdist
   workers is invisible to it — such a run fails loudly instead of
-  silently filtering every mutant.
+  silently filtering every mutant. Follow-up runs restore every target to
+  its unmutated bytes before the coverage phase, so coverage always
+  measures original line numbers. The trade-off: in this mode no
+  trampolined output survives between runs — every file is re-generated
+  each run and verdict reuse (fast path) is unavailable for them. Subset
+  runs (CLI `--paths-to-mutate`, `do_not_mutate`) likewise restore
+  deselected targets to unmutated bytes and drop their generation
+  sidecars, so the next full run re-generates them.
 - Test observations that cannot prove complete coverage of subprocesses,
   threads, or xdist workers are never allowed to omit or reorder tests. Their
   durations may schedule independent mutant tasks, while pytest keeps the
