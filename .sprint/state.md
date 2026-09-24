@@ -1,8 +1,8 @@
 ---
-current_sprint: "43"
+current_sprint: "44"
 sprint_goal: "v2.21.5: in progress"
-branch: "fix/v2.21.5-remediation-r0"
-started_at: "2026-09-23"
+branch: "fix/v2.21.5-remediation-r1"
+started_at: "2026-09-24"
 phase: "in_progress"
 candidate_commit: ""
 candidate_tree: ""
@@ -25,7 +25,7 @@ documentation_updated: false
 <!-- RELEASE_PHASE: in_progress -->
 <!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
 <!-- RELEASE_TARGET: v2.21.5 -->
-<!-- RELEASE_BRANCH: `fix/v2.21.5-remediation-r0` -->
+<!-- RELEASE_BRANCH: `fix/v2.21.5-remediation-r1` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
