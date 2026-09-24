@@ -357,7 +357,24 @@ class MutmutConfig(BaseModel):
             else:
                 # Preserve the user's harmless relative spelling (including a
                 # trailing separator); only resolved containment is normalized.
-                safe.append(entry)
+                if ".." in path.parts:
+                    # Canonicalise '..'-aliases after containment is proven:
+                    # the staging reservation, generation, sidecar paths, and
+                    # mutant names all key on the literal entry, so an
+                    # unnormalised alias would bypass the '<source>.meta'
+                    # reservation and form unusable mutant names (M-034).
+                    normalized = Path(os.path.normpath(entry))
+                    if ".." in normalized.parts:
+                        # normpath kept '..' (the entry leaves and re-enters
+                        # the project root); the resolved relative form is
+                        # the authoritative canonical spelling.
+                        normalized = relative
+                    canonical = "." if normalized == Path() else normalized.as_posix()
+                    if entry.endswith(("/", os.sep)) and canonical != ".":
+                        canonical += "/"
+                    safe.append(canonical)
+                else:
+                    safe.append(entry)
         return safe
 
     @field_validator(

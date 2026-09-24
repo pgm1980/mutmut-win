@@ -2013,6 +2013,13 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
         Fully qualified mutant identifier string.
     """
     stem = str(relative_source_path)[: -len(relative_source_path.suffix)]
+    if ".." in relative_source_path.parts:
+        msg = (
+            f"mutating path {relative_source_path} must be canonical and "
+            "project-relative — '..' components produce mutant names that can "
+            "never match the trampoline prefix or the stats mapping (M-034)"
+        )
+        raise ValueError(msg)
     module_components = stem.replace(os.sep, ".").replace("/", ".").split(".")
     for root in SOURCE_ROOT_NAMES:
         root_matches = module_components and module_components[0] == root
@@ -2107,6 +2114,17 @@ def create_mutants_for_file(
         names came from the unchanged-staging fast path.
     """
     collected_warnings: list[warnings.WarningMessage] = []
+
+    if ".." in filename.parts:
+        # Engine invariant (M-034): the config validator canonicalises
+        # '..'-aliases, but this guard also protects callers that bypass it.
+        # It must fire before any staging write — get_mutant_name runs only
+        # after the generated module is on disk.
+        msg = (
+            f"Refusing to mutate through a non-canonical '..'-alias ({filename}) — "
+            "paths_to_mutate entries must be canonical project-relative paths."
+        )
+        raise ValueError(msg)
 
     if output_path.resolve() == filename.resolve():
         msg = (

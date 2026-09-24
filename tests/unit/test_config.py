@@ -285,3 +285,67 @@ class TestGuessPathsToMutate:
             assert result == [f"{cwd_name}.py"]
         finally:
             os.chdir(orig)
+
+
+class TestPathsToMutateCanonicalisation:
+    """M-034 (issue #144): '..'-aliases must canonicalise after containment.
+
+    An unnormalised alias like ``src/../src/mod.py`` passes containment but
+    bypasses the ``<source>.meta`` staging reservation and produces mutant
+    names that never match the trampoline prefix (``...src.mod.<m>``).
+    """
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            ("src/../src/mod.py", "src/mod.py"),
+            ("src/../src/", "src/"),
+            ("src/mod/../mod.py", "src/mod.py"),
+            ("src/..", "."),
+            ("src/../", "."),
+        ],
+    )
+    def test_dotdot_alias_is_canonicalised(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        entry: str,
+        expected: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=[entry])
+        assert config.paths_to_mutate == [expected]
+
+    def test_harmless_relative_spelling_is_preserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["src/", "lib/pkg/mod.py"])
+        assert config.paths_to_mutate == ["src/", "lib/pkg/mod.py"]
+
+    def test_canonicalisation_is_idempotent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["src/../src/mod.py"])
+        again = MutmutConfig(paths_to_mutate=config.paths_to_mutate)
+        assert again.paths_to_mutate == config.paths_to_mutate == ["src/mod.py"]
+
+    @given(
+        segments=st.lists(
+            st.from_regex(r"[a-z]{1,8}", fullmatch=True), min_size=1, max_size=4
+        ),
+        position=st.integers(min_value=0, max_value=4),
+    )
+    def test_canonicalised_entries_resolve_identically_and_stay_canonical(
+        self, segments: list[str], position: int
+    ) -> None:
+        position = min(position, len(segments))
+        entry = "/".join([*segments[:position], "x", "..", *segments[position:]])
+        config = MutmutConfig(paths_to_mutate=[entry])
+        canonical = config.paths_to_mutate[0]
+        assert ".." not in Path(canonical).parts
+        again = MutmutConfig(paths_to_mutate=[canonical])
+        assert again.paths_to_mutate == [canonical]
+        project_root = Path.cwd().resolve()
+        assert (project_root / entry).resolve() == (project_root / canonical).resolve()

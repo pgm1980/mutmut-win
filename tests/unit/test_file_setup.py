@@ -389,6 +389,32 @@ class TestCopySrcDir:
         assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
         assert not (tmp_path / "mutants").exists()
 
+    def test_dotdot_alias_reserves_the_same_metadata_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-034 (issue #144): a '..'-alias must reserve the same meta name.
+
+        Unnormalised, the reservation is keyed under ('src','..','src',
+        'mod.py.meta') while the automatic mirror plans the live fixture
+        under ('src','mod.py.meta') — the collision goes undetected and the
+        staged fixture copy is later replaced by generator metadata.
+        """
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "mod.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        legitimate_metadata = tmp_path / "src" / "mod.py.meta"
+        legitimate_metadata.write_bytes(b"PROJECT-FIXTURE-METADATA")
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match=r"mod\.py\.meta.*mutation metadata",
+        ):
+            copy_src_dir(_config(paths_to_mutate=["src/../src/mod.py"]))
+
+        assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
+        assert not (tmp_path / "mutants").exists()
+
     @pytest.mark.parametrize("import_root", [".", "src", "source"])
     @pytest.mark.parametrize(
         "helper_name", ["_mutmut_stats_plugin", "_mutmut_phase_guard", "sitecustomize"]
@@ -1233,6 +1259,11 @@ class TestGetMutantName:
         result = get_mutant_name(path, "x_f__mutmut_1")
         assert result == "mypkg.mod.x_f__mutmut_1"
 
+    def test_dotdot_relative_path_is_rejected(self) -> None:
+        """M-034 (issue #144): non-canonical '..'-aliases never form names."""
+        with pytest.raises(ValueError, match=r"canonical.*project-relative"):
+            get_mutant_name(Path("src/../src/mod.py"), "f__mutmut_1")
+
     @pytest.mark.skipif(os.name != "nt", reason="Windows path casing contract")
     def test_uppercase_source_root_and_init_stem_match_runtime_name(self) -> None:
         path = Path("SRC") / "pkg" / "__INIT__.PY"
@@ -1458,3 +1489,22 @@ class TestCreateMutantsForFile:
                 assert meta.exists()
         finally:
             os.chdir(original_cwd)
+
+    def test_dotdot_relative_path_fails_before_any_staging_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-034 (issue #144): the engine refuses '..'-aliases up front.
+
+        get_mutant_name runs only after the generated module is written, so
+        the invariant must fire before anything lands in mutants/.
+        """
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "mod.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        output = tmp_path / "mutants" / "src" / "mod.py"
+
+        with pytest.raises(ValueError, match=r"\.\."):
+            create_mutants_for_file(Path("src/../src/mod.py"), output)
+
+        assert not output.exists()
