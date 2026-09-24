@@ -27,15 +27,15 @@ verifiziert und durch einen vorher rot laufenden Regressionstest belegt.
 
 ## Arbeitsumfang (R0 / AP-00, Issue #141)
 
-- [ ] Stand-Abgleich gegen den Review-Stand sowie externe Gate-Umgebungen (UV_PROJECT_ENVIRONMENT, HYPOTHESIS_STORAGE_DIRECTORY außerhalb des Checkouts)
-- [ ] Baseline aller Gates auf unverändertem Stand (ruff check/format, mypy strict, lint-imports, Vollsuite pytest mit P-17-Behandlung der fragilen Tests)
-- [ ] Serena-Onboarding auf den Hauptmodulen der Sanierung
-- [ ] Testhilfen Q-01 bis Q-04 (Fault-Injection, Windows-FS-Zustände, Plugin-Lader, Prozessbaum) mit eigenen Tests
-- [ ] Q-05 Mutation-Gate-Matrix für Engine-Module dokumentieren
-- [ ] 51 AP-Issues mit Gruppen-Checklisten, 5 Milestones und Sprintzuschnitt R0 bis R4 anlegen
-- [ ] P-08-Entscheidungsliste gesammelt dem Nutzer vorlegen (R1-Entscheidungen M-008, M-003, M-144 Stufe 2 in den Issues #143/#145/#149)
-- [ ] Phasengate R0: kanonisches Semgrep-Gate und pip-audit mit echter Ausgabe belegen
-- [ ] Sprintabschluss R0: Backlog finalisieren, MEMORY.md aktualisieren, Issues mit Verifikationsergebnis schließen
+- [x] Stand-Abgleich gegen den Review-Stand sowie externe Gate-Umgebungen (UV_PROJECT_ENVIRONMENT, HYPOTHESIS_STORAGE_DIRECTORY außerhalb des Checkouts)
+- [x] Baseline aller Gates auf unverändertem Stand (ruff check/format, mypy strict, lint-imports, Vollsuite pytest mit P-17-Behandlung der fragilen Tests)
+- [x] Serena-Onboarding auf den Hauptmodulen der Sanierung
+- [x] Testhilfen Q-01 bis Q-04 (Fault-Injection, Windows-FS-Zustände, Plugin-Lader, Prozessbaum) mit eigenen Tests
+- [x] Q-05 Mutation-Gate-Matrix für Engine-Module dokumentieren
+- [x] 51 AP-Issues mit Gruppen-Checklisten, 5 Milestones und Sprintzuschnitt R0 bis R4 anlegen
+- [x] P-08-Entscheidungsliste gesammelt dem Nutzer vorlegen (R1-Entscheidungen M-008, M-003, M-144 Stufe 2 in den Issues #143/#145/#149)
+- [x] Phasengate R0: kanonisches Semgrep-Gate und pip-audit mit echter Ausgabe belegen
+- [x] Sprintabschluss R0: Backlog finalisieren, MEMORY.md aktualisieren, Issues mit Verifikationsergebnis schließen
 
 ## Baseline-Protokoll (Stand `5a491a0`, unverändert)
 
