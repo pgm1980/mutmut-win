@@ -388,7 +388,7 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         start_col=20,
         end_line=100,
         end_col=46,
-        lines_sha256="d454e85371f697f3da8ea2205a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
+        lines_sha256="d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         file_sha256="04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09",
     )
     assert [
