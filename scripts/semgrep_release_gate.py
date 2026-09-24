@@ -155,6 +155,9 @@ _STATICMETHOD_FILE_SHA: Final = "d9707d4b429b3274fcebf64b52eaa9f747df9973c004582
 _WRAPPER_CODEGEN_FILE_SHA: Final = (
     "4b4f889f82a17909ad29fad1c5f48ef667823442ac84a3b6f3ccd7df5137432b"
 )
+_ATOMIC_FAULT_UTIL_FILE_SHA: Final = (
+    "114df1ce5340df56df8aef41c31647c115c7df0285fb9cb3f1b362230699b6c9"
+)
 
 
 DEFAULT_FINDING_ALLOWLIST: Final = (
@@ -187,6 +190,21 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         46,
         "d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         _ARCHITECTURE_FILE_SHA,
+    ),
+    # The remediation fault-injection harness (AP-00 / Q-01) resolves its
+    # patch target from a dotted string supplied by test code only (e.g.
+    # "os.replace", "mutmut_win.atomic_file.atomic_write_bytes").  No product
+    # input reaches import_module; the dynamic import is the harness purpose:
+    # reaching production seams without importing them statically.
+    FindingSignature(
+        "tests/unit/atomic_fault_util.py",
+        _IMPORT_RULE,
+        82,
+        14,
+        82,
+        50,
+        "7093d00f9d3c754e533b6d6d0cb832a98431f42fafb1ceba13b893ac27fe7156",
+        _ATOMIC_FAULT_UTIL_FILE_SHA,
     ),
     FindingSignature(
         "tests/unit/test_class_body_injection.py",
