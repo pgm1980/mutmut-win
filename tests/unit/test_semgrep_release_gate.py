@@ -375,8 +375,8 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         )
         == gate.DEFAULT_BUNDLE_CONTRACT
     )
-    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 22
-    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 22
+    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 23
+    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 23
     assert gate.DEFAULT_FINDING_ALLOWLIST[0].path == "tests/integration/test_kill_proc_tree.py"
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c"
@@ -388,7 +388,7 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         start_col=20,
         end_line=100,
         end_col=46,
-        lines_sha256="d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
+        lines_sha256="d454e85371f697f3da8ea2205a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         file_sha256="04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09",
     )
     assert [
@@ -396,6 +396,22 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         for finding in gate.DEFAULT_FINDING_ALLOWLIST
         if finding.path == "tests/test_architecture.py"
     ] == [architecture_finding]
+    # AP-00 / Q-01 fault-injection harness: test-authored dotted targets only.
+    fault_harness_finding = gate.FindingSignature(
+        path="tests/unit/atomic_fault_util.py",
+        check_id="python.lang.security.audit.non-literal-import.non-literal-import",
+        start_line=82,
+        start_col=14,
+        end_line=82,
+        end_col=50,
+        lines_sha256="7093d00f9d3c754e533b6d6d0cb832a98431f42fafb1ceba13b893ac27fe7156",
+        file_sha256="114df1ce5340df56df8aef41c31647c115c7df0285fb9cb3f1b362230699b6c9",
+    )
+    assert [
+        finding
+        for finding in gate.DEFAULT_FINDING_ALLOWLIST
+        if finding.path == "tests/unit/atomic_fault_util.py"
+    ] == [fault_harness_finding]
     repository = Path(__file__).resolve().parents[2]
     assert (
         gate._finding_signature(
