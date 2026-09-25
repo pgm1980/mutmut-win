@@ -55,8 +55,10 @@ from mutmut_win.test_mapping import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from mutmut_win.db import MutationRunState
-    from mutmut_win.models import MutationResult
+    from mutmut_win.models import GenerationDegradation, MutationResult
 
 
 @click.group()
@@ -789,6 +791,9 @@ def run(
     # mutation suite passed.  Explicit filters are usage/domain errors; a full
     # empty generation is a runtime failure.  JSON was already emitted above.
     if not dry_run and result.total_mutants == 0:
+        surface_report = _mutation_surface_report(result.degraded_files)
+        if surface_report is not None:
+            click.echo(surface_report, err=True)
         if explicit_selection:
             click.echo("No mutants matched the explicit run selection.", err=True)
             sys.exit(2)
@@ -797,6 +802,11 @@ def run(
 
     # --- Score gate ---
     if min_score is not None:
+        surface_report = _mutation_surface_report(result.degraded_files)
+        if surface_report is not None:
+            click.echo(surface_report, err=True)
+            click.echo("Score gate failed closed.", err=True)
+            sys.exit(1)
         if not result.execution_basis_complete:
             click.echo(
                 "Execution basis incomplete — score gate failed closed; not all "
@@ -865,8 +875,8 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         if current_run.evidence_invalidated:
             click.echo(
                 "Evidence invalidated: yes; release-ready: no. "
-                "The recorded execution basis is no longer authoritative; "
-                "re-run 'mutmut-win run'.",
+                "The recorded execution basis is no longer authoritative or "
+                "the mutation surface was incomplete; re-run 'mutmut-win run'.",
                 err=True,
             )
         elif current_run.status == "completed":
@@ -1245,6 +1255,23 @@ def export_cicd_stats_cmd() -> None:
         sys.exit(1)
 
 
+def _mutation_surface_report(degraded: Sequence[GenerationDegradation]) -> str | None:
+    """Return the mutation-surface report, or ``None`` for a complete surface.
+
+    Private module-level function so the CLI gate logic stays attributable in
+    a targeted mutation gate (Q-35, M-003).
+    """
+    if not degraded:
+        return None
+    lines = [f"Mutation surface incomplete — {len(degraded)} file(s) could not be mutated:"]
+    lines.extend(f"  - {d.path} ({d.reason})" for d in degraded)
+    lines.append(
+        "Exclude them via do_not_mutate to accept the reduced surface; if a "
+        "file is valid Python source, please report it as a mutmut-win bug."
+    )
+    return "\n".join(lines)
+
+
 def _export_cicd_stats_locked() -> None:
     """Export one snapshot while the cache/staging state lock is held."""
     _require_safe_workspace_roots("mutants", ".mutmut-cache")
@@ -1285,8 +1312,9 @@ def _export_cicd_stats_locked() -> None:
         artifact_path.unlink(missing_ok=True)
         click.echo(
             "Latest mutation run evidence was invalidated because its recorded "
-            "execution basis is no longer authoritative; "
-            "re-run 'mutmut-win run' before CI/CD export.",
+            "execution basis is no longer authoritative or its mutation surface "
+            "was incomplete; re-run 'mutmut-win run' (excluding unmutatable files "
+            "via do_not_mutate if a run reported them) before CI/CD export.",
             err=True,
         )
         sys.exit(1)

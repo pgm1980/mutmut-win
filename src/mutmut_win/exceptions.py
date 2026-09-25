@@ -194,3 +194,27 @@ class InvalidGeneratedSyntaxException(MutmutWinError):  # noqa: N818 — name ma
             "with a minimal reproducible example file."
         )
         super().__init__(msg)
+
+
+class MutationSurfaceDegradedWarning(SyntaxWarning):
+    """A file could not be mutated; the mutation surface is incomplete.
+
+    Producer: ``file_setup.create_mutants_for_file`` when LibCST cannot parse
+    the source (``unsupported_source_syntax``), rejects the syntax tree
+    (``cst_validation_error``), or the generated mutant module does not
+    compile (``generated_code_invalid``).  The file is staged unmutated
+    (issue #78 safety net) and excluded from the mutation surface, so
+    ``--min-score`` and CI/CD export are revoked for the run (M-003).
+
+    Function-granular skips (U+01C1 mangling, trampoline collisions) keep
+    raising plain ``SyntaxWarning`` — they narrow individual functions, not
+    the file-level surface.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(reason, message)
+        self.reason = reason
+        self.detail = message
+
+    def __str__(self) -> str:
+        return self.detail

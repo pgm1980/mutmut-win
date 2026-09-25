@@ -34,6 +34,7 @@ from mutmut_win.db import (
     invalidate_cached_reuse_for_run,
     load_current_run,
     mark_reused_results,
+    revoke_active_run_export_authority,
     save_result,
     set_run_plan,
     validate_cache_path,
@@ -42,12 +43,14 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    MutationSurfaceDegradedWarning,
     OrchestratorError,
     StaleStagingError,
     UnsafeStagingError,
     UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
+    GenerationDegradation,
     MutationResult,
     MutationRunResult,
     MutationTask,
@@ -187,6 +190,7 @@ class MutationOrchestrator:
         self._active_run_id: str | None = None
         self._run_plan_finalized = False
         self._allow_cache_reuse = True
+        self._generation_degradations: list[GenerationDegradation] = []
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -429,6 +433,11 @@ class MutationOrchestrator:
             # between that invariant and the implementation as a product bug.
             raise OrchestratorError("mutation run completed without a persisted run identity")
 
+        # M-003: set degraded_files centrally, right after the pipeline and
+        # before any terminal-status branching (independent of early returns).
+        result.degraded_files = list(self._generation_degradations)
+        surface_complete = not result.degraded_files
+
         if result.was_interrupted:
             terminal_status = "interrupted"
         elif result.run_aborted or result.total_mutants == 0:
@@ -491,6 +500,29 @@ class MutationOrchestrator:
                         "Results were preserved, but every current and historical "
                         "verdict-reuse capability was revoked."
                     )
+
+            # M-003: an incomplete mutation surface revokes export/score
+            # authority via the NARROW revocation — verdict reuse stays intact
+            # so follow-up runs do not re-execute every mutant.
+            if not surface_complete and not execution_basis_deauthorized:
+                try:
+                    revoke_active_run_export_authority(
+                        self._db_path,
+                        self._active_run_id,
+                    )
+                except Exception as exc:
+                    raise OrchestratorError(
+                        f"the mutation surface was incomplete "
+                        f"({len(result.degraded_files)} file(s) could not be mutated) "
+                        "and its evidence authority could not be revoked; the run "
+                        "remains running for revoke-first recovery"
+                    ) from exc
+                print(
+                    f"{len(result.degraded_files)} file(s) could not be mutated "
+                    "(mutation surface incomplete); --min-score and CI/CD export "
+                    "are disabled for this run. Exclude them via do_not_mutate "
+                    "to accept the reduced surface."
+                )
         else:
             execution_basis_deauthorized = False
             try:
@@ -522,6 +554,7 @@ class MutationOrchestrator:
             terminal_status == "completed"
             and basis_evidence.complete
             and not execution_basis_deauthorized
+            and surface_complete
         )
         return result
 
@@ -1113,6 +1146,9 @@ class MutationOrchestrator:
             walk_source_files,
         )
 
+        # Fresh surface truth per generation pass (M-003).
+        self._generation_degradations = []
+
         # Step 1-3: Prepare the mutants/ directory.  The orchestration process
         # itself must keep importing the live engine; pytest children receive
         # explicit staged paths from ``MutantTestRunner._mutants_env``.
@@ -1238,12 +1274,13 @@ class MutationOrchestrator:
 
         generation_errors: list[str] = []
         for result in raw_results:
-            rel_path_result, mutant_names, error, warn_msgs, took_fast_path = result
+            rel_path_result, mutant_names, error, warn_msgs, took_fast_path, degradations = result
             for msg in warn_msgs:
                 print(f"Warning: {msg}")
             if error is not None:
                 generation_errors.append(f"{rel_path_result}: {error}")
                 continue
+            self._generation_degradations.extend(degradations)
             if not mutant_names:
                 continue
             src_file_result = Path(rel_path_result)
@@ -1270,6 +1307,9 @@ class MutationOrchestrator:
                 f"universe fingerprint:\n{details}"
             )
             raise OrchestratorError(msg)
+
+        # Deterministic ordering for logs and the additive JSON contract.
+        self._generation_degradations.sort(key=lambda d: (d.path, d.reason))
 
         # Catch a mismatched file/meta pair (including the crash window between
         # their two atomic publications) before type checking or clean tests
@@ -1334,7 +1374,7 @@ class MutationOrchestrator:
 
 def _create_mutants_worker(
     args: tuple[str, Path, Path, set[int] | None, bool, Profile, tuple[str, ...]],
-) -> tuple[str, list[str], Exception | None, list[str], bool]:
+) -> tuple[str, list[str], Exception | None, list[str], bool, list[GenerationDegradation]]:
     """Top-level picklable worker for parallel mutant generation.
 
     Called by ``multiprocessing.Pool.imap_unordered`` inside
@@ -1350,9 +1390,11 @@ def _create_mutants_worker(
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages,
-        took_fast_path)`` where ``error`` is ``None`` on success,
-        ``mutant_names`` may be empty, and ``took_fast_path`` marks files
-        whose staging was reused unchanged (issue #119 result reuse).
+        took_fast_path, degradations)`` where ``error`` is ``None`` on
+        success, ``mutant_names`` may be empty, ``took_fast_path`` marks
+        files whose staging was reused unchanged (issue #119 result reuse),
+        and ``degradations`` carries the file-level surface degradations
+        (M-003) — ``[]`` on the error path.
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
@@ -1375,9 +1417,20 @@ def _create_mutants_worker(
             do_not_mutate_patterns=skip_patterns,
         )
         warn_msgs = [str(w.message) for w in warns]
-        return rel_path, mutant_names, None, warn_msgs, took_fast_path
+        # Built inside the try so an unknown degradation reason (pydantic
+        # ValidationError) ends up fail-closed in generation_errors.
+        degradations = [
+            GenerationDegradation(
+                path=rel_path,
+                reason=w.message.reason,  # type: ignore[arg-type]  # pydantic Literal; validated by GenerationDegradation
+                detail=str(w.message),
+            )
+            for w in warns
+            if isinstance(w.message, MutationSurfaceDegradedWarning)
+        ]
+        return rel_path, mutant_names, None, warn_msgs, took_fast_path, degradations
     except Exception as exc:  # broad catch: pool workers must not crash the parent
-        return rel_path, [], exc, [], False
+        return rel_path, [], exc, [], False, []
 
 
 def _filter_tasks_by_names(

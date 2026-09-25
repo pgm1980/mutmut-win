@@ -18,6 +18,7 @@ from unittest.mock import patch
 import libcst as cst
 import pytest
 
+from mutmut_win.exceptions import MutationSurfaceDegradedWarning
 from mutmut_win.file_setup import create_mutants_for_file
 from mutmut_win.node_mutation import operator_dict_arguments, operator_number
 from mutmut_win.regex_mutation import mutate_regex_pattern
@@ -55,6 +56,11 @@ class TestValidateThenWrite:
         written = out_file.read_text(encoding="utf-8")
         assert written == source  # original, not the broken output
         assert any("do not compile" in str(w.message) for w in warns)
+        degraded = [w for w in warns if isinstance(w.message, MutationSurfaceDegradedWarning)]
+        assert len(degraded) == 1
+        assert degraded[0].message.reason == "generated_code_invalid"
+        assert degraded[0].category is MutationSurfaceDegradedWarning
+        assert issubclass(degraded[0].category, SyntaxWarning)
 
     def test_end_to_end_output_always_compiles(self, tmp_path: Path) -> None:
         """Adversarial multiline-or pattern (A1-NM-001 / Bug-#68 class): the
@@ -143,3 +149,63 @@ class TestRegexOverflowGuard:
     def test_normal_quantifier_still_mutated(self) -> None:
         results = mutate_regex_pattern("a{3}")
         assert "a{4}" in results
+
+
+class TestMutationSurfaceDegradationClassification:
+    """M-003 (issue #145): the three degradation reasons are typed."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_staging(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+
+    def test_unsupported_source_syntax(self, tmp_path: Path) -> None:
+        """A file LibCST cannot parse degrades with the parser reason."""
+        src_file = tmp_path / "bad.py"
+        src_file.write_text("def (:\n", encoding="utf-8")
+        out_file = tmp_path / "mutants" / "bad.py"
+
+        names, warns, _ = create_mutants_for_file(src_file, out_file)
+
+        assert names == []
+        assert out_file.read_text(encoding="utf-8") == "def (:\n"
+        degraded = [w for w in warns if isinstance(w.message, MutationSurfaceDegradedWarning)]
+        assert len(degraded) == 1
+        assert degraded[0].message.reason == "unsupported_source_syntax"
+        assert "Unsupported syntax in" in str(degraded[0].message)
+
+    def test_cst_validation_error(self, tmp_path: Path) -> None:
+        """A CSTValidationError from the engine degrades neutrally."""
+        src_file = tmp_path / "mod.py"
+        src_file.write_text("def f():\n    return 1\n", encoding="utf-8")
+        out_file = tmp_path / "mutants" / "mod.py"
+
+        def _validation_error_writer(*, out, **_kwargs):  # type: ignore[no-untyped-def]  # noqa: ARG001
+            raise cst.CSTValidationError("mock tree rejection")
+
+        with patch(
+            "mutmut_win.file_setup.write_all_mutants_to_file",
+            _validation_error_writer,
+        ):
+            names, warns, _ = create_mutants_for_file(src_file, out_file)
+
+        assert names == []
+        assert out_file.read_text(encoding="utf-8") == "def f():\n    return 1\n"
+        degraded = [w for w in warns if isinstance(w.message, MutationSurfaceDegradedWarning)]
+        assert len(degraded) == 1
+        assert degraded[0].message.reason == "cst_validation_error"
+        text = str(degraded[0].message)
+        assert "Unsupported syntax" not in text
+        assert "please report" not in text.casefold()
+
+    def test_warning_subclass_is_picklable(self) -> None:
+        """The warning subclass must survive the spawn boundary."""
+        import pickle
+
+        warning = MutationSurfaceDegradedWarning(
+            "unsupported_source_syntax", "Unsupported syntax in x.py, skipping"
+        )
+        # S301: round-tripping a locally constructed warning object (trusted data).
+        clone = pickle.loads(pickle.dumps(warning))  # noqa: S301
+        assert clone.reason == "unsupported_source_syntax"
+        assert clone.detail == "Unsupported syntax in x.py, skipping"
+        assert str(clone) == "Unsupported syntax in x.py, skipping"

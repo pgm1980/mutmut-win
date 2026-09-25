@@ -1708,6 +1708,39 @@ def invalidate_cached_reuse_for_run(path: Path, run_id: str) -> int:
         return max(0, cursor.rowcount)
 
 
+def revoke_active_run_export_authority(path: Path, run_id: str) -> None:
+    """Revoke a completed run's export/score authority, keeping verdict reuse.
+
+    Narrow revocation for an incomplete mutation surface (M-003): sets the
+    run's basis to NULL and marks evidence invalidated so ``--min-score``
+    and CI/CD export fail closed, but leaves both ``tests_fingerprint``
+    columns untouched — the verdicts of the files that were generated are
+    still valid and are reused in follow-up runs (no runtime regression,
+    unlike :func:`deauthorize_active_run_evidence`, which also clears every
+    historical reuse fingerprint and is reserved for ambient-basis drift).
+
+    Also distinct from :func:`invalidate_latest_run_evidence` (apply-side,
+    latest-by-sequence, no active-run guard): this function requires the
+    exact *run_id* of a run that is still ``running``.
+    """
+    create_db(path)
+    with _write_transaction(path) as conn:
+        _require_active_run(conn, run_id)
+        cursor = conn.execute(
+            """
+            UPDATE mutation_run
+            SET basis_fingerprint = NULL,
+                basis_config_json = NULL,
+                evidence_invalidated = 1
+            WHERE run_id = ? AND status = ?
+            """,
+            (run_id, RUN_STATUS_RUNNING),
+        )
+        if cursor.rowcount != 1:
+            msg = f"run {run_id!r} is not the active running run"
+            raise RunStateError(msg)
+
+
 def deauthorize_active_run_evidence(path: Path, run_id: str) -> int:
     """Atomically preserve diagnostics while revoking every evidence capability.
 
@@ -1716,7 +1749,9 @@ def deauthorize_active_run_evidence(path: Path, run_id: str) -> int:
     result rows remain visible, while the run basis, export authority and both
     current-run and historical verdict-reuse fingerprints are removed in one
     transaction.  Requiring the exact active run prevents a stale caller from
-    deauthorizing a newer attempt.
+    deauthorizing a newer attempt.  For the narrow surface-degradation
+    revocation (keeps verdict reuse) see
+    :func:`revoke_active_run_export_authority`.
 
     Returns:
         Number of historical cache rows whose reuse fingerprint was cleared.

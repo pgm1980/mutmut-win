@@ -323,7 +323,7 @@ class TestProfileWiredThroughGeneration:
                 profile,
                 (),
             )
-            _rel, names, err, _warns, _fast = _create_mutants_worker(args)
+            _rel, names, err, _warns, _fast, _degraded = _create_mutants_worker(args)
             assert err is None
             return len(names)
 
@@ -350,7 +350,7 @@ class TestProfileWiredThroughGeneration:
             Profile.ADVANCED,
             ("drop_me",),
         )
-        _rel, names, err, _warns, _fast = _create_mutants_worker(args)
+        _rel, names, err, _warns, _fast, _degraded = _create_mutants_worker(args)
         assert err is None
         assert any("keep_me" in n for n in names)  # unmatched sibling still mutates
         assert not any("drop_me" in n for n in names)  # matched function excluded

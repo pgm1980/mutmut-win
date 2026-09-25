@@ -41,6 +41,7 @@ from mutmut_win.constants import (
     configured_staging_relative_path,
 )
 from mutmut_win.exceptions import (
+    MutationSurfaceDegradedWarning,
     StagingNamespaceCollisionError,
     StaleStagingError,
     UnsafeStagingError,
@@ -2358,9 +2359,17 @@ def create_mutants_for_file(
         # limitation and stays importable in staging. Engine invariants such
         # as ValueError must propagate to the orchestration transaction;
         # swallowing them would silently publish a partial mutant universe.
+        if isinstance(exc, cst.ParserSyntaxError):
+            reason = "unsupported_source_syntax"
+            text = f"Unsupported syntax in {filename} ({exc!s}), skipping"
+        else:
+            # CSTValidationError can arise both while parsing and while the
+            # engine builds nodes; attribute it neutrally (M-003).
+            reason = "cst_validation_error"
+            text = f"LibCST rejected the syntax tree for {filename} ({exc!s}), skipping"
         w = warnings.WarningMessage(
-            message=SyntaxWarning(f"Unsupported syntax in {filename} ({exc!s}), skipping"),
-            category=SyntaxWarning,
+            message=MutationSurfaceDegradedWarning(reason, text),
+            category=MutationSurfaceDegradedWarning,
             filename=str(filename),
             lineno=0,
         )
@@ -2378,12 +2387,13 @@ def create_mutants_for_file(
         except (IndentationError, SyntaxError) as exc:
             lineno = getattr(exc, "lineno", "?")
             w = warnings.WarningMessage(
-                message=SyntaxWarning(
+                message=MutationSurfaceDegradedWarning(
+                    "generated_code_invalid",
                     f"Generated mutants for {filename} do not compile "
                     f"(line {lineno}: {exc.msg}) — copying the file unmutated. "
-                    "Please report this as a mutmut-win bug."
+                    "Please report this as a mutmut-win bug.",
                 ),
-                category=SyntaxWarning,
+                category=MutationSurfaceDegradedWarning,
                 filename=str(filename),
                 lineno=0,
             )

@@ -12,11 +12,33 @@ import json
 import math
 import stat
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from mutmut_win.atomic_file import ensure_atomic_bytes
 from mutmut_win.constants import SOURCE_METADATA_SCHEMA
+
+#: File-level degradation reasons for the mutation surface (M-003).
+DegradationReason = Literal[
+    "unsupported_source_syntax",
+    "cst_validation_error",
+    "generated_code_invalid",
+]
+
+
+class GenerationDegradation(BaseModel):
+    """One file that could not be mutated; the surface is incomplete.
+
+    Carries the machine-readable reason so ``--min-score`` and CI/CD export
+    can be revoked for the run while verdict reuse stays intact (M-003).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1)
+    reason: DegradationReason
+    detail: str
 
 
 class MutationTask(BaseModel):
@@ -462,6 +484,10 @@ class MutationRunResult(BaseModel):
     # basis may still produce useful local diagnostics, but it cannot authorize
     # cache reuse, CI export, or a score gate.
     execution_basis_complete: bool = False
+    # Additive JSON contract (M-003): files that could not be mutated.  The
+    # score denominator is unchanged; presence of entries revokes --min-score
+    # and CI/CD export authority for the run.
+    degraded_files: list[GenerationDegradation] = Field(default_factory=list)
     duration_seconds: float = 0.0
 
     # Serialized into model_dump()/JSON (issue #97 / A3-OS-014: the CI

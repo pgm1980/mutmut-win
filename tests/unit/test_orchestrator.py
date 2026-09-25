@@ -504,13 +504,13 @@ class TestMutationOrchestratorInit:
         def fake_run_generation_supervised(
             file_args: list[Any],
             **_kwargs: Any,
-        ) -> list[tuple[str, list[str], None, list[str], bool]]:
+        ) -> list[tuple[str, list[str], None, list[str], bool, list[Any]]]:
             assert len(file_args) == 1
             preparation = get_preparation_data("mutmut-win-generation-path-regression")
             prepared_path = preparation["sys_path"]
             assert isinstance(prepared_path, list)
             spawn_sys_path.extend(prepared_path)
-            return [(file_args[0][0], [], None, [], False)]
+            return [(file_args[0][0], [], None, [], False, [])]
 
         monkeypatch.setattr(
             process,
