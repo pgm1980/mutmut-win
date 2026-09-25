@@ -69,3 +69,24 @@ class TestExceptionHierarchy:
     def test_invalid_generated_syntax_exception_with_string(self) -> None:
         exc = InvalidGeneratedSyntaxException("some/path.py")
         assert "some/path.py" in str(exc)
+
+
+class TestMutationSurfaceDegradedWarning:
+    """M-003 (issue #145): the constructor assigns fields positionally."""
+
+    def test_init_assigns_reason_and_detail(self) -> None:
+        from mutmut_win.exceptions import MutationSurfaceDegradedWarning
+
+        warning = MutationSurfaceDegradedWarning("test_reason", "test_message")
+        assert warning.reason == "test_reason"
+        assert warning.detail == "test_message"
+        assert str(warning) == "test_message"
+        # super().__init__(reason, message) passes both positionally
+        assert warning.args == ("test_reason", "test_message")
+
+    def test_str_returns_detail_not_reason(self) -> None:
+        from mutmut_win.exceptions import MutationSurfaceDegradedWarning
+
+        warning = MutationSurfaceDegradedWarning("reason_code", "human readable text")
+        assert str(warning) == "human readable text"
+        assert str(warning) != "reason_code"
