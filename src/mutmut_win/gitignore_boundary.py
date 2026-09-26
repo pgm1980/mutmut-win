@@ -20,6 +20,14 @@ The boundary mirrors Git's layered ignore semantics for walk pruning:
   hashing or staging too much is merely cost, skipping tracked files is
   wrong results.
 
+Tracked-index override (M-001): files present in the Git index (tracked,
+whether committed or ``git add -f``) are never excluded by ignore patterns.
+The index is loaded once per ``load()`` call via ``git ls-files -z --cached``
+and cached per (root, index mtime, index size).  Without a Git repository the
+behaviour is unchanged (pure patterns, no subprocess).  A Git failure with an
+existing ``.git`` marker logs a warning and disables pruning entirely for
+that boundary (``unknown``), ensuring tracked files are never silently lost.
+
 Only project-local ``.gitignore`` files are honoured.
 ``.git/info/exclude`` and the global ``core.excludesFile`` are deliberate
 non-goals: neither belongs to the cloned project bytes a mutation run stages.
@@ -28,6 +36,9 @@ non-goals: neither belongs to the cloned project bytes a mutation run stages.
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -112,6 +123,145 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
     return _IgnoreLevel(base=base, patterns=tuple(spec.patterns))
 
 
+@dataclass(frozen=True)
+class _TrackedIndex:
+    """Immutable snapshot of the Git index's tracked paths (M-001).
+
+    ``files`` contains every tracked file path (project-root-relative,
+    POSIX separators, case-folded).  ``directories`` contains every
+    ancestor-directory prefix of every tracked file.  ``unknown`` marks a
+    Git failure — the boundary then excludes nothing (fail-open) to ensure
+    tracked files are never silently pruned.
+    """
+
+    files: frozenset[str]
+    directories: frozenset[str]
+    unknown: bool
+
+
+#: Process-local cache for the tracked index, keyed by (root, index_mtime, index_size).
+_TRACKED_CACHE: dict[tuple[str, int, int], _TrackedIndex] = {}
+_TRACKED_CACHE_MAX = 16
+
+#: Environment keys stripped before invoking git (they can redirect the index).
+_GIT_ENV_STRIP = frozenset(
+    {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"}
+)
+
+
+def _fold(path: str) -> str:
+    """Case-fold a POSIX path for Windows-insensitive comparison."""
+    return path.casefold()
+
+
+def _find_git_marker(root: Path) -> Path | None:
+    """Walk upward from *root* looking for a ``.git`` directory or file."""
+    current = root.resolve()
+    for candidate in (current, *current.parents):
+        marker = candidate / ".git"
+        if marker.exists():
+            return marker
+    return None
+
+
+def _load_tracked_index(project_root: Path) -> _TrackedIndex:
+    """Load the tracked-file set from the Git index (M-001).
+
+    Uses ``git ls-files -z --cached`` (without ``--exclude-standard``) to get
+    the full tracked set regardless of ignore rules.  Repo detection is
+    filesystem-based (``.git`` marker search) to avoid false negatives from
+    ``rev-parse`` errors like "dubious ownership".  Without a ``.git`` marker
+    the result is an empty index (pure pattern behaviour).  With a marker but
+    a Git failure the result is ``unknown=True`` (excludes nothing).
+    """
+    marker = _find_git_marker(project_root)
+    if marker is None:
+        return _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=False)
+
+    # Cache key from the index file's identity when available.
+    cache_key: tuple[str, int, int] = (str(project_root), 0, 0)
+    index_path = marker.parent / ".git" / "index" if marker.is_dir() else None
+    if index_path is not None and index_path.exists():
+        try:
+            stat = index_path.stat()
+            cache_key = (str(project_root), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            pass
+    cached = _TRACKED_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        result = subprocess.run(  # noqa: S603  # git from PATH; argv list, no shell, env scrubbed
+            # S607: "git" from PATH is the project contract (cli.py does the same).
+            ["git", "-C", str(project_root), "ls-files", "-z", "--cached"],  # noqa: S607  # git from PATH per project contract
+            capture_output=True,
+            timeout=30,
+            check=False,
+            env=env,
+            creationflags=creationflags,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning(
+            "Git index query failed for %s (%s); gitignore pruning is disabled "
+            "for this boundary to avoid losing tracked files",
+            project_root,
+            type(exc).__name__,
+        )
+        index = _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=True)
+        _cache_tracked(cache_key, index)
+        return index
+
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "git ls-files failed for %s (rc=%d, %s); gitignore pruning is disabled "
+            "for this boundary to avoid losing tracked files",
+            project_root,
+            result.returncode,
+            stderr[:200],
+        )
+        index = _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=True)
+        _cache_tracked(cache_key, index)
+        return index
+
+    try:
+        output = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning(
+            "git ls-files output for %s is not valid UTF-8; gitignore pruning "
+            "is disabled for this boundary",
+            project_root,
+        )
+        index = _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=True)
+        _cache_tracked(cache_key, index)
+        return index
+
+    files: set[str] = set()
+    dirs: set[str] = set()
+    for raw_path in output.split("\0"):
+        if not raw_path:
+            continue
+        folded = _fold(raw_path.replace("\\", "/"))
+        files.add(folded)
+        parts = folded.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+
+    index = _TrackedIndex(files=frozenset(files), directories=frozenset(dirs), unknown=False)
+    _cache_tracked(cache_key, index)
+    return index
+
+
+def _cache_tracked(key: tuple[str, int, int], index: _TrackedIndex) -> None:
+    """Store the index in the process-local cache (bounded)."""
+    if len(_TRACKED_CACHE) >= _TRACKED_CACHE_MAX:
+        _TRACKED_CACHE.clear()
+    _TRACKED_CACHE[key] = index
+
+
 class GitignoreBoundary:
     """Immutable, per-directory ignore state carried down a filesystem walk.
 
@@ -123,9 +273,22 @@ class GitignoreBoundary:
     Entering a directory that the parent boundary reported as excluded keeps
     the whole subtree excluded: Git never descends into ignored directories,
     so a ``!`` pattern can never re-include files below one.
+
+    Tracked-index override (M-001): files in the Git index are never
+    excluded.  The check runs before ``_subtree_excluded`` and before
+    pattern evaluation; ``descend_forced``'s branch decision uses the pure
+    pattern verdict (without the override) to preserve ``git add -f``
+    semantics for untracked siblings.
     """
 
-    __slots__ = ("_directory", "_levels", "_prefix", "_root", "_subtree_excluded")
+    __slots__ = (
+        "_directory",
+        "_levels",
+        "_prefix",
+        "_root",
+        "_subtree_excluded",
+        "_tracked",
+    )
 
     def __init__(
         self,
@@ -134,19 +297,22 @@ class GitignoreBoundary:
         prefix: str,
         levels: tuple[_IgnoreLevel, ...],
         subtree_excluded: bool = False,
+        tracked: _TrackedIndex | None = None,
     ) -> None:
         self._root = root
         self._directory = directory
         self._prefix = prefix
         self._levels = levels
         self._subtree_excluded = subtree_excluded
+        self._tracked = tracked
 
     @classmethod
     def load(cls, project_root: Path) -> GitignoreBoundary:
         """Create the walk-root boundary, honouring the root ``.gitignore``."""
         root_level = _load_ignore_level(project_root, "")
         levels = (root_level,) if root_level is not None else ()
-        return cls(project_root, project_root, "", levels)
+        tracked = _load_tracked_index(project_root)
+        return cls(project_root, project_root, "", levels, tracked=tracked)
 
     def enter(self, name: str) -> GitignoreBoundary:
         """Return the boundary for one child directory.
@@ -165,6 +331,7 @@ class GitignoreBoundary:
             prefix,
             levels,
             subtree_excluded=self._subtree_excluded or self.excludes_directory(name),
+            tracked=self._tracked,
         )
 
     def descend(self, *parts: str) -> GitignoreBoundary:
@@ -186,17 +353,22 @@ class GitignoreBoundary:
         not itself excluded descends normally, so ignored subtrees *inside*
         it stay pruned — that is the MBR-2026-09-14-01 case: ``tests/`` is
         configured, ``tests/test_project/.lake`` is not.
+
+        The branch decision uses the PURE pattern verdict (without the
+        tracked override): a tracked-ignored configured entry keeps the
+        reset branch so untracked siblings retain their ``git add -f``
+        inclusion semantics (M-001 counter-review correction).
         """
         relative = [part for part in parts if part not in {"", "."}]
         if not relative:
             return self
         parent = self.descend(*relative[:-1])
-        if parent.excludes_directory(relative[-1]):
+        if self._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
             directory = self._directory.joinpath(*relative)
             prefix = "/".join(part for part in (self._prefix, *relative) if part)
             level = _load_ignore_level(directory, prefix)
             levels = (level,) if level is not None else ()
-            return GitignoreBoundary(self._root, directory, prefix, levels)
+            return GitignoreBoundary(self._root, directory, prefix, levels, tracked=self._tracked)
         return parent.enter(relative[-1])
 
     def excludes_directory(self, name: str) -> bool:
@@ -208,7 +380,29 @@ class GitignoreBoundary:
         return self._excludes(_candidate(self._prefix, name), directory=False)
 
     def _excludes(self, candidate: str, *, directory: bool) -> bool:
-        """Resolve the layered ignore decision for one candidate path."""
+        """Resolve the layered ignore decision for one candidate path.
+
+        The tracked-index override (M-001) runs FIRST: a tracked file or a
+        directory with tracked content is never excluded, even when patterns
+        match.  This preserves the module contract that a walk must never
+        skip a file Git tracks.
+        """
+        if self._tracked is not None:
+            if self._tracked.unknown:
+                return False
+            folded = _fold(candidate)
+            if not directory and folded in self._tracked.files:
+                return False
+            if directory and folded in self._tracked.directories:
+                return False
+        return self._pure_pattern_excludes(candidate, directory=directory)
+
+    def _pure_pattern_excludes(self, candidate: str, *, directory: bool) -> bool:
+        """Pattern-only verdict without the tracked-index override.
+
+        Used by ``descend_forced`` for its branch decision so the tracked
+        override cannot change the ``git add -f`` reset semantics.
+        """
         if self._subtree_excluded:
             return True
         for level in reversed(self._levels):

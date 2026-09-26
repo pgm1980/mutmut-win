@@ -309,3 +309,132 @@ class TestBoundaryImmutability:
         assert child is not boundary
         # The parent boundary is unchanged by descending.
         assert boundary.excludes_directory("logs") is True
+
+
+# ---------------------------------------------------------------------------
+# Tracked-index override (M-001, issue #146): tracked files are never pruned
+# ---------------------------------------------------------------------------
+
+
+def _tracked_index(
+    files: set[str] | None = None, *, unknown: bool = False
+) -> gitignore_boundary._TrackedIndex:
+    """Build a _TrackedIndex for testing."""
+    file_set = frozenset(f.casefold() for f in (files or set()))
+    dirs: set[str] = set()
+    for f in files or set():
+        parts = f.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]).casefold())
+    return gitignore_boundary._TrackedIndex(
+        files=file_set,
+        directories=frozenset(dirs),
+        unknown=unknown,
+    )
+
+
+class TestTrackedIndexOverride:
+    """M-001: tracked files are never excluded by gitignore patterns."""
+
+    def test_tracked_file_ignored_by_pattern_is_included(self, tmp_path: Path) -> None:
+        """A tracked file matching an ignore pattern is NOT excluded."""
+        project = _make_project(tmp_path, (".gitignore", "*_gen.py\n"))
+        (project / "src" / "pkg").mkdir(parents=True)
+        (project / "src" / "pkg" / "api_gen.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "src" / "pkg" / "other_gen.py").write_text("x = 2\n", encoding="utf-8")
+
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+            {"src/pkg/api_gen.py"}
+        )
+        try:
+            boundary = GitignoreBoundary.load(project).descend_forced("src").enter("pkg")
+            assert boundary.excludes_file("api_gen.py") is False
+            assert boundary.excludes_file("other_gen.py") is True
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_tracked_directory_not_excluded(self, tmp_path: Path) -> None:
+        """A directory containing tracked files is never excluded."""
+        project = _make_project(tmp_path, (".gitignore", "build/\n"))
+        (project / "build").mkdir()
+        (project / "build" / "generated.py").write_text("x = 1\n", encoding="utf-8")
+
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+            {"build/generated.py"}
+        )
+        try:
+            boundary = GitignoreBoundary.load(project)
+            assert boundary.excludes_directory("build") is False
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_unknown_tracked_index_excludes_nothing(self, tmp_path: Path) -> None:
+        """Git failure (unknown) disables pruning entirely for safety."""
+        project = _make_project(tmp_path, (".gitignore", "*_gen.py\nlogs/\n"))
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(unknown=True)
+        try:
+            boundary = GitignoreBoundary.load(project)
+            assert boundary.excludes_file("x_gen.py") is False
+            assert boundary.excludes_directory("logs") is False
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_no_repo_keeps_pure_pattern_verdict(self, tmp_path: Path) -> None:
+        """Without .git, the tracked index is empty and patterns apply."""
+        project = _make_project(tmp_path, (".gitignore", "*_gen.py\n"))
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index()
+        try:
+            boundary = GitignoreBoundary.load(project)
+            assert boundary.excludes_file("x_gen.py") is True
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_descend_forced_keeps_git_add_f_semantics_for_untracked(
+        self, tmp_path: Path
+    ) -> None:
+        """Counter-review correction 1: the branch decision in descend_forced
+        must use the PURE pattern verdict, not the tracked override.
+
+        An ignored configured entry with tracked content must keep the
+        git-add-f reset branch (ancestral patterns discarded), so untracked
+        files underneath are NOT accidentally pruned by ancestor rules.
+        """
+        project = _make_project(tmp_path, (".gitignore", "generated/\n"))
+        (project / "generated").mkdir()
+        (project / "generated" / "tracked_file.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "generated" / "untracked_ignored.py").write_text("x = 2\n", encoding="utf-8")
+        (project / "generated" / ".gitignore").write_text("untracked_ignored.py\n", encoding="utf-8")
+
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+            {"generated/tracked_file.py"}
+        )
+        try:
+            # 'generated' is ignored by the root .gitignore; descend_forced
+            # must take the RESET branch (ancestral patterns discarded).
+            boundary = GitignoreBoundary.load(project).descend_forced("generated")
+            # The tracked file is included by the local .gitignore override.
+            assert boundary.excludes_file("tracked_file.py") is False
+            # The local .gitignore still prunes its own patterns.
+            assert boundary.excludes_file("untracked_ignored.py") is True
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_tracked_boundary_propagates_through_enter(self, tmp_path: Path) -> None:
+        """The tracked index propagates through enter/descend chains."""
+        project = _make_project(tmp_path, (".gitignore", "*.pyc\n"))
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+            {"src/deep/module.pyc"}
+        )
+        try:
+            boundary = GitignoreBoundary.load(project)
+            deep = boundary.enter("src").enter("deep")
+            assert deep.excludes_file("module.pyc") is False
+            assert deep.excludes_file("other.pyc") is True
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
