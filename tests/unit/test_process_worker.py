@@ -254,6 +254,14 @@ class TestWorkerMain:
         with (
             patch("mutmut_win.process.worker.subprocess.Popen", return_value=fake_proc),
             patch("mutmut_win.process.worker._REAL_POPEN_TYPE", object),
+            patch(
+                "mutmut_win.process.worker._refuse_replaced_popen_subclass",
+                lambda _t: None,
+            ),
+            patch(
+                "mutmut_win.process.worker._refuse_real_process_from_replaced_popen",
+                lambda _p, _t: None,
+            ),
             patch("mutmut_win.process.worker._create_task_job", return_value=77),
             patch(
                 "mutmut_win.process.worker._resume_suspended_process",

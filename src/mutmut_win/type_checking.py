@@ -130,14 +130,25 @@ def _assign_type_checker_to_job(job_handle: int, pid: int) -> bool:
     return True
 
 
-def _snapshot_process_tree(pid: int) -> list[psutil.Process]:
-    """Best-effort snapshot of *pid* and descendants, even after root exit."""
+def _snapshot_process_tree(pid: int, root_create_time: float | None = None) -> list[psutil.Process]:
+    """Best-effort snapshot of *pid* and descendants, even after root exit.
+
+    When *root_create_time* is provided (M-009), the PPID fallback walk is
+    identity-verified: an edge parent→child is only accepted if the child's
+    create_time >= the parent's, preventing stale PPID edges from PID
+    recycling.  Without it (root already dead and no captured time), the
+    unverified walk is preserved for the documented dead-root fallback.
+    """
     members: list[psutil.Process] = []
     seen: set[int] = set()
+    root_time: float | None = root_create_time
     try:
         root = psutil.Process(pid)
         members.append(root)
         seen.add(root.pid)
+        if root_time is None:
+            with contextlib.suppress(psutil.AccessDenied, psutil.NoSuchProcess):
+                root_time = root.create_time()
         for child in root.children(recursive=True):
             if child.pid not in seen:
                 members.append(child)
@@ -150,21 +161,14 @@ def _snapshot_process_tree(pid: int) -> list[psutil.Process]:
 
     # On Windows, an orphan keeps the exited parent's PID as its PPID.  A
     # Process(pid).children() lookup therefore loses exactly the descendants
-    # we need to reap after a successful root exit.  Build a PPID graph from a
-    # system snapshot so the dead-root fallback remains effective.
-    children_by_ppid: dict[int, list[psutil.Process]] = {}
-    for process in psutil.process_iter(["pid", "ppid"]):
-        with contextlib.suppress(psutil.AccessDenied, psutil.NoSuchProcess):
-            children_by_ppid.setdefault(process.info["ppid"], []).append(process)
-    pending = [pid]
-    while pending:
-        parent_pid = pending.pop()
-        for child in children_by_ppid.get(parent_pid, []):
-            if child.pid in seen:
-                continue
+    # we need to reap after a successful root exit.  Build a PPID graph from
+    # a system snapshot so the dead-root fallback remains effective.
+    from mutmut_win.process.worker import _iter_descendants
+
+    for child in _iter_descendants(pid, root_time):
+        if child.pid not in seen:
             members.append(child)
             seen.add(child.pid)
-            pending.append(child.pid)
     return members
 
 
@@ -174,6 +178,12 @@ def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: i
     Windows Job Objects are the primary boundary. POSIX additionally gets a
     dedicated process group via ``start_new_session=True``; the psutil snapshot
     is belt-and-suspenders cleanup for already-contained processes.
+
+    Identity verification (M-009): the root's create_time is captured
+    BEFORE any kill action so the PPID fallback walk in the snapshot
+    filters stale edges from PID recycling.  Without a readable time the
+    fallback still runs (preserving the documented dead-root cleanup)
+    but only with psutil's own identity checks.
     """
     cleanup_errors: list[tuple[str, BaseException]] = []
 
@@ -183,8 +193,13 @@ def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: i
         except BaseException as exc:
             cleanup_errors.append((label, exc))
 
+    # Capture the root's create_time before any kill action (M-009).
+    root_create_time: float | None = None
+    with contextlib.suppress(Exception):
+        root_create_time = psutil.Process(process.pid).create_time()
+
     try:
-        processes = _snapshot_process_tree(process.pid)
+        processes = _snapshot_process_tree(process.pid, root_create_time)
     except BaseException as exc:
         # A failed diagnostic snapshot must never prevent the authoritative
         # Job/process-group and direct-child kill stages.

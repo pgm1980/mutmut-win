@@ -75,7 +75,7 @@ class TestPhaseGrandchildReaping:
         ):
             exit_code = runner._run_phase("clean run", ["pytest"], env={}, timeout=1)
         assert exit_code == 36
-        job.assert_called_once_with(4242)
+        job.assert_called_once_with(None)
         kill_tree.assert_called_once_with(fake_proc, None)
         assert "clean run timed out" in capsys.readouterr().out
 
@@ -158,7 +158,7 @@ class TestPhaseGrandchildReaping:
         ):
             exit_code = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
         assert exit_code == 0
-        job.assert_called_once_with(4242)
+        job.assert_called_once_with(None)
         kill_tree.assert_not_called()
         close_job.assert_called_once_with(42)
 

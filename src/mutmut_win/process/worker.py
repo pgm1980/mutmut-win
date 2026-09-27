@@ -1647,8 +1647,16 @@ def _popen_contained(
             _close_posix_gate_fd(gate_write)
 
     if subprocess.Popen is not _REAL_POPEN_TYPE:
+        # M-144 stage 2: refuse a Popen subclass before starting anything.
+        _refuse_replaced_popen_subclass(_REAL_POPEN_TYPE)
         proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
-        job_handle = _create_task_job(proc.pid)
+        # M-144 stage 2: refuse a real process from a function wrapper.
+        _refuse_real_process_from_replaced_popen(proc, _REAL_POPEN_TYPE)
+        # M-144 stage 1 (BC-100): a test double's synthetic pid must never
+        # reach OpenProcess/AssignProcessToJobObject.  The job is still
+        # created (and closed by the caller's finally), but only real
+        # Popen instances are assigned.
+        job_handle = _create_task_job(proc.pid if isinstance(proc, _REAL_POPEN_TYPE) else None)
         try:
             _resume_after_containment(proc, job_handle)
         except BaseException:
@@ -1680,6 +1688,44 @@ def _popen_contained(
     return proc, job_handle
 
 
+_REPLACED_POPEN_REFUSAL = (
+    "subprocess.Popen was replaced after import; refusing the non-atomic "
+    "containment path for a real process"
+)
+_REPLACED_POPEN_SUBCLASS_REFUSAL = (
+    "subprocess.Popen was replaced after import by a Popen subclass; "
+    "refusing the non-atomic containment path before starting a real process"
+)
+
+
+def _refuse_replaced_popen_subclass(real_popen_type: type[Any]) -> None:
+    """Refuse a Popen subclass replacement before any process starts (M-144).
+
+    A class wrapper is detectable before the launch; a function wrapper
+    is only detectable by the returned instance (checked separately in
+    :func:`_refuse_real_process_from_replaced_popen`).
+    """
+    current: object = subprocess.Popen
+    if sys.platform != "win32" or current is real_popen_type:
+        return
+    if isinstance(current, type) and issubclass(current, real_popen_type):
+        raise ProcessContainmentError(_REPLACED_POPEN_SUBCLASS_REFUSAL)
+
+
+def _refuse_real_process_from_replaced_popen(proc: object, real_popen_type: type[Any]) -> None:
+    """Refuse a real process from a replaced Popen after the launch (M-144).
+
+    Kills the still-suspended child and raises ``ProcessContainmentError``.
+    The suspension is only guaranteed if the wrapper passed ``CREATE_SUSPENDED``
+    through unchanged (documented condition).
+    """
+    if sys.platform != "win32" or not isinstance(proc, real_popen_type):
+        return  # Test doubles carry no process identity
+    with contextlib.suppress(Exception):
+        _kill_proc_tree(proc)
+    raise ProcessContainmentError(_REPLACED_POPEN_REFUSAL)
+
+
 def _close_posix_gate_fd(fd: int | None) -> None:
     if fd is not None:
         with contextlib.suppress(OSError):
@@ -1699,35 +1745,64 @@ def _abort_posix_gated_process(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=2.0)
 
 
-def _iter_descendants(root_pid: int) -> list[Any]:
+def _iter_descendants(root_pid: int, root_create_time: float | None = None) -> list[Any]:
     """Collect live descendant processes of *root_pid* by walking ppids.
 
     Unlike ``psutil.Process(root_pid).children(recursive=True)`` this also
     works when the root itself ALREADY EXITED (issue #82 / A2-EW-008):
     Windows does not re-parent orphans, so their recorded ppid keeps
-    pointing at the dead pid.  Minor caveat: if the dead pid is recycled
-    very quickly, an unrelated process tree could match — the window is
-    milliseconds wide and the previous behaviour (orphans surviving until
-    job-object close) was strictly worse.
+    pointing at the dead pid.
+
+    Identity verification (M-009): when *root_create_time* is provided, an
+    edge parent→child is only accepted if the child's create_time is >=
+    the parent's create_time — the same rule psutil's ``children()``
+    applies internally.  This prevents the walker from following stale
+    PPID edges left by PID recycling.  Nodes whose create_time is not
+    readable (AccessDenied, None) are neither traversed nor returned.
+    When *root_create_time* is None (psutil unavailable or unreadable),
+    the unverified walk is preserved for the non-win32 path; callers
+    that can supply the time always should (fail-closed).
     """
     import psutil  # type: ignore[import-untyped,unused-ignore]
 
     children_by_ppid: dict[int, list[Any]] = {}
-    for proc in psutil.process_iter(["pid", "ppid"]):
+    create_times: dict[int, float] = {}
+    for proc in psutil.process_iter(["pid", "ppid", "create_time"]):
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            children_by_ppid.setdefault(proc.info["ppid"], []).append(proc)
+            ppid = proc.info["ppid"]
+            children_by_ppid.setdefault(ppid, []).append(proc)
+            pid = proc.info["pid"]
+            ctime = proc.info.get("create_time")
+            if ctime is not None:
+                create_times[pid] = ctime
 
     descendants: list[Any] = []
-    pending = [root_pid]
+    # Track the verified create_time for each accepted node so the edge
+    # check applies against the direct parent, not just the root.
+    pending: list[tuple[int, float]] = []
+    if root_create_time is not None:
+        pending.append((root_pid, root_create_time))
+    else:
+        pending.append((root_pid, float("inf")))
     seen: set[int] = set()
     while pending:
-        current = pending.pop()
-        for child in children_by_ppid.get(current, []):
+        current_pid, parent_ctime = pending.pop()
+        for child in children_by_ppid.get(current_pid, []):
             if child.pid in seen:
                 continue
-            seen.add(child.pid)
-            descendants.append(child)
-            pending.append(child.pid)
+            child_ctime = create_times.get(child.pid)
+            if root_create_time is not None:
+                # Verified walk: reject nodes with unreadable or older
+                # create_times (stale PPID from PID recycling).
+                if child_ctime is None or child_ctime < parent_ctime:
+                    continue
+                seen.add(child.pid)
+                descendants.append(child)
+                pending.append((child.pid, child_ctime))
+            else:
+                seen.add(child.pid)
+                descendants.append(child)
+                pending.append((child.pid, child_ctime or float("inf")))
     return descendants
 
 
@@ -1742,6 +1817,13 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
     even when the direct child already exited (the old code returned early
     and orphaned the grandchildren until the END of the whole run).  Two
     sweeps narrow the TOCTOU window for processes spawned mid-kill.
+
+    Identity verification (M-009): the root's create_time is captured
+    BEFORE the job close (while the Popen handle still reserves the PID)
+    and threaded into the walker so stale PPID edges from PID recycling
+    are not followed.  Without a readable create_time the sweep is
+    skipped (fail-closed: better to miss a descendant than to kill a
+    foreign process).
     """
     # Unit tests and third-party integrations can supply Popen-like objects.
     # Their synthetic ``pid`` values are not process identities and must never
@@ -1754,6 +1836,16 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
         with contextlib.suppress(Exception):
             proc.wait(timeout=2.0)
         return
+
+    # Capture the root's create_time BEFORE the job close, while the
+    # Popen handle still reserves the PID from recycling (M-009).
+    root_create_time: float | None = None
+    try:
+        import psutil  # type: ignore[import-untyped,unused-ignore]
+
+        root_create_time = psutil.Process(proc.pid).create_time()
+    except psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError:
+        root_create_time = None
 
     if job_handle is not None:
         with contextlib.suppress(Exception):
@@ -1778,13 +1870,11 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
     if use_psutil:
         import psutil  # type: ignore[import-untyped,unused-ignore]
 
-        for _sweep in range(2):
-            for child in _iter_descendants(proc.pid):
-                with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-                    child.kill()
-            if proc.poll() is None:
-                with contextlib.suppress(Exception):
-                    proc.kill()
+        if root_create_time is not None:
+            for _sweep in range(2):
+                for child in _iter_descendants(proc.pid, root_create_time):
+                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                        child.kill()
 
     with contextlib.suppress(Exception):
         proc.kill()
