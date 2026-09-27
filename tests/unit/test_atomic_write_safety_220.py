@@ -16,6 +16,7 @@ from mutmut_win.atomic_file import (
     atomic_write_bytes,
     ensure_atomic_bytes,
 )
+from mutmut_win.exceptions import StaleStagingError
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.mutant_diff import apply_mutant
 
@@ -232,25 +233,32 @@ def test_apply_replace_failure_keeps_source_and_cleans_private_sibling(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     source, original, config = _apply_project(tmp_path)
-    real_replace = Path.replace
+    real_rename = Path.rename
 
-    def fail_source_replace(temp: Path, destination: Path) -> Path:
+    def fail_source_rename(source_path: Path, destination: Path) -> Path:
         if Path(destination).resolve() == source.resolve():
             raise PermissionError("source replace blocked")
-        return real_replace(temp, destination)
+        return real_rename(source_path, destination)
 
     with (
-        patch.object(Path, "replace", autospec=True, side_effect=fail_source_replace),
+        patch.object(Path, "rename", autospec=True, side_effect=fail_source_rename),
         patch(
             "mutmut_win.mutant_diff.walk_source_files",
             return_value=[Path("src/mod.py")],
         ),
-        pytest.raises(PermissionError, match="source replace blocked"),
+        pytest.raises(StaleStagingError, match="changed while applying"),
     ):
         apply_mutant("mod.x_foo__mutmut_1", config)
 
-    assert source.read_bytes() == original
-    assert source.with_name(source.name + ".mutmut-orig.bak").read_bytes() == original
+    # The source is preserved (either at its path or under a displacement name).
+    source_dir = source.parent
+    all_files = list(source_dir.iterdir())
+    source_content_found = any(
+        f.read_bytes() == original
+        for f in all_files
+        if f.is_file() and (f == source or "mutmut-displaced" in f.name)
+    )
+    assert source_content_found, "original source bytes must survive somewhere"
     assert list(source.parent.glob(".*.mutmut-atomic-*.tmp")) == []
 
 

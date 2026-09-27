@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, cast
 
 import libcst as cst
 
-from mutmut_win.atomic_file import atomic_write_bytes
+from mutmut_win.atomic_file import (
+    AtomicPreconditionError,
+    atomic_replace_if_unchanged,
+    atomic_write_bytes,
+)
 from mutmut_win.exceptions import (
     AmbiguousMutantNameError,
     MutationParseError,
@@ -553,8 +557,10 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     honoured, A4-UI-001), reads/writes are byte-exact so the original line
     endings survive (A4-UI-002), the previous content is backed up next to
     the source as ``<name>.mutmut-orig.bak`` (overwritten on repeated apply),
-    the write is atomic (temp file + ``os.replace``), and the call refuses to
-    run when the source changed after its mutants were generated (A4-UI-003).
+    the write uses a compare-and-swap publication that refuses to overwrite
+    a source that changed since the staleness check (M-005), and the call
+    refuses to run when the source bytes do not match the SHA-256 recorded
+    when the mutants were generated (A4-UI-003).
 
     Args:
         mutant_name: Fully qualified mutant identifier.
@@ -565,9 +571,14 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             found.
         AmbiguousMutantNameError: If a glob pattern matches more than one
             mutant (issue #115 / A4-UI-012 — apply never applies a set).
-        StaleStagingError: If the source file is newer than its ``mutants/``
-            copy (stale staging — re-run ``mutmut-win run`` first; was a raw
-            ``RuntimeError`` traceback until issue #123 / CLI-003).
+        StaleStagingError: If the current source bytes do not match the
+            SHA-256 recorded when the mutants were generated (or no hash
+            was recorded), if the staged bytes do not match the recorded
+            generated hash, if the staged original body differs from the
+            source body, or if the source changes while apply is running
+            (compare-and-swap; nothing is overwritten — re-run
+            ``mutmut-win run`` first; was a raw ``RuntimeError`` traceback
+            until issue #123 / CLI-003).
     """
     mutant_name, data = resolve_mutant(mutant_name, config)
     path = data.path
@@ -614,4 +625,30 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     except UnicodeEncodeError as exc:
         msg = f"applied mutant cannot be represented in source encoding {source_encoding}: {exc}"
         raise MutationParseError(msg) from exc
-    atomic_write_bytes(source_path, applied_bytes, mode=source_mode)
+
+    # Stage 1 (M-005): re-read the source immediately before the CAS write
+    # to shrink the race window.  Any deviation aborts without writing.
+    current_bytes = source_path.read_bytes()
+    if current_bytes != source_bytes:
+        msg = (
+            f"source {source_path} changed while applying mutant {mutant_name}; "
+            "nothing was overwritten — re-run 'mutmut-win run' first"
+        )
+        raise StaleStagingError(msg)
+
+    # Stage 2 (M-005): compare-and-swap publication — the source is only
+    # replaced if it still holds the bytes we verified above.
+    try:
+        atomic_replace_if_unchanged(
+            source_path,
+            applied_bytes,
+            expected=source_bytes,
+            mode=source_mode,
+            backup_path=backup_path,
+        )
+    except AtomicPreconditionError as exc:
+        msg = (
+            f"source {source_path} changed while applying mutant {mutant_name}; "
+            "nothing was overwritten — re-run 'mutmut-win run' first"
+        )
+        raise StaleStagingError(msg) from exc

@@ -22,10 +22,6 @@ from mutmut_win.models import GenerationDegradation, MutationRunResult
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
-
-    MonkeyPatch = pytest.MonkeyPatch
-
 _DEGRADED = [
     GenerationDegradation(
         path="src/broken.py",
@@ -48,7 +44,7 @@ def _result(**overrides: object) -> MutationRunResult:
 
 
 @pytest.fixture
-def cli_project(tmp_path: Path, monkeypatch: MonkeyPatch) -> Path:
+def cli_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Minimal workspace so config validation passes before the mocked run."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -84,7 +80,7 @@ class TestMutationSurfaceReport:
 class TestScoreGateFailsClosedOnDegradedSurface:
     def test_degraded_surface_with_min_score_exits_1(
         self,
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         cli_project: Path,  # noqa: ARG002
     ) -> None:
         monkeypatch.setattr(
@@ -104,7 +100,7 @@ class TestScoreGateFailsClosedOnDegradedSurface:
 
     def test_degraded_surface_with_basis_incomplete_still_specific(
         self,
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         cli_project: Path,  # noqa: ARG002
     ) -> None:
         monkeypatch.setattr(
@@ -119,7 +115,7 @@ class TestScoreGateFailsClosedOnDegradedSurface:
 
     def test_degraded_surface_without_min_score_is_diagnostic_exit_0(
         self,
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         cli_project: Path,  # noqa: ARG002
     ) -> None:
         monkeypatch.setattr(
@@ -133,7 +129,7 @@ class TestScoreGateFailsClosedOnDegradedSurface:
 
     def test_json_output_contains_degraded_files_field(
         self,
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         cli_project: Path,  # noqa: ARG002
     ) -> None:
         monkeypatch.setattr(

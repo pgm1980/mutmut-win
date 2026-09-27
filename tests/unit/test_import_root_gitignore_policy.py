@@ -25,10 +25,6 @@ from mutmut_win import stats as stats_module
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
-
-    MonkeyPatch = pytest.MonkeyPatch
-
 
 def _make_venv(project: Path, name: str = ".venv") -> Path:
     """Create a minimal project-internal venv with site-packages."""
@@ -37,7 +33,7 @@ def _make_venv(project: Path, name: str = ".venv") -> Path:
     return site
 
 
-def _setup_isolated(project: Path, monkeypatch: MonkeyPatch, sys_path: list[str]) -> None:
+def _setup_isolated(project: Path, monkeypatch: pytest.MonkeyPatch, sys_path: list[str]) -> None:
     monkeypatch.chdir(project)
     monkeypatch.setattr(stats_module.sys, "path", sys_path)
     monkeypatch.setattr(
@@ -63,7 +59,7 @@ class TestProjectInternalVenvBound:
 
     @pytest.mark.parametrize("ignore_style", ["root", "inner-star"])
     def test_venv_content_changes_digest(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch, ignore_style: str
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ignore_style: str
     ) -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -79,12 +75,12 @@ class TestProjectInternalVenvBound:
         before, safe_before = _hash_imports(project)
 
         (site / "orphan_plugin.py").write_text("VALUE = 2\n", encoding="utf-8")
-        after, safe_after = _hash_imports(project)
+        after, _safe_after = _hash_imports(project)
 
         assert safe_before is True
         assert after != before
 
-    def test_venv_pth_changes_digest(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    def test_venv_pth_changes_digest(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         project = tmp_path / "project"
         project.mkdir()
         (project / ".gitignore").write_text(".venv/\n", encoding="utf-8")
@@ -95,12 +91,14 @@ class TestProjectInternalVenvBound:
         _setup_isolated(project, monkeypatch, [str(project), str(site)])
         before, _ = _hash_imports(project)
 
-        (site / "orphan-hook.pth").write_text("import os\n", encoding="utf-8")
+        (site / "orphan-hook.pth").write_text("", encoding="utf-8")
         after, _ = _hash_imports(project)
 
         assert after != before
 
-    def test_env_named_venv_with_sys_prefix(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    def test_env_named_venv_with_sys_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A venv named 'env' (not in skip-dirs) via sys.prefix."""
         project = tmp_path / "project"
         project.mkdir()
@@ -119,7 +117,7 @@ class TestProjectInternalVenvBound:
         assert after != before
 
     def test_ignored_project_tree_still_pruned(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """MBR guard: ignored non-venv project trees stay pruned."""
         project = tmp_path / "project"
@@ -143,7 +141,7 @@ class TestZipArchiveSubpath:
     """M-007: ZIP subpaths on sys.path bind the archive bytes."""
 
     def test_archive_change_invalidates_digest(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -164,9 +162,10 @@ class TestZipArchiveSubpath:
         assert safe is True
         assert after != before
 
-    def test_missing_entry_is_not_archive(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    def test_missing_entry_is_not_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A truly absent sys.path entry is not misclassified as archive."""
-        import os
 
         project = tmp_path / "project"
         project.mkdir()
@@ -177,9 +176,11 @@ class TestZipArchiveSubpath:
 
         assert safe is True
         # Verify the absent path truly doesn't exist.
-        assert not os.path.exists(absent)
+        assert not absent.exists()
 
-    def test_regular_file_ancestor_bound(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    def test_regular_file_ancestor_bound(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A non-ZIP regular file as ancestor is bound (fail-closed)."""
         project = tmp_path / "project"
         project.mkdir()

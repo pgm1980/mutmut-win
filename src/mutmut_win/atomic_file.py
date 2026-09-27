@@ -28,6 +28,21 @@ class AtomicPublicationRaceError(UnsafeAtomicWriteError):
     """A competing publisher replaced the destination before post-validation."""
 
 
+class AtomicPreconditionError(UnsafeAtomicWriteError):
+    """A compare-and-swap precondition failed: the target changed.
+
+    Raised by :func:`atomic_replace_if_unchanged` when the destination's
+    current bytes do not match the expected bytes, or when a foreign writer
+    recreated the path between displacement and insertion.  Nothing is
+    overwritten: the foreign content stays at the destination (or is
+    preserved under a displacement path named in the error message).
+
+    Deliberately NOT a subclass of :class:`AtomicReplaceError`
+    (PermissionError) so that existing retry loops for
+    ``AtomicReplaceError`` never re-run a precondition breach.
+    """
+
+
 #: Bounded backoff for transient Windows filter-driver interference.  The
 #: pytest phase guard republishes its execution sentinel once per test report;
 #: under that create/replace churn, antivirus or indexer filters transiently
@@ -599,3 +614,169 @@ def atomic_copy_file(source: Path, destination: Path) -> None:
         mode=stat.S_IMODE(after.st_mode),
         timestamps_ns=(after.st_atime_ns, after.st_mtime_ns),
     )
+
+
+def _displacement_sibling(path: Path) -> Path:
+    """Return a random displacement sibling that never ends in ``.py``.
+
+    The name starts with the source name (findable after a crash) and ends
+    in ``.mutmut-displaced`` so :func:`file_setup.walk_source_files` never
+    picks it up as a Python source.
+    """
+    import secrets
+
+    suffix = secrets.token_hex(8)
+    return path.with_name(f".{path.name}.{suffix}.mutmut-displaced")
+
+
+def atomic_replace_if_unchanged(
+    path: Path,
+    payload: bytes,
+    *,
+    expected: bytes,
+    mode: int | None = None,
+    backup_path: Path | None = None,
+) -> bool:
+    """Compare-and-swap publication: replace *path* only if it holds *expected*.
+
+    Protocol (M-005):
+
+    1. Write a private temp sibling with *payload* (existing atomic machinery).
+    2. Check the parent; capture the target's identity via ``lstat``.
+    3. Rename the target to a private displacement sibling (``os.rename``,
+       NOT ``replace`` — fails if another process recreated it).
+    4. Verify the displaced file: identity must match the captured identity
+       AND content must match *expected*.
+    5. Rename the temp into place (``os.rename`` — a ``FileExistsError``
+       means a foreign writer recreated the path; their file stays).
+    6. Post-publication identity check.
+    7. Promote the displaced file to *backup_path* (or keep it if no
+       backup path is given — it is NEVER deleted).
+
+    Returns:
+        ``True`` on success, ``False`` if the current bytes already equal
+        *payload* (no write needed).
+
+    Raises:
+        AtomicPreconditionError: The target's current bytes differ from
+            *expected*, or a foreign writer interfered.  Nothing is
+            overwritten; foreign content stays at *path* or under a
+            displacement path named in the error.
+        UnsafeAtomicWriteError: The parent contains unsafe indirection.
+        AtomicPublicationRaceError: Post-publication identity mismatch.
+    """
+    path = Path(path)
+    parent_identity = _capture_parent_identity(path)
+
+    # Read the current bytes to check whether a swap is needed.
+    try:
+        current = path.read_bytes()
+    except FileNotFoundError:
+        msg = f"compare-and-swap target does not exist: {path}"
+        raise AtomicPreconditionError(msg) from None
+    except OSError as exc:
+        msg = f"cannot read compare-and-swap target {path}: {exc}"
+        raise AtomicPreconditionError(msg) from exc
+
+    if current == payload:
+        return False
+    if current != expected:
+        msg = f"compare-and-swap target bytes differ from expected: {path}"
+        raise AtomicPreconditionError(msg)
+
+    # Step 1: write the private temp sibling with the new payload.
+    fd, temp_path, temp_identity = _open_random_sibling(path)
+    try:
+        if mode is not None:
+            os.fchmod(fd, mode)
+        _write_all(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _checked_temp(temp_path, temp_identity)
+    _checked_parent(path, parent_identity)
+
+    # Step 2: capture the target's identity.
+    try:
+        target_stat = path.lstat()
+    except OSError as exc:
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = f"cannot inspect compare-and-swap target {path}: {exc}"
+        raise AtomicPreconditionError(msg) from exc
+    target_identity = _identity(target_stat)
+
+    # Step 3: displace the target (os.rename, NOT replace).
+    displaced_path = _displacement_sibling(path)
+    try:
+        path.rename(displaced_path)
+    except OSError as exc:
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = f"cannot displace compare-and-swap target {path}: {exc}"
+        raise AtomicPreconditionError(msg) from exc
+
+    # Step 4: verify the displaced file.
+    try:
+        displaced_stat = displaced_path.lstat()
+        displaced_content = displaced_path.read_bytes()
+    except OSError as exc:
+        # The displacement succeeded but we cannot verify it — attempt
+        # restoration, then fail closed.
+        with contextlib.suppress(OSError):
+            displaced_path.rename(path)
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = f"cannot verify displaced file {displaced_path}: {exc}; restoration attempted"
+        raise AtomicPreconditionError(msg) from exc
+
+    if _identity(displaced_stat) != target_identity or displaced_content != expected:
+        # The file changed between identity capture and displacement —
+        # restore it and fail closed.
+        with contextlib.suppress(OSError):
+            displaced_path.rename(path)
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = (
+            f"compare-and-swap target changed between check and displacement: {path}; "
+            f"displaced content preserved at {displaced_path}"
+        )
+        raise AtomicPreconditionError(msg)
+
+    # Step 5: insert the temp (os.rename — FileExistsError is fail-closed).
+    try:
+        temp_path.rename(path)
+    except FileExistsError:
+        # A foreign writer recreated the path while it was displaced.
+        # Their file stays; the displaced original is preserved.
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = (
+            f"a foreign writer recreated {path} during displacement; "
+            f"the original content is preserved at {displaced_path}"
+        )
+        raise AtomicPreconditionError(msg) from None
+    except OSError as exc:
+        # Attempt restoration of the displaced file.
+        with contextlib.suppress(OSError):
+            displaced_path.rename(path)
+        _cleanup_owned_temp(temp_path, temp_identity)
+        msg = (
+            f"cannot insert replacement at {path}: {exc}; "
+            f"original content preserved at {displaced_path}"
+        )
+        raise AtomicPreconditionError(msg) from exc
+
+    # Step 6: post-publication identity check.
+    try:
+        published_stat = path.lstat()
+    except OSError as exc:
+        msg = f"cannot verify published file {path}: {exc}"
+        raise AtomicPublicationRaceError(msg) from exc
+    if _identity(published_stat) != temp_identity:
+        msg = f"published file identity mismatch at {path}"
+        raise AtomicPublicationRaceError(msg)
+
+    # Step 7: promote the displaced file to backup (never delete it).
+    if backup_path is not None:
+        with contextlib.suppress(OSError):
+            displaced_path.rename(backup_path)
+    # If no backup path, the displaced file stays at displaced_path.
+
+    _fsync_parent(path, parent_identity)
+    return True

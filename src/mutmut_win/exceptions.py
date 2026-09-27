@@ -79,12 +79,17 @@ class MutationParseError(MutationError):
 
 
 class StaleStagingError(MutmutWinError):
-    """The staging is older than the source it was generated from.
+    """The staged or source bytes do not match their recorded hashes.
 
-    Producer: ``mutant_diff.apply_mutant`` refuses to patch a source file
-    that changed after its mutants were generated (issue #123 / external QA
-    CLI-003 — the refusal used to escape as a raw ``RuntimeError``
-    traceback past the #114 domain-error rendering).
+    Producers: ``mutant_diff._read_source_bytes_matching_staging`` (source
+    SHA-256 mismatch or missing hash), ``file_setup.read_verified_generated_bytes``
+    (staged bytes mismatch the generated hash), ``mutant_diff._public_mutant_function``
+    (staged original body differs from the source body), and the
+    compare-and-swap publication in ``mutant_diff.apply_mutant`` (source
+    changed while apply was running — nothing is overwritten, M-005).
+    All producers bind byte content, never file timestamps (issue #123 /
+    external QA CLI-003 - the refusal used to escape as a raw
+    ``RuntimeError`` traceback past the #114 domain-error rendering).
     """
 
 

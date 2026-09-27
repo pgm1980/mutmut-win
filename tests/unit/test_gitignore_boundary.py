@@ -344,7 +344,7 @@ class TestTrackedIndexOverride:
         (project / "src" / "pkg" / "other_gen.py").write_text("x = 2\n", encoding="utf-8")
 
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(
             {"src/pkg/api_gen.py"}
         )
         try:
@@ -361,7 +361,7 @@ class TestTrackedIndexOverride:
         (project / "build" / "generated.py").write_text("x = 1\n", encoding="utf-8")
 
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(
             {"build/generated.py"}
         )
         try:
@@ -374,7 +374,7 @@ class TestTrackedIndexOverride:
         """Git failure (unknown) disables pruning entirely for safety."""
         project = _make_project(tmp_path, (".gitignore", "*_gen.py\nlogs/\n"))
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(unknown=True)
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(unknown=True)
         try:
             boundary = GitignoreBoundary.load(project)
             assert boundary.excludes_file("x_gen.py") is False
@@ -386,16 +386,14 @@ class TestTrackedIndexOverride:
         """Without .git, the tracked index is empty and patterns apply."""
         project = _make_project(tmp_path, (".gitignore", "*_gen.py\n"))
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index()
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index()
         try:
             boundary = GitignoreBoundary.load(project)
             assert boundary.excludes_file("x_gen.py") is True
         finally:
             gitignore_boundary._load_tracked_index = original_load
 
-    def test_descend_forced_keeps_git_add_f_semantics_for_untracked(
-        self, tmp_path: Path
-    ) -> None:
+    def test_descend_forced_keeps_git_add_f_semantics_for_untracked(self, tmp_path: Path) -> None:
         """Counter-review correction 1: the branch decision in descend_forced
         must use the PURE pattern verdict, not the tracked override.
 
@@ -407,10 +405,12 @@ class TestTrackedIndexOverride:
         (project / "generated").mkdir()
         (project / "generated" / "tracked_file.py").write_text("x = 1\n", encoding="utf-8")
         (project / "generated" / "untracked_ignored.py").write_text("x = 2\n", encoding="utf-8")
-        (project / "generated" / ".gitignore").write_text("untracked_ignored.py\n", encoding="utf-8")
+        (project / "generated" / ".gitignore").write_text(
+            "untracked_ignored.py\n", encoding="utf-8"
+        )
 
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(
             {"generated/tracked_file.py"}
         )
         try:
@@ -428,7 +428,7 @@ class TestTrackedIndexOverride:
         """The tracked index propagates through enter/descend chains."""
         project = _make_project(tmp_path, (".gitignore", "*.pyc\n"))
         original_load = gitignore_boundary._load_tracked_index
-        gitignore_boundary._load_tracked_index = lambda root: _tracked_index(
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(
             {"src/deep/module.pyc"}
         )
         try:
