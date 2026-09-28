@@ -584,7 +584,9 @@ skipped (the visitor's class stack is now identity-bound). The same wave
 grounds the wholesale exclusion of decorated classes in the trampoline
 architecture (private method copies live in the class body, their lookup
 names are bound only after the class statement) instead of the inherited
-function-decorator rationale. Details:
+function-decorator rationale, and computes `block` pragma extents from the
+token stream so column-0 comments and multi-line string contents no longer
+end a block early. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.

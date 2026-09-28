@@ -1,11 +1,16 @@
 """Unit tests for mutmut_win.mutation."""
 
+import ast
+
 import libcst as cst
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.mutation import (
     ChildReplacementTransformer,
     Mutation,
     _is_generator,
+    _pragma_block_range,
     _pragma_no_mutate_suffix,
     create_mutations,
     deep_replace,
@@ -139,6 +144,104 @@ class TestPragmaNoMutateLines:
         # a line dedented BELOW the header indent ends the block (<= base, not == base)
         src = "    if x:  # pragma: no mutate block\n        a = 1\nb = 2\n"
         assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_block_survives_column0_comment_inside_suite(self) -> None:
+        # M-043 regression: a column-0 comment line is NOT a statement and must
+        # not end the block - the suite continues with ` b = 2` below it.
+        src = "def f():  # pragma: no mutate block\n    a = 1\n# note\n    b = 2\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4}
+
+    def test_block_survives_multiline_string_content_at_column0(self) -> None:
+        # M-043 regression: the STRING token spans several physical lines; its
+        # column-0 content lines are not suite boundaries.
+        src = 'def f():  # pragma: no mutate block\n    s = """\nx\n"""\n    b = 2\nc = 3\n'
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4, 5}
+
+    def test_block_survives_multiline_fstring_content_at_column0(self) -> None:
+        # f-strings tokenise as FSTRING_START/MIDDLE/END; same rule as plain
+        # multi-line strings (guard for the token-based extent).
+        src = 'def g(v):  # pragma: no mutate block\n    s = f"""{v}\nx\n"""\n    b = 2\nc = 3\n'
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4, 5}
+
+    def test_block_excludes_trailing_comment_after_last_statement(self) -> None:
+        # pinned new semantic: the extent ends at the last NEWLINE inside the
+        # suite, so a trailing comment line after the last statement drops out
+        # (it cannot carry a mutation target anyway).
+        src = "def f():  # pragma: no mutate block\n    a = 1\n    # tail\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_comment_only_block_pragma_as_first_suite_line_stays_single_line(self) -> None:
+        # guard against silent widening: for a comment-only pragma the next
+        # significant token is the INDENT of the ENCLOSING header, which must
+        # not swallow the whole body - comment-only pragmas keep the legacy
+        # physical-indent extent.
+        src = "def f():\n    # pragma: no mutate block\n    if x:\n        a = 1\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_comment_only_block_pragma_before_header_stays_single_line(self) -> None:
+        src = "x = 1\n# pragma: no mutate block\ndef f():\n    a = 1\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_block_pragma_on_bracket_continuation_line_stays_legacy(self) -> None:
+        # pinned conservative decision: the token-based extent only applies to
+        # pragmas on a code line that CLOSES its logical line (NEWLINE on the
+        # same physical line). A pragma inside a bracketed multi-line header
+        # keeps the physical-indent extent instead of widening to the suite.
+        src = "def f(\n    a,  # pragma: no mutate block\n):\n    x = 1\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_block_pragma_over_multiline_string_prevents_all_mutants(self) -> None:
+        # end to end: nothing inside the block pragma's suite may produce a
+        # mutant name (`c = 3` is a module statement and never mutated).
+        source = 'def f():  # pragma: no mutate block\n    s = """\nx\n"""\n    b = 2\nc = 3\n'
+        _code, names = mutate_file_contents("m.py", source)
+        assert list(names) == []
+
+    @given(
+        st.lists(st.sampled_from(["assign", "comment", "string", "blank"]), min_size=1, max_size=6)
+    )
+    @settings(deadline=None)
+    def test_block_extent_matches_ast_suite_property(self, parts: list[str]) -> None:
+        """A code-line block pragma covers at least the whole ast function suite."""
+        lines = ["def f():  # pragma: no mutate block", "    v0 = 0"]
+        for part in parts:
+            if part == "assign":
+                lines.append(f"    v{len(lines)} = {len(lines)}")
+            elif part == "comment":
+                lines.append("# col0 comment")
+            elif part == "string":
+                lines += ['    s = """', "col0 string content", '    """']
+            else:
+                lines.append("")
+        lines.append("z = 1")
+        source = "\n".join(lines) + "\n"
+        tree = ast.parse(source)
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        result = pragma_no_mutate_lines(source)
+        assert set(range(function.lineno, (function.end_lineno or 0) + 1)) <= result
+        assert tree.body[1].lineno not in result
+
+    @given(
+        st.lists(st.sampled_from(["assign", "comment", "string", "blank"]), min_size=1, max_size=6)
+    )
+    @settings(deadline=None)
+    def test_comment_only_block_pragma_keeps_legacy_extent_property(self, parts: list[str]) -> None:
+        """A comment-only block pragma keeps exactly the legacy indent-based extent."""
+        lines = ["def g():", "    w0 = 0", "    # pragma: no mutate block"]
+        for part in parts:
+            if part == "assign":
+                lines.append(f"    w{len(lines)} = {len(lines)}")
+            elif part == "comment":
+                lines.append("# col0 comment")
+            elif part == "string":
+                lines += ['    t = """', "col0 string content", '    """']
+            else:
+                lines.append("")
+        lines.append("y = 1")
+        source = "\n".join(lines) + "\n"
+        legacy = _pragma_block_range(source.split("\n"), 2)
+        assert pragma_no_mutate_lines(source) == set(legacy)
 
     def test_suffix_helper_return_values(self) -> None:
         # direct probe of the classifier: pins the exact return value so the
