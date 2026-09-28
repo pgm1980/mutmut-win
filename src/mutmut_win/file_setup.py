@@ -1350,45 +1350,41 @@ def _copy_with_retry(
     src: Path,
     dst: Path,
     *,
-    is_tree: bool = False,
     max_attempts: int = 5,
-    **kwargs: object,
 ) -> None:
-    """Copy a file or directory tree with retry logic for Windows file locks.
+    """Copy a single file atomically with retry logic for Windows file locks.
 
     On Windows, recently written files can be temporarily locked by Defender,
-    the Search Indexer, or NTFS journaling.  This wrapper retries with
-    exponential backoff (0.1 s, 0.2 s, 0.4 s, 0.8 s) before giving up.
+    the Search Indexer, or NTFS journaling.  This wrapper performs exactly
+    ``max_attempts`` atomic copies via ``atomic_copy_file``, separated by
+    exponential backoff pauses of 0.1 s, 0.2 s, 0.4 s and 0.8 s for the
+    default of five attempts; the last attempt's ``OSError`` propagates.
+    Failures that are not ``OSError`` subclasses (e.g. ``UnsafeStagingError``)
+    are never retried.
 
     Args:
         src: Source path.
         dst: Destination path.
-        is_tree: If True, use ``shutil.copytree`` instead of ``shutil.copy2``.
-        max_attempts: Maximum number of attempts before raising.
-        **kwargs: Additional keyword arguments forwarded to the copy function.
+        max_attempts: Total number of copy attempts, at least 1.  The
+            historic unconditional bonus attempt is gone, so a budget of
+            zero could never publish anything and is rejected instead.
     """
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
 
-    def copy_once() -> None:
-        if is_tree:
-            shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
-            return
-
-        # The destination is published through the still-private atomic
-        # sibling.  Never close and reopen its random pathname: a directory
-        # watcher could otherwise replace it with an external hardlink.
-        atomic_copy_file(src, dst)
-
-    publish_guard = contextlib.nullcontext() if is_tree else _temporarily_writable_staging_leaf(dst)
-    with publish_guard:
-        for attempt in range(max_attempts):
+    with _temporarily_writable_staging_leaf(dst):
+        for attempt in range(1, max_attempts + 1):
             try:
-                copy_once()
+                # The destination is published through the still-private
+                # atomic sibling.  Never close and reopen its random
+                # pathname: a directory watcher could otherwise replace it
+                # with an external hardlink.
+                atomic_copy_file(src, dst)
                 return
             except OSError:
-                if attempt < max_attempts - 1:
-                    time.sleep(0.1 * (2**attempt))
-        # Final attempt — let the exception propagate if it still fails.
-        copy_once()
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(0.1 * 2 ** (attempt - 1))
 
 
 def _atomic_write_text(
