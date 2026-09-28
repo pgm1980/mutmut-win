@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,76 @@ class TestGuessPathsToMutate:
             assert result == [f"{cwd_name}.py"]
         finally:
             os.chdir(orig)
+
+    def test_dash_only_cwd_name_is_never_guessed(self, tmp_path: Path) -> None:
+        # M-082 (BC-124): '---'.replace('-', '') == '' and Path('').is_dir()
+        # is True on Windows, so the empty candidate silently became the
+        # mutation root. Before the fix this returned [''] instead of
+        # raising; the same code path is taken for a drive/UNC-share root
+        # (Path.cwd().name == '').
+        dash_dir = tmp_path / "---"
+        dash_dir.mkdir()
+        orig = Path.cwd()
+        try:
+            os.chdir(dash_dir)
+            with pytest.raises(FileNotFoundError, match="Could not figure out"):
+                guess_paths_to_mutate()
+        finally:
+            os.chdir(orig)
+
+    def test_dash_only_cwd_falls_back_to_the_src_default(self, tmp_path: Path) -> None:
+        # Same cwd: the model default falls back to ['src/'], so the CLI
+        # can reject the configuration precisely instead of running with
+        # an empty mutation root.
+        dash_dir = tmp_path / "---"
+        dash_dir.mkdir()
+        orig = Path.cwd()
+        try:
+            os.chdir(dash_dir)
+            assert MutmutConfig().paths_to_mutate == ["src/"]
+        finally:
+            os.chdir(orig)
+
+    def test_dash_only_cwd_exits_2_on_missing_src_before_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # CLI Folge test: exit 2 with the precise paths_to_mutate
+        # diagnosis BEFORE any staging. Before the fix the empty root
+        # slipped past the existence check (Path('').exists() is True) and
+        # the run ended at 'No mutants generated.' instead.
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        dash_dir = tmp_path / "---"
+        (dash_dir / "mutants").mkdir(parents=True)
+        monkeypatch.chdir(dash_dir)
+
+        result = CliRunner().invoke(cli, ["run", "--dry-run"])
+
+        assert result.exit_code == 2
+        combined = result.output + str(result.stderr)
+        assert "paths_to_mutate entry does not exist: src/" in combined
+
+    @given(dashes=st.text(alphabet="-", min_size=1, max_size=20))
+    def test_dash_names_never_yield_the_empty_path(self, dashes: str) -> None:
+        # Property: an all-dash cwd name never yields the empty path —
+        # either FileNotFoundError or a non-empty guess. Temp dir + manual
+        # chdir under @given (no function-scoped fixtures), try/finally.
+        with tempfile.TemporaryDirectory() as td:
+            dash_dir = Path(td) / dashes
+            dash_dir.mkdir()
+            orig = Path.cwd()
+            try:
+                os.chdir(dash_dir)
+                try:
+                    result = guess_paths_to_mutate()
+                except FileNotFoundError:
+                    pass
+                else:
+                    assert result != [""]
+            finally:
+                os.chdir(orig)
 
 
 class TestPathsToMutateCanonicalisation:

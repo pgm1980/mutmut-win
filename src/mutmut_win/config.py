@@ -70,7 +70,11 @@ def guess_paths_to_mutate() -> list[str]:
     Mirrors the heuristic from mutmut 3.5.0: checks for ``lib/``, ``src/``,
     a directory named after the current working directory (with common
     transformations applied), and finally a top-level ``.py`` file with the
-    same stem.
+    same stem. Empty candidates are never guessed (M-082 / BC-124): in a
+    drive or UNC-share root ``Path.cwd().name`` is ``''``, and a cwd named
+    like ``'---'`` produces the empty candidate via ``replace('-', '')`` —
+    ``Path('').is_dir()`` is True on Windows, so the empty string silently
+    became the mutation root.
 
     Returns:
         A list containing the single best-guess path.
@@ -89,7 +93,7 @@ def guess_paths_to_mutate() -> list[str]:
         this_dir.replace(" ", ""),
     ]
     for candidate in candidates:
-        if Path(candidate).is_dir():
+        if candidate and Path(candidate).is_dir():
             return [candidate]
 
     py_file = this_dir + ".py"
