@@ -456,6 +456,84 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
     return config.model_copy(update={"also_copy": config.also_copy + default_also_copy})
 
 
+#: Sentinel ``default_section`` for the M-080 diagnostic parser: a
+#: newline can never occur inside an INI section header, so no literal
+#: section is treated as the defaults section and ``[DEFAULT]`` becomes
+#: an ordinary section whose keys are NOT inherited into ``[mutmut]``.
+_NO_DEFAULT_SECTION_SENTINEL = "\n"
+
+
+def _read_setup_cfg_text(path: Path) -> str | None:
+    """Read setup.cfg once as UTF-8 text (M-027 / M-079, Q-37).
+
+    ``ConfigParser.read`` swallows every ``OSError`` around its whole
+    ``with`` block, and under Windows a byte-range lock (msvcrt) opens
+    fine and fails only at ``read()`` — so an existing-but-unreadable
+    setup.cfg used to degrade to silent ``MutmutConfig()`` defaults.
+    Reading explicitly makes only ``FileNotFoundError`` proven absence;
+    UTF-8 decoding also happens at ``read()`` time, so both failures
+    must sit inside the SAME try block.
+
+    Args:
+        path: Path of the setup.cfg file.
+
+    Returns:
+        The file content as text, or ``None`` if the file is absent.
+
+    Raises:
+        ConfigError: If the file exists but cannot be read (any
+            ``OSError`` other than ``FileNotFoundError``) or is not
+            valid UTF-8.
+    """
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as exc:
+        msg = f"Failed to read setup.cfg: file is not valid UTF-8 ({exc})"
+        raise ConfigError(msg) from exc
+    except OSError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+
+
+def _validate_config_mapping(
+    normalized: dict[str, object], project_dir: Path, *, source: str
+) -> MutmutConfig:
+    """Validate a normalized mapping from either config source (Q-39).
+
+    M-077 shared validation boundary: value errors of pyproject.toml AND
+    setup.cfg surface as ``InvalidConfigValueError`` naming the source,
+    so the CLI exit-2 contract holds for both (a pydantic
+    ``ValidationError`` used to escape the setup.cfg path as a raw
+    traceback). Only ``project_dir.resolve()`` and ``model_validate``
+    sit inside the try — anything else would be mislabelled as a value
+    error. ``except Exception`` keeps parity with the previous TOML-only
+    wrapper (it also catches OSError from path.resolve in a validator).
+
+    Args:
+        normalized: Hyphen-normalized key/value mapping of one source.
+        project_dir: Project root passed as validator context.
+        source: Human-readable source label for the error message.
+
+    Returns:
+        The validated ``MutmutConfig``.
+
+    Raises:
+        InvalidConfigValueError: If model validation fails for any reason.
+    """
+    try:
+        return MutmutConfig.model_validate(
+            normalized, context={"project_root": project_dir.resolve()}
+        )
+    except Exception as e:
+        msg = f"Invalid {source} configuration: {e}"
+        # Value-level failure → the specific subclass (issue #114 /
+        # A4-QX-006); still a ConfigError for every existing handler.
+        raise InvalidConfigValueError(msg) from e
+
+
 def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     """Attempt to load mutmut configuration from setup.cfg [mutmut] section.
 
@@ -467,17 +545,24 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     Returns:
         ``MutmutConfig`` loaded from setup.cfg, or ``None`` if the file does
         not exist or has no ``[mutmut]`` section.
+
+    Raises:
+        ConfigError: If an existing setup.cfg cannot be read, is not valid
+            UTF-8, or cannot be parsed.
+        InvalidConfigValueError: If a setup.cfg [mutmut] value fails model
+            validation (message names the source).
     """
     setup_cfg_path = project_dir / "setup.cfg"
-    if not setup_cfg_path.exists():
+    text = _read_setup_cfg_text(setup_cfg_path)
+    if text is None:
         return None
 
     # Percent signs are ordinary command/config characters here, not
     # ConfigParser interpolation markers (MW220-036).
     parser = ConfigParser(interpolation=None)
     try:
-        parser.read(str(setup_cfg_path), encoding="utf-8")
-    except (ConfigParserError, OSError) as exc:
+        parser.read_string(text, source=str(setup_cfg_path))
+    except ConfigParserError as exc:
         msg = f"Failed to read setup.cfg: {exc}"
         raise ConfigError(msg) from exc
 
@@ -503,7 +588,26 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     # silently ignored — the run proceeded with defaults and the user
     # believed the option was active. The known set is the model itself,
     # so new fields can never drift out of this check.
-    unknown = sorted(set(parser.options("mutmut")) - set(MutmutConfig.model_fields))
+    #
+    # M-080: parser.options() exposes the EFFECTIVE view, so keys merely
+    # inherited from [DEFAULT] produced a false typo warning on every
+    # run. A second, purely diagnostic parse of the SAME text — with a
+    # sentinel default_section (see _NO_DEFAULT_SECTION_SENTINEL) and
+    # strict=False, because the strict parser accepts repeated [DEFAULT]
+    # headers — yields the section-local key set. VALUE inheritance from
+    # [DEFAULT] stays with the strict parser (mutmut 3.5.0 parity).
+    diagnostic_parser = ConfigParser(
+        interpolation=None,
+        default_section=_NO_DEFAULT_SECTION_SENTINEL,
+        strict=False,
+    )
+    try:
+        diagnostic_parser.read_string(text, source=str(setup_cfg_path))
+        local_keys = set(diagnostic_parser.options("mutmut"))
+    except ConfigParserError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+    unknown = sorted(local_keys - set(MutmutConfig.model_fields))
     if unknown:
         print(
             f"Warning: setup.cfg [mutmut] contains unknown option(s): "
@@ -553,7 +657,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         normalized["mutation_profile"] = profile_value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
-    return MutmutConfig.model_validate(normalized, context={"project_root": project_dir.resolve()})
+    return _validate_config_mapping(normalized, project_dir, source="setup.cfg [mutmut]")
 
 
 def load_config(project_dir: Path | None = None) -> MutmutConfig:
@@ -570,7 +674,13 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         Validated MutmutConfig instance.
 
     Raises:
-        ConfigError: If pyproject.toml cannot be read or parsed.
+        ConfigError: If pyproject.toml cannot be read, is not valid UTF-8,
+            or cannot be parsed; if ``tool`` is present but not a table; if
+            an existing setup.cfg cannot be read, is not valid UTF-8, or
+            cannot be parsed.
+        InvalidConfigValueError: If ``tool.mutmut`` is present but not a
+            table (e.g. ``[[tool.mutmut]]``), or if a value of either
+            configuration source fails model validation.
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -586,12 +696,40 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     try:
         with pyproject_path.open("rb") as f:
             data = tomllib.load(f)
+    except UnicodeDecodeError as e:
+        # M-079: tomllib decodes lazily, so an undecodable file raises
+        # UnicodeDecodeError (a ValueError) past the tuple below —
+        # keep the 'Failed to read' contract prefix for the CLI exit-2
+        # path.
+        msg = f"Failed to read pyproject.toml: file is not valid UTF-8 ({e})"
+        raise ConfigError(msg) from e
     except (tomllib.TOMLDecodeError, OSError) as e:
         msg = f"Failed to read pyproject.toml: {e}"
         raise ConfigError(msg) from e
 
-    tool_config = data.get("tool", {}).get("mutmut", {})
-    if not isinstance(tool_config, dict) or not tool_config:
+    # Q-38 structure check BEFORE any fallback (M-078 / M-028): the old
+    # data.get("tool", {}).get("mutmut", {}) chain crashed with a raw
+    # AttributeError when 'tool' was a scalar, and silently treated a
+    # present non-table 'tool.mutmut' (e.g. [[tool.mutmut]]) as a
+    # missing section — falling back to setup.cfg or guessed defaults
+    # without a single word of diagnosis.
+    tool_table: object = data.get("tool")
+    if tool_table is not None and not isinstance(tool_table, dict):
+        msg = f"Invalid pyproject.toml: [tool] must be a table, got {type(tool_table).__name__}"
+        raise ConfigError(msg)
+    tool_config: object = tool_table.get("mutmut") if isinstance(tool_table, dict) else None
+    if tool_config is not None and not isinstance(tool_config, dict):
+        # A present non-table value (an array of tables such as
+        # [[tool.mutmut]], a scalar, or the empty array) is NOT a
+        # missing section; only the EMPTY TABLE keeps the documented
+        # setup.cfg/default fallback below.
+        msg = (
+            "Invalid [tool.mutmut] configuration: expected a table, got "
+            f"{type(tool_config).__name__} (an array of tables such as "
+            "[[tool.mutmut]] is not supported)"
+        )
+        raise InvalidConfigValueError(msg)
+    if not tool_config:
         # No [tool.mutmut] section — try setup.cfg before returning defaults
         setup_cfg_config = _load_setup_cfg(project_dir)
         if setup_cfg_config is not None:
@@ -623,14 +761,6 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         hint = f" — did you mean '{matches[0]}'?" if matches else ""
         print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}", file=sys.stderr)
 
-    try:
-        config = MutmutConfig.model_validate(
-            normalized, context={"project_root": project_dir.resolve()}
-        )
-    except Exception as e:
-        msg = f"Invalid [tool.mutmut] configuration: {e}"
-        # Value-level failure → the specific subclass (issue #114 /
-        # A4-QX-006); still a ConfigError for every existing handler.
-        raise InvalidConfigValueError(msg) from e
+    config = _validate_config_mapping(normalized, project_dir, source="[tool.mutmut]")
 
     return _apply_default_also_copy(config, project_dir)
