@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig
 from mutmut_win.db import (
-    CorruptCacheError,
     MutationRunState,
     RunBasisIncompleteness,
     RunMutationResult,
@@ -30,7 +31,7 @@ from mutmut_win.db import (
     start_run,
     validate_cache_path,
 )
-from mutmut_win.exceptions import UnsafeWorkspaceStateError
+from mutmut_win.exceptions import CorruptCacheError, UnsafeWorkspaceStateError
 from mutmut_win.stats import canonical_run_basis_config
 
 
@@ -90,11 +91,11 @@ def test_new_database_is_exclusively_precreated_before_sqlite_connect(
     real_connect = sqlite3.connect
     observations: list[tuple[int, int]] = []
 
-    def checked_connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def checked_connect(path: str | os.PathLike[str], *_args: object) -> sqlite3.Connection:
         prepared = Path(os.fspath(path))
         metadata = prepared.lstat()
         observations.append((metadata.st_nlink, metadata.st_size))
-        return real_connect(path, *args, **kwargs)  # type: ignore[arg-type]
+        return real_connect(path)
 
     monkeypatch.setattr(sqlite3, "connect", checked_connect)
 
@@ -116,10 +117,10 @@ def test_database_identity_swap_during_connect_fails_before_external_schema_writ
         connection.commit()
     real_connect = sqlite3.connect
 
-    def swapping_connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def swapping_connect(path: str | os.PathLike[str], *_args: object) -> sqlite3.Connection:
         database.unlink()
         os.link(external, database)
-        return real_connect(path, *args, **kwargs)  # type: ignore[arg-type]
+        return real_connect(path)
 
     monkeypatch.setattr(sqlite3, "connect", swapping_connect)
 
@@ -142,8 +143,8 @@ def test_sidecar_swap_after_connect_fails_before_schema_write(
     sidecar = Path(f"{database}-wal")
     real_connect = sqlite3.connect
 
-    def swapping_connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = real_connect(path, *args, **kwargs)  # type: ignore[arg-type]
+    def swapping_connect(path: str | os.PathLike[str], *_args: object) -> sqlite3.Connection:
+        connection = real_connect(path)
         os.link(sentinel, sidecar)
         return connection
 
@@ -398,11 +399,58 @@ def test_zero_links_or_multiple_links_fail_closed_with_only_bounded_sidecar_retr
         validate_cache_path(database)
 
     assert calls == expected_calls
-    if target == "sidecar" and link_count == 0:
+    if link_count == 0:
+        # a zero link count is unread metadata (the CPython lstat fallback for
+        # an unopenable regular file), never evidence of a hardlink — for the
+        # database leaf exactly as for an exhausted sidecar (M-095 / Q-45)
         assert "no links" in str(caught.value)
         assert "hardlink" not in str(caught.value)
     elif link_count > 1:
         assert "hardlink" in str(caught.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sidecar deletion metadata")
+@given(link_count=st.integers(min_value=0, max_value=5))
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_database_leaf_link_count_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_count: int,
+) -> None:
+    """DB-leaf link counts: 1 passes, 0 reports unread metadata, >= 2 is a hardlink.
+
+    The patched ``Path.lstat`` and the touched database file stay unchanged
+    across examples, so hypothesis's function-scoped-fixture health check is
+    suppressed (M-095). The name deliberately avoids 'hardlink' because the
+    asserts inspect the whole message including the tmp_path directory.
+    """
+    database = tmp_path / "cache.db"
+    database.touch()
+    real_lstat = Path.lstat
+    calls = 0
+
+    def counted_lstat(path: Path) -> os.stat_result:
+        nonlocal calls
+        metadata = real_lstat(path)
+        if path == database:
+            calls += 1
+            return _stat_with_link_count(metadata, link_count)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", counted_lstat)
+
+    if link_count == 1:
+        validate_cache_path(database)
+        return
+    with pytest.raises(UnsafeWorkspaceStateError) as caught:
+        validate_cache_path(database)
+    # the database leaf is never retried: the refusal fires on the first lstat
+    assert calls == 1
+    if link_count == 0:
+        assert "no links" in str(caught.value)
+        assert "hardlink" not in str(caught.value)
+    else:
+        assert f"hardlink ({link_count} links)" in str(caught.value)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows sidecar deletion metadata")
@@ -955,7 +1003,9 @@ def test_load_current_run_rejects_permanent_path_swap_after_final_query(
 
         def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
             nonlocal swapped
-            cursor = self._connection.execute(sql, *args)
+            # the proxy forwards every execute() shape db.py produces; staying
+            # wider than sqlite3's public parameter union is intentional here
+            cursor = self._connection.execute(sql, *args)  # type: ignore[arg-type]
             if not swapped and "SELECT ordinal, mutant_name" in sql:
                 replacement.replace(database)
                 swapped = True
@@ -967,8 +1017,8 @@ def test_load_current_run_rejects_permanent_path_swap_after_final_query(
         def __getattr__(self, name: str) -> object:
             return getattr(self._connection, name)
 
-    def swapping_connect(path: object, *args: object, **kwargs: object) -> object:
-        return SwappingConnection(real_connect(path, *args, **kwargs))  # type: ignore[arg-type]
+    def swapping_connect(path: str | os.PathLike[str], *_args: object) -> object:
+        return SwappingConnection(real_connect(path))
 
     monkeypatch.setattr(sqlite3, "connect", swapping_connect)
 

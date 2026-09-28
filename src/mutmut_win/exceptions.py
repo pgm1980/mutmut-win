@@ -116,13 +116,38 @@ class UnsafeWorkspaceStateError(MutmutWinError):
 class CorruptCacheError(MutmutWinError):
     """The ``.mutmut-cache/`` SQLite database is corrupt or unreadable.
 
+    Reserved for genuinely corrupt or invalid persisted cache content only:
+    garbage / truncated DB bytes (SQLITE_CORRUPT, SQLITE_NOTADB) and rows that
+    fail schema or domain validation. Recover with ``run --force``, which
+    deletes the cache before rebuilding it.
+
     Producer: ``db.create_db`` (and therefore every reader via
     ``db.load_results``) wraps ``sqlite3.DatabaseError`` — a garbage / truncated
     DB file used to escape as a raw traceback from ``run`` / ``results`` /
     ``export-cicd-stats`` (external QA CACHE-001). Mirrors the domain-error
     contract of the other state errors (e.g. :class:`StaleStagingError`): a clean
-    message + a defined exit code, never a traceback. ``run --force`` recovers by
-    deleting ``.mutmut-cache/`` first.
+    message + a defined exit code, never a traceback.
+    """
+
+
+class CacheEnvironmentError(MutmutWinError):
+    """The cache database could not be read or written because of its environment.
+
+    Producer: ``db._raise_database_error`` for SQLite base codes that describe
+    the surrounding system rather than the persisted bytes — SQLITE_READONLY
+    (read-only file or directory), SQLITE_IOERR (I/O error), SQLITE_FULL
+    (disk full), SQLITE_CANTOPEN (path unopenable), plus SQLITE_PERM and
+    SQLITE_NOLFS on the same grounds (M-037 / issue #164).
+
+    Distinct from :class:`CorruptCacheError`: the cache is NOT known to be
+    corrupt here, so the message deliberately gives recovery guidance
+    (read-only state, disk space, antivirus/backup interference) and never
+    recommends deleting ``.mutmut-cache/`` or re-running with ``--force`` —
+    that would destroy possibly intact, reusable verdicts. Extended
+    SQLITE_IOERR codes can also surface real damage (e.g.
+    SQLITE_IOERR_CORRUPTFS); classifying them as environment errors is the
+    fail-safe direction: the run still aborts with exit 1, it just never
+    advises deleting a possibly intact cache.
     """
 
 
