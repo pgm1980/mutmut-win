@@ -231,7 +231,8 @@ also_copy = ["fixtures/"]             # extra files copied into mutants/
 extra_paths = ["benchmarks/"]         # sibling packages: copied + on worker PYTHONPATH
 
 # Execution
-max_children = 8                      # workers (default: CPU count)
+max_children = 8                      # workers (default: CPU count; generation
+                                       # uses at most 61 workers on Windows)
 timeout_multiplier = 30               # scales the measured per-mutant test time
 clean_run_timeout = 300               # budget (s) for the clean baseline / stats runs
 forced_fail_timeout = 120             # budget (s) for the forced-fail verification
