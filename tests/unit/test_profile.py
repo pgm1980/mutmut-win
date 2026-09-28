@@ -16,6 +16,7 @@ filter. They are the C1 wave of Phase 1.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from io import StringIO
 from typing import TYPE_CHECKING
@@ -26,8 +27,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from mutmut_win.config import MutmutConfig
+from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.constants import Profile
+from mutmut_win.exceptions import InvalidConfigValueError
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     create_mutants_for_file,
@@ -249,6 +251,58 @@ class TestMutationProfileConfig:
     def test_model_dump_roundtrip(self, profile: Profile) -> None:
         original = MutmutConfig(mutation_profile=profile)
         restored = MutmutConfig(**original.model_dump())
+        assert restored.mutation_profile is profile
+
+    @pytest.mark.parametrize("value", [True, False, 1.0, 2.0])
+    def test_rejects_booleans_and_floats(self, value: object) -> None:
+        # M-083 (BC-125): pydantic's lax IntEnum coercion silently mapped
+        # true -> ADVANCED, false -> BASIC, 2.0 -> ALL — reachable from a
+        # TOML boolean/float. Only str/int (and Profile itself) are
+        # legitimate inputs.
+        with pytest.raises(ValidationError):
+            MutmutConfig.model_validate({"mutation_profile": value})
+
+    def test_pyproject_toml_boolean_is_invalid_config_value(self, tmp_path: Path) -> None:
+        # Before the fix: 'mutation_profile = false' loaded as BASIC
+        # without any error.
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.mutmut]\nmutation_profile = false\n", encoding="utf-8"
+        )
+
+        with pytest.raises(InvalidConfigValueError):
+            load_config(tmp_path)
+
+    @pytest.mark.parametrize("value", [0, 1, 2])
+    def test_int_values_stay_valid(self, value: int) -> None:
+        # The cli.py/db.py JSON basis persists the profile as int — the
+        # guard must keep accepting it (deliberately no strict field).
+        restored = MutmutConfig.model_validate({"mutation_profile": value})
+        assert restored.mutation_profile == value
+
+    def test_json_basis_roundtrip_keeps_the_profile(self) -> None:
+        # db.py reloads persisted basis JSON via json.loads +
+        # model_validate — must keep working for every profile.
+        cfg = MutmutConfig(mutation_profile=Profile.ALL)
+        restored = MutmutConfig.model_validate(json.loads(cfg.model_dump_json()))
+        assert restored.mutation_profile is Profile.ALL
+
+    def test_toml_int_is_deliberately_still_valid(self, tmp_path: Path) -> None:
+        # Gegenprobe from the design review: TOML int 2 means ALL and is
+        # unaffected — the finding covers bool/float only.
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.mutmut]\nmutation_profile = 2\n", encoding="utf-8"
+        )
+
+        assert load_config(tmp_path).mutation_profile is Profile.ALL
+
+    @given(st.one_of(st.booleans(), st.floats()))
+    def test_no_boolean_or_float_ever_validates(self, value: bool | float) -> None:
+        with pytest.raises(ValidationError):
+            MutmutConfig.model_validate({"mutation_profile": value})
+
+    @given(profile=st.sampled_from(list(Profile)))
+    def test_int_form_of_every_profile_roundtrips(self, profile: Profile) -> None:
+        restored = MutmutConfig.model_validate({"mutation_profile": int(profile)})
         assert restored.mutation_profile is profile
 
 

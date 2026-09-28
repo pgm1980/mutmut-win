@@ -306,8 +306,15 @@ class MutmutConfig(BaseModel):
         A string is parsed case-insensitively via :meth:`Profile.from_name`
         (which raises ValueError on an unknown name, surfaced by pydantic as a
         ValidationError); a Profile passes through unchanged, as does the int
-        form pydantic emits on a model_dump round-trip.
+        form pydantic emits on a model_dump round-trip (M-083 / BC-125: the
+        int form stays deliberately valid for the cli.py/db.py JSON basis —
+        but booleans and floats are rejected here, because pydantic's lax
+        IntEnum coercion would silently map ``true`` to ADVANCED, ``false``
+        to BASIC and ``2.0`` to ALL when a TOML boolean/float is configured).
         """
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            msg = f"mutation_profile must be one of basic/advanced/all, got {type(v).__name__}"
+            raise ValueError(msg)
         if isinstance(v, str):
             return Profile.from_name(v)
         return v
