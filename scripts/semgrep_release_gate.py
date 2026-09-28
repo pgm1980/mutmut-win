@@ -158,6 +158,9 @@ _WRAPPER_CODEGEN_FILE_SHA: Final = (
 _ATOMIC_FAULT_UTIL_FILE_SHA: Final = (
     "114df1ce5340df56df8aef41c31647c115c7df0285fb9cb3f1b362230699b6c9"
 )
+_MUTANT_SAFETY_NET_FILE_SHA: Final = (
+    "645eb90457907bf6440be2773efde803bd8ce3059b40a97b339083291dfd083f"
+)
 
 
 DEFAULT_FINDING_ALLOWLIST: Final = (
@@ -205,6 +208,30 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         50,
         "7093d00f9d3c754e533b6d6d0cb832a98431f42fafb1ceba13b893ac27fe7156",
         _ATOMIC_FAULT_UTIL_FILE_SHA,
+    ),
+    # M-003 / issue #145: the MutationSurfaceDegradedWarning pickle test
+    # round-trips a locally constructed warning object (trusted data) to
+    # verify spawn-boundary compatibility.  Both signatures cover the
+    # pickle.loads call and the nested pickle.dumps call on line 208.
+    FindingSignature(
+        "tests/unit/test_mutant_safety_net.py",
+        _PICKLE_RULE,
+        208,
+        17,
+        208,
+        52,
+        "8ec3a82d95f1da987303ccc80ddb99038d3706e82cd63ebff99a835d14ef0f8a",
+        _MUTANT_SAFETY_NET_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/unit/test_mutant_safety_net.py",
+        _PICKLE_RULE,
+        208,
+        30,
+        208,
+        51,
+        "8ec3a82d95f1da987303ccc80ddb99038d3706e82cd63ebff99a835d14ef0f8a",
+        _MUTANT_SAFETY_NET_FILE_SHA,
     ),
     FindingSignature(
         "tests/unit/test_class_body_injection.py",
