@@ -103,7 +103,14 @@ class GenerationNoProgressTimeoutError(GenerationSupervisorError):
 
 
 class GenerationSupervisorCrashedError(GenerationSupervisorError):
-    """The dedicated supervisor exited without completing its protocol."""
+    """The dedicated supervisor died outside its happy path.
+
+    Either the supervisor exited before completing its protocol (unexpected
+    exit or closed progress pipe), or it failed its bounded post-DONE
+    teardown — still alive after reporting completion or exited with a
+    nonzero code afterwards.  Completed results are discarded fail-closed in
+    both cases.
+    """
 
 
 class GenerationSupervisorRemoteError(GenerationSupervisorError):
@@ -501,7 +508,14 @@ def _decode_result(
 
 
 def _join_completed_supervisor(process: BaseProcess) -> None:
-    """Bound a healthy post-DONE teardown independently from abort cleanup."""
+    """Bound a healthy post-DONE teardown independently from abort cleanup.
+
+    Raises:
+        GenerationSupervisorCrashedError: The supervisor was still alive
+            after reporting completion, or exited with a nonzero code
+            afterwards.  Results of an otherwise complete generation are
+            discarded fail-closed in both cases.
+    """
     process.join(timeout=_SUCCESS_JOIN_TIMEOUT_SECONDS)
     if process.is_alive():
         raise GenerationSupervisorCrashedError(
@@ -576,7 +590,10 @@ def run_generation_supervised[ArgT, ResultT](
 
     Raises:
         GenerationNoProgressTimeoutError: No file completed before the deadline.
-        GenerationSupervisorCrashedError: Supervisor exited without a final message.
+        GenerationSupervisorCrashedError: Supervisor exited without a final
+            message, or failed its bounded post-DONE teardown — still alive
+            after reporting completion or exited with a nonzero code
+            afterwards; completed results are discarded fail-closed.
         GenerationSupervisorRemoteError: Executor/bootstrap/worker failure.
         GenerationContainmentError: Job Object or process group setup failed.
         GenerationProtocolError: The child violated the wire protocol.
