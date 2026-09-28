@@ -1,8 +1,8 @@
 ---
-current_sprint: "44"
-sprint_goal: "v2.21.5: in progress"
-branch: "fix/v2.21.5-remediation-r1"
-started_at: "2026-09-24"
+current_sprint: "45"
+sprint_goal: "v3.0.0: in progress"
+branch: "fix/v2.21.5-remediation-r2"
+started_at: "2026-09-28"
 phase: "in_progress"
 candidate_commit: ""
 candidate_tree: ""
@@ -12,7 +12,7 @@ release_tag: ""
 housekeeping_done: false
 memory_updated: false
 github_issues_closed: false
-sprint_backlog_written: true
+sprint_backlog_written: false
 semgrep_passed: false
 tests_passed: false
 documentation_updated: false
