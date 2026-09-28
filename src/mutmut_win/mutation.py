@@ -453,6 +453,20 @@ class MutationVisitor(cst.CSTVisitor):
         #    to mutate their arguments and cause exceptions
         # 3) @property decorators break the trampoline signature assignment
         #    (which expects it to be a function)
+        # 4) decorated CLASSES are locked for their own technical reason, not
+        #    merely inherited from the function rules (external QA BC-132,
+        #    refuted at the code): combine_mutations_to_source rewrites the
+        #    class body so that each mutated method's public trampoline
+        #    wrapper, its private ``…__mutmut_orig`` copy AND all mutant
+        #    copies live INSIDE the class body, while their lookup names
+        #    (``…__mutmut_orig_ref`` and the ``…__mutmut_mutants`` dict) are
+        #    only bound at module level AFTER the class statement.  A class
+        #    decorator that touches members during class creation — calling,
+        #    registering or introspecting them, as @dataclass-style
+        #    registries do — would meet half-built trampolines (NameError on
+        #    the not-yet-bound module names) and see the private copies as
+        #    unexpected class members.  Keep decorated classes unmutated
+        #    wholesale.
         # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
         # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
         # a free function (no instance/class arg). Other decorators stay skipped.
