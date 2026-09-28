@@ -1249,8 +1249,9 @@ class MutationOrchestrator:
         # Every worker count, including one, runs behind a dedicated
         # non-daemonic supervisor. Its Job Object/process group contains the
         # complete PPE tree before project-dependent payload is transferred;
-        # the no-progress deadline covers bootstrap, submit serialization and
-        # execution (MW220-020).
+        # START is serialized in this process before the spawn (outside the
+        # no-progress budget), so the deadline covers only supervisor
+        # bootstrap, submit serialization and execution (MW220-020).
         from mutmut_win.process import GenerationSupervisorError, run_generation_supervised
 
         try:

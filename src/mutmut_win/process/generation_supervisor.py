@@ -35,6 +35,7 @@ import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -553,7 +554,10 @@ def run_generation_supervised[ArgT, ResultT](
     The no-progress clock starts before the supervisor is spawned and resets
     only after the parent receives a completed file.  It therefore includes
     supervisor bootstrap, containment handshake, executor construction, worker
-    startup, and all ``submit`` calls.
+    startup, and all ``submit`` calls.  Caller-side START serialization
+    happens before the supervisor is spawned and is not part of the
+    no-progress budget; reconstructing incoming RESULT messages stays
+    synchronous in the parent, so result payloads must be cheap to unpickle.
 
     Args:
         file_args: Picklable per-file worker arguments.
@@ -576,6 +580,10 @@ def run_generation_supervised[ArgT, ResultT](
         GenerationSupervisorRemoteError: Executor/bootstrap/worker failure.
         GenerationContainmentError: Job Object or process group setup failed.
         GenerationProtocolError: The child violated the wire protocol.
+        pickle.PicklingError: ``file_args`` or ``worker`` failed START
+            serialization before the supervisor was spawned (exceptions from
+            custom ``__reduce__`` implementations propagate unchanged); no
+            pipe, Job Object, or process exists at that point.
         BaseException: Callback exceptions and ``KeyboardInterrupt`` are
             preserved after exception-safe process-tree cleanup.
     """
@@ -591,6 +599,12 @@ def run_generation_supervised[ArgT, ResultT](
 
     arguments = tuple(file_args)
     effective_children = _effective_generation_workers(max_children, len(arguments))
+    # Pickle START before the pipe and Job Object exist: a hanging or failing
+    # __reduce__ then surfaces before any resource is opened instead of after
+    # the supervisor has already been spawned.  send_bytes later writes the
+    # same wire bytes Connection.send would have produced; materializing the
+    # pickler's buffer view up front keeps no exported BytesIO buffer alive.
+    start_payload = bytes(ForkingPickler.dumps((_START, arguments, worker)))
     context = multiprocessing.get_context("spawn")
     parent_connection, child_connection = context.Pipe(duplex=True)
     containment = _Containment()
@@ -675,7 +689,7 @@ def run_generation_supervised[ArgT, ResultT](
         supervisor_pid = _decode_ready(ready, process, containment)
         # Windows membership was part of CreateProcess itself.  There is no
         # post-start assignment window and no startup code outside the Job.
-        parent_connection.send((_START, arguments, worker))
+        parent_connection.send_bytes(start_payload)
 
         while True:
             message = _wait_for_wire_event(
