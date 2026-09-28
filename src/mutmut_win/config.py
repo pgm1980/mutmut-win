@@ -14,11 +14,15 @@ import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
 from configparser import Error as ConfigParserError
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from mutmut_win.constants import Profile
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _default_max_children() -> int:
@@ -66,7 +70,11 @@ def guess_paths_to_mutate() -> list[str]:
     Mirrors the heuristic from mutmut 3.5.0: checks for ``lib/``, ``src/``,
     a directory named after the current working directory (with common
     transformations applied), and finally a top-level ``.py`` file with the
-    same stem.
+    same stem. Empty candidates are never guessed (M-082 / BC-124): in a
+    drive or UNC-share root ``Path.cwd().name`` is ``''``, and a cwd named
+    like ``'---'`` produces the empty candidate via ``replace('-', '')`` —
+    ``Path('').is_dir()`` is True on Windows, so the empty string silently
+    became the mutation root.
 
     Returns:
         A list containing the single best-guess path.
@@ -85,7 +93,7 @@ def guess_paths_to_mutate() -> list[str]:
         this_dir.replace(" ", ""),
     ]
     for candidate in candidates:
-        if Path(candidate).is_dir():
+        if candidate and Path(candidate).is_dir():
             return [candidate]
 
     py_file = this_dir + ".py"
@@ -106,6 +114,19 @@ def _guess_paths_safe() -> list[str]:
         return guess_paths_to_mutate()
     except FileNotFoundError:
         return ["src/"]
+
+
+#: Number of stack frames the stats hit-recorder burns before any user or
+#: test frame is reachable: ``record_trampoline_hit`` itself, the trampoline
+#: template's ``_mutmut_trampoline``, and the generated wrapper that called
+#: it (M-072 / BC-083). None of the three can ever match a pytest/unittest
+#: filename, so ``max_stack_depth`` values 1..3 unconditionally discard
+#: EVERY stats hit — the config validator rejects them. With a direct call
+#: from a test file the first pytest frame sits at index 4, which is why
+#: ``PytestRunner.run_stats`` adds a hint when a loaded mapping is empty.
+#: (This constant lives here, NOT in hit_recording: that kernel module must
+#: stay free of mutmut_win imports at module level.)
+_INSTRUMENTATION_FRAME_COUNT = 3
 
 
 class MutmutConfig(BaseModel):
@@ -135,7 +156,9 @@ class MutmutConfig(BaseModel):
         description=(
             "Regex patterns (mutmut-3.6.0 backport): a function or class whose "
             "name matches any pattern (re.search) is excluded from mutation "
-            "together with its whole body."
+            "together with its whole body. In single-line setup.cfg values, "
+            "commas inside valid quantifiers ({m,n}, {m,}, {,n}) are part of "
+            "the pattern, not list separators."
         ),
     )
     also_copy: list[str] = Field(
@@ -190,10 +213,16 @@ class MutmutConfig(BaseModel):
     max_stack_depth: int = Field(
         default=-1,
         # ge=-1: values below the sentinel walked the frame stack with a
-        # truthy-negative counter (issue #110 / A4-QX-018). 0 is rejected
-        # separately below — it would discard EVERY stats hit.
+        # truthy-negative counter (issue #110 / A4-QX-018). 0..3 are
+        # rejected separately below — those budgets are consumed by the
+        # three instrumentation frames and discard every stats hit (M-072).
         ge=-1,
-        description="Maximum stack depth for mutations (-1 = unlimited)",
+        description=(
+            "Maximum stack depth for the stats-hit frame walk "
+            "(-1 = unlimited; the budget starts at the recorder — three "
+            "frames are mutmut instrumentation, so 0-3 are rejected and "
+            "sensible depths start at 5)"
+        ),
     )
     debug: bool = Field(
         default=False,
@@ -300,26 +329,41 @@ class MutmutConfig(BaseModel):
         A string is parsed case-insensitively via :meth:`Profile.from_name`
         (which raises ValueError on an unknown name, surfaced by pydantic as a
         ValidationError); a Profile passes through unchanged, as does the int
-        form pydantic emits on a model_dump round-trip.
+        form pydantic emits on a model_dump round-trip (M-083 / BC-125: the
+        int form stays deliberately valid for the cli.py/db.py JSON basis —
+        but booleans and floats are rejected here, because pydantic's lax
+        IntEnum coercion would silently map ``true`` to ADVANCED, ``false``
+        to BASIC and ``2.0`` to ALL when a TOML boolean/float is configured).
         """
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            msg = f"mutation_profile must be one of basic/advanced/all, got {type(v).__name__}"
+            raise ValueError(msg)
         if isinstance(v, str):
             return Profile.from_name(v)
         return v
 
     @field_validator("max_stack_depth", mode="after")
     @classmethod
-    def _reject_zero_stack_depth(cls, v: int) -> int:
-        """Reject ``max_stack_depth=0`` loudly (issue #110 / A4-QX-018).
+    def _reject_dead_stack_depths(cls, v: int) -> int:
+        """Reject ``max_stack_depth`` values that discard every stats hit.
 
-        0 exhausts the frame-walk budget before the first frame, so EVERY
-        stats hit is silently discarded — every mutant then runs the full
-        suite. Nobody means that; -1 is the documented "unlimited" sentinel.
+        Issue #110 / A4-QX-018 rejected only 0; M-072 / BC-083 extends the
+        rejection to 1..3: the frame walk starts at the recorder itself,
+        and the recorder, ``_mutmut_trampoline`` and the generated wrapper
+        occupy the first three frames without ever matching a pytest or
+        unittest filename — so depths 1..3 (like 0) unconditionally
+        discard EVERY stats hit and every mutant silently runs the full
+        suite. With a direct call from a test file the first pytest frame
+        sits at index 4, so 4 is dead there too and sensible depths start
+        at 5; -1 is the documented "unlimited" sentinel.
         """
-        if v == 0:
+        if 0 <= v <= _INSTRUMENTATION_FRAME_COUNT:
             msg = (
-                "max_stack_depth=0 would discard every stats hit "
-                "(every mutant would run the full suite) — use -1 for "
-                "unlimited or a positive depth."
+                f"max_stack_depth={v} would discard every stats hit: the "
+                f"budget is consumed by {_INSTRUMENTATION_FRAME_COUNT} mutmut "
+                "instrumentation frames (recorder, trampoline, generated "
+                "wrapper) before any pytest/unittest frame — use -1 for "
+                "unlimited or a depth of at least 5."
             )
             raise ValueError(msg)
         return v
@@ -462,6 +506,49 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
 #: an ordinary section whose keys are NOT inherited into ``[mutmut]``.
 _NO_DEFAULT_SECTION_SENTINEL = "\n"
 
+#: A regex quantifier containing a comma — ``{m,n}``, ``{m,}`` and
+#: ``{,n}`` (all three are valid in Python's ``re``).  The comma inside
+#: such a span is part of the pattern, never a list separator (M-029).
+_QUANTIFIER_WITH_COMMA_RE = re.compile(r"\{\d*,\d*\}")
+
+
+def _split_setup_cfg_regex_list(value: str) -> list[str]:
+    """Split a single-line setup.cfg regex list, protecting quantifier commas.
+
+    M-029: the generic single-line comma split turned
+    ``do_not_mutate_patterns = ^f[0-9]{1,3}$`` into the fragments
+    ``'^f[0-9]{1'`` and ``'3}$'`` — both compile, so the regex validator
+    stayed green while neither fragment matched any function name and the
+    exclusion silently stopped working.
+
+    Only commas inside syntactically valid quantifiers (``{m,n}``,
+    ``{m,}``, ``{,n}``, found via :data:`_QUANTIFIER_WITH_COMMA_RE`) are
+    protected; every other comma splits exactly like the legacy
+    comprehension ``[x.strip() for x in value.split(",") if x.strip()]``
+    (design review: a bracket-depth state machine and an ambiguity
+    ``ValueError`` were rejected — they would newly reject accepted,
+    compilable lists such as ``'a{, b'``).  Commas in character classes or
+    groups keep splitting; the resulting fragments do not compile and
+    already fail loudly in ``_validate_regex_patterns``.
+
+    Args:
+        value: The raw single-line setup.cfg value.
+
+    Returns:
+        The separated, stripped, non-empty patterns.
+    """
+    protected = [(m.start(), m.end()) for m in _QUANTIFIER_WITH_COMMA_RE.finditer(value)]
+    if not protected:
+        return [x.strip() for x in value.split(",") if x.strip()]
+    parts: list[str] = []
+    start = 0
+    for i, ch in enumerate(value):
+        if ch == "," and not any(begin <= i < end for begin, end in protected):
+            parts.append(value[start:i])
+            start = i + 1
+    parts.append(value[start:])
+    return [x.strip() for x in parts if x.strip()]
+
 
 def _read_setup_cfg_text(path: Path) -> str | None:
     """Read setup.cfg once as UTF-8 text (M-027 / M-079, Q-37).
@@ -566,7 +653,11 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         msg = f"Failed to read setup.cfg: {exc}"
         raise ConfigError(msg) from exc
 
-    def _get(key: str, default: object) -> object:
+    def _get(
+        key: str,
+        default: object,
+        single_line_splitter: Callable[[str], list[str]] | None = None,
+    ) -> object:
         try:
             result = parser.get("mutmut", key)
         except (
@@ -578,6 +669,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
             # Multi-line values: split on newlines; single-line: split on commas
             if "\n" in result:
                 return [x for x in result.split("\n") if x]
+            if single_line_splitter is not None:
+                return single_line_splitter(result)
             return [x.strip() for x in result.split(",") if x.strip()]
         return result
 
@@ -619,7 +712,9 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "paths_to_mutate": _get("paths_to_mutate", []),
         "tests_dir": _get("tests_dir", ["tests/"]),
         "do_not_mutate": _get("do_not_mutate", []),
-        "do_not_mutate_patterns": _get("do_not_mutate_patterns", []),
+        "do_not_mutate_patterns": _get(
+            "do_not_mutate_patterns", [], single_line_splitter=_split_setup_cfg_regex_list
+        ),
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
