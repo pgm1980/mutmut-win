@@ -28,6 +28,7 @@ def test_windows_ppe_cap_mirrors_cpython_limit() -> None:
     ("max_children", "file_count", "expected"),
     [
         (1, 1, 1),
+        (5, 100, 5),
         (8, 3, 3),
         (61, 61, 61),
         (61, 100, 61),
