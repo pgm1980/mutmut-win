@@ -445,6 +445,157 @@ class TestSetupCfgValidationBoundary:
                 load_config(project)
 
 
+class TestSetupCfgRegexListSplit:
+    """M-029: single-line setup.cfg regex lists must not split at quantifier commas.
+
+    ``do_not_mutate_patterns = ^f[0-9]{1,3}$`` used to become the two
+    fragments ``'^f[0-9]{1'`` and ``'3}$'`` — both compile, so
+    ``_validate_regex_patterns`` stayed green while neither fragment
+    matched any function name: the exclusion silently stopped working.
+    Only commas inside VALID quantifiers (``{m,n}``, ``{m,}``, ``{,n}``)
+    are protected; every other comma keeps splitting exactly as before
+    (narrow fix per the design review — a bracket-depth state machine and
+    an ambiguity ValueError were explicitly rejected: they would newly
+    reject accepted, compilable lists).
+    """
+
+    def _load_patterns(self, tmp_path: Path, value: str) -> list[str]:
+        (tmp_path / "setup.cfg").write_text(
+            f"[mutmut]\npaths_to_mutate = src/\ndo_not_mutate_patterns = {value}\n",
+            encoding="utf-8",
+        )
+        return load_config(tmp_path).do_not_mutate_patterns
+
+    def test_quantifier_comma_does_not_split_the_pattern(self, tmp_path: Path) -> None:
+        # Before the fix: ['^f[0-9]{1', '3}$', '_internal'] — two silent
+        # no-op fragments instead of the exclusion pattern.
+        assert self._load_patterns(tmp_path, "^f[0-9]{1,3}$, _internal") == [
+            "^f[0-9]{1,3}$",
+            "_internal",
+        ]
+
+    def test_simple_comma_list_still_splits(self, tmp_path: Path) -> None:
+        # Contract (test_hardening_132 TestSetupCfgParity): plain comma
+        # lists keep working byte-for-byte.
+        assert self._load_patterns(tmp_path, "test_.*, _internal") == ["test_.*", "_internal"]
+
+    def test_multiline_value_with_comma_in_a_line_stays_unsplit(self, tmp_path: Path) -> None:
+        # The multi-line branch (split on newlines) is untouched by the fix.
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\n"
+            "paths_to_mutate = src/\n"
+            "do_not_mutate_patterns = ^f[0-9]{1,3}$\n"
+            "  _internal\n",
+            encoding="utf-8",
+        )
+        assert load_config(tmp_path).do_not_mutate_patterns == ["^f[0-9]{1,3}$", "_internal"]
+
+    def test_open_half_quantifier_keeps_the_legacy_split(self) -> None:
+        from mutmut_win.config import _split_setup_cfg_regex_list
+
+        # '{, b' is NOT a valid quantifier (space, no closing brace) — the
+        # legacy comma split applies, and no new rejection is introduced.
+        assert _split_setup_cfg_regex_list("a{, b") == ["a{", "b"]
+
+    def test_spaced_quantifier_is_literal_and_still_splits(self) -> None:
+        from mutmut_win.config import _split_setup_cfg_regex_list
+
+        # 'a{1, 3}' is a LITERAL in Python re (the space breaks the
+        # quantifier), so its comma stays a list separator — unchanged.
+        assert _split_setup_cfg_regex_list("^f[0-9]{1, 3}$") == ["^f[0-9]{1", "3}$"]
+
+    def test_all_three_quantifier_forms_are_protected(self) -> None:
+        from mutmut_win.config import _split_setup_cfg_regex_list
+
+        assert _split_setup_cfg_regex_list("^f[0-9]{1,3}$") == ["^f[0-9]{1,3}$"]
+        assert _split_setup_cfg_regex_list("x{2,}") == ["x{2,}"]
+        assert _split_setup_cfg_regex_list("x{,3}") == ["x{,3}"]
+        assert _split_setup_cfg_regex_list("x{,3},y") == ["x{,3}", "y"]
+        assert _split_setup_cfg_regex_list("a{2,}, b{1,2}") == ["a{2,}", "b{1,2}"]
+
+    @given(
+        st.lists(
+            st.tuples(
+                st.from_regex(r"[a-z_]{1,4}", fullmatch=True),
+                st.sampled_from(["", "{2,5}", "{3,}", "{,4}", "{0,9}"]),
+            ),
+            min_size=1,
+            max_size=4,
+        )
+    )
+    def test_patterns_with_quantifier_commas_roundtrip(self, parts: list[tuple[str, str]]) -> None:
+        # Property 1 (narrow variant): patterns whose commas all sit in
+        # valid quantifiers survive a ', '-join/split round-trip.
+        from mutmut_win.config import _split_setup_cfg_regex_list
+
+        patterns = [literal + quant for literal, quant in parts]
+        assert _split_setup_cfg_regex_list(", ".join(patterns)) == patterns
+
+    @given(st.text(alphabet="abc[](),._*^$0123456789- ", max_size=40))
+    def test_brace_free_strings_behave_exactly_like_the_legacy_split(self, value: str) -> None:
+        # Property 2 (compatibility): without '{' there is no quantifier,
+        # so the result must equal the old comprehension byte-for-byte.
+        from mutmut_win.config import _split_setup_cfg_regex_list
+
+        assert _split_setup_cfg_regex_list(value) == [
+            x.strip() for x in value.split(",") if x.strip()
+        ]
+
+
+class TestSetupCfgPatternsReachGeneration:
+    """M-029 Folge-Nachweis on generation level: with the pattern loaded
+    from setup.cfg, ``f1``/``f123`` produce no mutants while ``f1234``
+    still does. Before the fix the fragments matched nothing, so f1/f123
+    were mutated despite the exclusion.
+    """
+
+    def test_quantifier_pattern_excludes_only_matching_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.constants import Profile
+        from mutmut_win.orchestrator import _create_mutants_worker
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\ndo_not_mutate_patterns = ^f[0-9]{1,3}$\n",
+            encoding="utf-8",
+        )
+        patterns = tuple(load_config(tmp_path).do_not_mutate_patterns)
+        assert patterns == ("^f[0-9]{1,3}$",)
+
+        src = tmp_path / "m.py"
+        src.write_text(
+            "def f1():\n"
+            "    return 1 + 2\n"
+            "\n"
+            "\n"
+            "def f123():\n"
+            "    return 3 + 4\n"
+            "\n"
+            "\n"
+            "def f1234():\n"
+            "    return 5 + 6\n",
+            encoding="utf-8",
+        )
+        args: tuple[str, Path, Path, None, bool, Profile, tuple[str, ...]] = (
+            "m.py",
+            src,
+            tmp_path / "mutants" / "m.py",
+            None,
+            False,
+            Profile.ADVANCED,
+            patterns,
+        )
+        _rel, names, err, _warns, _fast, _degraded = _create_mutants_worker(args)
+        assert err is None
+        # Mutant names look like 'x_f1__mutmut_1'; the '__mutmut_' suffix
+        # makes the startswith probe unambiguous ('x_f1__' does not match
+        # 'x_f123__...').
+        assert not any(name.startswith("x_f1__") for name in names)
+        assert not any(name.startswith("x_f123__") for name in names)
+        assert any(name.startswith("x_f1234__") for name in names)
+
+
 class TestConfigErrorChannelCli:
     """Q-40: exit 2 on the config error channel for every subcommand."""
 

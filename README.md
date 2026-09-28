@@ -226,6 +226,12 @@ a `pyproject.toml` or `setup.cfg` that exists but cannot be read (for
 example a locked file) or decoded is a configuration error (exit 2),
 never silent defaults.
 
+Single-line `setup.cfg` list values are comma-separated. For
+`do_not_mutate_patterns`, commas inside valid regex quantifiers
+(`{m,n}`, `{m,}`, `{,n}`) are part of the pattern, not separators —
+use the multi-line (indented continuation) form for patterns containing
+any other commas.
+
 ```toml
 [tool.mutmut]
 # What to mutate and where the tests are

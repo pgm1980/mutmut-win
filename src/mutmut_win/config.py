@@ -14,11 +14,15 @@ import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
 from configparser import Error as ConfigParserError
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from mutmut_win.constants import Profile
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _default_max_children() -> int:
@@ -135,7 +139,9 @@ class MutmutConfig(BaseModel):
         description=(
             "Regex patterns (mutmut-3.6.0 backport): a function or class whose "
             "name matches any pattern (re.search) is excluded from mutation "
-            "together with its whole body."
+            "together with its whole body. In single-line setup.cfg values, "
+            "commas inside valid quantifiers ({m,n}, {m,}, {,n}) are part of "
+            "the pattern, not list separators."
         ),
     )
     also_copy: list[str] = Field(
@@ -462,6 +468,49 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
 #: an ordinary section whose keys are NOT inherited into ``[mutmut]``.
 _NO_DEFAULT_SECTION_SENTINEL = "\n"
 
+#: A regex quantifier containing a comma — ``{m,n}``, ``{m,}`` and
+#: ``{,n}`` (all three are valid in Python's ``re``).  The comma inside
+#: such a span is part of the pattern, never a list separator (M-029).
+_QUANTIFIER_WITH_COMMA_RE = re.compile(r"\{\d*,\d*\}")
+
+
+def _split_setup_cfg_regex_list(value: str) -> list[str]:
+    """Split a single-line setup.cfg regex list, protecting quantifier commas.
+
+    M-029: the generic single-line comma split turned
+    ``do_not_mutate_patterns = ^f[0-9]{1,3}$`` into the fragments
+    ``'^f[0-9]{1'`` and ``'3}$'`` — both compile, so the regex validator
+    stayed green while neither fragment matched any function name and the
+    exclusion silently stopped working.
+
+    Only commas inside syntactically valid quantifiers (``{m,n}``,
+    ``{m,}``, ``{,n}``, found via :data:`_QUANTIFIER_WITH_COMMA_RE`) are
+    protected; every other comma splits exactly like the legacy
+    comprehension ``[x.strip() for x in value.split(",") if x.strip()]``
+    (design review: a bracket-depth state machine and an ambiguity
+    ``ValueError`` were rejected — they would newly reject accepted,
+    compilable lists such as ``'a{, b'``).  Commas in character classes or
+    groups keep splitting; the resulting fragments do not compile and
+    already fail loudly in ``_validate_regex_patterns``.
+
+    Args:
+        value: The raw single-line setup.cfg value.
+
+    Returns:
+        The separated, stripped, non-empty patterns.
+    """
+    protected = [(m.start(), m.end()) for m in _QUANTIFIER_WITH_COMMA_RE.finditer(value)]
+    if not protected:
+        return [x.strip() for x in value.split(",") if x.strip()]
+    parts: list[str] = []
+    start = 0
+    for i, ch in enumerate(value):
+        if ch == "," and not any(begin <= i < end for begin, end in protected):
+            parts.append(value[start:i])
+            start = i + 1
+    parts.append(value[start:])
+    return [x.strip() for x in parts if x.strip()]
+
 
 def _read_setup_cfg_text(path: Path) -> str | None:
     """Read setup.cfg once as UTF-8 text (M-027 / M-079, Q-37).
@@ -566,7 +615,11 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         msg = f"Failed to read setup.cfg: {exc}"
         raise ConfigError(msg) from exc
 
-    def _get(key: str, default: object) -> object:
+    def _get(
+        key: str,
+        default: object,
+        single_line_splitter: Callable[[str], list[str]] | None = None,
+    ) -> object:
         try:
             result = parser.get("mutmut", key)
         except (
@@ -578,6 +631,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
             # Multi-line values: split on newlines; single-line: split on commas
             if "\n" in result:
                 return [x for x in result.split("\n") if x]
+            if single_line_splitter is not None:
+                return single_line_splitter(result)
             return [x.strip() for x in result.split(",") if x.strip()]
         return result
 
@@ -619,7 +674,9 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "paths_to_mutate": _get("paths_to_mutate", []),
         "tests_dir": _get("tests_dir", ["tests/"]),
         "do_not_mutate": _get("do_not_mutate", []),
-        "do_not_mutate_patterns": _get("do_not_mutate_patterns", []),
+        "do_not_mutate_patterns": _get(
+            "do_not_mutate_patterns", [], single_line_splitter=_split_setup_cfg_regex_list
+        ),
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
