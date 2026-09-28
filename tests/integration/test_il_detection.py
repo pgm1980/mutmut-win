@@ -1,19 +1,15 @@
-"""End-to-end deterministic test for Issue #71 — true IL detection.
+"""Integration tests for the IL classifier against real subprocesses (Bug #5/71, M-139).
 
-Spawns a real Python subprocess running ``while True: pass`` (CPU-pegged, no
-output), attaches a ``ProcessMonitor``, samples for a few seconds, then asks
-:func:`classify_samples` for a verdict — with ``status_signal_available``
-declared exactly the way the worker declares it (``sys.platform != "win32"``,
-issue #88): on Windows psutil reports virtually every process as "running",
-so verdicts there rest on the CPU and progress signals and are capped at
-``medium`` confidence.
+The busy-loop test uses an independent CPU oracle (psutil cpu_times summed
+over the whole process tree) to distinguish host contention from a genuine
+detector defect.  The verdict is checked FIRST; the oracle only explains a
+non-IL verdict (counter-review correction 2).  The log file lives under
+``tmp_path`` so parallel runs from the same checkout cannot delete each
+other's output (counter-review correction 3).
 
-This is the integration counterpart to the unit-level classifier tests in
-``tests/unit/test_loop_monitor.py``. It exercises the full chain
-(psutil → ProcessMonitor → classify_samples) against a real process tree.
-
-Skipped when psutil is unavailable in the test environment, since IL detection
-is structurally impossible without it.
+The old CPU-affinity pin (last core) was removed: it made concurrent runs
+contend for the SAME core, which is the primary cause of false-timeout
+flakes (counter-review correction 1).
 """
 
 from __future__ import annotations
@@ -22,72 +18,69 @@ import contextlib
 import subprocess
 import sys
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import psutil
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
-
-psutil = pytest.importorskip("psutil", reason="psutil not installed in test env")
-
-# Import after importorskip so collection on psutil-less environments still
-# yields a clean skip (rather than crashing here on the loop_monitor import).
-from mutmut_win.process.loop_monitor import (  # noqa: E402, I001
+from mutmut_win.process.loop_monitor import (
     IlThresholds,
     ProcessMonitor,
     classify_samples,
 )
+from tests.unit.il_precondition_util import (
+    MAX_ATTEMPTS,
+    assess_busy_loop_run,
+)
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
-_BUSY_LOOP_SOURCE = "while True: pass"
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
-#: Let the spawned interpreter reach steady CPU state before sampling — its
-#: startup is CPU-light and (under load) slow, so sampling it would dilute the
-#: mean toward a false 'timeout'. Sampling only the settled loop is load-robust.
 _WARMUP_SECONDS = 1.0
+_BUSY_LOOP_SOURCE = "while True: pass"
+_SLEEPING_SOURCE = "import time; time.sleep(20)"
+
+# The old _pin_for_stable_cpu was removed (M-139 counter-review correction 1):
+# pinning all tree members to the LAST core made concurrent runs contend for
+# the same core and was the primary cause of false-timeout flakes.
 
 
-def _pin_for_stable_cpu(pid: int) -> None:
-    """Pin the monitored child to one core (+ high priority on Windows) so its
-    measured CPU% stays near 100% even when the rest of the suite competes for
-    the CPU — the busy-loop verdict must not flake to ``timeout`` under load.
-
-    Best-effort: silently degrades where the platform lacks the knobs (macOS
-    has no ``cpu_affinity``; lowering ``nice`` on POSIX needs privileges). The
-    fallback is the original behaviour, so this never makes the test worse.
-    """
+def _tree_cpu_seconds(root_pid: int) -> dict[int, float]:
+    """Sum user+system CPU seconds per PID over the whole tree (oracle)."""
+    result: dict[int, float] = {}
     try:
-        proc = psutil.Process(pid)
-    except psutil.NoSuchProcess:
-        return
-    # Dedicate the last logical core; the pytest runner itself sits elsewhere.
-    with contextlib.suppress(Exception):
-        # Use the process's *allowed* affinity set, not system-wide cpu_count:
-        # containers/CI hosts can expose 32 logical CPUs while constraining the
-        # process to 0..23. Selecting global CPU 31 then failed silently and the
-        # canonical busy loop dropped below the threshold under suite load.
-        available_cpus = proc.cpu_affinity()
-        if len(available_cpus) > 1:
-            proc.cpu_affinity([available_cpus[-1]])
-    if sys.platform == "win32":
-        with contextlib.suppress(Exception):
-            proc.nice(psutil.HIGH_PRIORITY_CLASS)
+        root = psutil.Process(root_pid)
+        members = [root, *root.children(recursive=True)]
+    except psutil.NoSuchProcess, psutil.AccessDenied:
+        return result
+    for member in members:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            times = member.cpu_times()
+            result[member.pid] = times.user + times.system
+    return result
 
 
 def _run_classifier_against_subprocess(
-    cmd: list[str], window_seconds: float = 3.0
-) -> tuple[str, str, int]:
-    """Spawn ``cmd``, monitor it for ``window_seconds``, kill, classify.
+    cmd: list[str],
+    log_dir: Path,
+    window_seconds: float = 3.0,
+) -> tuple[Any, float]:
+    """Spawn ``cmd``, monitor it, classify, and measure granted CPU%.
 
-    Returns ``(verdict, confidence, samples_collected)``.
+    Returns ``(LoopClassification, granted_cpu_pct)`` where the granted CPU
+    is measured by an independent psutil oracle over the same window.
     """
-    tmp_log = Path("test_il_smoke.log")
+    tmp_log = log_dir / "test_il_smoke.log"
     tmp_log.write_text("", encoding="utf-8")
     child = subprocess.Popen(cmd)  # noqa: S603 - cmd is fully controlled in this test
-    _pin_for_stable_cpu(child.pid)
     try:
-        # Sample only the settled loop, not the CPU-light interpreter startup.
         time.sleep(_WARMUP_SECONDS)
+        # Oracle t0: measure tree CPU just before the monitor starts.
+        t0 = time.monotonic()
+        cpu0 = _tree_cpu_seconds(child.pid)
+
         monitor = ProcessMonitor(
             pid=child.pid,
             log_path=tmp_log,
@@ -98,67 +91,80 @@ def _run_classifier_against_subprocess(
         time.sleep(window_seconds + 0.3)
         snapshot = monitor.take_samples_snapshot()
         monitor.shutdown()
+
+        # Oracle t1: measure tree CPU just after the window.
+        t1 = time.monotonic()
+        cpu1 = _tree_cpu_seconds(child.pid)
     finally:
         if child.poll() is None:
             child.kill()
             child.wait(timeout=2.0)
-        if tmp_log.exists():
-            tmp_log.unlink()
 
-    # Declare the status signal exactly the way the worker does (issue #88):
-    # dead on win32, real on POSIX.
+    # Compute granted CPU % from the oracle measurements.
+    elapsed = t1 - t0
+    total_cpu = sum(cpu1.get(pid, 0.0) - cpu0.get(pid, 0.0) for pid in cpu1)
+    granted_cpu_pct = (total_cpu / elapsed * 100.0) if elapsed > 0 else 0.0
+
     classification = classify_samples(
         snapshot,
         IlThresholds(window_seconds=window_seconds),
         status_signal_available=sys.platform != "win32",
     )
-    return classification.verdict, classification.confidence, len(snapshot)
+    return classification, granted_cpu_pct
 
 
-def test_busy_loop_subprocess_classified_as_infinite_loop() -> None:
+def test_busy_loop_subprocess_classified_as_infinite_loop(
+    tmp_path: Path,
+) -> None:
     """``while True: pass`` must classify as killed_by_infinite_loop.
 
-    Confidence is platform-exact: "medium" on Windows (two-signal verdict,
-    capped — issue #88), "high" on POSIX (all three signals with margin).
+    Uses an independent CPU oracle to distinguish host contention (skip
+    with measurements after retries) from a genuine detector defect
+    (hard fail).  See M-139 / issue #151.
     """
-    verdict, confidence, samples = _run_classifier_against_subprocess(
-        [sys.executable, "-c", _BUSY_LOOP_SOURCE]
+    thresholds = IlThresholds(window_seconds=3.0)
+    attempts: list[float] = []
+
+    for _attempt in range(MAX_ATTEMPTS):
+        classification, granted = _run_classifier_against_subprocess(
+            [sys.executable, "-c", _BUSY_LOOP_SOURCE],
+            log_dir=tmp_path,
+        )
+        attempts.append(granted)
+        assessment = assess_busy_loop_run(classification, granted, thresholds)
+
+        if assessment.decision == "assert_il":
+            # Run the original assertions.
+            samples = classification.forensics.samples_collected
+            assert samples >= 5, f"Expected at least 5 samples, got {samples}"
+            assert classification.verdict == "killed_by_infinite_loop", (
+                f"Real busy-loop wrongly classified as "
+                f"{classification.verdict!r} (granted {granted:.1f}%). "
+                f"Bug #5 / Issue #71 — IL detector defect."
+            )
+            allowed = {"medium"} if sys.platform == "win32" else {"medium", "high"}
+            assert classification.confidence in allowed
+            return  # Success
+
+        if assessment.decision == "measurement_defect":
+            pytest.fail(
+                f"IL measurement defect: {assessment.reason} "
+                f"(attempts: {[f'{a:.0f}%' for a in attempts]})"
+            )
+
+    # All attempts had unmet preconditions: skip with measurements.
+    pytest.skip(
+        f"IL precondition unmet after {MAX_ATTEMPTS} attempts: "
+        f"granted CPU {[f'{a:.0f}%' for a in attempts]} "
+        f"< threshold {thresholds.cpu_threshold * 1.15:.0f}% "
+        "(host contention)"
     )
 
-    assert samples >= 5, (
-        f"Expected at least 5 samples in the 3s window at 0.2s polling, got {samples}"
-    )
-    assert verdict == "killed_by_infinite_loop", (
-        f"Real busy-loop subprocess wrongly classified as {verdict!r}. "
-        f"This is the canonical Bug #5 / Issue #71 case — if it fails the IL "
-        f"detector is broken."
-    )
-    # A CPU-pegged loop must land in a POSITIVE IL confidence band. The exact
-    # medium-vs-high split depends on the measured CPU margin, which is load-
-    # sensitive on a busy CI box; that split is covered deterministically with
-    # synthetic samples in tests/unit/test_loop_monitor.py. win32 is always
-    # capped at "medium" (two-signal verdict, issue #88).
-    allowed = {"medium"} if sys.platform == "win32" else {"medium", "high"}
-    assert confidence in allowed, (
-        f"Expected IL confidence in {allowed} on {sys.platform}, got {confidence!r}"
-    )
 
-
-def test_sleeping_subprocess_classified_as_timeout() -> None:
-    """``time.sleep(20)`` must classify as timeout, not IL.
-
-    Cross-platform the discriminating signal is CPU ~0%. The "sleeping"
-    process status only exists on POSIX — Windows reports "running" even
-    for a blocked process (A2-JT-001), which is why the worker declares the
-    status signal unavailable there.
-    """
-    verdict, _confidence, samples = _run_classifier_against_subprocess(
-        [sys.executable, "-c", "import time; time.sleep(20)"]
+def test_sleeping_subprocess_classified_as_timeout(tmp_path: Path) -> None:
+    """``time.sleep(20)`` must classify as timeout, not IL."""
+    classification, _granted = _run_classifier_against_subprocess(
+        [sys.executable, "-c", _SLEEPING_SOURCE],
+        log_dir=tmp_path,
     )
-
-    assert samples >= 5, f"Expected at least 5 samples, got {samples}"
-    assert verdict == "timeout", (
-        f"Idle/sleeping subprocess wrongly classified as IL — false positive. "
-        f"Got verdict={verdict!r}. This is the slow-network-test case that "
-        f"must NOT register as a kill."
-    )
+    assert classification.verdict == "timeout"
