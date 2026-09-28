@@ -57,6 +57,10 @@ _PARENT_LIVENESS_POLL_SECONDS = 0.2
 # but interpreter/resource-tracker teardown can still be slow under host load.
 # Keep that healthy teardown distinct from the deliberately short abort bound.
 _SUCCESS_JOIN_TIMEOUT_SECONDS = 15.0
+# Mirror of CPython's ``concurrent.futures.process._MAX_WINDOWS_WORKERS``:
+# a Windows ProcessPoolExecutor rejects max_workers above this bound.  The
+# private symbol must not be imported; tests pin both values together.
+_WINDOWS_PPE_MAX_WORKERS = 61
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +521,24 @@ def _remote_error(message: tuple[object, ...]) -> GenerationSupervisorRemoteErro
     )
 
 
+def _effective_generation_workers(max_children: int, file_count: int) -> int:
+    """Return the PPE worker count the generation supervisor may use.
+
+    Windows bounds ``ProcessPoolExecutor`` at ``_WINDOWS_PPE_MAX_WORKERS``,
+    and more workers than files cannot help.  The result is capped to both
+    and never below one, so the supervisor always keeps a real PPE worker.
+
+    Args:
+        max_children: Configured worker limit (already validated >= 1).
+        file_count: Number of files to generate.
+
+    Returns:
+        Effective worker count between 1 and ``min(max_children, 61,
+        file_count)`` (1 for an empty file list).
+    """
+    return max(1, min(max_children, _WINDOWS_PPE_MAX_WORKERS, file_count))
+
+
 def run_generation_supervised[ArgT, ResultT](
     file_args: Sequence[ArgT],
     *,
@@ -535,8 +557,11 @@ def run_generation_supervised[ArgT, ResultT](
 
     Args:
         file_args: Picklable per-file worker arguments.
-        max_children: PPE worker count.  One still uses a real PPE worker; the
-            worker callable is never executed in the main or supervisor process.
+        max_children: PPE worker limit.  One still uses a real PPE worker;
+            the worker callable is never executed in the main or supervisor
+            process.  On Windows the effective count is additionally capped
+            at 61 (CPython's ProcessPoolExecutor limit) and at the number of
+            files.
         no_progress_timeout: Maximum seconds without a completed file.
         worker: Spawn-picklable single-argument worker callable.
         on_progress: Optional main-process callback invoked in completion order.
@@ -565,6 +590,7 @@ def run_generation_supervised[ArgT, ResultT](
         raise ValueError(msg)
 
     arguments = tuple(file_args)
+    effective_children = _effective_generation_workers(max_children, len(arguments))
     context = multiprocessing.get_context("spawn")
     parent_connection, child_connection = context.Pipe(duplex=True)
     containment = _Containment()
@@ -594,7 +620,7 @@ def run_generation_supervised[ArgT, ResultT](
             process = JobContainedSpawnProcess(
                 job_handle=containment.job_handle,
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 daemon=False,
             )
             process.name = _SUPERVISOR_NAME
@@ -603,14 +629,14 @@ def run_generation_supervised[ArgT, ResultT](
 
             process = SessionContainedSpawnProcess(
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 daemon=False,
             )
             process.name = _SUPERVISOR_NAME
         else:
             process = context.Process(
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 name=_SUPERVISOR_NAME,
                 daemon=False,
             )

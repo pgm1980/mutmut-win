@@ -358,3 +358,15 @@ def test_empty_file_list_completes_without_progress_events() -> None:
         == []
     )
     assert progress == []
+
+
+def test_worker_count_above_windows_ppe_limit_still_generates() -> None:
+    """max_children > 61 must be capped, not rejected by ProcessPoolExecutor."""
+    results = run_generation_supervised(
+        [3, 5],
+        max_children=64,
+        no_progress_timeout=10.0,
+        worker=_identify_worker,
+    )
+
+    assert [result[0] for result in results] == [6, 10]
