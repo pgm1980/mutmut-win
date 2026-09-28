@@ -58,6 +58,13 @@ def record_trampoline_hit(name: str) -> None:
     pytest or unittest frame.  If none is found within the limit the hit is
     discarded (the mutation is too deep to be reliably exercised by tests).
 
+    The budget includes this recorder's own frame and the trampoline chain
+    (M-072 / BC-083): ``record_trampoline_hit`` (frame 0),
+    ``_mutmut_trampoline`` (1) and the generated wrapper (2) can never
+    match a pytest/unittest filename, so depths 1..3 unconditionally
+    discard every hit — the config validator rejects them, and with a
+    direct call from a test file the first pytest frame sits at index 4.
+
     Args:
         name: The mangled function name that was hit.
     """

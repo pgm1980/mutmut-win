@@ -24,15 +24,18 @@ from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from mutmut_win import _state
 from mutmut_win._state import _reset_globals
-from mutmut_win.config import MutmutConfig
+from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.constants import MUTANT_ENV_VAR
+from mutmut_win.exceptions import InvalidConfigValueError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.stats import MutmutStats, save_stats
@@ -51,9 +54,132 @@ class TestMaxStackDepthValidation:
         with pytest.raises(ValidationError):
             MutmutConfig(max_stack_depth=-2)
 
-    @pytest.mark.parametrize("value", [-1, 1, 8])
-    def test_sentinel_and_positive_depths_are_valid(self, value: int) -> None:
+    @pytest.mark.parametrize("value", [1, 2, 3])
+    def test_instrumentation_depths_are_rejected(self, value: int) -> None:
+        # M-072 / BC-083: the walk starts at the recorder itself — the
+        # recorder, _mutmut_trampoline and the generated wrapper occupy
+        # the first three frames and never match a pytest/unittest
+        # filename, so 1..3 unconditionally discard EVERY stats hit
+        # (behaviourally equal to the rejected 0). Before the fix these
+        # were silently accepted.
+        with pytest.raises(ValidationError, match="max_stack_depth"):
+            MutmutConfig(max_stack_depth=value)
+
+    def test_rejection_message_does_not_suggest_a_positive_depth(self) -> None:
+        # 'a positive depth' was the misleading old recommendation — 1..3
+        # ARE positive and dead. The message must name the frames instead.
+        with pytest.raises(ValidationError, match="instrumentation frames"):
+            MutmutConfig(max_stack_depth=2)
+
+    @pytest.mark.parametrize("value", [-1, 4, 5, 8])
+    def test_sentinel_and_live_depths_are_valid(self, value: int) -> None:
         assert MutmutConfig(max_stack_depth=value).max_stack_depth == value
+
+    @given(value=st.integers(min_value=-1, max_value=64))
+    def test_valid_exactly_when_unlimited_or_at_least_five(self, value: int) -> None:
+        # Property: valid iff value == -1 or value >= 4. (4 stays valid in
+        # the model: it is only dead for direct test-file call sites — the
+        # run_stats hint covers that remainder.)
+        try:
+            config = MutmutConfig(max_stack_depth=value)
+        except ValidationError:
+            assert 0 <= value <= 3
+        else:
+            assert config.max_stack_depth == value
+            assert value == -1 or value >= 4
+
+
+class TestMaxStackDepthRejectionChannels:
+    """M-072: 0..3 fail loudly on both configuration channels."""
+
+    def test_pyproject_value_two_is_invalid_config_value(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\nmax_stack_depth = 2\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(InvalidConfigValueError, match="max_stack_depth"):
+            load_config(tmp_path)
+
+    def test_cli_run_exits_2_without_traceback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\nmax_stack_depth = 1\n',
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(cli, ["run", "--dry-run"])
+
+        assert result.exit_code == 2
+        combined = result.output + str(result.stderr)
+        assert "Invalid [tool.mutmut] configuration" in combined
+        assert "max_stack_depth" in combined
+        assert "Traceback" not in combined
+
+
+class TestRunStatsEmptyMappingHint:
+    """M-072: run_stats names the cause when a LOADED but empty mapping
+    meets a bounded max_stack_depth (value 4 is dead for direct test-file
+    call sites — the validator cannot catch that remainder).
+    """
+
+    def _run_stats_output(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        max_stack_depth: int,
+    ) -> str:
+        from mutmut_win.runner import PytestRunner
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "tests").mkdir()
+        empty_mapping = MutmutStats(
+            tests_by_mangled_function_name={},
+            duration_by_test={"tests/test_x.py::test_one": 0.5},
+            stats_time=1.0,
+        )
+        runner = PytestRunner(MutmutConfig(max_stack_depth=max_stack_depth))
+        with (
+            patch.object(runner, "_run_phase", return_value=0),
+            patch.object(runner, "_write_stats_plugin"),
+            patch("mutmut_win.stats.load_stats", return_value=empty_mapping),
+        ):
+            runner.run_stats()
+        return capsys.readouterr().out
+
+    def test_hint_names_the_cause_when_mapping_is_empty(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        out = self._run_stats_output(tmp_path, monkeypatch, capsys, max_stack_depth=4)
+
+        assert "Collected 0 test-to-mutant mappings" in out
+        assert "max_stack_depth=4" in out
+        assert "instrumentation frames" in out
+
+    def test_no_hint_when_depth_is_unlimited(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        out = self._run_stats_output(tmp_path, monkeypatch, capsys, max_stack_depth=-1)
+
+        assert "Collected 0 test-to-mutant mappings" in out
+        assert "instrumentation frames" not in out
 
 
 class TestResetGlobalsCoversTheDepthCache:

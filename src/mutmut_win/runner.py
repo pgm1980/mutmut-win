@@ -569,6 +569,22 @@ class PytestRunner:
             num_mapped = sum(len(t) for t in _state.tests_by_mangled_function_name.values())
             num_tests = len(_state.duration_by_test)
             print(f"Collected {num_mapped} test-to-mutant mappings across {num_tests} tests.")
+            # M-072 / BC-083: a loaded but EMPTY mapping with a bounded
+            # depth is the only symptom of a too-small max_stack_depth —
+            # value 4 is dead for direct test-file call sites (the three
+            # instrumentation frames plus the test frame), which the config
+            # validator cannot catch. Name the cause instead of leaving the
+            # bare "Collected 0" line.
+            if num_mapped == 0 and num_tests > 0 and self._config.max_stack_depth != -1:
+                from mutmut_win.config import _INSTRUMENTATION_FRAME_COUNT
+
+                print(
+                    f"Hint: max_stack_depth={self._config.max_stack_depth} may be "
+                    f"too small — the budget includes "
+                    f"{_INSTRUMENTATION_FRAME_COUNT} mutmut instrumentation frames "
+                    "(recorder, trampoline, generated wrapper) before the test "
+                    "frame; use a depth of at least 5 or -1 for unlimited."
+                )
         else:
             print(
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."

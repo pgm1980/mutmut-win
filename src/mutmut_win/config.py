@@ -116,6 +116,19 @@ def _guess_paths_safe() -> list[str]:
         return ["src/"]
 
 
+#: Number of stack frames the stats hit-recorder burns before any user or
+#: test frame is reachable: ``record_trampoline_hit`` itself, the trampoline
+#: template's ``_mutmut_trampoline``, and the generated wrapper that called
+#: it (M-072 / BC-083). None of the three can ever match a pytest/unittest
+#: filename, so ``max_stack_depth`` values 1..3 unconditionally discard
+#: EVERY stats hit — the config validator rejects them. With a direct call
+#: from a test file the first pytest frame sits at index 4, which is why
+#: ``PytestRunner.run_stats`` adds a hint when a loaded mapping is empty.
+#: (This constant lives here, NOT in hit_recording: that kernel module must
+#: stay free of mutmut_win imports at module level.)
+_INSTRUMENTATION_FRAME_COUNT = 3
+
+
 class MutmutConfig(BaseModel):
     """Configuration for a mutmut-win mutation testing run.
 
@@ -200,10 +213,16 @@ class MutmutConfig(BaseModel):
     max_stack_depth: int = Field(
         default=-1,
         # ge=-1: values below the sentinel walked the frame stack with a
-        # truthy-negative counter (issue #110 / A4-QX-018). 0 is rejected
-        # separately below — it would discard EVERY stats hit.
+        # truthy-negative counter (issue #110 / A4-QX-018). 0..3 are
+        # rejected separately below — those budgets are consumed by the
+        # three instrumentation frames and discard every stats hit (M-072).
         ge=-1,
-        description="Maximum stack depth for mutations (-1 = unlimited)",
+        description=(
+            "Maximum stack depth for the stats-hit frame walk "
+            "(-1 = unlimited; the budget starts at the recorder — three "
+            "frames are mutmut instrumentation, so 0-3 are rejected and "
+            "sensible depths start at 5)"
+        ),
     )
     debug: bool = Field(
         default=False,
@@ -325,18 +344,26 @@ class MutmutConfig(BaseModel):
 
     @field_validator("max_stack_depth", mode="after")
     @classmethod
-    def _reject_zero_stack_depth(cls, v: int) -> int:
-        """Reject ``max_stack_depth=0`` loudly (issue #110 / A4-QX-018).
+    def _reject_dead_stack_depths(cls, v: int) -> int:
+        """Reject ``max_stack_depth`` values that discard every stats hit.
 
-        0 exhausts the frame-walk budget before the first frame, so EVERY
-        stats hit is silently discarded — every mutant then runs the full
-        suite. Nobody means that; -1 is the documented "unlimited" sentinel.
+        Issue #110 / A4-QX-018 rejected only 0; M-072 / BC-083 extends the
+        rejection to 1..3: the frame walk starts at the recorder itself,
+        and the recorder, ``_mutmut_trampoline`` and the generated wrapper
+        occupy the first three frames without ever matching a pytest or
+        unittest filename — so depths 1..3 (like 0) unconditionally
+        discard EVERY stats hit and every mutant silently runs the full
+        suite. With a direct call from a test file the first pytest frame
+        sits at index 4, so 4 is dead there too and sensible depths start
+        at 5; -1 is the documented "unlimited" sentinel.
         """
-        if v == 0:
+        if 0 <= v <= _INSTRUMENTATION_FRAME_COUNT:
             msg = (
-                "max_stack_depth=0 would discard every stats hit "
-                "(every mutant would run the full suite) — use -1 for "
-                "unlimited or a positive depth."
+                f"max_stack_depth={v} would discard every stats hit: the "
+                f"budget is consumed by {_INSTRUMENTATION_FRAME_COUNT} mutmut "
+                "instrumentation frames (recorder, trampoline, generated "
+                "wrapper) before any pytest/unittest frame — use -1 for "
+                "unlimited or a depth of at least 5."
             )
             raise ValueError(msg)
         return v

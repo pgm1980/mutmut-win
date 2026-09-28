@@ -269,7 +269,9 @@ type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
                                       # are subtracted, not counted as kills.
 
 # Advanced
-max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited (0 is rejected)
+max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited
+                                       # (0-3 rejected: 3 frames are mutmut
+                                       # instrumentation; use >= 5)
 
 # Infinite-loop detection (psutil-based; on by default)
 infinite_loop_detection = true
