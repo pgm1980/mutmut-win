@@ -44,6 +44,7 @@ Reference scenarios (status column is POSIX semantics):
 from __future__ import annotations
 
 import contextlib
+import itertools
 import threading
 import time
 from collections import deque
@@ -284,7 +285,13 @@ def classify_samples(
     measurable = [s.output_bytes for s in samples if s.output_bytes is not None]
     output_growth = max(0, measurable[-1] - measurable[0]) if measurable else 0
     measurable_io = [s.io_ops for s in samples if s.io_ops is not None]
-    io_ops_delta = max(0, measurable_io[-1] - measurable_io[0]) if measurable_io else None
+    # Sum of positive increments between consecutive measurable probes
+    # (M-004): a child exiting mid-window drops the raw tree total, which
+    # used to make max(0, last - first) miss real I/O progress.  For
+    # monotone series this is identical to last - first.
+    io_ops_delta = (
+        sum(max(0, b - a) for a, b in itertools.pairwise(measurable_io)) if measurable_io else None
+    )
     running_ratio = sum(1 for s in samples if s.status == "running") / len(samples)
 
     forensics = IlForensics(
@@ -412,6 +419,14 @@ class ProcessMonitor(threading.Thread):
         # lifetime of the monitor, re-use it for every sample, and only
         # discard it when the process disappears.
         self._proc_cache: dict[int, Any] = {}
+        # Monotonic tree-wide I/O high-water counter (M-004): one entry per
+        # psutil.Process identity (pid + create_time).  Outliving or exited
+        # children retain their last measured value so the published tree
+        # total never decreases when a child exits mid-window — that used to
+        # drop the I/O veto and turn a genuine timeout into a false
+        # killed_by_infinite_loop.  Veto-only; the classifier never uses it
+        # to *produce* a verdict.
+        self._io_high_water: dict[Any, int] = {}
         # Exceptions survived by the sampling loop (A2-JT-011) — surfaced via
         # the forensics so a degraded observation is never silent.
         self._sampler_errors = 0
@@ -471,6 +486,17 @@ class ProcessMonitor(threading.Thread):
 
     # ---------------------------------------------------------------- inner
 
+    def _record_io(self, proc: Any) -> None:
+        """Record the measured I/O count as a high-water mark (M-004).
+
+        Called via ``self._io_ops`` (instance attribute — tests monkeypatch
+        it there, counter-review correction 3).  Only non-None values are
+        recorded; the max keeps the counter monotonic per identity.
+        """
+        reading = self._io_ops(proc)
+        if reading is not None:
+            self._io_high_water[proc] = max(self._io_high_water.get(proc, reading), reading)
+
     def _take_sample(self) -> IlSample | None:
         if self._proc is None or psutil is None:
             return None
@@ -483,16 +509,14 @@ class ProcessMonitor(threading.Thread):
             #    child process.
             # 2) pytest's --forked / xdist plugins spawn their own children.
             cpu = self._cached_cpu_percent(self._proc)
-            io_ops = self._io_ops(self._proc)
+            self._record_io(self._proc)
             root_status = str(self._proc.status())
             tree_running = root_status == "running"
             try:
                 live_pids: set[int] = {self._pid}
                 for child in self._proc.children(recursive=True):
                     cpu += self._cached_cpu_percent(child)
-                    child_io = self._io_ops(child)
-                    if child_io is not None:
-                        io_ops = child_io if io_ops is None else io_ops + child_io
+                    self._record_io(child)
                     live_pids.add(child.pid)
                     with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
                         tree_running = tree_running or str(child.status()) == "running"
@@ -506,6 +530,10 @@ class ProcessMonitor(threading.Thread):
                 psutil.AccessDenied,
             ):
                 pass
+            # Publish the monotonic tree total: includes high-water marks of
+            # children that have exited or become unmeasurable (M-004).  None
+            # only when nothing was ever measured (neutral for the veto).
+            io_ops: int | None = sum(self._io_high_water.values()) if self._io_high_water else None
             # POSIX status is a tree signal just like CPU/I/O: a sleeping
             # launcher with a spinning child is running for classification
             # purposes. Windows declares this signal unavailable downstream.
