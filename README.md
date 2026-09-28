@@ -569,7 +569,10 @@ seconds without progress), retries `--force` cleanup through transient file
 locks, absorbs transient Windows filter-driver interference at three narrow
 atomic-publication points, publishes the pytest phase-guard execution proof
 once per phase instead of once per test report, and documents
-`clean_run_timeout` for large staged suites. Details:
+`clean_run_timeout` for large staged suites. The current remediation wave
+additionally restores the exclusion guarantees of that surface: qualified
+`do_not_mutate_patterns` stay effective even after a nested class was
+skipped (the visitor's class stack is now identity-bound). Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.

@@ -212,9 +212,14 @@ class MutationVisitor(cst.CSTVisitor):
         # Compiled name-skip regexes (mutmut-3.6.0 do_not_mutate_patterns backport):
         # a FunctionDef/ClassDef whose name matches any of these is skipped wholesale.
         self._name_skip_patterns = [re.compile(p) for p in do_not_mutate_patterns]
-        # Enclosing-class names (maintained by on_visit/on_leave) so the
+        # Enclosing ClassDef nodes (maintained by on_visit/on_leave) so the
         # do_not_mutate_patterns can match a QUALIFIED ``Class.method`` name.
-        self._class_stack: list[str] = []
+        # Invariant: the list holds exactly the ClassDef nodes whose subtree
+        # is currently being visited.  Node IDENTITY is load-bearing: libcst
+        # calls on_leave for every node — including ClassDefs skipped by
+        # on_visit — so on_leave pops only when the leaving node is the top
+        # entry (see M-038).
+        self._class_nodes: list[cst.ClassDef] = []
         # ids() of CST nodes whose entire subtree must NOT be mutated.
         # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
         # whose first argument is a pure type annotation (see Bug #4).
@@ -255,10 +260,12 @@ class MutationVisitor(cst.CSTVisitor):
             self._create_mutations(node)
 
         # Track the enclosing class so do_not_mutate_patterns can match a
-        # qualified ``Class.method`` name (on_leave pops it). Pushed only after
-        # the skip checks above — a skipped class returns early, never pushed.
+        # qualified ``Class.method`` name. Pushed only after the skip checks
+        # above — a skipped class returns early, never pushed. on_leave only
+        # pops when the leaving node IS the top entry, so skipped nested
+        # classes cannot desynchronise the stack (M-038).
         if isinstance(node, cst.ClassDef):
-            self._class_stack.append(node.name.value)
+            self._class_nodes.append(node)
         # continue to mutate children
         return True
 
@@ -297,12 +304,17 @@ class MutationVisitor(cst.CSTVisitor):
     def on_leave(self, original_node: cst.CSTNode) -> None:
         """Pop the enclosing-class stack when leaving a ``ClassDef``.
 
-        Balanced with the push in :meth:`on_visit`: libcst calls ``on_leave``
-        exactly for the nodes whose ``on_visit`` returned True, so a skipped
-        (never-pushed) class is never popped here.
+        libcst calls ``on_leave`` for EVERY node — including nodes whose
+        ``on_visit`` returned ``False`` (a skipped nested ``ClassDef`` never
+        pushes).  The stack stays balanced through node identity: pop only
+        when the node being left IS the current top entry.
         """
-        if isinstance(original_node, cst.ClassDef) and self._class_stack:
-            self._class_stack.pop()
+        if (
+            isinstance(original_node, cst.ClassDef)
+            and self._class_nodes
+            and self._class_nodes[-1] is original_node
+        ):
+            self._class_nodes.pop()
 
     def _create_mutations(self, node: cst.CSTNode) -> None:
         is_cast = isinstance(node, cst.Call) and self._is_typing_cast_call(node)
@@ -408,7 +420,7 @@ class MutationVisitor(cst.CSTVisitor):
         # matcher used to be name-only).
         if self._name_skip_patterns and isinstance(node, (cst.FunctionDef, cst.ClassDef)):
             simple = node.name.value
-            qualified = ".".join([*self._class_stack, simple])
+            qualified = ".".join([*(klass.name.value for klass in self._class_nodes), simple])
             if any(
                 pattern.search(simple) or pattern.search(qualified)
                 for pattern in self._name_skip_patterns
