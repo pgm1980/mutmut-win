@@ -11,6 +11,7 @@ clean slate).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -23,12 +24,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import UnsafeStagingError
+from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
+    validate_staging_namespace,
 )
 from mutmut_win.models import SourceFileMutationData
 
@@ -1097,6 +1099,204 @@ class TestForcedRootRetainPolicy:
 
         assert staged.read_bytes() == source.read_bytes()
         assert not staged.with_name(staged.name + ".meta").exists()
+
+
+class TestVanishedLiveInputs:
+    """M-033: vanished project inputs are not namespace collisions.
+
+    ``_same_live_input`` collapsed "identity not determinable" into
+    "different live sources", so a file deleted between the input freeze and
+    the comparison produced a false ``StagingNamespaceCollisionError`` with a
+    factually wrong remedy.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        tests = project / "tests"
+        tests.mkdir()
+        (tests / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        (tests / "test_gone.py").write_text("def test_b(): pass\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def _freeze_then_delete(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        project: Path,
+        victims: tuple[str, ...] = ("tests/test_gone.py",),
+    ) -> list[str]:
+        """Freeze the automatic inputs, then delete *victims* before compare.
+
+        Returns the victims that were part of the frozen plan, so a test can
+        prove the vanished file was actually enumerated.
+        """
+        import mutmut_win.file_setup as file_setup
+
+        original = file_setup._iter_automatic_staging_inputs
+        frozen_victims: list[str] = []
+
+        def freeze_and_vanish(excluded_resolved: frozenset[Path], **kwargs: object):
+            frozen = list(original(excluded_resolved, **kwargs))
+            for victim in victims:
+                if any(source == Path(victim) for source, _target in frozen):
+                    frozen_victims.append(victim)
+                (project / victim).unlink()
+            return iter(frozen)
+
+        monkeypatch.setattr(file_setup, "_iter_automatic_staging_inputs", freeze_and_vanish)
+        return frozen_victims
+
+    def test_vanished_automatic_input_under_configured_root_is_not_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        frozen_victims = self._freeze_then_delete(monkeypatch, project)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        validate_staging_namespace(config)  # must not raise
+        # The trigger's shape is proven: the vanished file WAS planned, and
+        # expected_source (absolute, mapped from the configured also_copy
+        # root) and automatic_source (relative) denote the SAME deleted file
+        # — both sides of the comparison are gone.
+        assert "tests/test_gone.py" in frozen_victims
+        assert not (project / "tests" / "test_gone.py").exists()
+
+    def test_vanished_planned_input_pair_is_not_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Loop 1: a file planned by two mirrors vanishes after the freeze."""
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        original_automatic = file_setup._iter_automatic_staging_inputs
+        original_configured = file_setup._iter_configured_staging_inputs
+
+        def freeze_automatic(excluded_resolved: frozenset[Path], **kwargs: object):
+            return iter(list(original_automatic(excluded_resolved, **kwargs)))
+
+        def freeze_configured(config: MutmutConfig, excluded_resolved: frozenset[Path]):
+            frozen = list(original_configured(config, excluded_resolved))
+            (project / "tests" / "test_gone.py").unlink()
+            return iter(frozen)
+
+        monkeypatch.setattr(file_setup, "_iter_automatic_staging_inputs", freeze_automatic)
+        monkeypatch.setattr(file_setup, "_iter_configured_staging_inputs", freeze_configured)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/", "tests/test_gone.py"])
+        validate_staging_namespace(config)  # must not raise
+
+    def test_permission_error_stays_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail-closed: an unprovable identity must not pass as vanished."""
+        project = self._project(tmp_path, monkeypatch)
+        self._freeze_then_delete(monkeypatch, project)
+        real_samefile = Path.samefile
+
+        def refusing_samefile(self: Path, other: str | Path) -> bool:
+            if "test_gone" in str(self) or "test_gone" in str(other):
+                raise PermissionError("identity not provable")
+            return real_samefile(self, other)
+
+        monkeypatch.setattr(Path, "samefile", refusing_samefile)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        with pytest.raises(StagingNamespaceCollisionError):
+            validate_staging_namespace(config)
+
+    def test_configured_side_missing_automatic_existing_stays_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vanished configured source with a live automatic mirror erases
+        that mirror's staging in the configured sync — that stays a collision."""
+        project = self._project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "data.bin").write_bytes(b"DATA")
+        shared = tmp_path / "shared" / "fixtures"
+        shared.mkdir(parents=True)
+        (shared / "data.bin").write_bytes(b"SHARED")
+        self._freeze_then_delete(monkeypatch, project, victims=())
+        (shared / "data.bin").unlink()  # the configured side is now missing
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["../shared/fixtures"])
+        with pytest.raises(StagingNamespaceCollisionError):
+            validate_staging_namespace(config)
+
+    def test_live_input_relation_states(self, tmp_path: Path) -> None:
+        """Direct contract of _live_input_relation (M-033)."""
+        import mutmut_win.file_setup as file_setup
+
+        left = tmp_path / "left.bin"
+        right = tmp_path / "right.bin"
+        left.write_bytes(b"L")
+        right.write_bytes(b"R")
+        assert file_setup._live_input_relation(left, right) == "different"
+        assert file_setup._live_input_relation(left, left) == "same"
+        hardlink = tmp_path / "hardlink.bin"
+        os.link(left, hardlink)
+        assert file_setup._live_input_relation(left, hardlink) == "same"
+
+        gone_left = tmp_path / "gone-left.bin"
+        gone_right = tmp_path / "gone-right.bin"
+        assert file_setup._live_input_relation(gone_left, right) == "left_missing"
+        assert file_setup._live_input_relation(left, gone_right) == "right_missing"
+        assert file_setup._live_input_relation(gone_left, gone_right) == "both_missing"
+
+        # Thin wrapper equivalence for the unchanged call sites.
+        assert file_setup._same_live_input(left, left) is True
+        assert file_setup._same_live_input(left, right) is False
+
+    @given(
+        left_exists=st.booleans(),
+        right_exists=st.booleans(),
+        same_object=st.sampled_from(["same-path", "hardlink", "different"]),
+    )
+    @settings(
+        max_examples=25,
+        deadline=None,
+        # tmp_path is function-scoped on purpose: every example recreates the
+        # same short paths (see the cleanup below).
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_live_input_relation_property(
+        self, tmp_path: Path, left_exists: bool, right_exists: bool, same_object: str
+    ) -> None:
+        """Existence and identity fully determine the relation verdict."""
+        import mutmut_win.file_setup as file_setup
+
+        # Clean slate: hypothesis reuses the function-scoped tmp_path and a
+        # previous example may have left a (hard-linked) right.bin behind.
+        for residue in ("left.bin", "right.bin"):
+            with contextlib.suppress(FileNotFoundError):
+                (tmp_path / residue).unlink()
+        left = tmp_path / "left.bin"
+        left.write_bytes(b"L")
+        right: Path = left
+        if same_object == "hardlink":
+            right = tmp_path / "right.bin"
+            os.link(left, right)
+        elif same_object == "different":
+            right = tmp_path / "right.bin"
+            right.write_bytes(b"R")
+        same_path = right is left
+        if same_path and left_exists != right_exists:
+            # One physical path cannot vanish on only one side.
+            left_exists = right_exists = left_exists and right_exists
+        if not left_exists:
+            left.unlink()
+        if not right_exists and not same_path:
+            right.unlink()
+
+        relation = file_setup._live_input_relation(left, right)
+
+        if left_exists and right_exists:
+            assert relation == ("same" if same_object != "different" else "different")
+        elif left_exists:
+            assert relation == "right_missing"
+        elif right_exists:
+            assert relation == "left_missing"
+        else:
+            assert relation == "both_missing"
 
 
 class TestForceHonesty:

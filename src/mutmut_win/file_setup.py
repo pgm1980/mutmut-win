@@ -28,7 +28,7 @@ import tokenize
 import warnings
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Literal
 
 import libcst as cst
 
@@ -842,18 +842,78 @@ def _helper_owner_for_target(
     return None
 
 
+_LiveInputRelation = Literal[
+    "same",
+    "different",
+    "left_missing",
+    "right_missing",
+    "both_missing",
+]
+
+
+def _live_input_is_gone(path: Path) -> bool:
+    """Return whether *path* is provably absent (fail-closed otherwise).
+
+    Existence is decided per ``lstat`` with separate exception branches: a
+    missing path component (``FileNotFoundError``/``NotADirectoryError``) is
+    "gone", while any other :class:`OSError` propagates so the caller keeps
+    treating the identity as unprovable instead of fail-open guessing (an
+    ``os.path.lexists`` probe can report ``False`` on permission errors).
+    """
+    try:
+        path.lstat()
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
+        return True
+    return False
+
+
+def _live_input_relation(left: Path, right: Path) -> _LiveInputRelation:
+    """Classify whether two planned live inputs denote the same object.
+
+    ``samefile``/``resolve`` identity is only meaningful while both entries
+    exist; a deleted file made the historical boolean helper answer "different"
+    for what is really "not determinable" and turned vanished inputs into
+    false namespace collisions (M-033).  The relation therefore distinguishes:
+
+    * ``same``/``different`` — both exist and the identity was decided;
+    * ``left_missing``/``right_missing``/``both_missing`` — the vanished
+      side(s) stage nothing anymore, so they cannot collide;
+    * ``different`` — also the fail-closed verdict when an :class:`OSError`
+      other than absence prevents proving the identity (e.g. a
+      :class:`PermissionError`).
+    """
+    try:
+        return "same" if left.samefile(right) else "different"
+    except FileNotFoundError, NotADirectoryError:
+        try:
+            left_gone = _live_input_is_gone(left)
+            right_gone = _live_input_is_gone(right)
+        except OSError:
+            # Absence is not provable either — stay fail-closed.
+            return "different"
+        if left_gone and right_gone:
+            return "both_missing"
+        if left_gone:
+            return "left_missing"
+        if right_gone:
+            return "right_missing"
+        # Both entries (re)appeared after samefile failed: a race decided to
+        # resolve both paths again before falling back to the lexical match.
+    except OSError:
+        return "different"
+    try:
+        if os.path.normcase(str(left.resolve(strict=True))) == os.path.normcase(
+            str(right.resolve(strict=True))
+        ):
+            return "same"
+    except OSError:
+        return "different"
+    return "different"
+
+
 def _same_live_input(left: Path, right: Path) -> bool:
     """Return whether two planned sources identify the same live object."""
-
-    try:
-        return left.samefile(right)
-    except OSError:
-        try:
-            return os.path.normcase(str(left.resolve(strict=True))) == os.path.normcase(
-                str(right.resolve(strict=True))
-            )
-        except OSError:
-            return False
+    return _live_input_relation(left, right) == "same"
 
 
 def _same_planned_input(left: Path, right: Path) -> bool:
@@ -1008,14 +1068,27 @@ def validate_staging_namespace(
     for source, target in planned_inputs:
         target_key = _staging_key(target)
         previous = target_owners.get(target_key)
-        if previous is not None and not _same_live_input(previous[0], source):
-            collisions.add(
-                (
-                    str(target),
-                    str(source),
-                    f"another live staging input {previous[1]}",
+        if previous is not None:
+            relation = _live_input_relation(previous[0], source)
+            if relation in {"right_missing", "both_missing"}:
+                # M-033: the entry vanished after the planned inputs were
+                # frozen — nothing will be staged from it, so it neither
+                # collides nor owns the target, and no reserved-name check
+                # applies.  copy_src_dir repeats this validation at the copy
+                # boundary, where the walk no longer sees the file at all.
+                continue
+            if relation != "different":
+                # Identical, or the previous owner itself vanished and the
+                # current source takes over the target.
+                target_owners[target_key] = (source, str(source))
+            else:
+                collisions.add(
+                    (
+                        str(target),
+                        str(source),
+                        f"another live staging input {previous[1]}",
+                    )
                 )
-            )
         else:
             target_owners[target_key] = (source, str(source))
         owner = exact_owners.get(_staging_key(target))
@@ -1040,9 +1113,15 @@ def validate_staging_namespace(
                     configured_target,
                     automatic_target,
                 )
-                if expected_source is None or not _same_live_input(
+                # M-033: a vanished automatic input stages nothing and cannot
+                # collide — regardless of the configured side (the trigger's
+                # expected_source denotes the very same deleted file).  A
+                # vanished configured-side descendant with a still-live
+                # automatic source stays a collision: the configured mirror's
+                # deletion pass would erase that automatic copy.
+                if expected_source is None or _live_input_relation(
                     expected_source, automatic_source
-                ):
+                ) in {"different", "left_missing"}:
                     collisions.add(
                         (
                             str(configured_target),
