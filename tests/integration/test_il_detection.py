@@ -53,7 +53,7 @@ def _tree_cpu_seconds(root_pid: int) -> dict[int, float]:
     try:
         root = psutil.Process(root_pid)
         members = [root, *root.children(recursive=True)]
-    except psutil.NoSuchProcess, psutil.AccessDenied:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         return result
     for member in members:
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):

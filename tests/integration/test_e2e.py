@@ -25,7 +25,7 @@ _SIMPLE_LIB_DIR = Path(__file__).parent.parent / "e2e_projects" / "simple_lib"
 # propagates into the spawned CLI and its workers and can more than double the
 # Windows runtime.  Keep enough headroom for the repository's required full
 # coverage gate without turning a genuine hang into an unbounded test.
-_E2E_COMMAND_TIMEOUT_SECONDS = 300
+_E2E_COMMAND_TIMEOUT_SECONDS = 600
 
 
 @pytest.fixture
