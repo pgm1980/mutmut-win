@@ -16,7 +16,12 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 import mutmut_win.process.worker as worker_module
-from mutmut_win.exceptions import BadTestExecutionCommandsException, ProcessContainmentError
+from mutmut_win.atomic_file import AtomicReplaceError
+from mutmut_win.exceptions import (
+    BadTestExecutionCommandsException,
+    ProcessContainmentError,
+    PytestBoundaryError,
+)
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.worker import MUTANT_ENV_VAR, _kill_proc_tree, worker_main
 
@@ -240,6 +245,185 @@ class TestWorkerMain:
         assert "PytestBoundaryError" in (completed.last_output or "")
         assert "guard publication denied" in (completed.last_output or "")
         # The second task was not consumed after the fatal boundary failure.
+        assert task_q.get() == second
+
+    @pytest.mark.parametrize(
+        ("seam", "side_effect"),
+        [
+            (
+                "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+                OSError(28, "No space left on device"),
+            ),
+            (
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+                OSError(267, "Directory name invalid"),
+            ),
+            (
+                "mutmut_win.process.worker._write_pytest_argfile",
+                AtomicReplaceError("replace locked by an antivirus filter"),
+            ),
+        ],
+    )
+    def test_task_preparation_oserror_is_fatal_and_stops_worker(
+        self, seam: str, side_effect: BaseException
+    ) -> None:
+        """M-065: a preparation OSError describes the host, not the mutant.
+
+        Before the fix every preparation OSError escaped as a raw exception,
+        was classified non-fatal by worker_main, and a persistent host-wide
+        disturbance (ENOSPC, AV locks, quota exhaustion) turned into one
+        persisted 'suspicious' row per remaining mutant.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(seam, side_effect=side_effect):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.mutant_name == first["mutant_name"]
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "WorkerEnvironmentError" in (completed.last_output or "")
+        assert str(side_effect) in (completed.last_output or "")
+        # The fatal environment failure stops the worker; task 2 stays queued.
+        assert task_q.get() == second
+
+    def test_task_preparation_non_oserror_stays_non_fatal(self) -> None:
+        """M-065 boundary: only OSError is reclassified as environment-fatal.
+
+        A non-OSError preparation failure (here: a ValueError) is still a
+        Bug-#12 recovery event with fatal=False, and the worker loop keeps
+        consuming tasks.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+            side_effect=ValueError("code-level fault, host is healthy"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        first_completed = TaskCompleted.model_validate(event_q.get())
+        second_completed = TaskCompleted.model_validate(event_q.get())
+        assert first_completed.exit_code == 35
+        assert first_completed.fatal is False
+        assert second_completed.mutant_name == second["mutant_name"]
+        assert second_completed.fatal is False
+        assert event_q.empty()
+        # Recovery kept the loop alive through the sentinel.
+        assert task_q.empty()
+
+    def test_task_preparation_pytest_boundary_error_is_not_reclassified(self) -> None:
+        """M-065: PytestBoundaryError keeps its own fatal identity.
+
+        The boundary drift must surface as PytestBoundaryError (not the new
+        environment class) so diagnostics keep distinguishing a pytest
+        boundary fault from a host fault.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.apply_pytest_boundary_environment",
+            side_effect=PytestBoundaryError("boundary drifted mid-run"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "PytestBoundaryError" in (completed.last_output or "")
+        assert "WorkerEnvironmentError" not in (completed.last_output or "")
+        assert task_q.get() == second
+
+    def test_task_preparation_failure_cleans_up_runtime_context(self, tmp_path: Path) -> None:
+        """M-065: every preparation failure (not only OSError) cleans the runtime dir."""
+        runtime_root = tmp_path / "worker-runtime"
+        runtime_root.mkdir()
+        cleaned: list[str] = []
+
+        class _FakeTemporaryDirectory:
+            """Real directory, but cleanup must be called explicitly."""
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.name = str(runtime_root)
+
+            def cleanup(self) -> None:
+                cleaned.append(self.name)
+
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        with (
+            patch(
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+                _FakeTemporaryDirectory,
+            ),
+            patch(
+                "mutmut_win.process.worker.apply_pytest_boundary_environment",
+                side_effect=PytestBoundaryError("boundary drifted mid-run"),
+            ),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        assert cleaned == [str(runtime_root)]
+
+    @given(
+        exc_type=st.sampled_from(
+            [
+                OSError,
+                PermissionError,
+                FileNotFoundError,
+                FileExistsError,
+                AtomicReplaceError,
+            ]
+        ),
+        seam=st.sampled_from(
+            [
+                "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+                "mutmut_win.process.worker._write_pytest_argfile",
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+            ]
+        ),
+    )
+    @settings(max_examples=25, deadline=None)
+    def test_every_preparation_environment_fault_is_fatal(
+        self, exc_type: type[BaseException], seam: str
+    ) -> None:
+        """M-065 property: any OSError flavour on any preparation seam is fatal."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(seam, side_effect=exc_type("hypothesis fault")):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.fatal is True
+        # The worker stopped instead of digesting the remaining task.
         assert task_q.get() == second
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")

@@ -627,6 +627,10 @@ class TestWorkerDiagnosticsChannel:
         # returns one terminal suspicious result for the claimed queue item.
         completed = TaskCompleted.model_validate(event_q.get())
         assert completed.exit_code == 35
+        # M-065: the execution-path OSError is host infrastructure, never a
+        # mutant property — the terminal event must abort the run (fatal),
+        # not persist as a 'suspicious' verdict.
+        assert completed.fatal is True
 
     def test_monitor_start_failure_print_is_verbatim_on_stderr(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
