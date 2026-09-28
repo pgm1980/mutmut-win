@@ -109,6 +109,8 @@ tests_dir = ["tests/unit/"]
 # trampolines); the 300 s default aborted every full dogfood at the clean
 # phase (found during the MBR-2026-09-14-01 mutation run).
 clean_run_timeout = 5400
+forced_fail_timeout = 600
+generation_timeout = 900
 
 [tool.ruff]
 target-version = "py314"
