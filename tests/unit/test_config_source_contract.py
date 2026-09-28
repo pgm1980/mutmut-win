@@ -34,7 +34,7 @@ from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig, load_config
-from mutmut_win.exceptions import ConfigError
+from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -230,4 +230,144 @@ class TestSetupCfgReadBoundaryCli:
 
         assert result.exit_code == 2
         assert "setup.cfg" in result.output + str(result.stderr)
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def _toml_scalar_literal(value: int | bool | list[int]) -> str:
+    """Serialize a hypothesis-generated value as a TOML literal.
+
+    ``str(True)`` would produce ``True``, which is INVALID TOML (the
+    resulting TOMLDecodeError would make the tests vacuously green).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(str(item) for item in value) + "]"
+    return str(value)
+
+
+# TOML integers are 64-bit signed; tomllib rejects anything wider with a
+# TOMLDecodeError before the structure check can run.
+_TOML_INT64 = st.integers(min_value=-(2**63), max_value=2**63 - 1)
+
+
+class TestPyprojectToolStructure:
+    """M-078: a non-table `tool` value is an AttributeError today."""
+
+    @pytest.mark.parametrize(
+        "toml_value",
+        ["1", '"x"', "[1, 2]", "true", "[]"],
+    )
+    def test_non_table_tool_is_a_config_error(self, tmp_path: Path, toml_value: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(f"tool = {toml_value}\n", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match=r"\[tool\] must be a table"):
+            load_config(tmp_path)
+
+    @given(st.one_of(_TOML_INT64, st.booleans(), st.lists(st.integers(0, 99), max_size=3)))
+    def test_any_non_table_tool_literal_is_a_config_error(
+        self, value: int | bool | list[int]
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "pyproject.toml").write_text(
+                f"tool = {_toml_scalar_literal(value)}\n", encoding="utf-8"
+            )
+            with pytest.raises(ConfigError, match=r"\[tool\] must be a table"):
+                load_config(project)
+
+    def test_inline_empty_tool_table_still_falls_back(self, tmp_path: Path) -> None:
+        # 'tool = {}' is a table — the fallback stays reachable.
+        (tmp_path / "pyproject.toml").write_text("tool = {}\n", encoding="utf-8")
+
+        config = load_config(tmp_path)
+
+        assert isinstance(config, MutmutConfig)
+
+    def test_missing_tool_still_falls_back(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[other]\nfoo = 1\n", encoding="utf-8")
+
+        config = load_config(tmp_path)
+
+        assert isinstance(config, MutmutConfig)
+
+
+class TestPyprojectMutmutStructure:
+    """M-028: a present-but-non-table `tool.mutmut` is silently ignored today."""
+
+    @pytest.mark.parametrize(
+        "toml_value",
+        ["1", '"src"', "[1, 2]", "[]"],
+    )
+    def test_non_table_mutmut_is_invalid_config_value(
+        self, tmp_path: Path, toml_value: str
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            f"[tool]\nmutmut = {toml_value}\n", encoding="utf-8"
+        )
+
+        with pytest.raises(InvalidConfigValueError, match="expected a table"):
+            load_config(tmp_path)
+
+    @given(st.one_of(_TOML_INT64, st.booleans(), st.lists(st.integers(0, 99), max_size=3)))
+    def test_any_non_table_mutmut_literal_is_invalid_config_value(
+        self, value: int | bool | list[int]
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "pyproject.toml").write_text(
+                f"[tool]\nmutmut = {_toml_scalar_literal(value)}\n", encoding="utf-8"
+            )
+            with pytest.raises(InvalidConfigValueError, match="expected a table"):
+                load_config(project)
+
+    def test_array_of_tables_with_setup_cfg_present_proves_no_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        # [[tool.mutmut]] parses to a LIST; the old code silently fell
+        # through to setup.cfg — this setup.cfg must never be reached.
+        (tmp_path / "pyproject.toml").write_text(
+            '[[tool.mutmut]]\npaths_to_mutate = ["lib/"]\n', encoding="utf-8"
+        )
+        (tmp_path / "setup.cfg").write_text("[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8")
+
+        with pytest.raises(InvalidConfigValueError, match="expected a table"):
+            load_config(tmp_path)
+
+    def test_empty_mutmut_table_still_falls_back_to_setup_cfg(self, tmp_path: Path) -> None:
+        # Only the EMPTY TABLE equals a missing section (Gegenprobe to
+        # 'mutmut = []' above, which is a present non-table value).
+        (tmp_path / "pyproject.toml").write_text("[tool.mutmut]\n", encoding="utf-8")
+        (tmp_path / "setup.cfg").write_text("[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8")
+
+        config = load_config(tmp_path)
+
+        assert config.paths_to_mutate == ["src/"]
+
+
+class TestPyprojectStructureCli:
+    """M-078/M-028: wrong TOML types exit 2 through the config contract."""
+
+    @pytest.mark.parametrize(
+        ("pyproject_text", "expected_fragment"),
+        [
+            ("tool = 1\n", "must be a table"),
+            ("[tool]\nmutmut = 1\n", "expected a table"),
+        ],
+    )
+    def test_structure_errors_exit_2_without_traceback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        pyproject_text: str,
+        expected_fragment: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "pyproject.toml").write_text(pyproject_text, encoding="utf-8")
+
+        result = CliRunner().invoke(cli, ["show", "src.mod.x_f__mutmut_1"])
+
+        assert result.exit_code == 2
+        assert expected_fragment in result.output + str(result.stderr)
         assert result.exception is None or isinstance(result.exception, SystemExit)

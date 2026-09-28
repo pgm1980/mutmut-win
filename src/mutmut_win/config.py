@@ -637,8 +637,11 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
 
     Raises:
         ConfigError: If pyproject.toml cannot be read, is not valid UTF-8,
-            or cannot be parsed; if an existing setup.cfg cannot be read,
-            is not valid UTF-8, or cannot be parsed.
+            or cannot be parsed; if ``tool`` is present but not a table; if
+            an existing setup.cfg cannot be read, is not valid UTF-8, or
+            cannot be parsed.
+        InvalidConfigValueError: If ``tool.mutmut`` is present but not a
+            table (e.g. ``[[tool.mutmut]]``).
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -665,8 +668,29 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         msg = f"Failed to read pyproject.toml: {e}"
         raise ConfigError(msg) from e
 
-    tool_config = data.get("tool", {}).get("mutmut", {})
-    if not isinstance(tool_config, dict) or not tool_config:
+    # Q-38 structure check BEFORE any fallback (M-078 / M-028): the old
+    # data.get("tool", {}).get("mutmut", {}) chain crashed with a raw
+    # AttributeError when 'tool' was a scalar, and silently treated a
+    # present non-table 'tool.mutmut' (e.g. [[tool.mutmut]]) as a
+    # missing section — falling back to setup.cfg or guessed defaults
+    # without a single word of diagnosis.
+    tool_table: object = data.get("tool")
+    if tool_table is not None and not isinstance(tool_table, dict):
+        msg = f"Invalid pyproject.toml: [tool] must be a table, got {type(tool_table).__name__}"
+        raise ConfigError(msg)
+    tool_config: object = tool_table.get("mutmut") if isinstance(tool_table, dict) else None
+    if tool_config is not None and not isinstance(tool_config, dict):
+        # A present non-table value (an array of tables such as
+        # [[tool.mutmut]], a scalar, or the empty array) is NOT a
+        # missing section; only the EMPTY TABLE keeps the documented
+        # setup.cfg/default fallback below.
+        msg = (
+            "Invalid [tool.mutmut] configuration: expected a table, got "
+            f"{type(tool_config).__name__} (an array of tables such as "
+            "[[tool.mutmut]] is not supported)"
+        )
+        raise InvalidConfigValueError(msg)
+    if not tool_config:
         # No [tool.mutmut] section — try setup.cfg before returning defaults
         setup_cfg_config = _load_setup_cfg(project_dir)
         if setup_cfg_config is not None:
