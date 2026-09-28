@@ -24,7 +24,7 @@ from mutmut_win.db import (
     RunBasisIncompleteness,
     known_run_basis_incompleteness,
 )
-from mutmut_win.exceptions import CorruptCacheError
+from mutmut_win.exceptions import CacheEnvironmentError, CorruptCacheError
 from mutmut_win.models import (
     MutationResult,
     SourceFileMutationData,
@@ -383,7 +383,7 @@ class ResultBrowser(App[None]):
 
         try:
             current_run, latest_results = load_latest_run_results(self._db_path)
-        except CorruptCacheError as exc:
+        except (CorruptCacheError, CacheEnvironmentError) as exc:
             self._run_state_error = str(exc)
             return
         if current_run is not None:

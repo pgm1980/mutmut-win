@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, NoReturn
 from uuid import uuid4
 
 from mutmut_win.exceptions import (
+    CacheEnvironmentError,
     CorruptCacheError,
     MutmutWinError,
     UnsafeWorkspaceStateError,
@@ -284,6 +285,26 @@ type _FileIdentity = tuple[int, int]
 
 _SQLITE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
 
+#: SQLite base codes (``sqlite_errorcode & 0xFF``) that describe the cache's
+#: ENVIRONMENT rather than its bytes (M-037 / issue #164): READONLY (8),
+#: IOERR (10), FULL (13) and CANTOPEN (14) are the asserted environmental
+#: failures; PERM (3, OS-level permission denial) and NOLFS (22, database
+#: larger than the filesystem supports) are included on the same grounds —
+#: none of them is evidence of corruption. SQLITE_AUTH (23) is deliberately
+#: absent: it can only appear with an authorizer this project never sets, so
+#: including it would be an unjustified widening. CORRUPT, NOTADB, and any
+#: code without a sqlite_errorcode stay conservative (CorruptCacheError).
+_ENVIRONMENT_SQLITE_CODES = frozenset(
+    {
+        sqlite3.SQLITE_PERM,
+        sqlite3.SQLITE_READONLY,
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_CANTOPEN,
+        sqlite3.SQLITE_NOLFS,
+    }
+)
+
 
 def _absolute_cache_path(path: Path) -> Path:
     """Return a normalized absolute path without resolving redirects."""
@@ -518,7 +539,13 @@ def _corrupt_cache(path: Path, detail: str, exc: BaseException | None = None) ->
 
 
 def _raise_database_error(path: Path, exc: sqlite3.DatabaseError) -> NoReturn:
-    """Classify transient SQLite contention separately from corrupt bytes."""
+    """Classify contention and environment failures separately from corrupt bytes.
+
+    SQLITE_BUSY/LOCKED stay transient run-state contention; the environment
+    base codes raise :class:`CacheEnvironmentError` without any delete advice;
+    everything else — including exceptions that carry no ``sqlite_errorcode``
+    at all — conservatively remains a corrupt cache.
+    """
     error_code = getattr(exc, "sqlite_errorcode", None)
     base_code = error_code & 0xFF if isinstance(error_code, int) else None
     detail = str(exc).casefold()
@@ -530,6 +557,21 @@ def _raise_database_error(path: Path, exc: sqlite3.DatabaseError) -> NoReturn:
             f"cache database at '{path}' is busy or locked by another process; "
             "wait for that mutmut-win operation to finish and retry. The cache "
             "is not known to be corrupt and must not be deleted."
+        ) from exc
+    if base_code in _ENVIRONMENT_SQLITE_CODES:
+        error_name = getattr(exc, "sqlite_errorname", None)
+        code_detail = (
+            f"{error_name} ({error_code})"
+            if isinstance(error_name, str)
+            else f"sqlite error code {error_code}"
+        )
+        raise CacheEnvironmentError(
+            f"cache database at '{path}' could not be read or written because "
+            f"of an environment problem ({code_detail}: {exc}). Check whether "
+            "the file or its directory is read-only, the disk is full, an "
+            "antivirus or backup tool is holding the file, or another I/O or "
+            "permission problem applies. The cache is not known to be corrupt "
+            "and must not be deleted."
         ) from exc
     _corrupt_cache(path, str(exc), exc)
 
@@ -721,6 +763,11 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
     Raises:
         CorruptCacheError: if the file exists but is not a valid SQLite
             database (external QA CACHE-001); recover with ``run --force``.
+        CacheEnvironmentError: if the cache's environment blocks reading or
+            writing it — a read-only file or directory, a full disk, an I/O
+            error, or an unopenable path (M-037). The cache is not known to
+            be corrupt, so deleting it (``--force``) is deliberately not
+            advised; fix the environment instead.
     """
     with _verified_connection(path, create=True) as (conn, identity, absolute):
         conn.execute("PRAGMA foreign_keys = ON")
