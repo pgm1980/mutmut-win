@@ -173,30 +173,20 @@ class TestGatherCoverage:
         measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
 
         class FakeCoverageData:
+            def __init__(self, *, basename: str) -> None:
+                assert basename.endswith(".coverage.mutmut")
+
+            def read(self) -> None:
+                return None
+
             def measured_files(self) -> set[str]:
                 return {measured_path}
 
             def lines(self, filename: str) -> None:
                 assert filename == measured_path
 
-        class FakeCoverage:
-            def __init__(self, *, data_file: str) -> None:
-                assert data_file.endswith(".coverage.mutmut")
-
-            def load(self) -> None:
-                return None
-
-            def get_data(self) -> FakeCoverageData:
-                return FakeCoverageData()
-
-        monkeypatch.setattr(code_coverage_module.coverage, "Coverage", FakeCoverage)
-        runner = MagicMock()
-
-        def fake_collection(data_file: Path) -> int:
-            data_file.write_bytes(b"coverage proof")
-            return 0
-
-        runner.run_coverage_collection.side_effect = fake_collection
+        monkeypatch.setattr(code_coverage_module.coverage, "CoverageData", FakeCoverageData)
+        runner = _fake_coverage_runner(lambda data_file: data_file.write_bytes(b"coverage proof"))
 
         with pytest.raises(CoverageCollectionError, match="measured no coverage"):
             gather_coverage(runner, ["src/mod.py"])
@@ -420,3 +410,156 @@ class TestCanonicalKeyProperty:
 
             measured = {canonicalize(rel_posix, mutants_dir): {1, 2}}
             assert measured.get(canonicalize(absolute, mutants_dir)) == {1, 2}
+
+
+class TestParallelDataParts:
+    """M-019: ``parallel = true`` writes suffixed data parts, not one file.
+
+    The staged project coverage configuration may set ``parallel = true``
+    (``concurrency = multiprocessing`` forces it too): coverage then writes
+    only ``.coverage.mutmut.<host>.pid<n>.X<random>`` parts.  Every part in
+    the exclusive fresh output directory must be collected and merged —
+    nothing stale or foreign can be in there.
+    """
+
+    def _write_part(self, data_file: Path, suffix: str, measured: dict[str, list[int]]) -> None:
+        part = coverage.CoverageData(basename=str(data_file), suffix=suffix)
+        part.add_lines(dict(measured.items()))
+        part.write()
+
+    def _write_arc_part(
+        self, data_file: Path, suffix: str, measured: dict[str, list[tuple[int, int]]]
+    ) -> None:
+        part = coverage.CoverageData(basename=str(data_file), suffix=suffix)
+        part.add_arcs(dict(measured.items()))
+        part.write()
+
+    def test_only_a_suffixed_part_is_collected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        runner = _fake_coverage_runner(
+            lambda data_file: self._write_part(data_file, "host.pid1.Xabc", {measured_path: [1, 3]})
+        )
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered == {os.path.normcase(measured_path): {1, 3}}
+
+    def test_two_suffixed_parts_union_their_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        def write_both(data_file: Path) -> None:
+            self._write_part(data_file, "host.pid1.Xabc", {measured_path: [1, 3]})
+            self._write_part(data_file, "host.pid2.Xzzz", {measured_path: [5]})
+
+        runner = _fake_coverage_runner(write_both)
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered == {os.path.normcase(measured_path): {1, 3, 5}}
+
+    def test_suffixed_and_suffixless_parts_union(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        def write_both(data_file: Path) -> None:
+            _write_lines_data(data_file, {measured_path: [2]})
+            self._write_part(data_file, "host.pid1.Xabc", {measured_path: [7]})
+
+        runner = _fake_coverage_runner(write_both)
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered == {os.path.normcase(measured_path): {2, 7}}
+
+    def test_leftover_sqlite_journal_sidecar_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A crashed run may leave '<data file>-journal'/-wal/-shm behind;
+        # those SQLite sidecars must never be treated as data parts.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        def write_with_journal(data_file: Path) -> None:
+            self._write_part(data_file, "host.pid1.Xabc", {measured_path: [4]})
+            (data_file.parent / ".coverage.mutmut.host.pid1.Xabc-journal").write_bytes(
+                b"sqlite garbage"
+            )
+
+        runner = _fake_coverage_runner(write_with_journal)
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered == {os.path.normcase(measured_path): {4}}
+
+    def test_arc_part_and_line_part_combine_without_abort(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # CoverageData.update would raise DataError on an arc/line mix; the
+        # per-file lines() union must tolerate it (lines() derives lines
+        # from arcs).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        def write_mixed(data_file: Path) -> None:
+            self._write_arc_part(
+                data_file, "host.pid1.Xabc", {measured_path: [(1, 2), (2, 3), (3, 0)]}
+            )
+            self._write_part(data_file, "host.pid2.Xzzz", {measured_path: [5]})
+
+        runner = _fake_coverage_runner(write_mixed)
+
+        covered = gather_coverage(runner, ["src/mod.py"])
+        assert covered == {os.path.normcase(measured_path): {1, 2, 3, 5}}
+
+    def test_unreadable_part_raises_naming_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        measured_path = str((tmp_path / "mutants" / "src" / "mod.py").absolute())
+
+        def write_broken(data_file: Path) -> None:
+            self._write_part(data_file, "host.pid1.Xabc", {measured_path: [1]})
+            (data_file.parent / ".coverage.mutmut.broken").write_bytes(b"not a database")
+
+        runner = _fake_coverage_runner(write_broken)
+
+        with pytest.raises(CoverageCollectionError, match=r"\.coverage\.mutmut\.broken"):
+            gather_coverage(runner, ["src/mod.py"])
+
+
+class TestParallelUnionProperty:
+    """M-019 hypothesis: any partition onto parts restores the whole union."""
+
+    @given(
+        lines=st.sets(st.integers(min_value=1, max_value=500), min_size=1),
+        num_parts=st.integers(min_value=1, max_value=4),
+    )
+    def test_partition_onto_parts_restores_the_union(self, lines: set[int], num_parts: int) -> None:
+        with tempfile.TemporaryDirectory() as tmp_name:
+            root = Path(tmp_name)
+            mutants_dir = root / "mutants"
+            mutants_dir.mkdir()
+            ordered = sorted(lines)
+            for index in range(num_parts):
+                part = coverage.CoverageData(
+                    basename=str(root / ".coverage.mutmut"),
+                    suffix=f"host.pid{index}.X{index}",
+                )
+                part.add_lines({"src/mod.py": ordered[index::num_parts]})
+                part.write()
+
+            candidates = sorted(root.glob(".coverage.mutmut*"))
+            merged = code_coverage_module._merge_measured_lines(candidates, mutants_dir)
+            key = code_coverage_module._canonical_measured_key("src/mod.py", mutants_dir)
+            assert merged[key] == lines

@@ -9,8 +9,10 @@ The reworked flow is a subprocess bridge: the runner executes the suite
 under ``coverage run --data-file=<fresh external temp dir>/.coverage.mutmut``
 inside ``mutants/`` (which at that point holds the UNMUTATED copies — line
 numbers are identical to the original sources the mutant generator filters
-against), and the parent loads the data file.  Measured keys are matched
-canonically: a relative key (the staged project config may set
+against), and the parent merges every data file written to the exclusive
+output directory — ``parallel = true`` parts, including measurements from
+coverage-spawned ``multiprocessing`` children, are combined.  Measured keys
+are matched canonically: a relative key (the staged project config may set
 ``relative_files = true``) is first bound to ``mutants/`` — the coverage
 subprocess cwd — then ``os.path.realpath`` folds filesystem aliases (8.3
 short names, subst drives) and ``os.path.normcase`` folds case, on both
@@ -24,6 +26,9 @@ degrade into "0 mutants".
 Known limits (documented in the README): code exercised only via
 test-spawned subprocesses or pytest-xdist workers is not measured; an
 all-empty measurement therefore raises instead of filtering everything.
+Coverage's own child processes (``concurrency = multiprocessing``) ARE
+measured — their parallel data parts are merged, which can surface more
+covered mutants than a parent-process-only measurement would.
 """
 
 from __future__ import annotations
@@ -105,6 +110,47 @@ def get_covered_lines_for_file(
     return covered_lines.get(_normalized_key(filename), set())
 
 
+def _merge_measured_lines(data_candidates: list[Path], mutants_dir: Path) -> dict[str, set[int]]:
+    """Merge fresh coverage data files into one canonical-keyed line map.
+
+    ``parallel = true`` in the project coverage configuration (forced as
+    well by ``concurrency = multiprocessing``) makes the coverage subprocess
+    write ``.coverage.mutmut.<host>.pid<n>.X<random>`` parts instead of one
+    suffixless file.  Every candidate is read through the configuration-free
+    :class:`coverage.CoverageData` API and united file-wise: per-file
+    ``lines()`` unions tolerate a mix of arc and line data across parts,
+    which ``CoverageData.update`` would reject with a ``DataError``.
+
+    Args:
+        data_candidates: Fresh data files from the exclusive output
+            directory — nothing stale or foreign can be among them.
+        mutants_dir: Absolute staged tree root that relative measured keys
+            are bound to.
+
+    Returns:
+        Canonical-keyed (:func:`_canonical_measured_key`) covered-lines map;
+        line sets of colliding keys are unioned.
+
+    Raises:
+        CoverageCollectionError: If any candidate cannot be read
+            (fail-closed; the file name is named in the message).
+    """
+    measured: dict[str, set[int]] = {}
+    for candidate in data_candidates:
+        part = coverage.CoverageData(basename=str(candidate))
+        try:
+            part.read()
+            for measured_file in part.measured_files():
+                key = _canonical_measured_key(measured_file, mutants_dir)
+                measured[key] = measured.get(key, set()) | set(part.lines(measured_file) or [])
+        except coverage.CoverageException as exc:
+            raise CoverageCollectionError(
+                f"coverage data file {candidate.name} is unreadable — "
+                f"the measurement cannot be combined."
+            ) from exc
+    return measured
+
+
 def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dict[str, set[int]]:
     """Collect per-file covered lines via the subprocess coverage bridge.
 
@@ -116,11 +162,12 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
         Mapping of normcased absolute mutants-paths to covered line sets.
 
     Raises:
-        CoverageCollectionError: If the collection run fails, produces no
-            data file, or measures no coverage in any source file — either
-            because nothing was executed at all (e.g. subprocess- or
-            xdist-based suites, whose execution the bridge cannot see) or
-            because no measured path matches a staged source file.
+        CoverageCollectionError: If the collection run fails, leaves no data
+            file in the output directory, a data file is unreadable, or no
+            coverage was measured in any source file — either because
+            nothing was executed at all (e.g. subprocess- or xdist-based
+            suites, whose execution the bridge cannot see) or because no
+            measured path matches a staged source file.
             Bare ``Exception`` until issue #114 / A4-QX-023.
     """
     # Coverage output is coordination state, never executable staging input.
@@ -138,19 +185,24 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
                 f"the test suite must pass before mutate_only_covered_lines can "
                 f"measure it."
             )
-        if not data_file.exists():
+        # parallel=true writes suffixed parts instead of one suffixless
+        # file; SQLite sidecars of a crashed run are never data.
+        data_candidates = sorted(
+            part_file
+            for part_file in data_file.parent.iterdir()
+            if part_file.name == ".coverage.mutmut"
+            or (
+                part_file.name.startswith(".coverage.mutmut.")
+                and not part_file.name.endswith(("-journal", "-wal", "-shm"))
+            )
+        )
+        if not data_candidates:
             raise CoverageCollectionError(
                 "coverage collection produced no data file — coverage did not record anything."
             )
 
         mutants_dir = Path("mutants").absolute()
-        cov = coverage.Coverage(data_file=str(data_file))
-        cov.load()
-        coverage_data = cov.get_data()
-        measured: dict[str, set[int]] = {}
-        for measured_file in coverage_data.measured_files():
-            key = _canonical_measured_key(measured_file, mutants_dir)
-            measured[key] = measured.get(key, set()) | set(coverage_data.lines(measured_file) or [])
+        measured = _merge_measured_lines(data_candidates, mutants_dir)
 
     covered_lines: dict[str, set[int]] = {}
     matched_any_source = False
