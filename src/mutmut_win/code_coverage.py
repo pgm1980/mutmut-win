@@ -20,6 +20,13 @@ sides.  Returned keys stay plain ``os.path.normcase``(absolute), so lookups
 via :func:`get_covered_lines_for_file` are unchanged (A3-CM-013,
 spike-verified: a case-deviating key returns ``None`` from ``lines()``).
 
+The data files deliberately live OUTSIDE ``mutants/`` — in a fresh,
+exclusive external temp directory handed to the subprocess via
+``--data-file``: the staging tree must stay byte-identical while coverage
+measures it (the staging fingerprint is frozen before and re-verified
+after the coverage phase), and a fresh directory cannot accrete stale or
+foreign measurements.  Do not move the data path back into ``mutants/``.
+
 Failure modes are LOUD by design — a broken collection must never silently
 degrade into "0 mutants".
 
