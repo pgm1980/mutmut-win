@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from click.testing import CliRunner
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
@@ -488,3 +488,41 @@ class TestConfigErrorChannelCli:
         payload = json.loads(result.stdout)
         assert payload["exit_code"] == 2
         assert "setup.cfg" in payload["error"]
+
+
+class TestLoadConfigTotalContract:
+    """Q-40: for arbitrary configuration bytes load_config is total.
+
+    Either a ``MutmutConfig`` or a ``ConfigError`` — never any other
+    exception (raw ``OSError``, ``UnicodeDecodeError``,
+    ``AttributeError``, pydantic ``ValidationError``, ...). Robustness
+    net across M-027/M-077/M-078/M-079/M-028; the targeted structure
+    tests above stay authoritative for the messages. Temp dir in the
+    body — no function-scoped fixtures under ``@given``.
+    """
+
+    @given(st.binary(min_size=1, max_size=200))
+    @settings(deadline=None)
+    def test_arbitrary_pyproject_bytes_never_crash_past_the_contract(self, blob: bytes) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "pyproject.toml").write_bytes(blob)
+            try:
+                config = load_config(project)
+            except ConfigError:
+                pass
+            else:
+                assert isinstance(config, MutmutConfig)
+
+    @given(st.binary(min_size=1, max_size=200))
+    @settings(deadline=None)
+    def test_arbitrary_setup_cfg_bytes_never_crash_past_the_contract(self, blob: bytes) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "setup.cfg").write_bytes(blob)
+            try:
+                config = load_config(project)
+            except ConfigError:
+                pass
+            else:
+                assert isinstance(config, MutmutConfig)
