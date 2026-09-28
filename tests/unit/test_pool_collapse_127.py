@@ -296,6 +296,9 @@ class TestStartupWatchdog:
                 mutant_name="slow", worker_pid=501, exit_code=0, duration=120.0
             ).model_dump(),
         ]
+        # M-054: every idle tick now drains the queue non-blockingly before
+        # sweeping; this fake has nothing beyond the scripted blocking reads.
+        executor._event_queue.get_nowait.side_effect = queue.Empty
 
         events = list(executor.get_events())
         executor.shutdown()
