@@ -496,6 +496,101 @@ def _validated_staging_destination(destination: Path, mutants_root: Path) -> Pat
     return lexical
 
 
+def _remove_staging_entry(lexical: Path, metadata: os.stat_result) -> None:
+    """Remove one contained staging entry regardless of kind (Q-13).
+
+    Directories go through ``rmtree`` with the read-only-aware ``onexc``
+    hook, regular files through the owned-unlink helper.  A bounded retry
+    with the same backoff as :func:`_copy_with_retry` absorbs transient
+    Windows locks (Defender, Search Indexer) before the caller converts the
+    failure into a domain error.
+    """
+    for attempt in range(5):
+        try:
+            if stat.S_ISDIR(metadata.st_mode):
+                shutil.rmtree(lexical, onexc=_retry_readonly_removal)
+            elif stat.S_ISREG(metadata.st_mode):
+                _unlink_staging_file(lexical)
+            else:
+                raise UnsafeStagingError(
+                    f"Unsafe staging entry {lexical}: not a regular file or directory"
+                )
+            return
+        except UnsafeStagingError:
+            raise
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (2**attempt))
+
+
+def _reconcile_staging_kind(
+    target: Path,
+    *,
+    want_directory: bool,
+    mutants_root: Path,
+) -> None:
+    """Reconcile a staging target's kind before materializing it (Q-13).
+
+    A mirror target whose live counterpart switched between file and
+    directory used to abort the run with a raw ``FileExistsError`` (``mkdir``
+    over a staged file) or ``PermissionError`` (``os.replace`` onto a staged
+    directory) long before the deletion pass could react (M-030).  Before
+    every materialization the staged entry's kind is checked against what
+    this run is about to create; a conflicting entry is removed after
+    revalidated containment.  Links/reparse points and entries that cannot
+    be removed safely become :class:`UnsafeStagingError` — a single-line
+    domain error instead of a traceback.
+
+    The staging root itself is never reconciled away (requesting it as a
+    file is refused), and persistent staging state files at the root are
+    explicitly excluded.
+
+    Args:
+        target: Staging path about to be materialized.
+        want_directory: Whether the upcoming materialization is a directory.
+        mutants_root: Canonical staging root for containment revalidation.
+    """
+    lexical = _validated_staging_destination(target, mutants_root)
+    if lexical == mutants_root:
+        if want_directory:
+            # The engine-owned staging root already exists as a directory;
+            # materializing it again is a no-op.
+            return
+        raise UnsafeStagingError(f"Refusing to replace the staging root {mutants_root} with a file")
+    if (
+        lexical.parent == mutants_root
+        and lexical.name.casefold() in _PERSISTENT_STAGING_STATE_FILES
+    ):
+        raise UnsafeStagingError(f"Refusing to replace persistent staging state file {lexical}")
+    try:
+        metadata = lexical.lstat()
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
+        return  # absent, or under a vanished parent: nothing to reconcile
+    except OSError as exc:
+        raise UnsafeStagingError(f"Cannot inspect staging target {lexical}: {exc}") from exc
+    if _is_link_or_reparse(lexical):
+        raise UnsafeStagingError(
+            f"Staging type conflict at {lexical}: link/reparse point is never replaced"
+        )
+    staged_is_directory = stat.S_ISDIR(metadata.st_mode)
+    if want_directory:
+        if staged_is_directory:
+            return
+    elif stat.S_ISREG(metadata.st_mode):
+        return
+    staged_kind = "directory" if staged_is_directory else "file"
+    wanted_kind = "directory" if want_directory else "file"
+    try:
+        _remove_staging_entry(lexical, metadata)
+    except OSError as exc:
+        raise UnsafeStagingError(
+            f"Staging type conflict at {lexical}: expected {wanted_kind}, "
+            f"found {staged_kind}; cannot remove the staged {staged_kind} ({exc})"
+        ) from exc
+    print(f"     replaced staged {staged_kind} after type change: {lexical}")
+
+
 def _staging_identity(metadata: os.stat_result) -> tuple[int, int]:
     """Return the stable filesystem identity used by staging attribute guards."""
 
@@ -1392,6 +1487,8 @@ def copy_src_dir(
     keep their whole tree — non-.py resources included — in executable
     staging.  The walk itself comes from :func:`_iter_mirror_walk_entries`
     (Q-14), the single source shared with the namespace preflight.
+    Type changes (file <-> directory) of a mirrored path are reconciled
+    before every materialization (:func:`_reconcile_staging_kind`, Q-13).
 
     Args:
         config: Active ``MutmutConfig`` instance.
@@ -1436,13 +1533,16 @@ def copy_src_dir(
             # they contain no files.  Materialize every validated live
             # directory so a clean first run has the same namespace-package
             # topology as the project; excluded/link roots were pruned above.
+            # Type changes are reconciled before materialization (Q-13).
             target_directory = Path("mutants") / relative_target
-            _validated_staging_destination(target_directory, mutants_root)
+            _reconcile_staging_kind(
+                target_directory, want_directory=True, mutants_root=mutants_root
+            )
             target_directory.mkdir(exist_ok=True, parents=True)
             continue
 
         target_path = Path("mutants") / relative_target
-        _validated_staging_destination(target_path, mutants_root)
+        _reconcile_staging_kind(target_path, want_directory=False, mutants_root=mutants_root)
         expected_targets.add(target_path)
 
         if target_path.exists():
@@ -1637,9 +1737,14 @@ def _sync_tree(
       proven-own sidecar so no stale fingerprint outlives its bytes;
     * ``retained_generation_keys`` (staging keys relative to ``mutants/``)
       apply the M-002 retain policy: files the run still generates keep
-      their trampolined output, everything else is restored unmutated.
+      their trampolined output, everything else is restored unmutated;
+    * type changes (file <-> directory) of a mirrored path are reconciled
+      before every materialization (:func:`_reconcile_staging_kind`, Q-13):
+      a conflicting staged entry is removed instead of aborting the run, and
+      the deletion pass judges staged files type-aware.
     """
     mutants_root = _validated_mutants_root()
+    _reconcile_staging_kind(destination_root, want_directory=True, mutants_root=mutants_root)
     _validated_staging_destination(destination_root, mutants_root)
     destination_rel = destination_root.resolve().relative_to(mutants_root.resolve())
     destination_key = _staging_key(destination_rel)
@@ -1661,6 +1766,12 @@ def _sync_tree(
         dirs[:] = safe_dirs
         rel_root = Path(root_str).relative_to(source_root)
         destination_directory = destination_root / rel_root
+        # Q-13: reconcile BEFORE the mkdir condition — a live folder that the
+        # boundary fully prunes skips the mkdir, and an old same-named staged
+        # file would otherwise survive the deletion pass type-blind.
+        _reconcile_staging_kind(
+            destination_directory, want_directory=True, mutants_root=mutants_root
+        )
         retained_files: list[str] = []
         for name in files:
             if boundary is not None and boundary.excludes_file(name):
@@ -1685,6 +1796,7 @@ def _sync_tree(
         for name in retained_files:
             src_file = Path(root_str) / name
             dst_file = destination_root / rel_root / name
+            _reconcile_staging_kind(dst_file, want_directory=False, mutants_root=mutants_root)
             _validated_staging_destination(dst_file, mutants_root)
             if dst_file.exists():
                 retain = (
@@ -1712,7 +1824,11 @@ def _sync_tree(
     ) -> bool:
         try:
             return (
-                live_path.exists()
+                # Type-aware (M-030): a staged FILE whose live counterpart
+                # became a directory is not current — the copy pass above
+                # reconciled the target, and a pruned live folder must not
+                # keep an old same-named staged file alive either.
+                live_path.is_file()
                 and live_path.resolve(strict=True) not in excluded_resolved
                 and not (live_boundary is not None and live_boundary.excludes_file(live_name))
             )
@@ -1961,7 +2077,9 @@ def copy_also_copy_files(
     :func:`_sync_tree` (issue #129 / 360°-B6b+C2: ``copytree`` re-copied
     everything on every run and never deleted — removed test files kept
     running inside the staging forever). Cache/venv/tooling directories are
-    skipped via the shared ``_STAGING_SKIP_DIRS`` walk filter.
+    skipped via the shared ``_STAGING_SKIP_DIRS`` walk filter.  Type changes
+    (file <-> directory) at a configured target are reconciled before every
+    materialization (:func:`_reconcile_staging_kind`, Q-13).
 
     Args:
         config: Active ``MutmutConfig`` instance.
@@ -2031,17 +2149,17 @@ def copy_also_copy_files(
             # Remove the exact, revalidated destination instead of silently
             # accepting a haunted staging tree.
             try:
-                destination_mode = destination.lstat().st_mode
+                destination_metadata = destination.lstat()
             except FileNotFoundError:
                 continue
-            if stat.S_ISDIR(destination_mode):
-                shutil.rmtree(destination, onexc=_retry_readonly_removal)
-            else:
-                _unlink_staging_file(destination)
+            _remove_staging_entry(destination, destination_metadata)
             print("     removed stale configured mirror", destination)
             continue
         print("     also copying", path_str)
         if path.is_file():
+            # Q-13: type changes are reconciled before materialization — a
+            # stale staged directory at a file target is removed here.
+            _reconcile_staging_kind(destination, want_directory=False, mutants_root=mutants_root)
             _validated_staging_destination(destination, mutants_root)
             if destination.exists():
                 retain = (
@@ -2054,6 +2172,9 @@ def copy_also_copy_files(
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
         else:
+            # Q-13: the mirror root itself is reconciled (a previously staged
+            # file at the root target is removed) before the tree sync.
+            _reconcile_staging_kind(destination, want_directory=True, mutants_root=mutants_root)
             _sync_tree(
                 path,
                 destination,

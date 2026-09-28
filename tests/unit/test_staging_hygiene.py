@@ -15,6 +15,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -1297,6 +1298,273 @@ class TestVanishedLiveInputs:
             assert relation == "left_missing"
         else:
             assert relation == "both_missing"
+
+
+class TestStagingTypeSwitch:
+    """M-030 / Q-13: file<->directory switches are reconciled, not fatal.
+
+    A live path that switched kind between runs used to abort with a raw
+    ``FileExistsError`` (``mkdir`` over a staged file) or ``PermissionError``
+    (``os.replace`` onto a staged directory) long before the deletion pass
+    could clean up.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def test_file_to_directory_switch_in_automatic_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "thing").is_file()
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        copy_src_dir(cfg)  # pre-fix: FileExistsError from mkdir
+
+        assert (project / "mutants" / "thing" / "data.txt").is_file()
+
+    def test_directory_to_file_switch_in_automatic_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        monkeypatch.setattr(file_setup.time, "sleep", lambda _seconds: None)
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "thing").is_dir()
+
+        shutil.rmtree(thing)
+        thing.write_text("x", encoding="utf-8")
+        copy_src_dir(cfg)  # pre-fix: OSError after the replace retries
+
+        staged = project / "mutants" / "thing"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "x"
+
+    def test_nested_type_switch_roundtrip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File 'a' becomes directory 'a/b/' and back (ergänzung (b))."""
+        project = self._project(tmp_path, monkeypatch)
+        live = project / "a"
+        live.write_text("F", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "a").is_file()
+
+        live.unlink()
+        (live / "b").mkdir(parents=True)
+        (live / "b" / "c.txt").write_text("C", encoding="utf-8")
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "a" / "b" / "c.txt").is_file()
+
+        shutil.rmtree(live)
+        live.write_text("F2", encoding="utf-8")
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "a"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "F2"
+        assert not (project / "mutants" / "a" / "b").exists()
+
+    def test_type_switch_inside_configured_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_sync_tree path without any preceding automatic copy (ergänzung (f))."""
+        project = self._project(tmp_path, monkeypatch)
+        sub = project / "fixtures" / "sub"
+        sub.parent.mkdir()
+        sub.write_text("as-file", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "sub").is_file()
+
+        sub.unlink()
+        sub.mkdir()
+        (sub / "nested.txt").write_text("n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert (project / "mutants" / "fixtures" / "sub" / "nested.txt").is_file()
+
+    def test_type_switch_on_configured_file_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        entry = project / "fixtures" / "cfg"
+        entry.parent.mkdir()
+        entry.write_text("v1", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures/cfg"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "cfg").is_file()
+
+        entry.unlink()
+        entry.mkdir()
+        (entry / "nested.txt").write_text("n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "cfg" / "nested.txt").is_file()
+
+        shutil.rmtree(entry)
+        entry.write_text("v2", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "fixtures" / "cfg"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "v2"
+
+    def test_configured_tree_root_that_was_a_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Directory branch of copy_also_copy_files over a staged file (erg. (g))."""
+        project = self._project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.write_text("was-a-file", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures").is_file()
+
+        fixtures.unlink()
+        fixtures.mkdir()
+        (fixtures / "data.txt").write_text("d", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert (project / "mutants" / "fixtures" / "data.txt").is_file()
+
+    def test_read_only_staged_file_is_replaced_on_switch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "thing"
+        staged.chmod(0o444)
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        copy_src_dir(cfg)
+
+        assert (project / "mutants" / "thing" / "data.txt").is_file()
+
+    def test_junction_staged_entry_with_wrong_kind_is_unsafe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import _winapi
+
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "thing"
+        staged.unlink()
+        junction_target = tmp_path / "junction-target"
+        junction_target.mkdir()
+        try:
+            _winapi.CreateJunction(str(junction_target), str(staged))
+        except AttributeError, OSError, NotImplementedError:
+            # Junction creation unavailable in this environment: simulate the
+            # reparse verdict the destination guard would produce.
+            real_check = file_setup._is_link_or_reparse
+
+            def junction_verdict(path: Path) -> bool:
+                return path == staged or real_check(path)
+
+            monkeypatch.setattr(file_setup, "_is_link_or_reparse", junction_verdict)
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        with pytest.raises(UnsafeStagingError):
+            copy_src_dir(cfg)
+
+    def test_reconcile_guards_root_and_persistent_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        mutants_root = project / "mutants"
+        mutants_root.mkdir()
+        fingerprint = mutants_root / ".mutmut-config-fingerprint"
+        fingerprint.write_text("fp", encoding="utf-8")
+
+        # The staging root itself stays effect-less for directories ...
+        file_setup._reconcile_staging_kind(
+            mutants_root, want_directory=True, mutants_root=mutants_root
+        )
+        assert mutants_root.is_dir()
+        # ... but is never replaced by a file, and persistent state files at
+        # the root are explicitly excluded from reconciliation.
+        with pytest.raises(UnsafeStagingError):
+            file_setup._reconcile_staging_kind(
+                mutants_root, want_directory=False, mutants_root=mutants_root
+            )
+        with pytest.raises(UnsafeStagingError):
+            file_setup._reconcile_staging_kind(
+                fingerprint, want_directory=False, mutants_root=mutants_root
+            )
+        assert fingerprint.read_text(encoding="utf-8") == "fp"
+
+    @given(
+        states=st.lists(
+            st.sampled_from(["file", "dir", "absent"]),
+            min_size=2,
+            max_size=4,
+        )
+    )
+    @settings(max_examples=15, deadline=None)
+    def test_type_state_sequence_property(self, states: list[str]) -> None:
+        """After every copy_src_dir the staged kind mirrors the live kind and
+        no raw OSError escapes the copy phase."""
+        import contextlib
+        import tempfile
+
+        live_root = Path(tempfile.mkdtemp(prefix="mutmut-kind-prop-"))
+        try:
+            (live_root / "src").mkdir()
+            (live_root / "src" / "mod.py").write_text("X = 1\n", encoding="utf-8")
+            cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+            live = live_root / "thing"
+            staged = live_root / "mutants" / "thing"
+            with contextlib.chdir(live_root):
+                for state in states:
+                    if live.is_dir():
+                        shutil.rmtree(live)
+                    elif live.exists() or live.is_symlink():
+                        live.unlink()
+                    if state == "file":
+                        live.write_text("F", encoding="utf-8")
+                    elif state == "dir":
+                        live.mkdir()
+                        (live / "data.txt").write_text("D", encoding="utf-8")
+                    copy_src_dir(cfg)
+                    if state == "file":
+                        assert staged.is_file()
+                        assert staged.read_text(encoding="utf-8") == "F"
+                    elif state == "dir":
+                        assert staged.is_dir()
+                        assert (staged / "data.txt").is_file()
+                    else:
+                        assert not staged.exists()
+        finally:
+            shutil.rmtree(live_root, ignore_errors=True)
 
 
 class TestForceHonesty:
