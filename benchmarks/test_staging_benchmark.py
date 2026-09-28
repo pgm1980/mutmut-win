@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.file_setup import copy_src_dir
+from mutmut_win.file_setup import _iter_automatic_staging_inputs, copy_src_dir
 from mutmut_win.models import SourceFileMutationData
 
 if TYPE_CHECKING:
@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 
 #: Number of source modules in the synthetic project.
 _MODULE_COUNT = 25
+
+#: Number of modules in the ignored mutation-root tree (AP-10 / M-032).
+_FORCED_TREE_FILES = 50
 
 _SOURCE = "def add(a, b):\n    return a + b\n"
 _GENERATED = (
@@ -78,6 +81,81 @@ def staging_project() -> Iterator[Path]:
         _build_project(root)
         with contextlib.chdir(root):
             yield root
+
+
+def _build_forced_root_project(root: Path) -> None:
+    """Add a git-ignored tree that ``paths_to_mutate`` force-includes.
+
+    AP-10 / M-032: the mutation search walks ``generated/`` with
+    ``descend_forced`` semantics; the automatic staging mirror must walk it
+    through the same forced roots (additional walk cost to be benchmarked),
+    and M-030 adds one ``lstat`` per staged directory and file.
+    """
+    _build_project(root)
+    (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    generated = root / "generated"
+    generated.mkdir()
+    for index in range(_FORCED_TREE_FILES):
+        (generated / f"gen{index:02d}.py").write_text(_SOURCE, encoding="utf-8")
+
+
+@pytest.fixture
+def forced_root_project() -> Iterator[Path]:
+    """Yield a synthetic project whose mutation root is git-ignored."""
+    with tempfile.TemporaryDirectory(prefix="mutmut-staging-forced-bench-") as name:
+        root = Path(name).resolve()
+        _build_forced_root_project(root)
+        with contextlib.chdir(root):
+            yield root
+
+
+def test_iter_automatic_staging_inputs_plain(
+    benchmark: BenchmarkFixture, staging_project: Path
+) -> None:
+    """Namespace preflight planning over the plain synthetic project."""
+    assert staging_project.is_dir()
+
+    def run() -> None:
+        list(_iter_automatic_staging_inputs(frozenset()))
+
+    benchmark.pedantic(run, rounds=5, iterations=1)
+
+
+def test_iter_automatic_staging_inputs_with_forced_roots(
+    benchmark: BenchmarkFixture, forced_root_project: Path
+) -> None:
+    """Namespace preflight planning including the forced mutation root (M-032)."""
+    from mutmut_win.file_setup import _forced_mutation_roots
+    from mutmut_win.gitignore_boundary import GitignoreBoundary
+
+    assert forced_root_project.is_dir()
+    project_root = forced_root_project.resolve()
+    config = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+    forced_roots = _forced_mutation_roots(
+        config, GitignoreBoundary.load(project_root), project_root
+    )
+    assert forced_roots
+
+    def run() -> None:
+        list(_iter_automatic_staging_inputs(frozenset(), forced_roots=forced_roots))
+
+    benchmark.pedantic(run, rounds=5, iterations=1)
+
+
+def test_followup_run_forced_root_copy_src_dir(
+    benchmark: BenchmarkFixture, forced_root_project: Path
+) -> None:
+    """copy_src_dir follow-up run with a git-ignored mutation root (M-032)."""
+    assert forced_root_project.is_dir()
+    config = MutmutConfig(
+        paths_to_mutate=["src", "generated"],
+        max_children=1,
+    )
+
+    def run() -> None:
+        copy_src_dir(config)
+
+    benchmark.pedantic(run, rounds=5, iterations=1)
 
 
 def test_followup_run_coverage_mode_copy_src_dir(

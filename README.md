@@ -478,6 +478,17 @@ Normal mutation runs never modify original sources; execution happens in the
 backs up and atomically replaces the selected source file. Add `mutants/`,
 `.mutmut-cache/` and `.mutmut-win-*.run.lock*` to `.gitignore`.
 
+**`.gitignore` limits of staging:** staging walks, staging copies, and the
+execution-basis fingerprint respect hierarchical project-local `.gitignore`
+files, so correctly ignored build trees are neither staged nor hashed.
+Explicitly configured entries are the deliberate exception — `paths_to_mutate`,
+`also_copy`, and `extra_paths` entries are force-included with git `add -f`
+semantics (an ignore file *inside* such an entry still governs its contents).
+A git-ignored `paths_to_mutate` root is therefore fully staged, non-`.py`
+resources included, exactly matching the mutation surface; its bytes are also
+bound into the run-basis evidence. Dotenv files stay out of staging even when
+ignored, but their bytes keep binding the basis.
+
 ## Development
 
 ```bash
