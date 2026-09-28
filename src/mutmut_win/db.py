@@ -402,6 +402,18 @@ def _inspect_cache_leaf(
             if _attempt < 2:
                 continue
             _unsafe_cache_path(path, f"SQLite {label} still has no links after repeated validation")
+        if metadata.st_nlink == 0:
+            # A zero link count means the metadata itself could not be read
+            # (the CPython lstat fallback for an unopenable regular file),
+            # not that a second directory entry was observed. The sidecar
+            # branch above has already retried, so this is the database leaf
+            # refusing fail-closed on the first observation (M-095 / Q-45).
+            _unsafe_cache_path(
+                path,
+                f"SQLite {label} reports no links (link count 0); its metadata "
+                "could not be read reliably, so it cannot be verified as a "
+                "single-link file",
+            )
         if metadata.st_nlink != 1:
             _unsafe_cache_path(path, f"SQLite {label} is a hardlink ({metadata.st_nlink} links)")
         try:
