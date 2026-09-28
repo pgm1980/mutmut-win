@@ -128,8 +128,8 @@ class TestRunnerUsesConfiguredTimeouts:
 
     def test_coverage_collection_builds_a_coverage_run_command(self, tmp_path: Path) -> None:
         """Issue #95: the coverage bridge runs pytest UNDER `coverage run`
-        with an explicit data file inside mutants/ — the parent loads the
-        data file afterwards."""
+        with an explicit external data file — the parent loads the data
+        file afterwards."""
         runner = PytestRunner(MutmutConfig())
         data_file = tmp_path / ".coverage.mutmut"
         with phase_popen(0) as mock_popen:

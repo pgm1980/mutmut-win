@@ -86,6 +86,55 @@ class TestCoverageGatingEndToEnd:
         )
         assert all("never_called" not in name for name in gated_names)
 
+    def test_relative_files_config_is_collected_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-018: the staged project coverage config may set relative_files=true.
+
+        ``coverage run`` then stores every measured path RELATIVE to its
+        working directory (``mutants/``); the parent must still match those
+        keys against the staged source files instead of rejecting the
+        measurement as "no coverage".
+        """
+        monkeypatch.chdir(tmp_path)
+        _build_mutants_tree(tmp_path)
+        (tmp_path / "mutants" / "pyproject.toml").write_text(
+            "[tool.coverage.run]\nrelative_files = true\n", encoding="utf-8"
+        )
+        runner = PytestRunner(MutmutConfig(tests_dir=["tests"]))
+
+        covered_map = gather_coverage(runner, ["src/pkg/mod.py"])
+        file_covered = get_covered_lines_for_file("src/pkg/mod.py", covered_map)
+
+        assert file_covered is not None
+        assert 2 in file_covered  # body of covered()
+        assert 6 not in file_covered  # body of never_called() was never run
+
+    def test_parallel_true_config_is_collected_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-019: parallel=true writes suffixed parts that must be merged.
+
+        The staged project coverage configuration may force parallel data
+        files (``parallel = true``; ``concurrency = multiprocessing`` forces
+        it too): coverage then never writes the suffixless data file, so the
+        parent must collect and merge every part of the exclusive output
+        directory instead of failing with "produced no data file".
+        """
+        monkeypatch.chdir(tmp_path)
+        _build_mutants_tree(tmp_path)
+        (tmp_path / "mutants" / "pyproject.toml").write_text(
+            "[tool.coverage.run]\nparallel = true\n", encoding="utf-8"
+        )
+        runner = PytestRunner(MutmutConfig(tests_dir=["tests"]))
+
+        covered_map = gather_coverage(runner, ["src/pkg/mod.py"])
+        file_covered = get_covered_lines_for_file("src/pkg/mod.py", covered_map)
+
+        assert file_covered is not None
+        assert 2 in file_covered  # body of covered()
+        assert 6 not in file_covered  # body of never_called() was never run
+
     def test_followup_run_measures_original_lines_not_generator_lines(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

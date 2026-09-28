@@ -300,9 +300,13 @@ Notes:
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
-  Code exercised only in test-spawned subprocesses or pytest-xdist
-  workers is invisible to it — such a run fails loudly instead of
-  silently filtering every mutant. Follow-up runs restore every target to
+  The project's own coverage configuration is honored: `relative_files
+  = true` keys are resolved against the staged `mutants/` tree before
+  matching, and parallel data files (`parallel = true`, including
+  `concurrency = multiprocessing` children) are merged into one
+  measurement. Code exercised only in test-spawned subprocesses or
+  pytest-xdist workers is invisible to it — such a run fails loudly
+  instead of silently filtering every mutant. Follow-up runs restore every target to
   its unmutated bytes before the coverage phase, so coverage always
   measures original line numbers. The trade-off: in this mode no
   trampolined output survives between runs — every file is re-generated
