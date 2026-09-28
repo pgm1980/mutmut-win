@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import copy
 import hashlib
 import importlib.machinery
 import itertools
@@ -25,6 +26,7 @@ import stat
 import sys
 import time
 import tokenize
+import tomllib
 import warnings
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
@@ -2256,6 +2258,68 @@ def config_fingerprint_matches(
     return False
 
 
+#: M-035: uv-sources table headers, anchored to real TOML header lines
+#: (``re.MULTILINE``; optional indentation and trailing comment).  The body
+#: runs to the next header-like line or EOF.  ``Path.read_text`` uses
+#: universal newlines, so no ``\r`` handling is needed.
+_UV_SOURCES_TABLE_RE = re.compile(
+    r"^[ \t]*\[tool\.uv\.sources(?:\.[^\]\n]+)?\][ \t]*(?:#[^\n]*)?\n"
+    r"(?:(?!^[ \t]*\[)[^\n]*\n?)*",
+    re.MULTILINE,
+)
+
+#: M-035: an empty ``[tool.uv]`` header (body collapsed after the sources
+#: removal above) directly followed by the next header or EOF.
+_EMPTY_TOOL_UV_TABLE_RE = re.compile(
+    r"^[ \t]*\[tool\.uv\][ \t]*(?:#[^\n]*)?\n(?=^[ \t]*\[|\Z)",
+    re.MULTILINE,
+)
+
+
+def _without_uv_sources(document: dict[str, object]) -> dict[str, object]:
+    """Return a deep copy of a parsed TOML document without uv sources.
+
+    ``tool.uv.sources`` is removed; ``tool.uv`` and ``tool`` parents that
+    become empty are removed with it.  Applied symmetrically to the original
+    and the cleaned document, this is the semantic equality oracle for
+    :func:`_sanitise_mutants_pyproject`.
+    """
+    cleaned = copy.deepcopy(document)
+    tool = cleaned.get("tool")
+    if not isinstance(tool, dict):
+        return cleaned
+    uv = tool.get("uv")
+    if isinstance(uv, dict):
+        uv.pop("sources", None)
+        if not uv:
+            del tool["uv"]
+    if not tool:
+        cleaned.pop("tool", None)
+    return cleaned
+
+
+def _remove_uv_table_candidates(content: str, expected_document: dict[str, object]) -> str:
+    """Remove anchored uv table headers one candidate at a time.
+
+    Matches are processed right-to-left so the spans of earlier matches
+    stay valid as text shrinks.  A removal is kept only when the remaining
+    text still parses and is semantically the original document minus
+    ``tool.uv.sources`` — a table pattern inside a TOML string fails that
+    proof (broken parse or changed string value) and is left in place.
+    """
+    cleaned = content
+    for pattern in (_UV_SOURCES_TABLE_RE, _EMPTY_TOOL_UV_TABLE_RE):
+        for match in reversed(list(pattern.finditer(cleaned))):
+            candidate = cleaned[: match.start()] + cleaned[match.end() :]
+            try:
+                candidate_document = tomllib.loads(candidate, parse_float=str)
+            except tomllib.TOMLDecodeError:
+                continue
+            if _without_uv_sources(candidate_document) == expected_document:
+                cleaned = candidate
+    return cleaned
+
+
 def _sanitise_mutants_pyproject() -> None:
     """Remove uv source tables from the copied pyproject.toml in mutants/.
 
@@ -2270,6 +2334,17 @@ def _sanitise_mutants_pyproject() -> None:
     kept the "Distribution not found at: file:///..." error alive). The
     inline dotted-key form (``sources.pkg = {...}`` inside ``[tool.uv]``)
     is NOT covered — that would need parse-and-rewrite, not a regex.
+
+    M-035 makes the removal TOML-safe: both patterns are anchored to real
+    header lines (line start, optional indentation, optional trailing
+    comment), and every single removal must pass a semantic proof — the
+    remaining text parses and equals the original document minus
+    ``tool.uv.sources``.  Both parses use ``parse_float=str`` so documents
+    containing ``nan`` compare equal to themselves.  When the original does
+    not parse, or no candidate passes the proof, nothing is written: the
+    staged copy stays byte-identical to the user's file (so pytest reports
+    the user's real error, not a sanitiser artefact) and a
+    ``RuntimeWarning`` is emitted for the rejected-removal case.
     """
     pyproject_path = Path("mutants") / "pyproject.toml"
     mutants_root = _validated_mutants_root()
@@ -2282,33 +2357,38 @@ def _sanitise_mutants_pyproject() -> None:
     except OSError:
         return
 
-    # Remove [tool.uv.sources] / [tool.uv.sources.<pkg>] sections — each
-    # header plus everything until the next section header or EOF (the
-    # final line may lack a trailing newline).
-    import re
+    try:
+        expected_document = _without_uv_sources(tomllib.loads(content, parse_float=str))
+    except tomllib.TOMLDecodeError:
+        # The user's own file is broken; leave the staged copy byte-identical
+        # so the pytest config boundary reports the genuine syntax error.
+        return
 
-    cleaned = re.sub(
-        r"\[tool\.uv\.sources(?:\.[^\]]+)?\]\s*\n(?:(?!\[)[^\n]*\n?)*",
-        "",
-        content,
-    )
+    if not (_UV_SOURCES_TABLE_RE.search(content) or _EMPTY_TOOL_UV_TABLE_RE.search(content)):
+        return
 
-    # Also remove [tool.uv] if it only contained sources (now empty)
-    cleaned = re.sub(
-        r"\[tool\.uv\]\s*\n(?=\[|\Z)",
-        "",
-        cleaned,
-    )
+    cleaned = _remove_uv_table_candidates(content, expected_document)
+    try:
+        final_document: dict[str, object] | None = tomllib.loads(cleaned, parse_float=str)
+    except tomllib.TOMLDecodeError:
+        final_document = None
+    if cleaned == content or final_document != expected_document:
+        warnings.warn(
+            "mutants/pyproject.toml: [tool.uv.sources] could not be removed without "
+            "changing other TOML content; staged copy left unchanged",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
 
-    if cleaned != content:
-        for attempt in range(5):
-            try:
-                _atomic_write_text(pyproject_path, cleaned)
-                break
-            except OSError:
-                if attempt < 4:
-                    time.sleep(0.1 * (2**attempt))
-                # Last attempt failed — continue silently, sanitisation is best-effort
+    for attempt in range(5):
+        try:
+            _atomic_write_text(pyproject_path, cleaned)
+            break
+        except OSError:
+            if attempt < 4:
+                time.sleep(0.1 * (2**attempt))
+            # Last attempt failed — continue silently, sanitisation is best-effort
 
 
 # ---------------------------------------------------------------------------
