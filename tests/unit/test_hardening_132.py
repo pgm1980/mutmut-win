@@ -22,12 +22,18 @@ C6: status maps are plain dicts — lookups cannot grow them.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.constants import Profile
@@ -490,6 +496,103 @@ class TestSetupCfgParity:
         (tmp_path / "setup.cfg").write_text("[mutmut]\npaths_to_mutate = src/\n", encoding="utf-8")
         load_config(tmp_path)
         assert capsys.readouterr().err == ""
+
+    # -- M-080 (AP-18 / Q-37): [DEFAULT] keys are not [mutmut] typos -------
+
+    def test_default_only_key_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # parser.options('mutmut') exposes the EFFECTIVE view including
+        # [DEFAULT] inheritance, so a [DEFAULT]-only key used to produce
+        # a false typo warning on every run.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\nauthor_note = x\n[mutmut]\npaths_to_mutate = src/\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.paths_to_mutate == ["src/"]
+        assert capsys.readouterr().err == ""
+
+    def test_unknown_key_in_default_and_mutmut_still_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The key literally appears in [mutmut] — the warning stays (and
+        # proves the check did not simply switch to ignoring everything).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\nzz_typo = 1\n[mutmut]\npaths_to_mutate = src/\nzz_typo = 2\n",
+            encoding="utf-8",
+        )
+        load_config(tmp_path)
+        err = capsys.readouterr().err
+        assert "zz_typo" in err
+        assert "unknown" in err.lower()
+
+    def test_default_value_inheritance_is_preserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Parity with mutmut 3.5.0 INI semantics: VALUES are still
+        # inherited from [DEFAULT] — only the diagnostic changed.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\ndebug = true\n[mutmut]\npaths_to_mutate = src/\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.debug is True
+
+    def test_double_default_headers_do_not_warn_or_fail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The strict parser accepts repeated [DEFAULT] headers; the
+        # diagnostic parser must not reject what the strict one accepts.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\na = 1\n[DEFAULT]\nb = 2\n[mutmut]\npaths_to_mutate = src/\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.paths_to_mutate == ["src/"]
+        assert capsys.readouterr().err == ""
+
+    def test_default_section_without_mutmut_keeps_defaults_quietly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text("[DEFAULT]\nauthor_note = x\n", encoding="utf-8")
+        config = load_config(tmp_path)
+        assert isinstance(config, MutmutConfig)
+        assert capsys.readouterr().err == ""
+
+    @given(
+        key=st.from_regex(r"[a-z][a-z_]{2,11}", fullmatch=True).filter(
+            lambda k: k not in MutmutConfig.model_fields
+        )
+    )
+    def test_generated_default_key_never_warns_but_section_key_does(self, key: str) -> None:
+        # No function-scoped fixtures under @given (health check
+        # function_scoped_fixture): temp dir and stderr capture live in
+        # the test body.
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "setup.cfg").write_text(
+                f"[DEFAULT]\n{key} = 1\n[mutmut]\npaths_to_mutate = src/\n",
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                load_config(project)
+            assert key not in stderr.getvalue()
+
+            (project / "setup.cfg").write_text(
+                f"[DEFAULT]\n{key} = 1\n[mutmut]\npaths_to_mutate = src/\n{key} = 2\n",
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                load_config(project)
+            assert key in stderr.getvalue()
 
 
 class TestBatchPersistence:

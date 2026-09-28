@@ -217,7 +217,11 @@ timeout classification retain their existing behavior.
 
 Everything lives in `pyproject.toml` under `[tool.mutmut]` (CLI flags
 override per run). Unknown keys produce a warning with a did-you-mean
-suggestion.
+suggestion. A `setup.cfg` `[mutmut]` section is honored as fallback when
+`pyproject.toml` has no `[tool.mutmut]` table. Both files must be UTF-8:
+a `pyproject.toml` or `setup.cfg` that exists but cannot be read (for
+example a locked file) or decoded is a configuration error (exit 2),
+never silent defaults.
 
 ```toml
 [tool.mutmut]

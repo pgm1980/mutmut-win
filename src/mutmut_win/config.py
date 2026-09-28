@@ -456,6 +456,48 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
     return config.model_copy(update={"also_copy": config.also_copy + default_also_copy})
 
 
+#: Sentinel ``default_section`` for the M-080 diagnostic parser: a
+#: newline can never occur inside an INI section header, so no literal
+#: section is treated as the defaults section and ``[DEFAULT]`` becomes
+#: an ordinary section whose keys are NOT inherited into ``[mutmut]``.
+_NO_DEFAULT_SECTION_SENTINEL = "\n"
+
+
+def _read_setup_cfg_text(path: Path) -> str | None:
+    """Read setup.cfg once as UTF-8 text (M-027 / M-079, Q-37).
+
+    ``ConfigParser.read`` swallows every ``OSError`` around its whole
+    ``with`` block, and under Windows a byte-range lock (msvcrt) opens
+    fine and fails only at ``read()`` — so an existing-but-unreadable
+    setup.cfg used to degrade to silent ``MutmutConfig()`` defaults.
+    Reading explicitly makes only ``FileNotFoundError`` proven absence;
+    UTF-8 decoding also happens at ``read()`` time, so both failures
+    must sit inside the SAME try block.
+
+    Args:
+        path: Path of the setup.cfg file.
+
+    Returns:
+        The file content as text, or ``None`` if the file is absent.
+
+    Raises:
+        ConfigError: If the file exists but cannot be read (any
+            ``OSError`` other than ``FileNotFoundError``) or is not
+            valid UTF-8.
+    """
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as exc:
+        msg = f"Failed to read setup.cfg: file is not valid UTF-8 ({exc})"
+        raise ConfigError(msg) from exc
+    except OSError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+
+
 def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     """Attempt to load mutmut configuration from setup.cfg [mutmut] section.
 
@@ -467,17 +509,22 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     Returns:
         ``MutmutConfig`` loaded from setup.cfg, or ``None`` if the file does
         not exist or has no ``[mutmut]`` section.
+
+    Raises:
+        ConfigError: If an existing setup.cfg cannot be read, is not valid
+            UTF-8, or cannot be parsed.
     """
     setup_cfg_path = project_dir / "setup.cfg"
-    if not setup_cfg_path.exists():
+    text = _read_setup_cfg_text(setup_cfg_path)
+    if text is None:
         return None
 
     # Percent signs are ordinary command/config characters here, not
     # ConfigParser interpolation markers (MW220-036).
     parser = ConfigParser(interpolation=None)
     try:
-        parser.read(str(setup_cfg_path), encoding="utf-8")
-    except (ConfigParserError, OSError) as exc:
+        parser.read_string(text, source=str(setup_cfg_path))
+    except ConfigParserError as exc:
         msg = f"Failed to read setup.cfg: {exc}"
         raise ConfigError(msg) from exc
 
@@ -503,7 +550,26 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     # silently ignored — the run proceeded with defaults and the user
     # believed the option was active. The known set is the model itself,
     # so new fields can never drift out of this check.
-    unknown = sorted(set(parser.options("mutmut")) - set(MutmutConfig.model_fields))
+    #
+    # M-080: parser.options() exposes the EFFECTIVE view, so keys merely
+    # inherited from [DEFAULT] produced a false typo warning on every
+    # run. A second, purely diagnostic parse of the SAME text — with a
+    # sentinel default_section (see _NO_DEFAULT_SECTION_SENTINEL) and
+    # strict=False, because the strict parser accepts repeated [DEFAULT]
+    # headers — yields the section-local key set. VALUE inheritance from
+    # [DEFAULT] stays with the strict parser (mutmut 3.5.0 parity).
+    diagnostic_parser = ConfigParser(
+        interpolation=None,
+        default_section=_NO_DEFAULT_SECTION_SENTINEL,
+        strict=False,
+    )
+    try:
+        diagnostic_parser.read_string(text, source=str(setup_cfg_path))
+        local_keys = set(diagnostic_parser.options("mutmut"))
+    except ConfigParserError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+    unknown = sorted(local_keys - set(MutmutConfig.model_fields))
     if unknown:
         print(
             f"Warning: setup.cfg [mutmut] contains unknown option(s): "
@@ -570,7 +636,9 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         Validated MutmutConfig instance.
 
     Raises:
-        ConfigError: If pyproject.toml cannot be read or parsed.
+        ConfigError: If pyproject.toml cannot be read, is not valid UTF-8,
+            or cannot be parsed; if an existing setup.cfg cannot be read,
+            is not valid UTF-8, or cannot be parsed.
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -586,6 +654,13 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     try:
         with pyproject_path.open("rb") as f:
             data = tomllib.load(f)
+    except UnicodeDecodeError as e:
+        # M-079: tomllib decodes lazily, so an undecodable file raises
+        # UnicodeDecodeError (a ValueError) past the tuple below —
+        # keep the 'Failed to read' contract prefix for the CLI exit-2
+        # path.
+        msg = f"Failed to read pyproject.toml: file is not valid UTF-8 ({e})"
+        raise ConfigError(msg) from e
     except (tomllib.TOMLDecodeError, OSError) as e:
         msg = f"Failed to read pyproject.toml: {e}"
         raise ConfigError(msg) from e
