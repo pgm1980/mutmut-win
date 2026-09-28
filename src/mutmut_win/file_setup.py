@@ -139,6 +139,195 @@ def _walk_boundary_map(
     return {walk_root: boundary}
 
 
+def _forced_mutation_roots(
+    config: MutmutConfig,
+    project_boundary: GitignoreBoundary,
+    project_root: Path,
+) -> list[tuple[Path, GitignoreBoundary | None]]:
+    """Return mutation roots the regular mirror walk would prune (M-032).
+
+    ``paths_to_mutate`` entries are force-included by the mutation search
+    (``git add -f`` semantics via :func:`_configured_entry_boundary`), while
+    the automatic mirror resolves the project tree with normal ``descend()``
+    rules and prunes ignored subtrees — so explicitly configured, git-ignored
+    mutation roots were mutated but never staged.  This helper derives exactly
+    those roots the normal walk would prune, together with the forced boundary
+    governing their contents, so preflight and copy phase walk the same
+    surface as the mutation search (Q-14).
+
+    Args:
+        config: Active ``MutmutConfig`` instance.
+        project_boundary: Boundary loaded at *project_root*.
+        project_root: Resolved project root.
+
+    Returns:
+        Sorted ``(root, boundary)`` pairs; *root* is the canonical
+        project-relative walk path of one forced entry.
+    """
+    forced: list[tuple[tuple[str, ...], Path, GitignoreBoundary | None]] = []
+    for raw in config.paths_to_mutate:
+        entry = Path(raw)
+        try:
+            relative = entry.resolve(strict=False).relative_to(project_root)
+        except (OSError, ValueError):  # fmt: skip
+            continue
+        if str(relative) in {".", ""} or not entry.exists():
+            continue
+        parts = relative.parts
+        if _is_staging_skip_dir(parts[-1], at_workspace_root=len(parts) == 1):
+            # Only gitignore-based pruning is forced here (M-032 scope); a
+            # root the staging filter skips for workspace reasons (venv,
+            # caches, …) is not resurrected by being configured.
+            continue
+        folded = tuple(part.casefold() for part in parts)
+        if any(folded[: len(other)] == other for other, _root, _boundary in forced):
+            # A descendant of an already forced root shares its walk.
+            continue
+        parent_boundary = project_boundary.descend(*parts[:-1])
+        pruned_by_regular_walk = (
+            parent_boundary.excludes_directory(parts[-1])
+            if entry.is_dir()
+            else parent_boundary.excludes_file(parts[-1])
+        )
+        if not pruned_by_regular_walk:
+            continue
+        forced.append(
+            (
+                folded,
+                Path(*parts),
+                _configured_entry_boundary(project_boundary, project_root, entry),
+            )
+        )
+    forced.sort(key=lambda item: item[0])
+    return [(root, boundary) for _key, root, boundary in forced]
+
+
+def _iter_mirror_walk_entries(
+    *,
+    excluded_resolved: frozenset[Path],
+    warn_on_skip: bool,
+    forced_roots: Sequence[tuple[Path, GitignoreBoundary | None]] = (),
+) -> Iterator[tuple[bool, Path, Path]]:
+    """Yield ``(is_directory, source, relative_target)`` mirror walk entries.
+
+    Q-14: the namespace preflight (:func:`_iter_automatic_staging_inputs`) and
+    the copy phase (:func:`copy_src_dir`) share this single walk source, so
+    both model exactly the same surface.  The walked roots are the standard
+    ``SOURCE_ROOT_NAMES`` plus the project root plus the forced mutation
+    roots of M-032 (git-ignored ``paths_to_mutate`` entries entered with
+    ``git add -f`` boundaries).  Directory entries are yielded parents-first;
+    ``relative_target`` equals the project-relative source path.
+
+    Args:
+        excluded_resolved: Resolved caller-owned paths never staged.
+        warn_on_skip: Emit :class:`RuntimeWarning` for pruned links and
+            unprovable containment (the copy phase does, the read-only
+            preflight stays silent).
+        forced_roots: ``(root, boundary)`` pairs from
+            :func:`_forced_mutation_roots`.
+    """
+    project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
+
+    def skipped(candidate: Path, detail: str) -> None:
+        if warn_on_skip:
+            _warn_skipped_source_link(candidate, detail)
+
+    walk_roots: list[tuple[Path, GitignoreBoundary | None, bool]] = [
+        (Path(name), project_boundary.descend(name), False) for name in SOURCE_ROOT_NAMES
+    ]
+    walk_roots.append((Path(), project_boundary, True))
+    walk_roots.extend((root, boundary, False) for root, boundary in forced_roots)
+    for source_root, root_boundary, is_dot_root in walk_roots:
+        if not source_root.exists():
+            continue
+        if not source_root.is_dir():
+            # A forced single-file mutation root (M-032) is staged as one
+            # target without a boundary check, exactly like walk_all_files
+            # treats configured file entries.
+            try:
+                if _is_link_or_reparse(source_root):
+                    skipped(source_root, "file links are not copied into executable staging")
+                    continue
+                resolved = source_root.resolve(strict=True)
+                resolved.relative_to(project_root)
+            except (OSError, ValueError) as exc:
+                skipped(source_root, f"cannot prove project containment ({exc})")
+                continue
+            if resolved in excluded_resolved:
+                continue
+            yield False, source_root, source_root
+            continue
+        boundaries = _walk_boundary_map(source_root, root_boundary)
+        for root_str, dirs, files in os.walk(source_root):
+            source_directory = Path(root_str)
+            boundary = boundaries.get(source_directory)
+            try:
+                if _is_link_or_reparse(source_directory):
+                    skipped(
+                        source_directory,
+                        "directory links are not copied into executable staging",
+                    )
+                    dirs[:] = []
+                    continue
+                source_directory.resolve(strict=True).relative_to(project_root)
+            except (OSError, ValueError) as exc:
+                skipped(source_directory, f"cannot prove project containment ({exc})")
+                dirs[:] = []
+                continue
+            # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
+            # git-ignored subtrees (MBR-2026-09-14-01).
+            safe_dirs: list[str] = []
+            at_workspace_root = source_directory.resolve() == project_root
+            for directory in dirs:
+                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                    continue
+                if boundary is not None and boundary.excludes_directory(directory):
+                    continue
+                candidate = source_directory / directory
+                try:
+                    if _is_link_or_reparse(candidate):
+                        skipped(
+                            candidate,
+                            "directory links are not copied into executable staging",
+                        )
+                        continue
+                    candidate.resolve().relative_to(project_root)
+                except (OSError, ValueError) as exc:
+                    skipped(candidate, f"cannot prove project containment ({exc})")
+                    continue
+                safe_dirs.append(directory)
+                if boundary is not None:
+                    boundaries[candidate] = boundary.enter(directory)
+            dirs[:] = safe_dirs
+            if is_dot_root and at_workspace_root:
+                # The explicit roots above already mirrored src/source —
+                # walking them again from "." doubled the largest trees
+                # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
+                # is not covered by the explicit roots and must stay.
+                source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
+                dirs[:] = [name for name in dirs if name.casefold() not in source_root_names]
+            yield True, source_directory, source_directory
+            for name in files:
+                if _skip_automatic_root_file(name):
+                    continue
+                if boundary is not None and boundary.excludes_file(name):
+                    continue
+                source = source_directory / name
+                try:
+                    if _is_link_or_reparse(source):
+                        skipped(source, "file links are not copied into executable staging")
+                        continue
+                    resolved = source.resolve(strict=True)
+                    resolved.relative_to(project_root)
+                except (OSError, ValueError) as exc:
+                    skipped(source, f"cannot prove project containment ({exc})")
+                    continue
+                if resolved in excluded_resolved:
+                    continue
+                yield False, source, source
+
+
 def _is_staging_skip_dir(name: str, *, at_workspace_root: bool) -> bool:
     """Apply root-only and recursive exclusions with Windows case-folding."""
     folded = name.casefold()
@@ -523,85 +712,34 @@ def _staging_key(path: Path) -> tuple[str, ...]:
 
 def _iter_automatic_staging_inputs(
     excluded_resolved: frozenset[Path],
+    *,
+    forced_roots: Sequence[tuple[Path, GitignoreBoundary | None]] = (),
 ) -> Iterator[tuple[Path, Path]]:
-    """Yield file/directory ownership planned for the automatic root mirror."""
+    """Yield file/directory ownership planned for the automatic root mirror.
 
-    project_root = Path.cwd().resolve()
-    project_boundary = GitignoreBoundary.load(project_root)
-    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
-        source_root = Path(source_root_name)
-        if not source_root.is_dir():
-            continue
-        walk_boundary = (
-            project_boundary
-            if source_root_name == "."
-            else project_boundary.descend(source_root_name)
-        )
-        boundaries = _walk_boundary_map(source_root, walk_boundary)
-        for root_str, dirs, files in os.walk(source_root):
-            source_directory = Path(root_str)
-            try:
-                if _is_link_or_reparse(source_directory):
-                    dirs[:] = []
-                    continue
-                source_directory.resolve(strict=True).relative_to(project_root)
-            except (OSError, ValueError):  # fmt: skip
-                dirs[:] = []
-                continue
-            boundary = boundaries.get(source_directory)
-            safe_dirs: list[str] = []
-            at_workspace_root = Path(root_str).resolve() == project_root
-            for directory in dirs:
-                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
-                    continue
-                if boundary is not None and boundary.excludes_directory(directory):
-                    continue
-                candidate = Path(root_str) / directory
-                try:
-                    if _is_link_or_reparse(candidate):
-                        continue
-                    candidate.resolve().relative_to(project_root)
-                except (
-                    OSError,
-                    ValueError,
-                ):  # fmt: skip
-                    continue
-                safe_dirs.append(directory)
-                if boundary is not None:
-                    boundaries[candidate] = boundary.enter(directory)
-            dirs[:] = safe_dirs
-            if source_root_name == "." and Path(root_str).resolve() == project_root:
-                source_roots = {name.casefold() for name in SOURCE_ROOT_NAMES}
-                dirs[:] = [name for name in dirs if name.casefold() not in source_roots]
+    The walk itself comes from :func:`_iter_mirror_walk_entries` (Q-14), the
+    single walk source shared with :func:`copy_src_dir`.  *forced_roots*
+    (M-032) adds the git-ignored mutation roots the regular walk would prune,
+    so the namespace preflight models exactly the surface the copy phase
+    stages — mutation search and mirror no longer disagree about explicitly
+    configured entries.
+    """
 
-            target_directory = Path(root_str)
-            if _staging_key(target_directory):
+    for is_directory, source, relative_target in _iter_mirror_walk_entries(
+        excluded_resolved=excluded_resolved,
+        warn_on_skip=False,
+        forced_roots=forced_roots,
+    ):
+        if is_directory:
+            if _staging_key(relative_target):
                 # ``mutants/`` itself is the engine-owned staging root, not a
                 # project input that conflicts with every configured mirror
                 # nested below it.  Descendant directories remain explicit
                 # ownership entries so empty namespace packages participate
                 # in collision preflight.
-                yield source_directory, target_directory
-
-            for name in files:
-                if _skip_automatic_root_file(name):
-                    continue
-                if boundary is not None and boundary.excludes_file(name):
-                    continue
-                source = Path(root_str) / name
-                try:
-                    if _is_link_or_reparse(source):
-                        continue
-                    resolved = source.resolve(strict=True)
-                    resolved.relative_to(project_root)
-                except (
-                    OSError,
-                    ValueError,
-                ):  # fmt: skip
-                    continue
-                if resolved in excluded_resolved:
-                    continue
-                yield source, Path(root_str) / name
+                yield source, relative_target
+            continue
+        yield source, relative_target
 
 
 def _iter_configured_staging_inputs(
@@ -856,7 +994,14 @@ def validate_staging_namespace(
             import_roots.append(extra_path)
 
     collisions: set[tuple[str, str, str]] = set()
-    automatic_inputs = list(_iter_automatic_staging_inputs(frozen_exclusions))
+    forced_roots = _forced_mutation_roots(
+        config,
+        GitignoreBoundary.load(project_root),
+        project_root,
+    )
+    automatic_inputs = list(
+        _iter_automatic_staging_inputs(frozen_exclusions, forced_roots=forced_roots)
+    )
     configured_inputs = list(_iter_configured_staging_inputs(config, frozen_exclusions))
     planned_inputs = itertools.chain(automatic_inputs, configured_inputs)
     target_owners: dict[tuple[str, ...], tuple[Path, str]] = {}
@@ -1163,6 +1308,12 @@ def copy_src_dir(
     authority for both plain and generator-owned files (see
     :func:`_mirror_is_stale`).
 
+    Git-ignored ``paths_to_mutate`` roots are walked with ``git add -f``
+    boundaries (:func:`_forced_mutation_roots`, M-032) so mutation targets
+    keep their whole tree — non-.py resources included — in executable
+    staging.  The walk itself comes from :func:`_iter_mirror_walk_entries`
+    (Q-14), the single source shared with the namespace preflight.
+
     Args:
         config: Active ``MutmutConfig`` instance.
         excluded_paths: Exact project files owned by the caller that must not
@@ -1172,12 +1323,19 @@ def copy_src_dir(
     """
     validate_staging_namespace(config, excluded_paths=excluded_paths)
     expected_targets: set[Path] = set()
-    synced_roots: list[Path] = []
+    # Track every automatic mirror root, including the project-root grab-bag
+    # and the forced mutation roots (M-032).  The deletion pass is deliberately
+    # limited to Python modules and their metadata, so generated non-source
+    # artifacts remain distinguishable while deleted root-level imports cannot
+    # haunt the next clean run; the project root subsumes the explicit
+    # src/source mirrors.
+    synced_roots: list[Path] = [Path()]
     # Retain policy (M-002): generator output survives only for files the
     # current run still (re)generates AND only outside the coverage mode.
     retained_generation_keys = _generation_target_keys(config)
     project_root = Path.cwd().resolve()
     project_boundary = GitignoreBoundary.load(project_root)
+    forced_roots = _forced_mutation_roots(config, project_boundary, project_root)
     mutants_root = _validated_mutants_root()
     Path("mutants").mkdir(exist_ok=True)
     excluded_resolved: set[Path] = set()
@@ -1189,132 +1347,38 @@ def copy_src_dir(
             # be encountered by the file walk below either.
             continue
 
-    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
-        source_root = Path(source_root_name)
-        if not source_root.exists() or not source_root.is_dir():
-            continue
-        # Track every automatic mirror root, including the project-root
-        # grab-bag.  The deletion pass is deliberately limited to Python
-        # modules and their metadata, so generated non-source artifacts remain
-        # distinguishable while deleted root-level imports cannot haunt the
-        # next clean run.
-        synced_roots.append(source_root)
-        walk_boundary = (
-            project_boundary
-            if source_root_name == "."
-            else project_boundary.descend(source_root_name)
-        )
-        boundaries = _walk_boundary_map(source_root, walk_boundary)
-
-        for root_str, dirs, files in os.walk(source_root):
-            source_directory = Path(root_str)
-            boundary = boundaries.get(source_directory)
-            try:
-                if _is_link_or_reparse(source_directory):
-                    _warn_skipped_source_link(
-                        source_directory,
-                        "directory links are not copied into executable staging",
-                    )
-                    dirs[:] = []
-                    continue
-                source_directory.resolve(strict=True).relative_to(project_root)
-            except (OSError, ValueError) as exc:
-                _warn_skipped_source_link(
-                    source_directory,
-                    f"cannot prove project containment ({exc})",
-                )
-                dirs[:] = []
-                continue
-            # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
-            # git-ignored subtrees (MBR-2026-09-14-01).
-            safe_dirs: list[str] = []
-            at_workspace_root = Path(root_str).resolve() == project_root
-            for directory in dirs:
-                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
-                    continue
-                if boundary is not None and boundary.excludes_directory(directory):
-                    continue
-                candidate = Path(root_str) / directory
-                try:
-                    if _is_link_or_reparse(candidate):
-                        _warn_skipped_source_link(
-                            candidate,
-                            "directory links are not copied into executable staging",
-                        )
-                        continue
-                    candidate.resolve().relative_to(project_root)
-                except (OSError, ValueError) as exc:
-                    _warn_skipped_source_link(
-                        candidate, f"cannot prove project containment ({exc})"
-                    )
-                    continue
-                safe_dirs.append(directory)
-                if boundary is not None:
-                    boundaries[candidate] = boundary.enter(directory)
-            dirs[:] = safe_dirs
-            if source_root_name == "." and root_str == ".":
-                # The explicit roots above already mirrored src/source —
-                # walking them again from "." doubled the largest trees
-                # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
-                # is not covered by the explicit roots and must stay.
-                source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
-                dirs[:] = [d for d in dirs if d.casefold() not in source_root_names]
-
+    for is_directory, source, relative_target in _iter_mirror_walk_entries(
+        excluded_resolved=frozenset(excluded_resolved),
+        warn_on_skip=True,
+        forced_roots=forced_roots,
+    ):
+        if is_directory:
             # Directory entries are import-visible under PEP 420 even when
             # they contain no files.  Materialize every validated live
             # directory so a clean first run has the same namespace-package
             # topology as the project; excluded/link roots were pruned above.
-            target_directory = Path("mutants") / root_str
+            target_directory = Path("mutants") / relative_target
             _validated_staging_destination(target_directory, mutants_root)
             target_directory.mkdir(exist_ok=True, parents=True)
+            continue
 
-            for name in files:
-                if _skip_automatic_root_file(name):
-                    continue
-                if boundary is not None and boundary.excludes_file(name):
-                    continue
-                source_path = Path(root_str) / name
-                try:
-                    if _is_link_or_reparse(source_path):
-                        _warn_skipped_source_link(
-                            source_path,
-                            "file links are not copied into executable staging",
-                        )
-                        continue
-                    resolved_source = source_path.resolve(strict=True)
-                    resolved_source.relative_to(project_root)
-                except (OSError, ValueError) as exc:
-                    # Automatic staging must never dereference an external or
-                    # broken file symlink into the executable mirror.
-                    _warn_skipped_source_link(
-                        source_path,
-                        f"cannot prove project containment ({exc})",
-                    )
-                    continue
-                if resolved_source in excluded_resolved:
-                    continue
-                target_path = Path("mutants") / root_str / name
-                _validated_staging_destination(target_path, mutants_root)
-                expected_targets.add(target_path)
+        target_path = Path("mutants") / relative_target
+        _validated_staging_destination(target_path, mutants_root)
+        expected_targets.add(target_path)
 
-                if target_path.exists():
-                    if source_path.is_file():
-                        retain = _staging_key(Path(root_str) / name) in retained_generation_keys
-                        if _mirror_is_stale(source_path, target_path, retain_generated=retain):
-                            removed_sidecar = _refresh_staged_mirror(source_path, target_path)
-                            if removed_sidecar:
-                                print(
-                                    f"     restored unmutated: {source_path} "
-                                    "(not retained for this run)"
-                                )
-                            else:
-                                print(
-                                    f"     updated: {source_path} (source changed since last run)"
-                                )
-                    continue
+        if target_path.exists():
+            if source.is_file():
+                retain = _staging_key(source) in retained_generation_keys
+                if _mirror_is_stale(source, target_path, retain_generated=retain):
+                    removed_sidecar = _refresh_staged_mirror(source, target_path)
+                    if removed_sidecar:
+                        print(f"     restored unmutated: {source} (not retained for this run)")
+                    else:
+                        print(f"     updated: {source} (source changed since last run)")
+            continue
 
-                target_path.parent.mkdir(exist_ok=True, parents=True)
-                _copy_with_retry(source_path, target_path)
+        target_path.parent.mkdir(exist_ok=True, parents=True)
+        _copy_with_retry(source, target_path)
 
     _sync_deleted_sources(
         expected_targets,

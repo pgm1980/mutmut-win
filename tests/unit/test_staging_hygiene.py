@@ -1012,6 +1012,93 @@ class TestWave3StagingHygiene:
         assert _mirror_is_stale(src, tgt) is True
 
 
+class TestForcedRootRetainPolicy:
+    """AP-10 / M-032: the M-002 retain policy governs forced roots too.
+
+    A git-ignored mutation root configured via ``paths_to_mutate`` must keep
+    its generator output and own ``.meta`` sidecar across ``copy_src_dir``
+    (including the ``_sync_deleted_sources`` pass) while it remains a selected
+    mutation target outside coverage mode.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".gitignore").write_text("generated/\n", encoding="utf-8")
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        generated = project / "generated"
+        generated.mkdir()
+        (generated / "gmod.py").write_text("def g(a):\n    return a - 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def test_generated_output_and_sidecar_survive_copy_src_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        copy_src_dir(cfg)
+
+        assert staged.read_text(encoding="utf-8") == _GENERATED_BYTES
+        assert staged.with_name(staged.name + ".meta").exists()
+
+    def test_coverage_mode_restores_original_in_forced_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        coverage_cfg = MutmutConfig(
+            paths_to_mutate=["src", "generated"],
+            max_children=1,
+            mutate_only_covered_lines=True,
+        )
+        copy_src_dir(coverage_cfg)
+
+        live_bytes = (project / "generated" / "gmod.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_deleted_forced_root_source_is_cleaned_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "generated" / "gmod.py"
+
+        (project / "generated" / "gmod.py").unlink()
+        copy_src_dir(cfg)
+
+        assert not staged.exists()
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_revert_a_b_a_in_forced_configured_mirror_restores_live_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The AP-02 A→B→A revert contract, repeated in the ignored root."""
+        project = self._project(tmp_path, monkeypatch)
+        source = project / "generated" / "gmod.py"
+        cfg = MutmutConfig(also_copy=["generated"], max_children=1)
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        source.write_text("B = 2\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        source.write_text("A = 1\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert staged.read_bytes() == source.read_bytes()
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+
 class TestForceHonesty:
     def test_partial_removal_is_reported_not_sold_as_clean(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
