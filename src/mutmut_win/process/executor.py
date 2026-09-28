@@ -15,6 +15,7 @@ import multiprocessing.queues
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +23,7 @@ from mutmut_win.exceptions import ProcessContainmentError, PytestBoundaryError, 
 from mutmut_win.process.worker import worker_main
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import MutationTask, TaskCompleted, TaskEvent
@@ -70,6 +71,27 @@ def _idle_grace_expired(*, remaining_tasks: int, in_flight_tasks: int, idle_elap
     governed by its per-task timeout, not by this pool-level progress watchdog.
     """
     return remaining_tasks > 0 and in_flight_tasks == 0 and idle_elapsed > _STARTUP_GRACE_SECONDS
+
+
+@dataclass
+class _EventLoopState:
+    """Mutable event-loop accounting shared by the normal and drain paths (M-054).
+
+    Bundling it keeps the idle-tick drain on the exact same counting and
+    aborting logic as the normal blocking read: single-counting
+    (``finished``), in-flight ownership, synthesized drops, one-time process
+    cleanup per dead PID (``handled_dead_pids`` — cleanup only, NOT a
+    synthesis gate), the WRK-001 watchdog bookkeeping, and the fatal-abort
+    flag the caller checks right after an event was yielded.
+    """
+
+    finished: int = 0
+    in_flight: dict[str, int] = field(default_factory=dict)
+    synthesized: set[str] = field(default_factory=set)
+    handled_dead_pids: set[int] = field(default_factory=set)
+    progress_observed: bool = False
+    last_progress_monotonic: float = field(default_factory=time.monotonic)
+    fatal_completion: bool = False
 
 
 class SpawnPoolExecutor:
@@ -233,6 +255,57 @@ class SpawnPoolExecutor:
             )
         return self._mp_ctx.Process(target=worker_main, args=args, daemon=True)
 
+    def _apply_event(self, raw: dict[str, object], state: _EventLoopState) -> Iterator[TaskEvent]:
+        """Validate, account for, and yield a single event-queue item.
+
+        Shared by the normal blocking read and the idle-tick drain (M-054) so
+        both paths count identically. ``state.fatal_completion`` is set
+        BEFORE the yield so the caller can break the loop immediately after
+        the consumer has received the event. A late real completion for an
+        already-synthesized mutant is dropped (with a warning) and yields
+        nothing — the single-count guarantee.
+        """
+        from mutmut_win.models import TaskCompleted, TaskStarted
+
+        if "exit_code" in raw:
+            completed = TaskCompleted.model_validate(raw)
+            if completed.mutant_name in state.synthesized:
+                # Late flush from a worker we already declared dead — drop it
+                # to keep the finished-accounting single-counted (M-054: the
+                # drop is now logged; it used to vanish silently).
+                logger.warning(
+                    "dropping late real completion for %s from worker pid %s — "
+                    "a synthetic result was already delivered",
+                    completed.mutant_name,
+                    completed.worker_pid,
+                )
+                state.synthesized.discard(completed.mutant_name)
+                state.in_flight.pop(completed.mutant_name, None)
+                return
+            event: TaskEvent = completed
+            state.in_flight.pop(completed.mutant_name, None)
+            self._forget_posix_group(completed.mutant_name, completed.worker_pid)
+            state.finished += 1
+            if completed.fatal:
+                self.aborted = True
+                self.abort_reason = (
+                    f"worker PID {completed.worker_pid} reported a fatal execution-boundary "
+                    f"failure: {completed.last_output or 'no diagnostic'}"
+                )
+                state.fatal_completion = True
+        elif "timestamp" in raw:
+            event = TaskStarted.model_validate(raw)
+            state.in_flight[event.mutant_name] = event.worker_pid
+        else:
+            # Fail fast on unknown shapes instead of misparsing them
+            # (issue #81; the #79 finally-shutdown cleans up the pool).
+            msg = f"unknown event shape on the event queue: {sorted(raw)!r}"
+            raise WorkerError(msg)
+
+        state.progress_observed = True
+        state.last_progress_monotonic = time.monotonic()
+        yield event
+
     def get_events(self) -> Iterator[TaskEvent]:
         """Yield domain events until all tasks have been reported as done.
 
@@ -240,134 +313,142 @@ class SpawnPoolExecutor:
         loop ends once every task produced a ``TaskCompleted`` (worker-side
         timeouts arrive as completions with exit code 36/38).
 
-        Liveness (issue #80 / A2-EW-002): the queue is polled with a timeout,
-        and every idle tick sweeps the workers.  A worker that died hard can
-        never deliver a completion for its in-flight task — previously this
-        blocked the run forever.  Such tasks are completed synthetically
-        (exit code 35 "suspicious" with an explanatory ``last_output``); a
-        late-flushed REAL completion for an already-synthesized mutant is
-        dropped so every task is counted exactly once.  When the whole pool
-        is dead and tasks were never started, the loop aborts loudly instead
-        of fabricating results for them.  A progress watchdog also bounds a
-        mixed pool where at least one task completed but another worker stays
-        alive and never pulls queued work; it is active only while no task is
-        in flight.
+        Liveness (issue #80 / A2-EW-002) with M-054 verdict integrity: the
+        queue is polled with a timeout, and every idle tick (1) takes a
+        liveness snapshot of the pool, then (2) drains the event queue
+        completely via non-blocking reads through the same event-application
+        path as normal events. A worker process joins its queue feeder
+        thread at interpreter exit, so once a worker is observed dead every
+        byte it ever wrote is already in the pipe — after the drain, a
+        missing completion is genuinely missing. Only then (3) are the
+        snapshot's dead workers swept: their in-flight tasks receive a
+        synthetic completion (exit code 35 "suspicious" with an explanatory
+        ``last_output``). A late-flushed REAL completion for an
+        already-synthesized mutant is dropped (with a warning) so every task
+        is counted exactly once, and a ``TaskStarted`` arriving after its
+        owner was observed dead is completed on the NEXT idle tick — its
+        real completion may still be ahead in the pipe and wins the drain.
+        When the whole pool was already dead in the snapshot and tasks were
+        never started, the loop aborts loudly instead of fabricating results
+        for them. A progress watchdog also bounds a mixed pool where at
+        least one task completed but another worker stays alive and never
+        pulls queued work; it is active only while no task is in flight.
 
         Yields:
             ``TaskStarted`` or ``TaskCompleted`` instances.
         """
         import queue as queue_module
 
-        from mutmut_win.models import TaskCompleted, TaskStarted
+        state = _EventLoopState()
 
-        finished = 0
-        in_flight: dict[str, int] = {}  # mutant_name -> worker pid
-        synthesized: set[str] = set()
-        handled_dead_pids: set[int] = set()
-        # WRK-001 progress watchdog.  The original global ``any_task_pulled``
-        # flag permanently disarmed the watchdog after one healthy worker made
-        # progress.  Track the last real state transition instead so a second,
-        # alive-but-bootstrap-wedged worker cannot strand queued tasks forever.
-        last_progress_monotonic = time.monotonic()
-        progress_observed = False
-
-        while finished < self._num_tasks:
-            self._drain_containment_events(in_flight)
+        while state.finished < self._num_tasks:
+            self._drain_containment_events(state.in_flight)
             try:
                 raw: dict[str, object] = self._event_queue.get(timeout=_EVENT_POLL_SECONDS)
             except queue_module.Empty:
-                # Idle tick: everything flushed so far has been consumed, so
-                # the in-flight map is current — sweep worker liveness now
-                # (drain-first ordering prevents double counting, JT-008).
-                synthetic_events = self._sweep_dead_workers(in_flight, handled_dead_pids)
-                for synthetic_event in synthetic_events:
-                    synthesized.add(synthetic_event.mutant_name)
-                    finished += 1
-                    yield synthetic_event
-                if synthetic_events:
-                    progress_observed = True
-                    last_progress_monotonic = time.monotonic()
+                # Idle tick. Ordering (M-054): liveness snapshot FIRST, then
+                # a complete non-blocking drain, then sweep and all-dead
+                # checks — each against the snapshot. Observing death before
+                # draining is what makes "no completion in the drain" proof
+                # that none is coming; the reverse order let the sweep
+                # replace a real verdict whose bytes were still in flight
+                # (the drain-first intent JT-008 documented but the old code
+                # never implemented).
+                dead_snapshot = [worker for worker in self._workers if not worker.is_alive()]
+                any_worker_alive = any(worker.is_alive() for worker in self._workers)
 
-                remaining = self._num_tasks - finished
-                if remaining > 0 and not any(worker.is_alive() for worker in self._workers):
-                    # Issue #127 / 360°-A7: declare the collapse as run
-                    # state — the silent break used to read as success.
-                    self.aborted = True
-                    self.abort_reason = (
-                        f"all {len(self._workers)} workers died; "
-                        f"{remaining} task(s) were never started"
-                    )
-                    print(
-                        f"Error: {self.abort_reason} — aborting the run. "
-                        "Their mutants remain unchecked.",
-                        file=sys.stderr,
-                    )
+                while state.finished < self._num_tasks:
+                    try:
+                        drained: dict[str, object] = self._event_queue.get_nowait()
+                    except queue_module.Empty:
+                        break
+                    yield from self._apply_event(drained, state)
+                    if state.fatal_completion:
+                        break
+                if state.fatal_completion:
+                    # A fatal completion surfaced during the drain: abort
+                    # before any sweep could fabricate further results.
                     break
-                # Bound both total startup failure and the mixed-pool variant:
-                # queued tasks, no in-flight task, and no progress for a full
-                # grace interval.  An in-flight task always disables this check
-                # and remains protected by its own worker-side timeout.
-                if _idle_grace_expired(
-                    remaining_tasks=remaining,
-                    in_flight_tasks=len(in_flight),
-                    idle_elapsed=time.monotonic() - last_progress_monotonic,
-                ):
-                    if progress_observed:
-                        self._declare_idle_collapse(remaining)
-                    else:
-                        self._declare_startup_collapse()
-                    break
+
+                if state.finished < self._num_tasks:
+                    synthetic_events = self._sweep_dead_workers(
+                        state.in_flight, state.handled_dead_pids, dead_snapshot
+                    )
+                    for synthetic_event in synthetic_events:
+                        state.synthesized.add(synthetic_event.mutant_name)
+                        state.finished += 1
+                        yield synthetic_event
+                    if synthetic_events:
+                        state.progress_observed = True
+                        state.last_progress_monotonic = time.monotonic()
+
+                    remaining = self._num_tasks - state.finished
+                    if remaining > 0 and not any_worker_alive:
+                        # Issue #127 / 360°-A7: declare the collapse as run
+                        # state — the silent break used to read as success.
+                        # M-054: judged against the pre-drain snapshot — a
+                        # pool that was dead before the drain and still has
+                        # unstarted tasks has genuinely lost them.
+                        self.aborted = True
+                        self.abort_reason = (
+                            f"all {len(self._workers)} workers died; "
+                            f"{remaining} task(s) were never started"
+                        )
+                        print(
+                            f"Error: {self.abort_reason} — aborting the run. "
+                            "Their mutants remain unchecked.",
+                            file=sys.stderr,
+                        )
+                        break
+                    # Bound both total startup failure and the mixed-pool variant:
+                    # queued tasks, no in-flight task, and no progress for a full
+                    # grace interval.  An in-flight task always disables this check
+                    # and remains protected by its own worker-side timeout.
+                    if _idle_grace_expired(
+                        remaining_tasks=remaining,
+                        in_flight_tasks=len(state.in_flight),
+                        idle_elapsed=time.monotonic() - state.last_progress_monotonic,
+                    ):
+                        if state.progress_observed:
+                            self._declare_idle_collapse(remaining)
+                        else:
+                            self._declare_startup_collapse()
+                        break
                 continue
 
-            # Discriminate on the keys present in the dict.
-            fatal_completion = False
-            if "exit_code" in raw:
-                event: TaskEvent = TaskCompleted.model_validate(raw)
-                if event.mutant_name in synthesized:
-                    # Late flush from a worker we already declared dead —
-                    # drop it to keep the finished-accounting single-counted.
-                    synthesized.discard(event.mutant_name)
-                    in_flight.pop(event.mutant_name, None)
-                    continue
-                in_flight.pop(event.mutant_name, None)
-                self._forget_posix_group(event.mutant_name, event.worker_pid)
-                finished += 1
-                if isinstance(event, TaskCompleted) and event.fatal:
-                    self.aborted = True
-                    self.abort_reason = (
-                        f"worker PID {event.worker_pid} reported a fatal execution-boundary "
-                        f"failure: {event.last_output or 'no diagnostic'}"
-                    )
-                    fatal_completion = True
-            elif "timestamp" in raw:
-                event = TaskStarted.model_validate(raw)
-                in_flight[event.mutant_name] = event.worker_pid
-            else:
-                # Fail fast on unknown shapes instead of misparsing them
-                # (issue #81; the #79 finally-shutdown cleans up the pool).
-                msg = f"unknown event shape on the event queue: {sorted(raw)!r}"
-                raise WorkerError(msg)
-
-            progress_observed = True
-            last_progress_monotonic = time.monotonic()
-            yield event
-            if fatal_completion:
+            yield from self._apply_event(raw, state)
+            if state.fatal_completion:
                 break
 
     def _sweep_dead_workers(
-        self, in_flight: dict[str, int], handled_dead_pids: set[int]
+        self,
+        in_flight: dict[str, int],
+        handled_dead_pids: set[int],
+        dead_workers: Sequence[multiprocessing.process.BaseProcess],
     ) -> list[TaskCompleted]:
-        """Synthesize completions for in-flight tasks of newly dead workers."""
+        """Synthesize completions for in-flight tasks of dead workers.
+
+        M-054: ``dead_workers`` is the liveness snapshot taken BEFORE the
+        idle-tick drain; only those workers are swept, always after that
+        drain of the same tick. ``handled_dead_pids`` guards only the
+        ONE-TIME process cleanup (POSIX group kills) — synthesis itself runs
+        for every dead worker that still owns in-flight entries, so a
+        ``TaskStarted`` arriving after its owner was observed dead is
+        completed on a later tick instead of stranding in ``in_flight``
+        forever, while never being overwritten before its real completion
+        had a chance to arrive through the drain.
+        """
         from mutmut_win.models import TaskCompleted
 
         synthetic: list[TaskCompleted] = []
-        for worker in self._workers:
+        for worker in dead_workers:
             pid = worker.pid or -1
-            if worker.is_alive() or pid in handled_dead_pids:
+            if worker.is_alive():
                 continue
-            handled_dead_pids.add(pid)
-            self._kill_posix_worker_group(pid)
-            self._kill_posix_groups_for_worker(pid)
+            if pid not in handled_dead_pids:
+                handled_dead_pids.add(pid)
+                self._kill_posix_worker_group(pid)
+                self._kill_posix_groups_for_worker(pid)
             orphaned = [name for name, owner in in_flight.items() if owner == pid]
             for name in orphaned:
                 in_flight.pop(name, None)

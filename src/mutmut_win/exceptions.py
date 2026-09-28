@@ -38,6 +38,26 @@ class WorkerError(MutmutWinError):
     """
 
 
+class WorkerEnvironmentError(MutmutWinError):
+    """A worker task failed because of the host environment, not the mutant.
+
+    Producer: the worker-side task preparation and execution paths in
+    ``process.worker`` wrap raw ``OSError`` conditions that describe the
+    HOST — ENOSPC, antivirus/backup locks on atomic replaces, handle or
+    quota exhaustion, path-length failures — rather than the code under
+    test (M-065 / issue #152). A worker-side ``OSError`` is never a mutant
+    property.
+
+    Consumer: ``worker_main`` classifies this exception as fatal; the
+    resulting ``TaskCompleted`` event carries ``fatal=True`` and aborts the
+    run through the executor instead of persisting a 'suspicious' verdict
+    for every remaining mutant. The class only ever arises INSIDE a worker
+    process — it travels to the parent as the fatal flag of a completion
+    event, never as a raised exception across the process boundary (so it
+    does not contradict ``WorkerError``: worker crashes still never raise).
+    """
+
+
 class OrchestratorError(MutmutWinError):
     """Error in the mutation testing orchestration."""
 
