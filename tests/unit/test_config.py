@@ -16,7 +16,7 @@ from mutmut_win.config import (
     guess_paths_to_mutate,
     load_config,
 )
-from mutmut_win.exceptions import ConfigError
+from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 
 
 class TestMutmutConfig:
@@ -202,6 +202,43 @@ class TestLoadConfig:
         )
         config = load_config(tmp_path)
         assert config.paths_to_mutate == ["src/"]
+
+    def test_setup_cfg_value_error_is_invalid_config_value(self, tmp_path: Path) -> None:
+        """M-077: setup.cfg value failures enter the ConfigError contract.
+
+        The unguarded model_validate used to leak a raw pydantic
+        ValidationError traceback (exit 1) past the exit-2 contract.
+        """
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_tool_scalar_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-078: a non-table 'tool' used to crash with AttributeError."""
+        (tmp_path / "pyproject.toml").write_text("tool = 1\n", encoding="utf-8")
+        with pytest.raises(ConfigError, match=r"\[tool\] must be a table"):
+            load_config(tmp_path)
+
+    def test_mutmut_scalar_is_invalid_config_value(self, tmp_path: Path) -> None:
+        """M-028: a present non-table [tool.mutmut] is not a missing section."""
+        (tmp_path / "pyproject.toml").write_text("[tool]\nmutmut = 1\n", encoding="utf-8")
+        with pytest.raises(InvalidConfigValueError, match="expected a table"):
+            load_config(tmp_path)
+
+    def test_utf16_setup_cfg_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-079: undecodable setup.cfg becomes ConfigError, not a crash."""
+        (tmp_path / "setup.cfg").write_bytes("[mutmut]\npaths_to_mutate = src/\n".encode("utf-16"))
+        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_directory_named_setup_cfg_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-027: an unreadable existing setup.cfg never yields silent defaults."""
+        (tmp_path / "setup.cfg").mkdir()
+        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            load_config(tmp_path)
 
 
 class TestApplyDefaultAlsoCopy:

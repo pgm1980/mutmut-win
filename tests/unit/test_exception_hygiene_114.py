@@ -96,6 +96,19 @@ class TestInvalidConfigValueProducer:
         with pytest.raises(ConfigError):
             load_config()
 
+    def test_bad_setup_cfg_value_raises_invalid_config_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # M-077: the setup.cfg source shares the validation boundary —
+        # pydantic's ValidationError must never escape as a raw traceback
+        # (the message must name the source so it is not source-blind).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n", encoding="utf-8"
+        )
+        with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+            load_config()
+
 
 # ---------------------------------------------------------------------------
 # QX-006 — WorkerError producer: unknown event shape

@@ -371,3 +371,120 @@ class TestPyprojectStructureCli:
         assert result.exit_code == 2
         assert expected_fragment in result.output + str(result.stderr)
         assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+class TestSetupCfgValidationBoundary:
+    """M-077 / Q-39: setup.cfg value errors cross the shared boundary.
+
+    Before the fix the unguarded ``MutmutConfig.model_validate`` let a
+    raw pydantic ``ValidationError`` traceback escape (exit 1) instead
+    of the exit-2 config contract.
+    """
+
+    def test_setup_cfg_value_error_is_invalid_config_value(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n", encoding="utf-8"
+        )
+
+        with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_setup_cfg_value_error_on_pyproject_fallback_path(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[tool.other]\nfoo = 1\n", encoding="utf-8")
+        (tmp_path / "setup.cfg").write_text("[mutmut]\nmax_children = 0\n", encoding="utf-8")
+
+        with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_setup_cfg_message_names_the_source(self, tmp_path: Path) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n", encoding="utf-8"
+        )
+
+        with pytest.raises(
+            InvalidConfigValueError, match=r"^Invalid setup\.cfg \[mutmut\] configuration: "
+        ):
+            load_config(tmp_path)
+
+    def test_toml_validation_message_is_byte_identical(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.mutmut]\nmax_children = 0\n", encoding="utf-8"
+        )
+
+        with pytest.raises(
+            InvalidConfigValueError, match=r"^Invalid \[tool\.mutmut\] configuration: "
+        ):
+            load_config(tmp_path)
+
+    @given(
+        st.sampled_from(
+            [
+                ("max_children", "0"),
+                ("timeout_multiplier", "-1"),
+                ("clean_run_timeout", "0"),
+                ("max_stack_depth", "0"),
+                ("debug", "vielleicht"),
+                ("mutation_profile", "bogus"),
+                ("do_not_mutate_patterns", "["),
+            ]
+        )
+    )
+    def test_every_invalid_setup_cfg_value_is_invalid_config_value(
+        self, key_value: tuple[str, str]
+    ) -> None:
+        # Never a bare pydantic ValidationError — for ANY invalid value,
+        # on any hypothesis example (temp dir in the body, no
+        # function-scoped fixtures).
+        key, value = key_value
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            (project / "setup.cfg").write_text(
+                f"[mutmut]\npaths_to_mutate = src/\n{key} = {value}\n", encoding="utf-8"
+            )
+            with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+                load_config(project)
+
+
+class TestConfigErrorChannelCli:
+    """Q-40: exit 2 on the config error channel for every subcommand."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["show", "src.mod.x_f__mutmut_1"],
+            ["apply", "src.mod.x_f__mutmut_1"],
+            ["run", "--dry-run", "--output", "json"],
+        ],
+    )
+    def test_invalid_setup_cfg_value_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n", encoding="utf-8"
+        )
+
+        result = CliRunner().invoke(cli, argv)
+
+        assert result.exit_code == 2
+        assert "setup.cfg" in result.output + str(result.stderr)
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+
+    def test_run_dry_run_json_emits_a_json_error_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n", encoding="utf-8"
+        )
+
+        result = CliRunner().invoke(cli, ["run", "--dry-run", "--output", "json"])
+
+        assert result.exit_code == 2
+        payload = json.loads(result.stdout)
+        assert payload["exit_code"] == 2
+        assert "setup.cfg" in payload["error"]

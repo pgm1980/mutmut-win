@@ -498,6 +498,42 @@ def _read_setup_cfg_text(path: Path) -> str | None:
         raise ConfigError(msg) from exc
 
 
+def _validate_config_mapping(
+    normalized: dict[str, object], project_dir: Path, *, source: str
+) -> MutmutConfig:
+    """Validate a normalized mapping from either config source (Q-39).
+
+    M-077 shared validation boundary: value errors of pyproject.toml AND
+    setup.cfg surface as ``InvalidConfigValueError`` naming the source,
+    so the CLI exit-2 contract holds for both (a pydantic
+    ``ValidationError`` used to escape the setup.cfg path as a raw
+    traceback). Only ``project_dir.resolve()`` and ``model_validate``
+    sit inside the try — anything else would be mislabelled as a value
+    error. ``except Exception`` keeps parity with the previous TOML-only
+    wrapper (it also catches OSError from path.resolve in a validator).
+
+    Args:
+        normalized: Hyphen-normalized key/value mapping of one source.
+        project_dir: Project root passed as validator context.
+        source: Human-readable source label for the error message.
+
+    Returns:
+        The validated ``MutmutConfig``.
+
+    Raises:
+        InvalidConfigValueError: If model validation fails for any reason.
+    """
+    try:
+        return MutmutConfig.model_validate(
+            normalized, context={"project_root": project_dir.resolve()}
+        )
+    except Exception as e:
+        msg = f"Invalid {source} configuration: {e}"
+        # Value-level failure → the specific subclass (issue #114 /
+        # A4-QX-006); still a ConfigError for every existing handler.
+        raise InvalidConfigValueError(msg) from e
+
+
 def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     """Attempt to load mutmut configuration from setup.cfg [mutmut] section.
 
@@ -513,6 +549,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     Raises:
         ConfigError: If an existing setup.cfg cannot be read, is not valid
             UTF-8, or cannot be parsed.
+        InvalidConfigValueError: If a setup.cfg [mutmut] value fails model
+            validation (message names the source).
     """
     setup_cfg_path = project_dir / "setup.cfg"
     text = _read_setup_cfg_text(setup_cfg_path)
@@ -619,7 +657,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         normalized["mutation_profile"] = profile_value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
-    return MutmutConfig.model_validate(normalized, context={"project_root": project_dir.resolve()})
+    return _validate_config_mapping(normalized, project_dir, source="setup.cfg [mutmut]")
 
 
 def load_config(project_dir: Path | None = None) -> MutmutConfig:
@@ -641,7 +679,8 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
             an existing setup.cfg cannot be read, is not valid UTF-8, or
             cannot be parsed.
         InvalidConfigValueError: If ``tool.mutmut`` is present but not a
-            table (e.g. ``[[tool.mutmut]]``).
+            table (e.g. ``[[tool.mutmut]]``), or if a value of either
+            configuration source fails model validation.
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -722,14 +761,6 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         hint = f" — did you mean '{matches[0]}'?" if matches else ""
         print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}", file=sys.stderr)
 
-    try:
-        config = MutmutConfig.model_validate(
-            normalized, context={"project_root": project_dir.resolve()}
-        )
-    except Exception as e:
-        msg = f"Invalid [tool.mutmut] configuration: {e}"
-        # Value-level failure → the specific subclass (issue #114 /
-        # A4-QX-006); still a ConfigError for every existing handler.
-        raise InvalidConfigValueError(msg) from e
+    config = _validate_config_mapping(normalized, project_dir, source="[tool.mutmut]")
 
     return _apply_default_also_copy(config, project_dir)
