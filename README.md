@@ -166,12 +166,11 @@ Mutant name matching is the same everywhere: an argument is either an
 exact mutant name or a glob pattern (`*`, `?`, `[...]`). Names and globs
 are compared case-sensitively, also under Windows — mutant names carry
 Python identifiers verbatim, so a differently spelled name is simply not
-found. `run` and
-`time-estimates` accept any number of matches; `show` and `apply`
-operate on a single mutant — a pattern matching more than one fails
-with the candidate list. `show` diffs are patch-capable for top-level
-functions (`a/`–`b/` labels, hunk lines refer to the original file);
-for class methods prefer `mutmut-win apply` over `patch`.
+found. `run` and `time-estimates` accept any number of matches; `show`
+and `apply` operate on a single mutant — a pattern matching more than
+one fails with the candidate list. `show` diffs are patch-capable for
+top-level functions (`a/`–`b/` labels, hunk lines refer to the original
+file); for class methods prefer `mutmut-win apply` over `patch`.
 
 Frequently used `run` options (see `mutmut-win run --help` for all):
 
