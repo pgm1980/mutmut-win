@@ -160,46 +160,37 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
     return identity
 
 
-def _dump_sibling_diagnostics(
-    temp_path: Path,
+def _sibling_diagnostics(
     opened_stat: os.stat_result,
     leaf_stat: os.stat_result,
-) -> None:
-    """Best-effort telemetry for sibling validation exhaustion.
+) -> str:
+    """Format the one-line field diagnostics for sibling validation exhaustion.
 
     Field evidence (MBR-2026-09-14-01 follow-up): under filter-driver
     enumeration in child processes, ``os.fstat`` can report one link more
-    than the path-view ``lstat`` for the same freshly created inode.  Keep
-    the dump so exhaustion stays diagnosable in the field.
+    than the path-view ``lstat`` for the same freshly created inode.  The
+    exhaustion diagnosis therefore travels inside the raised
+    :class:`UnsafeAtomicWriteError` message — a fixed sink path under the
+    shared ``%TEMP%`` followed prepared links onto other files (M-067) and
+    grew without bound; the message keeps the same fields (M-067).
     """
-    import json
 
-    def fields(st: os.stat_result) -> dict[str, object]:
-        return {
-            "st_mode": st.st_mode,
-            "st_dev": st.st_dev,
-            "st_ino": st.st_ino,
-            "st_nlink": st.st_nlink,
-            "st_size": st.st_size,
-            "st_file_attributes": getattr(st, "st_file_attributes", None),
-            "st_reparse_tag": getattr(st, "st_reparse_tag", None),
-        }
+    def fields(prefix: str, file_stat: os.stat_result) -> str:
+        return (
+            f"{prefix}st_mode={file_stat.st_mode}, "
+            f"{prefix}st_dev={file_stat.st_dev}, "
+            f"{prefix}st_ino={file_stat.st_ino}, "
+            f"{prefix}st_nlink={file_stat.st_nlink}, "
+            f"{prefix}st_size={file_stat.st_size}, "
+            f"{prefix}st_file_attributes={getattr(file_stat, 'st_file_attributes', None)}, "
+            f"{prefix}st_reparse_tag={getattr(file_stat, 'st_reparse_tag', None)}"
+        )
 
-    payload = {
-        "temp_path": str(temp_path),
-        "pid": os.getpid(),
-        "opened": fields(opened_stat),
-        "leaf": fields(leaf_stat),
-        "identity_mismatch": _identity(opened_stat) != _identity(leaf_stat),
-    }
-    try:
-        import tempfile as _tempfile
-
-        target = Path(_tempfile.gettempdir()) / "mutmut-sibling-diag.jsonl"
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
-    except OSError:
-        pass
+    return (
+        f"pid={os.getpid()}, {fields('opened_', opened_stat)}, "
+        f"{fields('leaf_', leaf_stat)}, "
+        f"identity_mismatch={_identity(opened_stat) != _identity(leaf_stat)}"
+    )
 
 
 def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
@@ -251,9 +242,13 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                     temp_path.unlink()
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
-                    _dump_sibling_diagnostics(temp_path, opened_stat, leaf_stat)
+                    # One-line field diagnosis in the error itself: the
+                    # pytest child's truncated output tail shows the last
+                    # traceback line reliably, and no file outside the
+                    # operation's own directory is ever touched (M-067).
                     raise UnsafeAtomicWriteError(
-                        f"exclusive atomic-write sibling is not a private regular file: {temp_path}"
+                        "exclusive atomic-write sibling is not a private regular file: "
+                        f"{temp_path} ({_sibling_diagnostics(opened_stat, leaf_stat)})"
                     )
                 retry_index = len(_SIBLING_VALIDATION_RETRY_DELAYS) - validation_attempts_left
                 time.sleep(_SIBLING_VALIDATION_RETRY_DELAYS[retry_index])
