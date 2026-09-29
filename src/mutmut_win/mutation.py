@@ -459,15 +459,13 @@ class MutationVisitor(cst.CSTVisitor):
         #    refuted at the code): combine_mutations_to_source rewrites the
         #    class body so that each mutated method's public trampoline
         #    wrapper, its private ``…__mutmut_orig`` copy AND all mutant
-        #    copies live INSIDE the class body, while their lookup names
-        #    (``…__mutmut_orig_ref`` and the ``…__mutmut_mutants`` dict) are
-        #    only bound at module level AFTER the class statement.  A class
-        #    decorator that touches members during class creation — calling,
-        #    registering or introspecting them, as @dataclass-style
-        #    registries do — would meet half-built trampolines (NameError on
-        #    the not-yet-bound module names) and see the private copies as
-        #    unexpected class members.  Keep decorated classes unmutated
-        #    wholesale.
+        #    copies live INSIDE the class body.  A class decorator that
+        #    touches members during class creation — calling, registering or
+        #    introspecting them, as @dataclass-style registries do — still
+        #    sees those private copies as unexpected class members (their
+        #    lookup module names are pre-bound at class-creation time since
+        #    M-039, so calls no longer NameError, but member-visible private
+        #    copies remain).  Keep decorated classes unmutated wholesale.
         # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
         # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
         # a free function (no instance/class arg). Other decorators stay skipped.
@@ -679,6 +677,10 @@ def function_trampoline_arrangement(
     returned separately: they must be emitted at MODULE level — for methods
     AFTER the class definition — because a dict in a class body becomes an
     ``enum.Enum`` member and its annotation broke ``NamedTuple`` (issue #77).
+    For methods the original-scope nodes additionally end with class-body
+    creation-time bindings (:func:`_class_creation_bindings`, M-039): a
+    ``global`` statement plus module-global assignments that make the
+    wrapper's names resolvable while the class itself is still being built.
 
     :return: A tuple of (nodes for the original scope, module-level lookup
         nodes, mutant names)"""
@@ -766,6 +768,13 @@ def function_trampoline_arrangement(
         mutant_names.append(mutant_name)
         nodes.append(candidate.with_changes(name=cst.Name(mutant_name)))
 
+    if class_name is not None:
+        # M-039: bind the wrapper's module-level names at class-creation
+        # time, directly after THIS method's own nodes (not collected at the
+        # class end) so an interleaved class attribute, decorator or enum
+        # member creation between two methods already sees them.
+        nodes.extend(_class_creation_bindings(mangled_name, mutant_names))
+
     lookup_nodes = _unannotated_trampoline_lookup(
         orig_name=name,
         mutants=mutant_names,
@@ -776,6 +785,94 @@ def function_trampoline_arrangement(
     lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
     return nodes, lookup_nodes, mutant_names
+
+
+def _class_creation_bindings(
+    mangled_name: str, mutant_names: Sequence[str]
+) -> list[cst.SimpleStatementLine]:
+    """Bind a method's trampoline module globals at class-creation time.
+
+    The public wrapper (still inside the class body) resolves
+    ``<mangled>_orig_ref`` and ``<mangled>_mutants`` as GLOBAL names, but the
+    module-level capture and lookup only run AFTER the class statement
+    (issue #77).  Any call of the method while the class is being built —
+    ``enum`` member creation invoking ``__init__`` or
+    ``_generate_next_value_``, a class attribute computed from an own method,
+    a decorator defined in the class body — therefore raised NameError before
+    the trampoline could run (M-039).  A ``global`` statement inside the
+    class body binds both names at module scope WITHOUT touching the class
+    namespace: no ``enum.Enum`` member, no ``NamedTuple`` field — issue #77
+    stays preserved.  The ``__name__`` assignment mirrors
+    ``create_trampoline_lookup`` so ``MUTANT_UNDER_TEST`` activation and the
+    stats prefix already work during class creation; the unchanged post-class
+    capture and lookup rebind both names after the class statement exactly as
+    before.
+
+    No other class-body statement may read either name before this
+    declaration (SyntaxError "used prior to global declaration"); the
+    source-name collision check in :func:`function_trampoline_arrangement`
+    guarantees that.
+
+    :param mangled_name: Private name prefix including the ``__mutmut`` suffix.
+    :param mutant_names: Mangled names of this method's mutants.
+    :return: Statements to emit directly after the method's own nodes.
+    """
+    type_ignore = cst.TrailingWhitespace(comment=cst.Comment("# type: ignore"))
+    public_name = mangled_name.removesuffix("__mutmut")
+    mutants_dict = cst.Dict(
+        [
+            # Keys are the mangled mutant-name strings; values are the
+            # class-body-local mutant functions defined just above.
+            cst.DictElement(cst.SimpleString(repr(mutant_name)), cst.Name(mutant_name))
+            for mutant_name in mutant_names
+        ]
+    )
+    return [
+        cst.SimpleStatementLine(
+            body=[
+                cst.Global(
+                    [
+                        cst.NameItem(cst.Name(f"{mangled_name}_orig_ref")),
+                        cst.NameItem(cst.Name(f"{mangled_name}_mutants")),
+                    ]
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_orig_ref"))],
+                    value=cst.Name(f"{mangled_name}_orig"),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_mutants"))],
+                    value=mutants_dict,
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[
+                        cst.AssignTarget(
+                            cst.Attribute(
+                                value=cst.Name(f"{mangled_name}_orig"), attr=cst.Name("__name__")
+                            )
+                        )
+                    ],
+                    value=cst.SimpleString(repr(public_name)),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+    ]
 
 
 def _unannotated_trampoline_lookup(
@@ -1035,6 +1132,10 @@ def create_trampoline_wrapper(
         # captured immediately after class creation.  Rebinding the public
         # class name later therefore cannot break saved class aliases, and the
         # complete argument list above retains ordinary descriptor semantics.
+        # During class creation itself the same module globals already exist
+        # via the class-body creation-time bindings (M-039), so calls from
+        # ``__init__`` during enum member creation, class attributes computed
+        # from own methods, and class-body decorators resolve as well.
         return cst.Name(f"{mangled_name}_orig_ref")
 
     result: cst.BaseExpression = cst.Call(

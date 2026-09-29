@@ -605,11 +605,20 @@ additionally restores the exclusion guarantees of that surface: qualified
 `do_not_mutate_patterns` stay effective even after a nested class was
 skipped (the visitor's class stack is now identity-bound). The same wave
 grounds the wholesale exclusion of decorated classes in the trampoline
-architecture (private method copies live in the class body, their lookup
-names are bound only after the class statement) instead of the inherited
-function-decorator rationale, and computes `block` pragma extents from the
-token stream so column-0 comments and multi-line string contents no longer
-end a block early. Details:
+architecture (private method copies live in the class body and stay visible
+to class decorators that touch members during class creation; their lookup
+names are pre-bound at class-creation time and rebound after the class
+statement) instead of the inherited function-decorator rationale, and
+computes `block` pragma extents from the token stream so column-0 comments
+and multi-line string contents no longer end a block early. The trampoline
+codegen itself is hardened next (issue #167): a method called while its own
+class is being built — enum member creation invoking `__init__` or
+`_generate_next_value_`, a class attribute computed from an own method, a
+decorator defined in the class body — used to fail the import with NameError
+because the wrapper's module-level lookup names were bound only after the
+class statement; the class body now carries creation-time `global` bindings
+that bypass the class namespace (no enum member, no NamedTuple field), while
+the post-class capture and lookup stay byte-identical. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.
