@@ -32,16 +32,48 @@ TAGGED_OPERATORS_TYPE = Sequence[
 NON_ESCAPE_SEQUENCE = re.compile(r"((?<!\\)[^\\]+)")
 
 
+def _int_token(value: int) -> str:
+    """Render a nonnegative integer as a libcst-safe literal token.
+
+    CPython refuses to convert integers with more than
+    ``sys.get_int_max_str_digits()`` decimal digits (default 4300) to a
+    string, so ``repr`` raises ``ValueError`` — which used to abort mutant
+    generation for the whole file (M-045 / issue #168). ``hex`` has no such
+    limit and produces a valid ``cst.Integer`` token, so oversized values
+    fall back to hexadecimal rendering. Only nonnegative values ever reach
+    this helper (the ``evaluated_value`` of a ``cst.Integer`` and ``abs()``
+    in ``_crcr_literal``), so the result is never the ``-0x…`` spelling that
+    ``cst.Integer`` would reject.
+
+    Args:
+        value: Nonnegative integer to render.
+
+    Returns:
+        ``repr(value)`` when within the digit limit, else ``hex(value)``.
+    """
+    try:
+        return repr(value)
+    except ValueError:
+        return hex(value)
+
+
 def operator_number(
     node: cst.BaseNumber,
 ) -> Iterable[cst.BaseNumber]:
-    """Mutate numeric literals by incrementing their value."""
-    if isinstance(node, (cst.Integer, cst.Float)):
+    """Mutate numeric literals by incrementing their value.
+
+    Integer increments whose decimal rendering would exceed CPython's
+    int→str digit limit render hexadecimally (see :func:`_int_token`) instead
+    of crashing the run; every literal within the limit stays byte-identical.
+    """
+    if isinstance(node, cst.Integer):
+        yield node.with_changes(value=_int_token(node.evaluated_value + 1))
+    elif isinstance(node, cst.Float):
         new_value = node.evaluated_value + 1
         # 1e400 is a legal literal evaluating to inf, but repr(inf) is not a
         # valid float token — with_changes would raise CSTValidationError and
         # kill mutant generation for the whole file (issue #78 / A1-NM-007).
-        if isinstance(new_value, float) and not math.isfinite(new_value):
+        if not math.isfinite(new_value):
             return
         yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
@@ -62,12 +94,13 @@ def _crcr_literal(value: int | float) -> cst.BaseExpression:
     """Render a CRCR replacement value as a libcst literal.
 
     A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
-    has no negative-literal node.
+    has no negative-literal node. Integer magnitudes beyond CPython's int→str
+    digit limit render hexadecimally via :func:`_int_token` (M-045).
     """
-    magnitude = abs(value)
-    literal: cst.BaseExpression = (
-        cst.Integer(str(magnitude)) if isinstance(value, int) else cst.Float(repr(magnitude))
-    )
+    if isinstance(value, int):
+        literal: cst.BaseExpression = cst.Integer(_int_token(abs(value)))
+    else:
+        literal = cst.Float(repr(abs(value)))
     if value < 0:
         return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
     return literal
