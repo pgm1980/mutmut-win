@@ -3,6 +3,7 @@
 import io
 import re
 import tokenize
+import unicodedata
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -927,6 +928,32 @@ def _docstring_statement(function: cst.FunctionDef) -> cst.BaseStatement | None:
     return None
 
 
+def _compiled_parameter_name(name: str, class_name: str | None) -> str:
+    """Return the identifier CPython actually binds for a parameter name.
+
+    The tokenizer normalizes every identifier with NFKC (``U+00B5`` becomes
+    ``U+03BC``, the KELVIN SIGN becomes ``K``), and inside a class body
+    private name mangling additionally rewrites an identifier that starts
+    with two underscores but does not end with them to
+    ``_<class><name>`` — the leading underscores of the class name are
+    stripped, and a class name consisting only of underscores does not
+    mangle at all (``_Py_Mangle`` semantics of CPython 3.14).  NFKC runs
+    FIRST on the parameter and the class name, then the mangling rule is
+    applied to the normalized forms.
+
+    :param name: Raw parameter name as written in the source.
+    :param class_name: Raw enclosing class name, or ``None`` for a
+        top-level function (no mangling).
+    :return: The compiled identifier, for use in generated string keys.
+    """
+    compiled = unicodedata.normalize("NFKC", name)
+    if class_name is not None and compiled.startswith("__") and not compiled.endswith("__"):
+        stripped_class = unicodedata.normalize("NFKC", class_name).lstrip("_")
+        if stripped_class:
+            compiled = f"_{stripped_class}{compiled}"
+    return compiled
+
+
 def create_trampoline_wrapper(
     function: cst.FunctionDef,
     mangled_name: str,
@@ -947,10 +974,16 @@ def create_trampoline_wrapper(
     ``yield from`` equivalent.  Methods whose complete positional signature is
     ``*args`` are supported as well: descriptor binding places the instance in
     that tuple and the wrapper forwards it without guessing a ``self`` name.
+
+    Keyword-only parameters are forwarded through a dict whose STRING keys
+    must be the identifiers CPython binds (M-040): NFKC-normalized and, for
+    methods, privately mangled (``__x`` in ``class C`` compiles to ``_C__x``
+    because the wrapper shares the class body).  Keyword names at CALL sites
+    are never mangled, so a caller overrides such a default with ``_C__x=…``.
     """
     named_params = [*function.params.posonly_params, *function.params.params]
     used_names = {
-        param.name.value
+        _compiled_parameter_name(param.name.value, class_name)
         for param in [
             *function.params.posonly_params,
             *function.params.params,
@@ -958,9 +991,9 @@ def create_trampoline_wrapper(
         ]
     }
     if isinstance(function.params.star_arg, cst.Param):
-        used_names.add(function.params.star_arg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_arg.name.value, class_name))
     if function.params.star_kwarg is not None:
-        used_names.add(function.params.star_kwarg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_kwarg.name.value, class_name))
     args_local_name = _fresh_wrapper_name("_mutmut_args", used_names)
     kwargs_local_name = _fresh_wrapper_name("_mutmut_kwargs", used_names)
 
@@ -978,7 +1011,13 @@ def create_trampoline_wrapper(
     )
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
-        cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)
+        # M-040: the key is the COMPILED parameter name (NFKC + private
+        # class mangling); the value expression is a CST name that the
+        # compiler renames identically, so both sides stay in sync.
+        cst.DictElement(
+            cst.SimpleString(repr(_compiled_parameter_name(p.name.value, class_name))),
+            p.name,
+        )
         for p in function.params.kwonly_params
     ]
     if isinstance(function.params.star_kwarg, cst.Param):

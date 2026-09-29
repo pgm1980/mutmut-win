@@ -15,10 +15,15 @@ Audit findings — all clean-run breakers on legal Python:
 from __future__ import annotations
 
 import asyncio
+import keyword
 import os
+import unicodedata
 from typing import Any
 
-from mutmut_win.mutation import mutate_file_contents
+from hypothesis import assume, given
+from hypothesis import strategies as st
+
+from mutmut_win.mutation import _compiled_parameter_name, mutate_file_contents
 
 
 def _exec_clean(source: str) -> tuple[dict[str, Any], list[str]]:
@@ -71,6 +76,119 @@ class TestLocalCollisions:
         source = "def f(x, **args):\n    return (x + 1, args)\n"
         ns, _names = _exec_clean(source)
         assert ns["f"](1, k=2) == (2, {"k": 2})
+
+
+class TestCompiledKeywordKeys:
+    """M-040: kwargs-dict keys must be the COMPILED parameter names.
+
+    The wrapper, the private ``_orig`` copy and every mutant of a method
+    live in the class body, so CPython NFKC-normalizes every identifier
+    (U+00B5 -> U+03BC) and privately mangles ``__x`` to ``_C__x``.  The
+    forwarding dict key used to be the raw CST name, so even the clean
+    call died with ``TypeError: unexpected keyword argument '__x'``.
+    """
+
+    def test_private_kwonly_param_in_method_forwards_mangled_key(self) -> None:
+        source = "class C:\n    def m(self, *, __x=1):\n        return __x + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["C"]().m() == 2
+        # the compiled parameter name is '_C__x', so it is also the only
+        # legal keyword to override the default with
+        assert ns["C"]().m(_C__x=5) == 6
+
+    def test_private_kwonly_param_with_leading_underscore_class(self) -> None:
+        # leading underscores of the class name are stripped for mangling
+        source = "class _P:\n    def m(self, *, __y=3):\n        return __y + 0\n"
+        ns, _names = _exec_clean(source)
+        assert ns["_P"]().m() == 3
+
+    def test_nfkc_class_and_private_kwonly_param(self) -> None:
+        # class U+FF23 compiles to 'C', __U+00B5 mangles to '_C__' + U+03BC
+        source = "class \uff23:\n    def m(self, *, __\u00b5=1):\n        return __\u00b5 + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["C"]().m() == 2
+        compiled_key = "_C__\u03bc"
+        assert ns["C"]().m(**{compiled_key: 5}) == 6
+
+    def test_nfkc_kwonly_param_in_top_level_function(self) -> None:
+        source = "def f(*, \u00b5=1):\n    return \u00b5 + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["f"]() == 2
+
+    def test_kelvin_sign_kwonly_param_in_top_level_function(self) -> None:
+        # U+212A (KELVIN SIGN) is the second NFKC variant that compiles to 'K'
+        source = "def f(*, \u212a=1):\n    return \u212a + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["f"]() == 2
+
+    def test_nfkc_kwonly_param_colliding_with_wrapper_args_local(self) -> None:
+        # Separate tested step of M-040: '_\uff4dutmut_args' (fullwidth m)
+        # compiles to '_mutmut_args'.  Without NFKC-aware used_names the
+        # wrapper local shadows the parameter and forwards the empty args
+        # list as the keyword value.
+        source = "def f(*, _\uff4dutmut_args=7):\n    return _\uff4dutmut_args + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["f"]() == 8
+        assert ns["f"](_mutmut_args=9) == 10
+
+    def test_dunder_suffix_kwonly_param_is_not_mangled(self) -> None:
+        # guard: names ending in '__' are dunders and must stay untouched
+        source = "class C:\n    def m(self, *, __x__=1):\n        return __x__ + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["C"]().m() == 2
+        assert ns["C"]().m(__x__=5) == 6
+
+    def test_underscore_only_class_does_not_mangle(self) -> None:
+        # guard: a class name consisting only of underscores never mangles
+        source = "class _:\n    def m(self, *, __x=1):\n        return __x + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["_"]().m() == 2
+        assert ns["_"]().m(__x=5) == 6
+
+
+def _kwdefaults_oracle_key(name: str, class_name: str | None) -> str:
+    """Read the compiled kwonly key from CPython 3.14.7 itself (Q-52 oracle)."""
+    if class_name is None:
+        source = f"def m(self, *, {name}=0):\n    pass\n"
+    else:
+        source = f"class {class_name}:\n    def m(self, *, {name}=0):\n        pass\n"
+    namespace: dict[str, Any] = {}
+    # Literal snippets in a codegen oracle; exec'ing compiler output IS the
+    # test purpose (same suppression rationale as _exec_clean).
+    exec(compile(source, "<oracle>", "exec"), namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+    if class_name is None:
+        method = namespace["m"]
+    else:
+        method = namespace[unicodedata.normalize("NFKC", class_name)].m
+    kwdefaults = method.__kwdefaults__
+    assert kwdefaults is not None
+    return next(iter(kwdefaults))
+
+
+# Identifier-shaped names incl. NFKC variants (µ, KELVIN SIGN, fullwidth
+# letters) and optional dunder prefix/suffix so every mangling branch is hit.
+_IDENTIFIER_STRATEGY = st.from_regex(
+    r"_{0,2}[a-z\u00b5\u212a\uff41-\uff5a][a-z0-9]{0,5}(__)?",
+    fullmatch=True,
+)
+
+
+_CLASS_NAME_STRATEGY = st.sampled_from([None, "C", "_C", "__C", "\uff23", "_", "__"])
+
+
+class TestCompiledParameterNameOracle:
+    @given(name=_IDENTIFIER_STRATEGY, class_name=_CLASS_NAME_STRATEGY)
+    def test_compiled_parameter_name_matches_cpython_oracle(
+        self, name: str, class_name: str | None
+    ) -> None:
+        normalized = unicodedata.normalize("NFKC", name)
+        # Keywords and 'self' would make the oracle source invalid
+        # (SyntaxError / duplicate argument), not the code under test.
+        assume(not keyword.iskeyword(normalized))
+        assume(normalized not in {"self", "m"})
+        assert _compiled_parameter_name(name, class_name) == _kwdefaults_oracle_key(
+            name, class_name
+        )
 
 
 class TestStarArgsMethods:
