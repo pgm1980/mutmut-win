@@ -109,7 +109,23 @@ class TestOperatorString:
     def test_value_changing_case_mutants_still_published(self) -> None:
         node = cst.SimpleString('"FOO"')
         values = [r.value for r in operator_string(node)]
-        assert '"foo"' in values
+        # Exact set AND count: the upper variant is textually equal and must
+        # be skipped — a duplicated lower candidate would also fail this pin.
+        assert values == ['"XXFOOXX"', '"foo"']
+
+    def test_already_lowercase_string_still_uppercased(self) -> None:
+        # Pins that the textual skip of the lower variant does not abort the
+        # candidate loop: the upper variant must still be published.
+        node = cst.SimpleString('"hello"')
+        values = [r.value for r in operator_string(node)]
+        assert values == ['"XXhelloXX"', '"HELLO"']
+
+    def test_hex_escape_upper_variant_still_published(self) -> None:
+        # Value-based filter must drop only the VALUE-EQUAL lower variant;
+        # the value-changing upper variant stays (and so does XX).
+        node = cst.parse_expression('"ab\\x4Ac"')
+        values = [r.value for r in operator_string(node)]
+        assert values == ['"XXab\\x4AcXX"', '"AB\\x4AC"']
 
     def test_raw_string_escape_case_still_published(self) -> None:
         # In a raw string the backslash is literal: case changes DO change
