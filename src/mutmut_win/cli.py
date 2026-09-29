@@ -1032,6 +1032,16 @@ def show(mutant_name: str) -> None:
     that matches exactly ONE mutant — the same matching rule as `run`;
     an ambiguous pattern fails and lists the candidates.
     """
+    # M-026: show is a READER — it must never resolve names through a
+    # redirected mutants/ root (a Junction could otherwise point the
+    # metadata walk — and its healing — at files outside the workspace).
+    # Same fail-closed root contract as run/apply/export, no lock needed.
+    try:
+        _require_safe_workspace_roots("mutants", action="show")
+    except UnsafeWorkspaceStateError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -1110,11 +1120,17 @@ def apply(mutant_name: str) -> None:
                     f"{artifact_path}: {exc}; source was not changed"
                 ) from exc
             apply_mutant(resolved_name, config)
+            # M-074: the receipt names the mutant that was actually
+            # written; with a glob input the resolved identity would
+            # otherwise be missing from every operator/CI log. Emitted
+            # inside the try so `resolved_name` is always bound here.
+            if resolved_name != mutant_name:
+                click.echo(f"Applied mutant '{resolved_name}' (matched '{mutant_name}').")
+            else:
+                click.echo(f"Applied mutant '{resolved_name}'.")
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
-
-    click.echo(f"Applied mutant '{mutant_name}'.")
 
 
 @cli.command()

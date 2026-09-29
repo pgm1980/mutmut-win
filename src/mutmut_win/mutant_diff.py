@@ -28,7 +28,11 @@ from mutmut_win.exceptions import (
     MutationParseError,
     StaleStagingError,
 )
-from mutmut_win.file_setup import read_verified_generated_bytes, walk_source_files
+from mutmut_win.file_setup import (
+    get_mutant_name,
+    read_verified_generated_bytes,
+    walk_source_files,
+)
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.mutation import parse_module_preserving_newlines
 from mutmut_win.test_mapping import (
@@ -85,7 +89,9 @@ def find_mutant(mutant_name: str, config: MutmutConfig) -> SourceFileMutationDat
 
     Returns:
         The ``SourceFileMutationData`` for the source file that owns
-        *mutant_name*.
+        *mutant_name*. Read-only: corrupt sidecars are never healed
+        (deleted) — that is the generation path's job under the workspace
+        lock (M-026).
 
     Raises:
         FileNotFoundError: If no source file contains *mutant_name*.
@@ -94,7 +100,7 @@ def find_mutant(mutant_name: str, config: MutmutConfig) -> SourceFileMutationDat
         if config.should_ignore_for_mutation(path):
             continue
         m = SourceFileMutationData(path=str(path))
-        m.load()
+        m.load(heal_corrupt=False)
         if mutant_name in m.exit_code_by_key:
             return m
 
@@ -108,6 +114,10 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
     and glob patterns go through the same matcher as ``run``, but these
     commands operate on a single mutant — an ambiguous pattern fails with
     the candidate list instead of guessing (or applying everything).
+    Duplicate or overlapping ``paths_to_mutate`` roots are deduplicated
+    by canonical file identity in generation order (M-113), so a repeated
+    root never makes an exact name ambiguous; only DIFFERENT files owning
+    the same name are (a genuine collision).
 
     Args:
         pattern: Mutant name or fnmatch pattern supplied by the user.
@@ -122,11 +132,26 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
         AmbiguousMutantNameError: If more than one mutant matches.
     """
     matches: list[tuple[str, SourceFileMutationData]] = []
+    seen_sources: set[Path] = set()
     for path in walk_source_files(config):
         if config.should_ignore_for_mutation(path):
             continue
+        # Duplicate/overlapping ``paths_to_mutate`` roots visit the same
+        # file twice (M-113): deduplicate by canonical file identity —
+        # exactly like the generation walk (orchestrator ``seen_sources``:
+        # ignore check first, ``Path.resolve()`` key, first spelling wins)
+        # so the same sidecar and staging path are used. Only genuinely
+        # different files owning one name stay ambiguous.
+        resolved_source = path.resolve()
+        if resolved_source in seen_sources:
+            continue
+        seen_sources.add(resolved_source)
         m = SourceFileMutationData(path=str(path))
-        m.load()
+        # Read-only (M-026): a corrupt sidecar yields no candidates here
+        # instead of being healed (deleted) — even through a redirected
+        # mutants/ root. Healing belongs to the generation path under the
+        # workspace lock.
+        m.load(heal_corrupt=False)
         matches.extend((key, m) for key in match_mutant_names([pattern], m.exit_code_by_key))
 
     if not matches:
@@ -141,6 +166,52 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
         )
         raise AmbiguousMutantNameError(msg)
     return matches[0]
+
+
+def locate_staged_source_for_mutant(
+    mutant_name: str,
+    mutants_dir: Path = Path("mutants"),
+) -> Path:
+    """Locate the staged source file that canonically owns *mutant_name*.
+
+    DB-only fallback (M-115): without a readable ``.meta`` sidecar, the
+    owner is found through the canonical forward mapping
+    :func:`mutmut_win.file_setup.get_mutant_name` — never through a file
+    CONTENT scan, whose first ``def <local name>`` substring hit can
+    belong to a different module or to a longer ordinal (``x_add__mutmut_3``
+    is a substring of ``def x_add__mutmut_30``).
+
+    The comparison is case-sensitive (Q-20): module components below the
+    stripped source root must match the generation-time spelling exactly;
+    a deviating spelling is treated as not found (fail-closed).
+
+    Args:
+        mutant_name: Fully qualified mutant identifier.
+        mutants_dir: Staging root to scan.
+
+    Returns:
+        Path of the owning staged file, relative to *mutants_dir*.
+
+    Raises:
+        FileNotFoundError: If no staged file maps to *mutant_name*.
+        AmbiguousMutantNameError: If more than one staged file maps to
+            *mutant_name* (identity collision).
+    """
+    local_name = mutant_name.rpartition(".")[-1]
+    owners: list[Path] = []
+    for py_file in sorted(mutants_dir.rglob("*.py")):
+        if not py_file.is_file():
+            continue
+        staged_rel = py_file.relative_to(mutants_dir)
+        if get_mutant_name(staged_rel, local_name) == mutant_name:
+            owners.append(staged_rel)
+    if not owners:
+        raise FileNotFoundError(f"Could not find mutant {mutant_name} in staging")
+    if len(owners) > 1:
+        shown = ", ".join(str(owner) for owner in owners)
+        msg = f"Mutant name {mutant_name!r} maps to {len(owners)} staged files: {shown}"
+        raise AmbiguousMutantNameError(msg)
+    return owners[0]
 
 
 def read_mutants_module(
@@ -465,8 +536,18 @@ def _encode_git_patch(diff: str, source_encoding: str) -> bytes:
 def _render_function_diff(path: Path | str, mutant_name: str) -> tuple[str, str]:
     """Render one diff and return its verified Python source encoding."""
     metadata = SourceFileMutationData(path=str(path))
-    metadata.load()
+    # Read-only (M-026): rendering must never heal (delete) a corrupt
+    # sidecar — an unverifiable metadata state fails closed instead, and
+    # healing stays with the generation path under the workspace lock.
+    metadata.load(heal_corrupt=False)
     source_bytes = _read_source_bytes_matching_staging(path, metadata.source_hash)
+    if mutant_name not in metadata.exit_code_by_key:
+        # Provenance gate (M-115): a path is not evidence that this file
+        # owns the mutant — render only mutants the file's own metadata
+        # records. Deliberately AFTER the source-hash gate so the pure
+        # DB-only state (no hash at all) still fails with StaleStagingError.
+        msg = f"Mutant {mutant_name} is not recorded in the metadata of {path}"
+        raise FileNotFoundError(msg)
     module = read_mutants_module(
         path,
         expected_generated_hash=metadata.generated_hash,
@@ -514,7 +595,8 @@ def render_function_diff(path: Path | str, mutant_name: str) -> str:
 
     Raises:
         FileNotFoundError: If the ``_orig`` copy or the mutant function is
-            missing from the mutants file.
+            missing from the mutants file, or the mutant is not recorded
+            in the file's mutation metadata (provenance gate, M-115).
         OSError: If the mutants file cannot be read.
         StaleStagingError: If the current source bytes do not match the source
             hash recorded when the mutants were generated.
