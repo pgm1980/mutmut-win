@@ -358,6 +358,10 @@ class PytestRunner:
         phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
             env,
             runtime_dir=runtime_dir,
+            # Phases re-check the guard inside frozen staging (written once
+            # by write_pth_blocker before the evidence snapshot): verify
+            # only, never republish frozen content (M-011).
+            replace_unverifiable=False,
         )
         capture = BoundedOutputCapture()
         proc: subprocess.Popen[bytes] | None = None
@@ -460,7 +464,9 @@ class PytestRunner:
             env = self._mutants_env()
             env[MUTANT_ENV_VAR] = ""
             env["PYTHONIOENCODING"] = "utf-8"
-            prepare_pytest_collection_guard()
+            # Verify-only guard republication: collection runs after the
+            # staging evidence snapshot (M-011).
+            prepare_pytest_collection_guard(replace_unverifiable=False)
 
         with tempfile.TemporaryDirectory(
             prefix="mutmut-win-pytest-runtime-",
@@ -535,9 +541,11 @@ class PytestRunner:
 
         # The deterministic plugin is part of the frozen staging basis.  This
         # idempotent ensure is also safe for direct/ad-hoc callers that did not
-        # invoke write_pth_blocker first.
+        # invoke write_pth_blocker first.  Post-snapshot runs verify only:
+        # an unprovable-but-identical plugin fails with the real cause
+        # instead of being republished (M-011).
         mutants_abs = Path("mutants").absolute()
-        self._write_stats_plugin(mutants_abs)
+        self._write_stats_plugin(mutants_abs, replace_unverifiable=False)
 
         # Run all tests with the stats plugin active.
         cmd = [*self._guarded_pytest_cmd(), "-p", "_mutmut_stats_plugin", "--tb=no", "-q"]
@@ -825,7 +833,11 @@ class PytestRunner:
         return env
 
     @staticmethod
-    def _write_stats_plugin(mutants_abs: Path) -> None:
+    def _write_stats_plugin(
+        mutants_abs: Path,
+        *,
+        replace_unverifiable: bool = True,
+    ) -> None:
         """Write the stats-collection pytest plugin into *mutants_abs*.
 
         The generated ``_mutmut_stats_plugin.py`` is loaded by pytest via
@@ -843,6 +855,13 @@ class PytestRunner:
         accumulate in ``_state._stats`` inside the subprocess, the plugin
         snapshots them per-test, and persists the result to a JSON file
         that the parent process reads after the subprocess exits.
+
+        Args:
+            mutants_abs: Absolute staging directory for the plugin leaf.
+            replace_unverifiable: Publishing default; post-snapshot stats
+                runs pass ``False`` so an unprovable-but-identical frozen
+                plugin fails with the real cause instead of being
+                republished (M-011).
         """
         plugin_path = mutants_abs / "_mutmut_stats_plugin.py"
         plugin_source = '''\
@@ -933,7 +952,11 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         raise RuntimeError("MUTMUT_STATS_OUTPUT_PATH must be absolute")
     atomic_write_bytes(output_path, payload_bytes)
 '''
-        ensure_atomic_bytes(plugin_path, plugin_source.encode("utf-8"))
+        ensure_atomic_bytes(
+            plugin_path,
+            plugin_source.encode("utf-8"),
+            replace_unverifiable=replace_unverifiable,
+        )
 
     def _write_sitecustomize_pth_blocker(self, mutants_abs: Path) -> None:
         """Write a sitecustomize.py that removes the real src/ from sys.path.
