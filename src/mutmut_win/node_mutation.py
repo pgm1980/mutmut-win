@@ -315,6 +315,9 @@ def operator_unsymmetrical_string_methods_swap(
 #: Expression types that can safely replace their enclosing node bare: they
 #: bind at least as tightly as a call and cannot carry hanging continuation
 #: lines unless already parenthesized (then the lpar check applies anyway).
+#: One exception is context-dependent and handled in the visitor (M-047): a
+#: bare DECIMAL integer is invalid directly before an attribute dot, so
+#: ``_parenthesize_for_context`` adds parens in exactly that position.
 _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.Name,
     cst.Integer,
@@ -334,6 +337,28 @@ _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.DictComp,
     cst.Tuple,
 )
+
+
+def _is_bare_decimal_integer(expression: cst.CSTNode) -> bool:
+    """True for an unparenthesised decimal ``cst.Integer``.
+
+    A bare decimal integer directly before an attribute dot is invalid —
+    ``0.bit_length()`` tokenises the dot as the start of a float and is a
+    SyntaxError (M-047 / issue #168). Hex/octal/binary integers keep their
+    prefix character before the dot and stay valid, as do floats and
+    imaginaries. Already-parenthesised integers are safe by construction.
+
+    Args:
+        expression: Candidate replacement node.
+
+    Returns:
+        True when the node is a decimal integer without its own parentheses.
+    """
+    return (
+        isinstance(expression, cst.Integer)
+        and not expression.lpar
+        and expression.value[:2].lower() not in {"0x", "0o", "0b"}
+    )
 
 
 def _safe_unwrap(expression: cst.BaseExpression) -> cst.BaseExpression:

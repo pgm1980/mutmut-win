@@ -21,7 +21,11 @@ from libcst.metadata import (
 )
 
 from mutmut_win.constants import Profile
-from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
+from mutmut_win.node_mutation import (
+    OPERATORS_TYPE,
+    _is_bare_decimal_integer,
+    operators_for_profile,
+)
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
 
 if TYPE_CHECKING:
@@ -194,9 +198,10 @@ class MutationVisitor(cst.CSTVisitor):
     The created mutations will be accessible at `self.mutations`.
 
     Two candidate-local guards run before a mutation is recorded: a
-    precedence repair that parenthesises bare unary replacements at a ``**``
-    base (M-046), and a pattern-local syntax gate that discards candidates
-    which cannot legally appear inside a ``case`` pattern, e.g. ``case +1``
+    context-sensitive parenthesisation that fixes bare unary replacements at
+    a ``**`` base and bare decimal integers at an attribute base (M-046,
+    M-047), and a pattern-local syntax gate that discards candidates which
+    cannot legally appear inside a ``case`` pattern, e.g. ``case +1``
     (M-048). Both keep the file-wide compile net in create_mutants_for_file
     as the last line of defence.
     """
@@ -349,10 +354,12 @@ class MutationVisitor(cst.CSTVisitor):
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
-                    # Precedence repair (M-046): a bare unary replacement at
-                    # a ** base must be parenthesised BEFORE the candidate is
-                    # recorded, so the gate below probes the repaired node.
-                    mutated_node = _parenthesize_power_base(
+                    # Context-sensitive parenthesisation (Q-55): a bare unary
+                    # replacement at a ** base (M-046) and a bare decimal
+                    # integer at an attribute base (M-047) must be
+                    # parenthesised BEFORE the candidate is recorded, so the
+                    # gate below probes the repaired node.
+                    mutated_node = _parenthesize_for_context(
                         self.get_metadata(ParentNodeProvider, node, None), node, mutated_node
                     )
                     # Pattern-local syntax gate (M-048): match patterns are a
@@ -522,19 +529,22 @@ class _SubtreeIdCollector(cst.CSTVisitor):
         return True
 
 
-def _parenthesize_power_base(
+def _parenthesize_for_context(
     parent: cst.CSTNode | None,
     node: cst.CSTNode,
     mutated_node: cst.CSTNode,
 ) -> cst.CSTNode:
-    """Parenthesise a replacement that would rebind as the base of ``**``.
+    """Parenthesise a replacement only where the parent context demands it.
 
-    A bare ``UnaryOperation`` at a power base rebinds: ``-1 ** x`` parses as
-    ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046 / issue #168). The
-    repair is deliberately narrow — it fires only when the replaced node IS
-    the left operand of a ``cst.Power`` binary operation and the candidate is
-    an unparenthesised ``UnaryOperation`` — so every other mutant keeps its
-    exact rendering and mutant ids stay stable.
+    Two contexts rebind or invalidate a bare replacement (Q-55, issue #168):
+
+    - the base of ``**``: a bare ``UnaryOperation`` rebinds — ``-1 ** x``
+      parses as ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046);
+    - the base of an attribute access: a bare decimal integer swallows the
+      dot into a float token — ``0.bit_length()`` is a SyntaxError (M-047).
+
+    Everything else stays untouched: mutant texts remain diff-minimal, and
+    mapping keys under profile ALL keep their valid bare form.
 
     Args:
         parent: The replaced node's parent from ``ParentNodeProvider``.
@@ -542,14 +552,23 @@ def _parenthesize_power_base(
         mutated_node: The operator's candidate replacement.
 
     Returns:
-        The candidate, parenthesised where the power-base context demands it.
+        The candidate, parenthesised where the context demands it.
     """
     if (
         isinstance(parent, cst.BinaryOperation)
         and isinstance(parent.operator, cst.Power)
         and parent.left is node
-        and isinstance(mutated_node, cst.UnaryOperation)
-        and not mutated_node.lpar
+    ):
+        if isinstance(mutated_node, cst.UnaryOperation) and not mutated_node.lpar:
+            return mutated_node.with_changes(
+                lpar=[cst.LeftParen()],
+                rpar=[cst.RightParen()],
+            )
+        return mutated_node
+    if (
+        isinstance(parent, cst.Attribute)
+        and parent.value is node
+        and _is_bare_decimal_integer(mutated_node)
     ):
         return mutated_node.with_changes(
             lpar=[cst.LeftParen()],

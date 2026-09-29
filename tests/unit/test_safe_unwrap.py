@@ -15,11 +15,17 @@ from __future__ import annotations
 
 import ast
 
+import libcst as cst
+from hypothesis import given
+from hypothesis import strategies as st
+
+from mutmut_win.constants import Profile
 from mutmut_win.mutation import mutate_file_contents
+from mutmut_win.node_mutation import _is_bare_decimal_integer
 
 
-def _mutate(source: str) -> tuple[str, list[str]]:
-    code, names = mutate_file_contents("m.py", source)
+def _mutate(source: str, active_profile: Profile = Profile.ADVANCED) -> tuple[str, list[str]]:
+    code, names = mutate_file_contents("m.py", source, active_profile=active_profile)
     # Hard gate: whatever the operators produce must compile.
     ast.parse(code)
     return code, list(names)
@@ -171,3 +177,120 @@ class TestAtomsStayBare:
     def test_single_line_conditional_unparenthesized(self) -> None:
         code, _names = _mutate("def f(a, b, c):\n    return a if c else b\n")
         assert "return (a)" not in code
+
+
+# ---------------------------------------------------------------------------
+# M-047 (issue #168): bare decimal integers as an attribute BASE
+# ---------------------------------------------------------------------------
+
+
+class TestDecimalIntegerAttributeBase:
+    """A bare decimal integer is NOT a safe atom where the replaced node was
+    the base of an attribute access: '0.bit_length()' is a SyntaxError because
+    the dot tokenises as the start of a float. The parenthesisation is
+    context-sensitive (only the attribute-base position gets parens), so
+    ordinary mutants keep their diff-minimal bare form and mapping keys under
+    profile ALL stay valid.
+    """
+
+    def test_unary_removal_attribute_base(self) -> None:
+        code, names = _mutate("def f():\n    return (~1).bit_length()\n")
+        assert "(1).bit_length()" in code
+        assert names
+
+    def test_math_neutralize_attribute_base(self) -> None:
+        code, names = _mutate("def f():\n    return abs(1).bit_length()\n")
+        assert "(1).bit_length()" in code
+        assert names
+
+    def test_or_default_attribute_base(self) -> None:
+        code, names = _mutate("def f(x):\n    return (x or 0).bit_length()\n")
+        assert "(0).bit_length()" in code
+        assert names
+
+    def test_conditional_expression_attribute_base(self) -> None:
+        code, names = _mutate("def f(c):\n    return (1 if c else 2).to_bytes(2)\n")
+        assert "(1).to_bytes(2)" in code
+        assert "(2).to_bytes(2)" in code
+        assert names
+
+    def test_or_default_without_attribute_stays_bare(self) -> None:
+        # Context-sensitive (variant b): outside an attribute base the
+        # decimal integer keeps its diff-minimal bare form.
+        code, _names = _mutate("def f(x):\n    return x or 0\n")
+        assert "return 0" in code
+        assert "return (0)" not in code
+
+    def test_hex_attribute_base_stays_bare(self) -> None:
+        # Hex (like float/imaginary) bases are valid before the dot.
+        code, _names = _mutate("def f():\n    return (~0x1).bit_length()\n")
+        assert "0x1.bit_length()" in code
+        assert "(0x1).bit_length()" not in code
+
+    def test_name_attribute_base_stays_bare(self) -> None:
+        code, _names = _mutate("def f(x, y):\n    return (x or y).bit_length()\n")
+        assert "y.bit_length()" in code
+        assert "(y).bit_length()" not in code
+
+    def test_profile_all_mapping_key_stays_valid(self) -> None:
+        # operator_aod (Profile.ALL) on a complex mapping key yields the bare
+        # decimal integer '1' — still a valid mapping key ('case {(1): _}'
+        # would be a SyntaxError; the M-048 gate is the second line of
+        # defence).
+        source = (
+            "def f(x):\n"
+            "    match x:\n"
+            "        case {1+2j: _}:\n"
+            "            return 1\n"
+            "        case _:\n"
+            "            return 0\n"
+        )
+        code, _names = _mutate(source, active_profile=Profile.ALL)
+        assert "case {1: _}:" in code
+
+
+class TestIsBareDecimalInteger:
+    def test_decimal_integer_is_bare_decimal(self) -> None:
+        assert _is_bare_decimal_integer(cst.Integer("1"))
+
+    def test_underscored_decimal_is_bare_decimal(self) -> None:
+        assert _is_bare_decimal_integer(cst.Integer("1_000"))
+
+    def test_hex_integer_is_not_bare_decimal(self) -> None:
+        assert not _is_bare_decimal_integer(cst.Integer("0x1"))
+
+    def test_octal_integer_is_not_bare_decimal(self) -> None:
+        assert not _is_bare_decimal_integer(cst.Integer("0o7"))
+
+    def test_binary_integer_is_not_bare_decimal(self) -> None:
+        assert not _is_bare_decimal_integer(cst.Integer("0b1"))
+
+    def test_uppercase_prefix_is_not_bare_decimal(self) -> None:
+        assert not _is_bare_decimal_integer(cst.Integer("0X1"))
+
+    def test_parenthesized_integer_is_not_bare(self) -> None:
+        node = cst.Integer("1", lpar=[cst.LeftParen()], rpar=[cst.RightParen()])
+        assert not _is_bare_decimal_integer(node)
+
+    def test_other_atoms_are_not_bare_decimals(self) -> None:
+        assert not _is_bare_decimal_integer(cst.Name("x"))
+        assert not _is_bare_decimal_integer(cst.Float("1.0"))
+        assert not _is_bare_decimal_integer(cst.Imaginary("1j"))
+        assert not _is_bare_decimal_integer(cst.SimpleString('"1"'))
+
+
+class TestAttributeBaseProperty:
+    @given(
+        n=st.integers(min_value=0, max_value=10**9),
+        tpl=st.sampled_from(
+            [
+                "(~{}).bit_length()",
+                "abs({}).bit_length()",
+                "(x or {}).bit_length()",
+                "({} if x else 2).real",
+            ]
+        ),
+    )
+    def test_generated_code_always_parses_and_mutates(self, n: int, tpl: str) -> None:
+        _code, names = _mutate(f"def f(x):\n    return {tpl.format(n)}\n")
+        assert names
