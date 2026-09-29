@@ -404,6 +404,14 @@ functions and top-level-class methods. The two kinds of nesting differ:
   top-level function's mutant set, so closure logic is covered.
 - A **method of a class nested inside another class** is genuinely not
   mutated and contributes no mutants rather than appearing as `survived`.
+- **Decorated functions and classes** are excluded wholesale, together with
+  everything they contain (a method decorated solely with `@staticmethod` is
+  the documented exception). For classes this is a technical constraint of
+  the trampoline, not a stylistic choice: each mutated method's private
+  `_orig` copy and mutants are placed inside the class body while their
+  lookup names are only bound after the class statement, so a class
+  decorator touching members during class creation would meet half-built
+  trampolines.
 
 Repeated same-named top-level functions or class methods remain distinct.
 The first occurrence keeps its historical mutant name; occurrence 2 and later
@@ -592,7 +600,16 @@ seconds without progress), retries `--force` cleanup through transient file
 locks, absorbs transient Windows filter-driver interference at three narrow
 atomic-publication points, publishes the pytest phase-guard execution proof
 once per phase instead of once per test report, and documents
-`clean_run_timeout` for large staged suites. Details:
+`clean_run_timeout` for large staged suites. The current remediation wave
+additionally restores the exclusion guarantees of that surface: qualified
+`do_not_mutate_patterns` stay effective even after a nested class was
+skipped (the visitor's class stack is now identity-bound). The same wave
+grounds the wholesale exclusion of decorated classes in the trampoline
+architecture (private method copies live in the class body, their lookup
+names are bound only after the class statement) instead of the inherited
+function-decorator rationale, and computes `block` pragma extents from the
+token stream so column-0 comments and multi-line string contents no longer
+end a block early. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.

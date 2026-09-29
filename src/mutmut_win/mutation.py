@@ -212,9 +212,14 @@ class MutationVisitor(cst.CSTVisitor):
         # Compiled name-skip regexes (mutmut-3.6.0 do_not_mutate_patterns backport):
         # a FunctionDef/ClassDef whose name matches any of these is skipped wholesale.
         self._name_skip_patterns = [re.compile(p) for p in do_not_mutate_patterns]
-        # Enclosing-class names (maintained by on_visit/on_leave) so the
+        # Enclosing ClassDef nodes (maintained by on_visit/on_leave) so the
         # do_not_mutate_patterns can match a QUALIFIED ``Class.method`` name.
-        self._class_stack: list[str] = []
+        # Invariant: the list holds exactly the ClassDef nodes whose subtree
+        # is currently being visited.  Node IDENTITY is load-bearing: libcst
+        # calls on_leave for every node — including ClassDefs skipped by
+        # on_visit — so on_leave pops only when the leaving node is the top
+        # entry (see M-038).
+        self._class_nodes: list[cst.ClassDef] = []
         # ids() of CST nodes whose entire subtree must NOT be mutated.
         # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
         # whose first argument is a pure type annotation (see Bug #4).
@@ -255,10 +260,12 @@ class MutationVisitor(cst.CSTVisitor):
             self._create_mutations(node)
 
         # Track the enclosing class so do_not_mutate_patterns can match a
-        # qualified ``Class.method`` name (on_leave pops it). Pushed only after
-        # the skip checks above — a skipped class returns early, never pushed.
+        # qualified ``Class.method`` name. Pushed only after the skip checks
+        # above — a skipped class returns early, never pushed. on_leave only
+        # pops when the leaving node IS the top entry, so skipped nested
+        # classes cannot desynchronise the stack (M-038).
         if isinstance(node, cst.ClassDef):
-            self._class_stack.append(node.name.value)
+            self._class_nodes.append(node)
         # continue to mutate children
         return True
 
@@ -297,12 +304,17 @@ class MutationVisitor(cst.CSTVisitor):
     def on_leave(self, original_node: cst.CSTNode) -> None:
         """Pop the enclosing-class stack when leaving a ``ClassDef``.
 
-        Balanced with the push in :meth:`on_visit`: libcst calls ``on_leave``
-        exactly for the nodes whose ``on_visit`` returned True, so a skipped
-        (never-pushed) class is never popped here.
+        libcst calls ``on_leave`` for EVERY node — including nodes whose
+        ``on_visit`` returned ``False`` (a skipped nested ``ClassDef`` never
+        pushes).  The stack stays balanced through node identity: pop only
+        when the node being left IS the current top entry.
         """
-        if isinstance(original_node, cst.ClassDef) and self._class_stack:
-            self._class_stack.pop()
+        if (
+            isinstance(original_node, cst.ClassDef)
+            and self._class_nodes
+            and self._class_nodes[-1] is original_node
+        ):
+            self._class_nodes.pop()
 
     def _create_mutations(self, node: cst.CSTNode) -> None:
         is_cast = isinstance(node, cst.Call) and self._is_typing_cast_call(node)
@@ -408,7 +420,7 @@ class MutationVisitor(cst.CSTVisitor):
         # matcher used to be name-only).
         if self._name_skip_patterns and isinstance(node, (cst.FunctionDef, cst.ClassDef)):
             simple = node.name.value
-            qualified = ".".join([*self._class_stack, simple])
+            qualified = ".".join([*(klass.name.value for klass in self._class_nodes), simple])
             if any(
                 pattern.search(simple) or pattern.search(qualified)
                 for pattern in self._name_skip_patterns
@@ -441,6 +453,20 @@ class MutationVisitor(cst.CSTVisitor):
         #    to mutate their arguments and cause exceptions
         # 3) @property decorators break the trampoline signature assignment
         #    (which expects it to be a function)
+        # 4) decorated CLASSES are locked for their own technical reason, not
+        #    merely inherited from the function rules (external QA BC-132,
+        #    refuted at the code): combine_mutations_to_source rewrites the
+        #    class body so that each mutated method's public trampoline
+        #    wrapper, its private ``…__mutmut_orig`` copy AND all mutant
+        #    copies live INSIDE the class body, while their lookup names
+        #    (``…__mutmut_orig_ref`` and the ``…__mutmut_mutants`` dict) are
+        #    only bound at module level AFTER the class statement.  A class
+        #    decorator that touches members during class creation — calling,
+        #    registering or introspecting them, as @dataclass-style
+        #    registries do — would meet half-built trampolines (NameError on
+        #    the not-yet-bound module names) and see the private copies as
+        #    unexpected class members.  Keep decorated classes unmutated
+        #    wholesale.
         # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
         # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
         # a free function (no instance/class arg). Other decorators stay skipped.
@@ -1076,6 +1102,11 @@ def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
 
     The pragma line plus the suite below it: every following line indented
     deeper than the pragma line, through the last such non-blank line.
+
+    Legacy physical-indent extent; still used for ``block`` pragmas on
+    comment-only lines and inside bracketed continuation lines, where the
+    token-based extent (:func:`_pragma_block_range_from_tokens`) must not
+    apply (it would swallow the enclosing header's suite).
     """
     base = _indent_width(lines[pragma_index])
     last_body = pragma_index
@@ -1091,13 +1122,68 @@ def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
     return range(pragma_index + 1, last_body + 2)
 
 
+def _pragma_block_range_from_tokens(
+    tokens: Sequence[tokenize.TokenInfo], pragma_index: int
+) -> range | None:
+    """Token-stream block extent for a ``block`` pragma, or ``None`` for the legacy path.
+
+    Applies only when the pragma comment sits on a CODE line that closes its
+    logical line (the very next token is a ``NEWLINE`` on the same physical
+    line). The extent then is that logical line plus — when the next
+    significant token opens a suite — the whole suite, bounded by INDENT/DEDENT
+    depth counting through the last ``NEWLINE`` before the matching ``DEDENT``.
+    Comments and string CONTENT are invisible to the tokenizer's indent
+    bookkeeping, so unlike the physical-indent scan they cannot end the block
+    early (M-043).
+
+    Returns:
+        The covered 1-based line range, or ``None`` when the caller must keep
+        the legacy physical-indent extent: comment-only pragma lines (the next
+        significant token would be the ENCLOSING header's INDENT, swallowing
+        the whole surrounding body) and pragmas inside bracketed continuation
+        lines (no same-line ``NEWLINE``; widening to the full suite would
+        exceed the documented pragma contract).
+    """
+    pragma_line = tokens[pragma_index].start[0]
+    following = tokens[pragma_index + 1] if pragma_index + 1 < len(tokens) else None
+    if following is None or following.type != tokenize.NEWLINE or following.start[0] != pragma_line:
+        return None
+    end_line = following.end[0]
+
+    cursor = pragma_index + 2
+    while cursor < len(tokens) and tokens[cursor].type in (tokenize.NL, tokenize.COMMENT):
+        cursor += 1
+    if cursor >= len(tokens) or tokens[cursor].type != tokenize.INDENT:
+        # no suite below: the block is just the (logical) pragma line
+        return range(pragma_line, end_line + 1)
+
+    depth = 1
+    cursor += 1
+    while cursor < len(tokens) and depth:
+        token = tokens[cursor]
+        if token.type == tokenize.INDENT:
+            depth += 1
+        elif token.type == tokenize.DEDENT:
+            depth -= 1
+        elif token.type == tokenize.NEWLINE:
+            # remember the last statement line inside the suite; comments or
+            # blank lines after it do not extend the block
+            end_line = token.end[0]
+        cursor += 1
+    return range(pragma_line, end_line + 1)
+
+
 def pragma_no_mutate_lines(source: str) -> set[int]:
     """Return line numbers (1-based) excluded by ``# pragma: no mutate`` comments.
 
     Recognises four forms (mutmut-3.6.0 surface backport):
 
     - ``# pragma: no mutate`` — the comment's own line (the original behaviour).
-    - ``# pragma: no mutate block`` — that line plus the indented suite below it.
+    - ``# pragma: no mutate block`` — that line plus the suite below it. On a
+      code line the extent follows the token stream (INDENT/DEDENT depth), so
+      comment lines and multi-line string contents do not end the block early;
+      comment-only and continuation-line pragmas keep the physical-indent
+      extent.
     - ``# pragma: no mutate start`` … ``# pragma: no mutate end`` — the inclusive
       range between the two markers; a dangling ``start`` skips to end-of-file.
     """
@@ -1110,14 +1196,13 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     # Tokenization is essential here: scanning raw source text mistakes pragma
     # lookalikes in ordinary, raw, f- and triple-quoted strings for comments and
     # can suppress every mutation through EOF.  Only Python COMMENT tokens are
-    # directives; the original physical lines are still used to determine a
-    # ``block`` pragma's indentation extent.
+    # directives.  A ``block`` pragma's extent is likewise derived from the
+    # token stream (INDENT/DEDENT depth, see _pragma_block_range_from_tokens)
+    # so comment-only lines and multi-line string CONTENT cannot end the block
+    # early; comment-only and continuation-line pragmas keep the physical
+    # indent extent via _pragma_block_range.
     try:
-        comment_tokens = [
-            token
-            for token in tokenize.generate_tokens(io.StringIO(scanner_source).readline)
-            if token.type == tokenize.COMMENT
-        ]
+        tokens = list(tokenize.generate_tokens(io.StringIO(scanner_source).readline))
     except (
         tokenize.TokenError,
         SyntaxError,
@@ -1128,7 +1213,9 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
         # Ignore all provisional directives and let the real parser adjudicate
         # the invalid source.
         return set()
-    for token in comment_tokens:
+    for position, token in enumerate(tokens):
+        if token.type != tokenize.COMMENT:
+            continue
         suffix = _pragma_no_mutate_suffix(token.string)
         if suffix is None:
             continue
@@ -1142,7 +1229,11 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
             ignored.update(range(start, lineno + 1))
             open_start = None
         elif suffix == "block":
-            ignored.update(_pragma_block_range(lines, index))
+            token_range = _pragma_block_range_from_tokens(tokens, position)
+            if token_range is not None:
+                ignored.update(token_range)
+            else:
+                ignored.update(_pragma_block_range(lines, index))
         else:
             ignored.add(lineno)
     if open_start is not None:
