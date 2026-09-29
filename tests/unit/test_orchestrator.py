@@ -1008,6 +1008,24 @@ class TestFilterTasksByNames:
         result = _filter_tasks_by_names(tasks, ("src.mod.*",))
         assert [t.mutant_name for t in result] == [t.mutant_name for t in tasks]
 
+    # M-056 / Q-20: run's task filter shares the matcher with show/apply —
+    # mutant names are case-sensitive identifiers, also under Windows.
+    def test_case_twin_exact_name_selects_exactly_one_task(self) -> None:
+        tasks = [
+            _task("src.mod.x_parse__mutmut_1"),
+            _task("src.mod.x_Parse__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.mod.x_parse__mutmut_1",))
+        assert [t.mutant_name for t in result] == ["src.mod.x_parse__mutmut_1"]
+
+    def test_case_sensitive_glob_selects_only_the_case_twin(self) -> None:
+        tasks = [
+            _task("src.mod.x_parse__mutmut_1"),
+            _task("src.mod.x_Parse__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.mod.x_P*",))
+        assert [t.mutant_name for t in result] == ["src.mod.x_Parse__mutmut_1"]
+
 
 # ---------------------------------------------------------------------------
 # MutationOrchestrator — F7 sort by estimated_time

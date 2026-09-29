@@ -66,8 +66,13 @@ def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> li
     THE matching rule for user-supplied mutant names (issue #115 /
     A4-UI-012): ``run``, ``show``, ``apply`` and ``time-estimates`` all
     resolve names through this function. An exact name matches itself;
-    ``*``/``?``/``[...]`` patterns match via :func:`fnmatch.fnmatch`.
-    Candidate order is preserved, each candidate appears at most once.
+    ``*``/``?``/``[...]`` patterns match via :func:`fnmatch.fnmatchcase`.
+    Mutant names carry case-sensitive Python identifiers verbatim, so the
+    comparison is case-sensitive on every platform — including Windows,
+    where :func:`fnmatch.fnmatch` folds both sides through
+    ``os.path.normcase`` and a mistyped name could select (and ``apply``
+    write) the wrong case twin (M-056 / Q-20). Candidate order is
+    preserved, each candidate appears at most once.
 
     Args:
         patterns: User-supplied names and/or glob patterns.
@@ -77,11 +82,12 @@ def match_mutant_names(patterns: Iterable[str], candidates: Iterable[str]) -> li
         The matching candidates in their original order (possibly empty).
     """
     pattern_list = list(patterns)
+    exact = set(pattern_list)
+    globs = [pattern for pattern in pattern_list if any(magic in pattern for magic in "*?[")]
     return [
         candidate
         for candidate in candidates
-        if candidate in pattern_list
-        or any(fnmatch.fnmatch(candidate, pattern) for pattern in pattern_list)
+        if candidate in exact or any(fnmatch.fnmatchcase(candidate, pattern) for pattern in globs)
     ]
 
 
