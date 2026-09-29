@@ -1914,7 +1914,7 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
         import psutil  # type: ignore[import-untyped,unused-ignore]
 
         root_create_time = psutil.Process(proc.pid).create_time()
-    except psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):
         root_create_time = None
 
     if job_handle is not None:
