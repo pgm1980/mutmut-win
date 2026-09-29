@@ -681,6 +681,12 @@ def create_exclusive_random_bytes(
     with ``O_EXCL`` in a real, identity-checked directory. Unlike
     :func:`atomic_write_bytes`, this helper never calls ``replace``: a
     pre-existing user path is therefore never an eligible publication target.
+
+    A validation failure of the freshly created file is retried through
+    ``_SIBLING_VALIDATION_RETRY_DELAYS`` (fresh random name, fresh
+    ``O_EXCL`` creation, full revalidation) — a budget kept strictly
+    separate from the 32-attempt collision budget, whose exhaustion still
+    ends in ``FileExistsError`` (M-013).
     """
     if not prefix or Path(prefix).name != prefix or Path(suffix).name != suffix:
         raise ValueError("exclusive random file prefix/suffix must be plain names")
@@ -697,7 +703,9 @@ def create_exclusive_random_bytes(
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
 
-    for _attempt in range(32):
+    collision_attempts_left = 32
+    validation_attempts_left = len(_SIBLING_VALIDATION_RETRY_DELAYS) + 1
+    while True:
         path = directory / f"{prefix}{secrets.token_hex(16)}{suffix}"
         fd: int | None = None
         identity: FileIdentity | None = None
@@ -706,11 +714,26 @@ def create_exclusive_random_bytes(
             try:
                 fd = os.open(path, flags, 0o600)
             except FileExistsError:
+                collision_attempts_left -= 1
+                if collision_attempts_left <= 0:
+                    raise FileExistsError(
+                        f"could not allocate a unique exclusive file in {directory}"
+                    ) from None
                 continue
 
             opened = os.fstat(fd)
             identity = _identity(opened)
             leaf = path.lstat()
+            # Handle-derived link counts are deliberately NOT part of the
+            # rejection condition — the same reasoning as in
+            # ``_open_random_sibling``: Windows filter drivers transiently
+            # report zero or two links for a fresh ``O_EXCL`` inode
+            # (CX221-071; MBR-2026-09-14-01 follow-up field data) while the
+            # path view stays at one.  Exclusive creation, handle/path
+            # identity equality, regular-file shape and the path-view link
+            # count carry the private-file contract; a hardlink attack on
+            # this fresh random name would already have failed the
+            # ``O_EXCL`` creation above (M-013).
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or stat.S_ISLNK(leaf.st_mode)
@@ -718,12 +741,28 @@ def create_exclusive_random_bytes(
                 or identity[0] < 0
                 or identity[1] <= 0
                 or identity != _identity(leaf)
-                or opened.st_nlink != 1
                 or leaf.st_nlink != 1
             ):
-                raise UnsafeAtomicWriteError(
-                    f"exclusive random file is not a private regular file: {path}"
-                )
+                # Ownership is released before the close so an OSError from
+                # the close itself never triggers a second close in the
+                # finally.  The own fresh ``O_EXCL`` entry is unlinked BY
+                # NAME — a name nobody else can have created — because a
+                # handle/path identity flap would defeat an
+                # identity-checked cleanup and leave the entry behind.
+                owned_fd = fd
+                fd = None
+                os.close(owned_fd)
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                identity = None
+                validation_attempts_left -= 1
+                if validation_attempts_left <= 0:
+                    raise UnsafeAtomicWriteError(
+                        f"exclusive random file is not a private regular file: {path}"
+                    )
+                retry_index = len(_SIBLING_VALIDATION_RETRY_DELAYS) - validation_attempts_left
+                time.sleep(_SIBLING_VALIDATION_RETRY_DELAYS[retry_index])
+                continue
 
             _checked_parent(path, parent_identity)
             _write_all(fd, payload)
@@ -741,8 +780,6 @@ def create_exclusive_random_bytes(
                     os.close(fd)
             if not keep:
                 _cleanup_owned_temp(path, identity)
-
-    raise FileExistsError(f"could not allocate a unique exclusive file in {directory}")
 
 
 def atomic_copy_file(source: Path, destination: Path) -> None:
