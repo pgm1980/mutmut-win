@@ -172,7 +172,7 @@ class TestInstrumentationFrameDeadZone:
         _state._cached_max_stack_depth = budget
         monkeypatch.setenv(MUTANT_ENV_VAR, "stats")
         namespace: dict[str, object] = {}
-        exec(trampoline_impl, namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected — executing our own shipped template IS the test purpose
+        exec(trampoline_impl, namespace)  # noqa: S102 — executing our own shipped trampoline template IS the test purpose (adjudicated in the semgrep release gate allowlist)
         trampoline: Any = namespace["_mutmut_trampoline"]
 
         def orig(value: int) -> int:

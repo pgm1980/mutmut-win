@@ -375,11 +375,11 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         )
         == gate.DEFAULT_BUNDLE_CONTRACT
     )
-    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 25
-    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 25
+    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 26
+    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 26
     assert gate.DEFAULT_FINDING_ALLOWLIST[0].path == "tests/integration/test_kill_proc_tree.py"
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
-        "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c"
+        "7aeebb7bac13a5dc2ddf55dfb695ad49831db1e2986fdc6017079c736fa76c0f"
     )
     architecture_finding = gate.FindingSignature(
         path="tests/test_architecture.py",

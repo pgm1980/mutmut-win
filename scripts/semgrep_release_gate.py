@@ -143,7 +143,8 @@ _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
     "874635fc0f8b82ef1d8ba4cac975e4bffc7f7712ad7f37d4191c21a7cd40637b"
 )
 _MODELS_FILE_SHA: Final = "cfcd968a3ee16aedadfe1b1a61a95b5418c62537b7c4a02db99cf9ee5915a43a"
-_MUTANT_DIFF_FILE_SHA: Final = "94e89108069d2cd5f924ef02a3cd8f4e60057dc6cb328f94b23ebdf7cf71e967"
+_MUTANT_DIFF_FILE_SHA: Final = "97f3f30ecd1893a5518b045154020e0791d4b430ebfa3a30b0906cd41417d5df"
+_HIT_RECORDING_FILE_SHA: Final = "87381a47877db98d06a08910b1d895b8784c1727d738f44665b57cbb63719584"
 _MUTATION_ADVERSARIAL_FILE_SHA: Final = (
     "9bbaac97643cb3dffa9143688aac92a7f48372e2c5198f30ac616e4356b55f57"
 )
@@ -324,9 +325,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_mutant_diff.py",
         _EXEC_RULE,
-        581,
+        677,
         9,
-        583,
+        679,
         10,
         "23d8ffb9e2cacc9b6edf4c0e7b02146b23771c7496f4e70ebf68d0964c05c0b9",
         _MUTANT_DIFF_FILE_SHA,
@@ -400,6 +401,16 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         42,
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c",
         _WRAPPER_CODEGEN_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/unit/test_hit_recording.py",
+        _EXEC_RULE,
+        175,
+        9,
+        175,
+        41,
+        "7aeebb7bac13a5dc2ddf55dfb695ad49831db1e2986fdc6017079c736fa76c0f",
+        _HIT_RECORDING_FILE_SHA,
     ),
 )
 
