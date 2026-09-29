@@ -133,8 +133,11 @@ def _get_diff_for_mutant(mutant_name: str, path: Path | None = None) -> str:
 
     * known *path* (meta-backed): render directly,
     * unknown: resolve via the config walk (``get_diff_for_mutant``),
-    * meta files absent (DB-only fallback): scan for the LOCAL definition
-      name (``def <name>``), then render.
+    * meta files absent (DB-only fallback): locate the staged owner via
+      the canonical module identity
+      (``mutant_diff.locate_staged_source_for_mutant``), then render —
+      never a file-content scan, whose first local-name hit can belong to
+      a different module or a longer mutant ordinal (M-115).
 
     Args:
         mutant_name: Unique mutant identifier.
@@ -154,19 +157,15 @@ def _get_diff_for_mutant(mutant_name: str, path: Path | None = None) -> str:
     try:
         return mutant_diff.get_diff_for_mutant(mutant_name, load_config())
     except FileNotFoundError:
-        pass  # no meta files (DB-only state) — fall through to the scan
+        pass  # no meta files (DB-only state) — locate the owner by identity
 
-    local_name = mutant_name.rpartition(".")[-1]
-    mutants_dir = Path("mutants")
-    for py_file in mutants_dir.rglob("*.py"):
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if f"def {local_name}" in content:
-            return mutant_diff.render_function_diff(py_file.relative_to(mutants_dir), mutant_name)
-
-    return f"<mutant '{mutant_name}' not found>"
+    try:
+        staged_rel = mutant_diff.locate_staged_source_for_mutant(mutant_name)
+        return mutant_diff.render_function_diff(staged_rel, mutant_name)
+    except FileNotFoundError:
+        # Locating and provenance gaps are display-level "not found";
+        # byte-verification refusals (StaleStagingError etc.) propagate.
+        return f"<mutant '{mutant_name}' not found>"
 
 
 def _load_source_file_data() -> dict[str, tuple[SourceFileMutationData, dict[str, int]]]:
