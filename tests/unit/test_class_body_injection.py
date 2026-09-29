@@ -184,6 +184,40 @@ class TestClassCreationTimeCalls:
                 os.environ["MUTANT_UNDER_TEST"] = old
         assert value != 2  # the activated mutant changes the arithmetic
 
+    def test_creation_bindings_carry_type_ignore_comments(self) -> None:
+        # The four creation-time binding lines are generated code inside the
+        # user's class body; like every other codegen line they carry a
+        # '# type: ignore' trailing comment so the mutants tree keeps the
+        # type-check baseline quiet.
+        source = "class K:\n    def m(self):\n        return 1 + 1\n"
+        code, _names = mutate_file_contents("m.py", source)
+        binding_lines = [
+            line
+            for line in code.splitlines()
+            if line.startswith(
+                (
+                    "    global xǁKǁm__mutmut",
+                    "    xǁKǁm__mutmut_orig_ref = ",
+                    "    xǁKǁm__mutmut_mutants = ",
+                    "    xǁKǁm__mutmut_orig.__name__",
+                )
+            )
+        ]
+        # class-body: global decl, orig_ref, mutants dict, __name__ — the
+        # unindented post-class capture/lookup lines must NOT match
+        assert len(binding_lines) == 4
+        for line in binding_lines:
+            assert line.endswith("# type: ignore"), line
+
+    def test_top_level_functions_get_no_creation_bindings(self) -> None:
+        # Creation-time bindings are a method-only concept (the wrapper
+        # shares the class body); a top-level function's nodes must not
+        # grow 'global' statements or early orig_ref/mutants assignments.
+        source = "def f(x):\n    return x + 1\n"
+        code, _names = mutate_file_contents("m.py", source)
+        assert "global x_f__mutmut" not in code
+        assert "x_f__mutmut_orig_ref = x_f__mutmut_orig" not in code
+
     @pytest.mark.parametrize(
         ("source", "class_name"),
         [
