@@ -9,6 +9,7 @@ name may already be a hardlink or symlink to a file outside the workspace.
 from __future__ import annotations
 
 import contextlib
+import enum
 import os
 import secrets
 import stat
@@ -18,6 +19,22 @@ from pathlib import Path
 
 class UnsafeAtomicWriteError(OSError):
     """Raised when a publication path changes or contains unsafe indirection."""
+
+
+class _TransientParentInspectionError(UnsafeAtomicWriteError):
+    """A parent-identity *observation* failed transiently and may be retried.
+
+    Deliberately narrow (M-069 / Q-30 error taxonomy): only failures of the
+    observing calls themselves — ``resolve(strict=True)``/``stat`` errors and
+    a parent-vs-resolved identity divergence, both documented to flap under
+    Windows filter drivers (MBR-2026-09-14-01 follow-up field data) — use
+    this subclass.  Deterministic structural rejections (missing parent,
+    link/reparse parent or ancestor, non-directory component) and the
+    mid-publication ``expected``-identity tripwire stay on the base class:
+    retrying those merely stalls every publication by the full backoff
+    ladder before failing with the identical error.  Callers catching
+    ``UnsafeAtomicWriteError`` or ``OSError`` remain compatible.
+    """
 
 
 class AtomicReplaceError(PermissionError):
@@ -60,6 +77,15 @@ _REPLACE_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.02, 0.05, 0.1)
 #: publication, so no tripwire can be raced — and the strict resolve itself
 #: stays the anti-redirect authority.
 _PARENT_CAPTURE_RETRY_DELAYS: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+#: Bounded backoff for transient observation failures of the idempotency
+#: probe (M-011).  A momentarily locked or unreadable — but byte-identical —
+#: frozen leaf must not be republished just because one observation failed:
+#: a republication changes identity/timestamps and trips the frozen staging
+#: evidence ("executable staging files changed").  The budget is kept short
+#: (sum 1.91 s) and never nests with the parent ladder: the parent identity
+#: is captured once per probe call (M-012), so the worst case per ensure
+#: call stays at ~15.85 s + 1.91 s.
+_IDEMPOTENT_PROBE_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0)
 
 
 FileIdentity = tuple[int, int]
@@ -119,12 +145,14 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
         resolved_parent = parent.resolve(strict=True)
         resolved_stat = resolved_parent.stat()
     except OSError as exc:
-        raise UnsafeAtomicWriteError(
+        raise _TransientParentInspectionError(
             f"cannot resolve atomic-write parent {parent}: "
             f"[errno {exc.errno}, winerror {getattr(exc, 'winerror', None)}] {exc}"
         ) from exc
     if _identity(parent_stat) != _identity(resolved_stat):
-        raise UnsafeAtomicWriteError(f"atomic-write parent changed or was redirected: {parent}")
+        raise _TransientParentInspectionError(
+            f"atomic-write parent changed or was redirected: {parent}"
+        )
 
     identity = _identity(parent_stat)
     if expected is not None and identity != expected:
@@ -299,45 +327,80 @@ def _cleanup_owned_temp(path: Path | None, identity: FileIdentity | None) -> Non
             path.unlink()
 
 
-def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
-    """Return whether *path* is one safe, stable regular file with *payload*.
+class _ProbeResult(enum.Enum):
+    """Outcome of one idempotency-probe observation (M-011).
+
+    ``MATCH`` proves a safe, stable, byte-identical leaf; ``MISMATCH``
+    proves the strict writer must replace (missing/unsafe leaf or different
+    bytes); ``UNVERIFIABLE`` means the observation itself failed and a
+    retry may yet prove either.
+    """
+
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    UNVERIFIABLE = "unverifiable"
+
+
+def _probe_regular_file_bytes(
+    path: Path,
+    payload: bytes,
+    parent_identity: FileIdentity,
+) -> tuple[_ProbeResult, OSError | None]:
+    """Observe once whether *path* is a safe, stable regular file with *payload*.
 
     The comparison never follows a link/reparse leaf and never accepts a
-    hardlink.  Revalidating both the open handle and directory entry before
-    returning makes this suitable for confirming that a competing publisher
-    won an idempotent, same-payload race.
+    hardlink; both the open handle and the directory entry are revalidated
+    before ``MATCH``.  Returns the :class:`_ProbeResult` plus, for
+    ``UNVERIFIABLE``, the best available observation error (re-raised by
+    the verify-only mode once the retry budget is exhausted).
+
+    Form is judged on the PATH view before identity: Windows lacks a
+    functional ``O_NOFOLLOW`` for ``os.open``, so a symlink leaf opens its
+    referent and only the directory entry proves the shape.  Handle-view
+    deviations (link count, size) with a healthy path view are documented
+    transient filter-driver artifacts and therefore ``UNVERIFIABLE``, not
+    ``MISMATCH`` — the strict writer must not replace a frozen leaf over a
+    flapping handle observation.
     """
-    parent_identity = _checked_parent(path)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
-        return False
-    except OSError:
-        # An unreadable/busy leaf cannot prove that the requested bytes are
-        # already published.  The strict writer (or its original error) must
-        # decide the operation instead.
-        return False
+        return _ProbeResult.MISMATCH, None
+    except OSError as exc:
+        # An unreadable/busy leaf neither proves nor disproves that the
+        # requested bytes are already published: retry the observation.
+        return _ProbeResult.UNVERIFIABLE, exc
 
     try:
         before = os.fstat(fd)
         try:
             leaf_before = path.lstat()
-        except OSError:
-            return False
-        before_identity = _identity(before)
+        except FileNotFoundError:
+            return _ProbeResult.MISMATCH, None
+        except OSError as exc:
+            return _ProbeResult.UNVERIFIABLE, exc
+
         if (
             not stat.S_ISREG(before.st_mode)
             or not stat.S_ISREG(leaf_before.st_mode)
             or stat.S_ISLNK(leaf_before.st_mode)
             or _is_reparse_point(leaf_before)
-            or before_identity != _identity(leaf_before)
-            or before.st_nlink != 1
             or leaf_before.st_nlink != 1
-            or before.st_size != len(payload)
+            or leaf_before.st_size != len(payload)
         ):
-            return False
+            return _ProbeResult.MISMATCH, None
+
+        before_identity = _identity(before)
+        if (
+            before.st_nlink != 1
+            or before.st_size != len(payload)
+            or before_identity != _identity(leaf_before)
+        ):
+            return _ProbeResult.UNVERIFIABLE, UnsafeAtomicWriteError(
+                f"cannot verify idempotent target handle view: {path}"
+            )
 
         received = bytearray()
         while len(received) <= len(payload):
@@ -348,24 +411,85 @@ def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
         after = os.fstat(fd)
         try:
             leaf_after = path.lstat()
-        except OSError:
-            return False
-        _checked_parent(path, parent_identity)
-        return (
-            bytes(received) == payload
-            and _identity(after) == before_identity
-            and after.st_size == before.st_size
-            and after.st_mtime_ns == before.st_mtime_ns
-            and stat.S_ISREG(leaf_after.st_mode)
-            and not stat.S_ISLNK(leaf_after.st_mode)
-            and not _is_reparse_point(leaf_after)
-            and _identity(leaf_after) == before_identity
-            and leaf_after.st_nlink == 1
-            and leaf_after.st_size == before.st_size
-            and leaf_after.st_mtime_ns == before.st_mtime_ns
-        )
+        except OSError as exc:
+            # Disappearance mid-probe is re-probed from scratch; a genuinely
+            # missing leaf then settles as MISMATCH on the next open.
+            return _ProbeResult.UNVERIFIABLE, exc
+        try:
+            _checked_parent(path, parent_identity)
+        except _TransientParentInspectionError as exc:
+            # The recheck could not *observe* the parent; a real identity
+            # change or structural rejection still raises.
+            return _ProbeResult.UNVERIFIABLE, exc
+
+        if (
+            not stat.S_ISREG(leaf_after.st_mode)
+            or stat.S_ISLNK(leaf_after.st_mode)
+            or _is_reparse_point(leaf_after)
+            or leaf_after.st_nlink != 1
+            or bytes(received) != payload
+        ):
+            return _ProbeResult.MISMATCH, None
+        if (
+            _identity(after) != before_identity
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or _identity(leaf_after) != before_identity
+            or leaf_after.st_size != before.st_size
+            or leaf_after.st_mtime_ns != before.st_mtime_ns
+        ):
+            return _ProbeResult.UNVERIFIABLE, UnsafeAtomicWriteError(
+                f"idempotent target changed during probe observation: {path}"
+            )
+        return _ProbeResult.MATCH, None
     finally:
         os.close(fd)
+
+
+def _probe_idempotent_leaf(
+    path: Path,
+    payload: bytes,
+    *,
+    strict_unverifiable: bool = False,
+) -> bool:
+    """Run the three-valued probe with bounded retry (M-011).
+
+    The parent identity is captured exactly once through the retry ladder
+    (M-012) before the loop, so the two ladders never nest.  ``MATCH``
+    returns ``True``; ``MISMATCH`` returns ``False`` so the strict writer
+    replaces the leaf; ``UNVERIFIABLE`` is retried through
+    ``_IDEMPOTENT_PROBE_RETRY_DELAYS``.  An exhausted budget returns
+    ``False`` — or, with *strict_unverifiable*, re-raises the last
+    observation cause: post-snapshot callers that must never republish
+    frozen staging content fail with the real error instead.
+    """
+    parent_identity = _capture_parent_identity(path)
+    last_cause: OSError | None = None
+    delays = (0.0, *_IDEMPOTENT_PROBE_RETRY_DELAYS)
+    for delay in delays:
+        if delay:
+            time.sleep(delay)
+        result, cause = _probe_regular_file_bytes(path, payload, parent_identity)
+        if result is _ProbeResult.MATCH:
+            return True
+        if result is _ProbeResult.MISMATCH:
+            return False
+        last_cause = cause
+    if strict_unverifiable and last_cause is not None:
+        raise last_cause
+    return False
+
+
+def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
+    """Return whether *path* is one safe, stable regular file with *payload*.
+
+    Stable test seam: signature ``(path, payload) -> bool``.  Internally the
+    three-valued probe (:func:`_probe_regular_file_bytes`) retries transient
+    observation failures through a bounded backoff; only a proven ``MATCH``
+    returns ``True`` — a link, hardlink or reparse leaf is never accepted,
+    and unprovable observations never fabricate a match.
+    """
+    return _probe_idempotent_leaf(path, payload)
 
 
 def _atomic_write_attempt(
@@ -425,14 +549,30 @@ def _atomic_write_attempt(
 
 
 def _capture_parent_identity(path: Path) -> FileIdentity:
-    """Capture the parent identity, retrying only transient resolve failures.
+    """Capture the parent identity, retrying only transient observation failures.
 
-    Windows filter drivers can make a healthy parent momentarily
-    unresolvable (MBR-2026-09-14-01 follow-up field data: ``resolve(strict)``
-    failed for a live runtime directory mid-phase).  The capture precedes
-    any publication, so retrying it cannot race or weaken a publication
-    tripwire; a genuinely redirected or linked parent fails identically on
-    every attempt and still fails closed.
+    Retried (as :class:`_TransientParentInspectionError`) and only those:
+
+    - ``resolve(strict=True)``/``stat`` errors on the parent — Windows
+      filter drivers can make a healthy parent momentarily unresolvable
+      (MBR-2026-09-14-01 follow-up field data: ``resolve(strict)`` failed
+      for a live runtime directory mid-phase);
+    - a parent-vs-resolved identity divergence, which is known to flap
+      for the same reason while both ``lstat`` views stay healthy.
+
+    Every deterministic structural rejection — missing or uninspectable
+    parent, link/reparse parent or ancestor, non-directory component —
+    and the mid-publication ``expected``-identity tripwire propagate
+    immediately with the base-class error: they fail identically on every
+    attempt, so retrying them would only stall the caller by the full
+    backoff ladder (M-069).  The capture precedes any publication, so
+    retrying it cannot race or weaken a publication tripwire; a genuinely
+    redirected or linked parent still fails closed.
+
+    Callers: the strict writer (:func:`atomic_write_bytes`), the
+    compare-and-swap path and — since M-012 — the idempotent probe behind
+    :func:`ensure_atomic_bytes`; the same read-only "capture before any
+    publication" justification covers all of them.
     """
     delays = (0.0, *_PARENT_CAPTURE_RETRY_DELAYS)
     for index, delay in enumerate(delays):
@@ -440,7 +580,7 @@ def _capture_parent_identity(path: Path) -> FileIdentity:
             time.sleep(delay)
         try:
             return _checked_parent(path)
-        except UnsafeAtomicWriteError:
+        except _TransientParentInspectionError:
             if index == len(delays) - 1:
                 raise
     raise AssertionError("unreachable: the retry loop always returns or raises")
@@ -482,7 +622,12 @@ def atomic_write_bytes(
     raise AssertionError("unreachable: the retry loop always returns or raises")
 
 
-def ensure_atomic_bytes(path: Path, payload: bytes) -> None:
+def ensure_atomic_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    replace_unverifiable: bool = True,
+) -> None:
     """Idempotently publish *payload*, accepting only an identical safe winner.
 
     :func:`atomic_write_bytes` deliberately detects when another writer
@@ -493,9 +638,22 @@ def ensure_atomic_bytes(path: Path, payload: bytes) -> None:
     treats the operation as successful only when the winning leaf is a safe,
     stable regular file containing the exact requested bytes.  A different or
     unverifiable winner preserves the original failure.
+
+    The idempotency probe retries transient observation failures through a
+    bounded backoff (M-011), so a momentarily locked — but byte-identical —
+    frozen leaf is never republished: a republication would change
+    identity/timestamps and trip the frozen staging evidence.  Callers
+    publishing into already-frozen staging (guard/collection/stats plugins
+    after the evidence snapshot) pass ``replace_unverifiable=False``: when
+    the probe budget is exhausted without a verdict, the real observation
+    error propagates instead of a blind replacement, keeping the fatal
+    ``OSError`` channel unchanged.
     """
     path = Path(path)
-    if _regular_file_matches_bytes(path, payload):
+    if replace_unverifiable:
+        if _regular_file_matches_bytes(path, payload):
+            return
+    elif _probe_idempotent_leaf(path, payload, strict_unverifiable=True):
         return
     try:
         atomic_write_bytes(path, payload)

@@ -842,10 +842,24 @@ def apply_pytest_boundary_environment(boundary: PytestBoundary, env: dict[str, s
     )
 
 
-def _publish_pytest_guard(plugin_path: Path) -> None:
-    """Publish the immutable guard, or fail as an execution-boundary error."""
+def _publish_pytest_guard(
+    plugin_path: Path,
+    *,
+    replace_unverifiable: bool = True,
+) -> None:
+    """Publish the immutable guard, or fail as an execution-boundary error.
+
+    ``replace_unverifiable=False`` switches the underlying idempotent
+    publication to verify-only: an unprovable-but-possibly-identical leaf
+    fails with the real observation error instead of being republished
+    (M-011 — republication would change the frozen staging evidence).
+    """
     try:
-        ensure_atomic_bytes(plugin_path, _PYTEST_PHASE_GUARD_SOURCE.encode("utf-8"))
+        ensure_atomic_bytes(
+            plugin_path,
+            _PYTEST_PHASE_GUARD_SOURCE.encode("utf-8"),
+            replace_unverifiable=replace_unverifiable,
+        )
     except OSError as exc:
         raise PytestBoundaryError(
             f"Could not publish the pytest execution guard at {plugin_path}: "
@@ -853,11 +867,15 @@ def _publish_pytest_guard(plugin_path: Path) -> None:
         ) from exc
 
 
-def prepare_pytest_collection_guard(mutants_dir: Path = Path("mutants")) -> None:
+def prepare_pytest_collection_guard(
+    mutants_dir: Path = Path("mutants"),
+    *,
+    replace_unverifiable: bool = True,
+) -> None:
     """Install the location guard for collection-only phases."""
 
     plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
-    _publish_pytest_guard(plugin_path)
+    _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
 
 def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Path) -> Path:
@@ -892,6 +910,7 @@ def prepare_pytest_phase_guard(
     mutants_dir: Path = Path("mutants"),
     *,
     runtime_dir: Path | None = None,
+    replace_unverifiable: bool = True,
 ) -> tuple[Path, str]:
     """Install the guard plugin and add one unique proof target to *env*.
 
@@ -913,12 +932,17 @@ def prepare_pytest_phase_guard(
         runtime_dir: Fresh parent-owned directory for the execution proof.
             Production callers always provide one outside executable staging;
             the legacy default is retained for direct helper callers.
+        replace_unverifiable: Keep the publishing default.  Post-snapshot
+            callers over frozen staging pass ``False`` so an unprovable
+            leaf fails with the real cause instead of being republished
+            (M-011); direct helper callers on unpublished staging keep
+            ``True``.
 
     Returns:
         ``(marker_path, expected_token)`` for post-process verification.
     """
     plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
-    _publish_pytest_guard(plugin_path)
+    _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
     # Do not create and reopen a workspace marker through tempfile: an
     # existing redirected staging parent would already have received that
@@ -1232,6 +1256,11 @@ def _process_task(
         phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
             env,
             runtime_dir=runtime_dir,
+            # Every task re-checks the guard inside frozen staging (written
+            # once by write_pth_blocker before the evidence snapshot): an
+            # unprovable leaf must fail with the real cause, never
+            # republish frozen content (M-011).
+            replace_unverifiable=False,
         )
         separator = cmd.index("--") if "--" in cmd else len(cmd)
         # Mutation testing needs only the first failing test. Keep pytest's
