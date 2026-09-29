@@ -337,21 +337,77 @@ def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
     return [name for name in git_result.stdout.split(separator) if name]
 
 
-def _comparison_parts(path_text: str) -> tuple[str, ...]:
-    """Normcased path parts of a changed name / tests_dir entry (node-id aware)."""
-    return tuple(
-        os.path.normcase(part)
-        for part in Path(path_text.split("::", 1)[0].strip("/").strip("\\")).parts
-    )
+def _project_relative_parts(path_text: str, project_root: Path) -> tuple[str, ...] | None:
+    """Canonical project-relative parts of a path or pytest node id (M-024).
+
+    Absolute entries and ``..``-aliases used to bypass the incremental
+    tests_dir exclusion because the comparison used raw ``Path.parts``:
+    an absolute entry kept its drive anchor and ``tests/../tests`` kept
+    its ``..`` component, so neither ever prefix-matched a changed name
+    and changed test files became mutation targets (CLI-03).
+
+    Both sides of the exclusion comparison go through this helper:
+
+    - a pytest node-id suffix (``::``) is split off,
+    - drive-anchored relative forms (``C:tests``) are not comparable to a
+      project root and yield ``None`` (they were already ineffective),
+    - root-without-drive forms (``/tests``) stay lexically project-relative
+      (the previous code stripped leading separators — same meaning),
+    - everything else is joined onto ``project_root``, normpath-collapsed
+      and mapped through ``relative_to`` (case-insensitive on Windows),
+      with a ``resolve(strict=False)`` fallback for alias spellings
+      (8.3 short names, junctions, subst drives).
+
+    Args:
+        path_text: A configured tests_dir entry or a changed git name.
+        project_root: The project directory (the process CWD).
+
+    Returns:
+        Normcased parts relative to ``project_root``; an empty tuple when
+        the entry IS the project root (``'.'`` — the historic
+        exclude-everything semantics); ``None`` when the entry is anchored
+        outside the project or not comparable at all.
+    """
+    text = path_text.split("::", 1)[0]
+    parsed = Path(text)
+    if parsed.drive and not parsed.root:
+        # 'C:tests' is relative to the drive's current directory, not to
+        # the project — not comparable (and never effective before).
+        return None
+    if parsed.root and not parsed.drive:
+        # '/tests' historically behaved like 'tests' because leading
+        # separators were stripped; keep that lexical meaning instead of
+        # failing the exclusion filter open.
+        text = text.lstrip("/\\")
+    root = Path(os.path.normpath(project_root))
+    candidate = Path(os.path.normpath(root / text))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        # Alias spellings the lexical pass cannot see (8.3 short names,
+        # junctions, subst drives) resolve through the filesystem.
+        try:
+            relative = candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+        except ValueError:
+            return None
+    return tuple(os.path.normcase(part) for part in relative.parts)
 
 
-def _is_mutation_target(name: str, tests_dir_parts: tuple[tuple[str, ...], ...]) -> bool:
+def _is_mutation_target(
+    name: str,
+    tests_dir_parts: tuple[tuple[str, ...], ...],
+    project_root: Path,
+) -> bool:
     """Whether a changed file name is an incremental mutation target."""
 
     # Deleted files and test files used to become mutation targets.
     if not name.casefold().endswith(".py") or not Path(name).exists():
         return False
-    parts = _comparison_parts(name)
+    parts = _project_relative_parts(name, project_root)
+    if parts is None:
+        # The name is anchored outside the project or not comparable: an
+        # exclusion filter must fail closed — never a mutation target.
+        return False
     # Component-prefix match (issue #128 / 360°-A4): the old
     # parts[0] comparison against the FULL tests_dir string never
     # matched nested dirs like "tests/unit/" — changed TEST files
@@ -663,9 +719,21 @@ def run(
             # monorepo runs from a repository subfolder select their own
             # targets instead of silently no-op'ing with exit 0.
             changed_names = _git_changed_names(since_commit, json_stdout=json_stdout)
-            tests_dir_parts = tuple(_comparison_parts(target) for target in config.tests_dir)
+            # M-024: both sides of the tests_dir exclusion canonicalize
+            # through _project_relative_parts, so absolute entries and
+            # '..'-aliases no longer fail open.
+            project_root = Path.cwd()
+            tests_dir_parts = tuple(
+                parts
+                for parts in (
+                    _project_relative_parts(entry, project_root) for entry in config.tests_dir
+                )
+                if parts is not None
+            )
             changed_py = [
-                name for name in changed_names if _is_mutation_target(name, tests_dir_parts)
+                name
+                for name in changed_names
+                if _is_mutation_target(name, tests_dir_parts, project_root)
             ]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."

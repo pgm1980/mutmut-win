@@ -6,6 +6,11 @@ emitted repo-root-relative names while the target filter checked
 repository subproject (monorepo) therefore selected NOTHING and still
 exited 0 — a silent no-op instead of the requested incremental run.
 
+M-024 (CLI-03): the tests_dir exclusion compared raw ``Path.parts``, so
+absolute entries and ``..``-aliases never matched and changed test files
+became mutation targets.  Both sides now canonicalize through
+``_project_relative_parts``.
+
 The unit tests use a recording ``subprocess.run`` dispatcher that encodes
 git's path semantics: with ``--relative`` in argv the diff reports
 CWD-relative names, without it repo-root-relative names.  Real-git
@@ -20,6 +25,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.models import MutationRunResult
@@ -168,3 +175,213 @@ class TestSubprojectRuns:
         assert result.exit_code == 2
         assert "git diff failed" in result.output
         assert "paths" not in captured
+
+
+class TestTestsDirCanonicalization:
+    """M-024 (CLI-03): absolute and ``..``-alias tests_dir entries must exclude.
+
+    The old comparison used raw ``Path.parts``: absolute entries kept their
+    drive anchor and ``..``-aliases kept their ``..`` components, so neither
+    ever prefix-matched a changed name — changed test files became mutation
+    targets and were silently mutated in the staging copy.
+    """
+
+    @pytest.mark.parametrize("entry_kind", ["absolute", "dotdot", "upper"])
+    def test_absolute_and_alias_entries_exclude_changed_test_files(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_diff: GitDiffRecorder,
+        entry_kind: str,
+    ) -> None:
+        project = tmp_path / "proj"
+        (project / "src" / "tests").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "src" / "tests" / "test_mod.py").write_text(
+            "def test_x(): pass\n", encoding="utf-8"
+        )
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["unused/"]\n',
+            encoding="utf-8",
+        )
+        entries = {
+            "absolute": str(project / "src" / "tests"),
+            "dotdot": "src/../src/tests",
+            "upper": str(project / "src" / "tests").upper(),
+        }
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0src/tests/test_mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, "--tests-dir", entries[entry_kind])
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_leading_separator_entry_still_excludes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # Backwards compatibility: '/tests/' (and the backslash variant)
+        # worked like 'tests' before because leading separators were
+        # stripped — the canonicalization must keep that meaning instead
+        # of failing open.
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_mod.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["unused/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, "--tests-dir", "\\tests\\")
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_drive_anchored_entry_stays_ineffective(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # 'C:tests' is relative to the DRIVE's current directory — it never
+        # matched anything before and is documented as not comparable (None)
+        # now.  The changed test file therefore stays a target; the entry
+        # must not crash the run either.
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_mod.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["unused/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+        drive = project.drive
+        assert drive, "tmp_path lives on a Windows drive"
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, "--tests-dir", f"{drive}tests")
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py", "tests/test_mod.py"]
+
+    def test_project_root_entry_excludes_everything(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # tests_dir '.' IS the project root: Path('.').parts == () made the
+        # prefix comparison exclude EVERYTHING before — a documented
+        # semantic the canonicalization keeps (empty tuple, not None).
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["unused/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, "--tests-dir", ".")
+
+        assert result.exit_code == 0, result.output
+        assert "No mutation-target .py files changed" in result.output
+        assert "paths" not in captured
+
+
+class TestProjectRelativeParts:
+    """Unit coverage of the shared canonicalization helper (Q-33/M-024)."""
+
+    def test_plain_relative_path(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("src/mod.py", tmp_path) == ("src", "mod.py")
+
+    def test_dotdot_alias_collapses(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("src/../src/tests", tmp_path) == ("src", "tests")
+
+    def test_absolute_entry_inside_project(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts(str(tmp_path / "src"), tmp_path) == ("src",)
+
+    def test_absolute_entry_outside_project_is_none(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        assert _project_relative_parts(str(tmp_path / "outside"), project) is None
+
+    def test_drive_anchored_relative_form_is_none(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("C:tests", tmp_path) is None
+
+    def test_root_without_drive_stays_project_relative(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("/tests/", tmp_path) == ("tests",)
+
+    def test_backslash_separators_normalize(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("src\\tests\\", tmp_path) == ("src", "tests")
+
+    def test_node_id_suffix_is_split_off(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        entry = "tests/unit/test_x.py::TestA::test_b"
+        assert _project_relative_parts(entry, tmp_path) == ("tests", "unit", "test_x.py")
+
+    def test_case_differences_do_not_matter(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts("SRC/Mod.PY", tmp_path) == ("src", "mod.py")
+
+    def test_project_root_entry_is_the_empty_tuple(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        assert _project_relative_parts(".", tmp_path) == ()
+
+    def test_dotdot_escaping_the_project_is_none(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        assert _project_relative_parts("../outside/mod.py", project) is None
+
+
+@given(
+    spelling=st.sampled_from(["absolute", "dot_segment", "upper", "trailing_sep"]),
+    insertions=st.integers(min_value=0, max_value=2),
+)
+def test_alias_spellings_of_one_entry_share_the_canonical_parts(
+    tmp_path_factory: pytest.TempPathFactory, spelling: str, insertions: int
+) -> None:
+    """Everyday alias spellings of ``src/tests`` canonicalize identically."""
+    from mutmut_win.cli import _project_relative_parts
+
+    root = tmp_path_factory.mktemp("m024_alias_root")
+    canonical = "src/tests"
+    if spelling == "absolute":
+        entry = str(root / "src" / "tests")
+    elif spelling == "dot_segment":
+        entry = "src/" + "x/../" * insertions + "tests"
+    elif spelling == "upper":
+        entry = canonical.upper()
+    else:
+        entry = canonical + "/" * (insertions + 1)
+
+    assert _project_relative_parts(entry, root) == _project_relative_parts(canonical, root)
+    assert _project_relative_parts(canonical, root) == ("src", "tests")
