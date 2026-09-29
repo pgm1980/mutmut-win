@@ -1,7 +1,9 @@
 """This module contains the mutations for individual nodes, e.g. replacing a != b with a == b."""
 
+import ast
 import math
 import re
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
 
@@ -30,6 +32,30 @@ TAGGED_OPERATORS_TYPE = Sequence[
 
 # pattern to match (nearly) all chars in a string that are not part of an escape sequence
 NON_ESCAPE_SEQUENCE = re.compile(r"((?<!\\)[^\\]+)")
+
+
+def _literal_value(token: str) -> str | bytes:
+    """Evaluate a complete string-literal token, suppressing escape warnings.
+
+    ``ast.literal_eval`` (and libcst's ``evaluated_value``) emit a
+    SyntaxWarning for invalid escape sequences such as ``'\\d'`` in a regex
+    or path literal. ``create_mutants_for_file`` records every warning with
+    ``record=True`` / ``simplefilter('always')`` and forwards it to the user,
+    so evaluating one warning per candidate would flood the orchestrator
+    channel (M-049). Only SyntaxWarning is suppressed — unexpected errors
+    propagate, keeping the evaluation fail-closed.
+
+    Args:
+        token: A complete string-literal token (prefix + quotes + body).
+
+    Returns:
+        The constant value of the token (``str`` or ``bytes``).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        # mypy: literal_eval is typed Any; a string-literal token always
+        # evaluates to str or bytes.
+        return cast("str | bytes", ast.literal_eval(token))
 
 
 def _int_token(value: int) -> str:
@@ -171,6 +197,12 @@ def operator_string(
 ) -> Iterable[cst.BaseString]:
     """Mutate string literals: prepend/append XX, lowercase, uppercase.
 
+    Case variants that only re-spell escape notation (hex digits of
+    ``\\x``/``\\u``/``\\U``, ``\\N{...}`` names) are value-equal to the
+    original and are not published — they would be unkillable equivalent
+    mutants (M-049). Raw strings and bytes ``\\N{...}`` genuinely change
+    their value and stay published.
+
     f-strings mutate their literal TEXT parts only (one mutant per part,
     XX-wrapped) — format specs and expressions live in
     ``FormattedStringExpression`` nodes and are provably untouched
@@ -202,11 +234,21 @@ def operator_string(
             lambda x: NON_ESCAPE_SEQUENCE.sub(lambda match: match.group(1).upper(), x),
         ]
 
+        # Value-based equivalence filter (M-049): the case variants only
+        # re-spell hex-escape digits (\x, \u, \U) and \N{...} names, which
+        # are case-insensitive — such candidates are value-equal to the
+        # original and therefore unkillable equivalent mutants. The original
+        # value is computed once; \N{...} in bytes literals and raw strings
+        # genuinely change the value and stay published.
+        original_literal_value = _literal_value(old_value)
+
         for mut_func in supported_str_mutations:
             new_value = f"{prefix}{value[0]}{mut_func(value[1:-1])}{value[-1]}"
             if new_value == value:
                 continue
             if new_value == old_value:
+                continue
+            if _literal_value(new_value) == original_literal_value:
                 continue
             yield node.with_changes(value=new_value)
 
