@@ -193,6 +193,41 @@ class TestOperatorNumberIntDigitLimit:
         assert ast.literal_eval(rendered) == n + 1
 
 
+class TestOperatorNumberValueEquality:
+    """M-098 (issue #168): float and imaginary increments that round back to
+    the original value must not be published.  ``1e20 + 1 == 1e20`` — the
+    candidate differs textually (``'1e20'`` -> ``'1e+20'``) but is an
+    equivalent, practically unkillable mutant."""
+
+    def test_float_at_1e20_yields_no_candidate(self) -> None:
+        assert list(operator_number(cst.parse_expression("1e20"))) == []
+
+    def test_imaginary_at_1e20_yields_no_candidate(self) -> None:
+        assert list(operator_number(cst.parse_expression("1e20j"))) == []
+
+    def test_canonical_2_pow_53_float_yields_no_candidate(self) -> None:
+        # repr-in canonical spelling: the candidate is even textually equal.
+        assert list(operator_number(cst.parse_expression("9007199254740992.0"))) == []
+
+    def test_representable_float_still_mutated(self) -> None:
+        mutants = list(operator_number(cst.Float("1.5")))
+        assert len(mutants) == 1
+        assert mutants[0].value == "2.5"
+
+    def test_representable_imaginary_still_mutated(self) -> None:
+        mutants = list(operator_number(cst.Imaginary("2j")))
+        assert len(mutants) == 1
+        assert mutants[0].value == "3j"
+
+    @given(x=st.floats(min_value=0, allow_nan=False, allow_infinity=False))
+    def test_no_value_equal_float_candidate_property(self, x: float) -> None:
+        # repr of a finite float is always a valid float token.
+        node = cst.Float(repr(x))
+        for mutant in operator_number(node):
+            rendered = cst.Module(body=[]).code_for_node(mutant)
+            assert float(ast.literal_eval(rendered)) != x
+
+
 class TestDictArgumentsDuplicateGuard:
     def test_colliding_keyword_mutation_is_skipped(self) -> None:
         # dict(a=1, aXX=2): mutating a -> aXX would duplicate the existing

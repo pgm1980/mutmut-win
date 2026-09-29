@@ -65,6 +65,9 @@ def operator_number(
     Integer increments whose decimal rendering would exceed CPython's
     int→str digit limit render hexadecimally (see :func:`_int_token`) instead
     of crashing the run; every literal within the limit stays byte-identical.
+    Float and imaginary increments that round back to the original value
+    (magnitudes from 2**53 upward) are not published — they would be
+    equivalent mutants.
     """
     if isinstance(node, cst.Integer):
         yield node.with_changes(value=_int_token(node.evaluated_value + 1))
@@ -75,10 +78,20 @@ def operator_number(
         # kill mutant generation for the whole file (issue #78 / A1-NM-007).
         if not math.isfinite(new_value):
             return
+        # Rounding: from magnitudes of 2**53 upward the nearest float to
+        # x + 1 is x itself — the candidate would differ textually
+        # ('1e20' -> '1e+20') yet be value-equal, i.e. an unkillable
+        # equivalent mutant (M-098).
+        if new_value == node.evaluated_value:
+            return
         yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
         new_imag = node.evaluated_value + 1j
         if not (math.isfinite(new_imag.real) and math.isfinite(new_imag.imag)):
+            return
+        # Same rounding bound as the float branch (M-098): '1e20j' + 1j
+        # rounds back to 1e20j.
+        if new_imag == node.evaluated_value:
             return
         yield node.with_changes(value=repr(new_imag))
     else:
