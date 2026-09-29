@@ -269,6 +269,96 @@ def _load_result_snapshot_or_exit(
         sys.exit(1)
 
 
+def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
+    """Changed tracked files since ``ref``, relative to the process CWD (M-021).
+
+    Runs ``git diff --name-only -z --relative <ref>``.  Without
+    ``--relative`` git reports repo-root-relative names while the target
+    filter checks them against the process CWD — a run from a repository
+    subproject (monorepo) selected nothing and still exited 0 (BC-015 /
+    CLI-02).  ``--relative`` makes git report CWD-relative names AND limits
+    the diff to the CWD subtree, which is exactly the project scope
+    (``paths_to_mutate`` is rejected outside the project by config).
+
+    Args:
+        ref: The git revision to diff against, one argv element.
+        json_stdout: JSON error channel for the returncode contract (#102).
+
+    Returns:
+        The changed file names, decoded from NUL-separated bytes.
+
+    Raises:
+        SystemExit: Exit 2 when git itself rejects the ref (issue #102).
+    """
+    import subprocess as sp
+
+    # git command is fully controlled — the ref travels as a single argv
+    # element and git validates it. Diff against the REF alone (no ..HEAD):
+    # committed AND working-tree changes count — the documented "check what
+    # you just changed" workflow includes uncommitted edits (issue #128
+    # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
+    # the process default anyway; it is spelled out because --relative
+    # derives the output base from it (setting it alone fixes nothing).
+    git_result = sp.run(  # noqa: S603 — git CLI with controlled args
+        [  # noqa: S607 — git is a well-known executable
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            ref,
+        ],
+        capture_output=True,
+        cwd=Path.cwd(),
+    )
+    # Issue #102 / A3-CM-006: the returncode was never checked — an
+    # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
+    if git_result.returncode != 0:
+        stderr = (
+            git_result.stderr.decode("utf-8", errors="replace")
+            if isinstance(git_result.stderr, bytes)
+            else git_result.stderr
+        )
+        message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
+        click.echo(message, err=True)
+        _emit_json_error(json_stdout, message, 2)
+        sys.exit(2)
+
+    if isinstance(git_result.stdout, bytes):
+        return [
+            raw.decode("utf-8", errors="surrogateescape")
+            for raw in git_result.stdout.split(b"\0")
+            if raw
+        ]
+    # Test doubles and third-party subprocess seams may still
+    # return text. Production uses bytes so ``-z`` can preserve
+    # every pathname without Git's C-style quoting.
+    separator = "\0" if "\0" in git_result.stdout else "\n"
+    return [name for name in git_result.stdout.split(separator) if name]
+
+
+def _comparison_parts(path_text: str) -> tuple[str, ...]:
+    """Normcased path parts of a changed name / tests_dir entry (node-id aware)."""
+    return tuple(
+        os.path.normcase(part)
+        for part in Path(path_text.split("::", 1)[0].strip("/").strip("\\")).parts
+    )
+
+
+def _is_mutation_target(name: str, tests_dir_parts: tuple[tuple[str, ...], ...]) -> bool:
+    """Whether a changed file name is an incremental mutation target."""
+
+    # Deleted files and test files used to become mutation targets.
+    if not name.casefold().endswith(".py") or not Path(name).exists():
+        return False
+    parts = _comparison_parts(name)
+    # Component-prefix match (issue #128 / 360°-A4): the old
+    # parts[0] comparison against the FULL tests_dir string never
+    # matched nested dirs like "tests/unit/" — changed TEST files
+    # became mutation targets.
+    return all(parts[: len(td)] != td for td in tests_dir_parts)
+
+
 @cli.command()
 @click.option("--max-children", type=int, default=None, help="Number of worker processes.")
 @click.option(
@@ -569,62 +659,14 @@ def run(
 
         # --since-commit: resolve changed .py files via git
         if since_commit is not None:
-            import subprocess as sp
-
-            # git command is fully controlled — commit hash is validated by git itself.
-            # Diff against the REF alone (no ..HEAD): committed AND
-            # working-tree changes count — the documented "check what you
-            # just changed" workflow includes uncommitted edits (issue #128
-            # / 360°-A4). Untracked files stay invisible to git diff.
-            git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-                ["git", "diff", "--name-only", "-z", since_commit],  # noqa: S607 — git is a well-known executable
-                capture_output=True,
-            )
-            # Issue #102 / A3-CM-006: the returncode was never checked — an
-            # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
-            if git_result.returncode != 0:
-                stderr = (
-                    git_result.stderr.decode("utf-8", errors="replace")
-                    if isinstance(git_result.stderr, bytes)
-                    else git_result.stderr
-                )
-                message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
-
-            def _comparison_parts(path_text: str) -> tuple[str, ...]:
-                return tuple(os.path.normcase(part) for part in Path(path_text).parts)
-
-            tests_dir_parts = tuple(
-                _comparison_parts(target.split("::", 1)[0].strip("/").strip("\\"))
-                for target in config.tests_dir
-            )
-
-            def _is_mutation_target(name: str) -> bool:
-                # Deleted files and test files used to become mutation targets.
-                if not name.casefold().endswith(".py") or not Path(name).exists():
-                    return False
-                parts = _comparison_parts(name)
-                # Component-prefix match (issue #128 / 360°-A4): the old
-                # parts[0] comparison against the FULL tests_dir string never
-                # matched nested dirs like "tests/unit/" — changed TEST files
-                # became mutation targets.
-                return all(parts[: len(td)] != td for td in tests_dir_parts)
-
-            if isinstance(git_result.stdout, bytes):
-                changed_names = [
-                    raw.decode("utf-8", errors="surrogateescape")
-                    for raw in git_result.stdout.split(b"\0")
-                    if raw
-                ]
-            else:
-                # Test doubles and third-party subprocess seams may still
-                # return text. Production uses bytes so ``-z`` can preserve
-                # every pathname without Git's C-style quoting.
-                separator = "\0" if "\0" in git_result.stdout else "\n"
-                changed_names = [name for name in git_result.stdout.split(separator) if name]
-            changed_py = [name for name in changed_names if _is_mutation_target(name)]
+            # M-021: --relative makes git report project-relative names, so
+            # monorepo runs from a repository subfolder select their own
+            # targets instead of silently no-op'ing with exit 0.
+            changed_names = _git_changed_names(since_commit, json_stdout=json_stdout)
+            tests_dir_parts = tuple(_comparison_parts(target) for target in config.tests_dir)
+            changed_py = [
+                name for name in changed_names if _is_mutation_target(name, tests_dir_parts)
+            ]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."
                 # A valid diff with no changed production target is an

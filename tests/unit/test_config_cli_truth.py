@@ -217,7 +217,16 @@ class TestSinceCommitTruth:
 
         assert result.exit_code == 0, result.output
         assert captured["paths"] == ["src/grüße.py"]
-        assert git_diff.call_args.args[0] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
+        # #128 guard (new --relative form, M-021): exactly one revision —
+        # the ref itself — and no range element anywhere in argv.
+        assert git_diff.call_args.args[0] == [
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            "HEAD~1",
+        ]
 
     def test_uppercase_python_suffix_is_a_windows_mutation_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -359,7 +368,9 @@ class TestSinceCommitTruth:
             result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
 
         assert result.exit_code == 0, result.output
-        assert seen["cmd"][:5] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
+        # #128 guard (new --relative form, M-021): diff against the ref
+        # alone; '..' ranges would hide uncommitted working-tree edits.
+        assert seen["cmd"][:6] == ["git", "diff", "--name-only", "-z", "--relative", "HEAD~1"]
         assert "HEAD~1..HEAD" not in seen["cmd"]
 
 
