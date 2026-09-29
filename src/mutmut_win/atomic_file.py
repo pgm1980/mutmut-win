@@ -20,6 +20,22 @@ class UnsafeAtomicWriteError(OSError):
     """Raised when a publication path changes or contains unsafe indirection."""
 
 
+class _TransientParentInspectionError(UnsafeAtomicWriteError):
+    """A parent-identity *observation* failed transiently and may be retried.
+
+    Deliberately narrow (M-069 / Q-30 error taxonomy): only failures of the
+    observing calls themselves — ``resolve(strict=True)``/``stat`` errors and
+    a parent-vs-resolved identity divergence, both documented to flap under
+    Windows filter drivers (MBR-2026-09-14-01 follow-up field data) — use
+    this subclass.  Deterministic structural rejections (missing parent,
+    link/reparse parent or ancestor, non-directory component) and the
+    mid-publication ``expected``-identity tripwire stay on the base class:
+    retrying those merely stalls every publication by the full backoff
+    ladder before failing with the identical error.  Callers catching
+    ``UnsafeAtomicWriteError`` or ``OSError`` remain compatible.
+    """
+
+
 class AtomicReplaceError(PermissionError):
     """The destination entry could not be replaced during atomic publication."""
 
@@ -119,12 +135,14 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
         resolved_parent = parent.resolve(strict=True)
         resolved_stat = resolved_parent.stat()
     except OSError as exc:
-        raise UnsafeAtomicWriteError(
+        raise _TransientParentInspectionError(
             f"cannot resolve atomic-write parent {parent}: "
             f"[errno {exc.errno}, winerror {getattr(exc, 'winerror', None)}] {exc}"
         ) from exc
     if _identity(parent_stat) != _identity(resolved_stat):
-        raise UnsafeAtomicWriteError(f"atomic-write parent changed or was redirected: {parent}")
+        raise _TransientParentInspectionError(
+            f"atomic-write parent changed or was redirected: {parent}"
+        )
 
     identity = _identity(parent_stat)
     if expected is not None and identity != expected:
@@ -425,14 +443,25 @@ def _atomic_write_attempt(
 
 
 def _capture_parent_identity(path: Path) -> FileIdentity:
-    """Capture the parent identity, retrying only transient resolve failures.
+    """Capture the parent identity, retrying only transient observation failures.
 
-    Windows filter drivers can make a healthy parent momentarily
-    unresolvable (MBR-2026-09-14-01 follow-up field data: ``resolve(strict)``
-    failed for a live runtime directory mid-phase).  The capture precedes
-    any publication, so retrying it cannot race or weaken a publication
-    tripwire; a genuinely redirected or linked parent fails identically on
-    every attempt and still fails closed.
+    Retried (as :class:`_TransientParentInspectionError`) and only those:
+
+    - ``resolve(strict=True)``/``stat`` errors on the parent — Windows
+      filter drivers can make a healthy parent momentarily unresolvable
+      (MBR-2026-09-14-01 follow-up field data: ``resolve(strict)`` failed
+      for a live runtime directory mid-phase);
+    - a parent-vs-resolved identity divergence, which is known to flap
+      for the same reason while both ``lstat`` views stay healthy.
+
+    Every deterministic structural rejection — missing or uninspectable
+    parent, link/reparse parent or ancestor, non-directory component —
+    and the mid-publication ``expected``-identity tripwire propagate
+    immediately with the base-class error: they fail identically on every
+    attempt, so retrying them would only stall the caller by the full
+    backoff ladder (M-069).  The capture precedes any publication, so
+    retrying it cannot race or weaken a publication tripwire; a genuinely
+    redirected or linked parent still fails closed.
     """
     delays = (0.0, *_PARENT_CAPTURE_RETRY_DELAYS)
     for index, delay in enumerate(delays):
@@ -440,7 +469,7 @@ def _capture_parent_identity(path: Path) -> FileIdentity:
             time.sleep(delay)
         try:
             return _checked_parent(path)
-        except UnsafeAtomicWriteError:
+        except _TransientParentInspectionError:
             if index == len(delays) - 1:
                 raise
     raise AssertionError("unreachable: the retry loop always returns or raises")
