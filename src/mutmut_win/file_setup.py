@@ -979,7 +979,7 @@ def _live_input_relation(left: Path, right: Path) -> _LiveInputRelation:
     """
     try:
         return "same" if left.samefile(right) else "different"
-    except FileNotFoundError, NotADirectoryError:
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
         try:
             left_gone = _live_input_is_gone(left)
             right_gone = _live_input_is_gone(right)

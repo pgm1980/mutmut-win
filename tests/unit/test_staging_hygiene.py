@@ -1478,7 +1478,7 @@ class TestStagingTypeSwitch:
         junction_target.mkdir()
         try:
             _winapi.CreateJunction(str(junction_target), str(staged))
-        except AttributeError, OSError, NotImplementedError:
+        except (AttributeError, OSError, NotImplementedError):  # fmt: skip
             # Junction creation unavailable in this environment: simulate the
             # reparse verdict the destination guard would produce.
             real_check = file_setup._is_link_or_reparse
