@@ -25,7 +25,11 @@ def create_trampoline_lookup(
     a class body is no descriptor, so ``enum.Enum`` turned it into a phantom
     member, and the former ``ClassVar[...]`` annotation crashed ``NamedTuple``
     creation (audit A1-MT-004/005).  For methods the dict values and the
-    ``__name__`` target are therefore qualified with ``<ClassName>.``.
+    ``__name__`` target are therefore qualified with ``<ClassName>.``.  For
+    methods, the class body additionally receives equivalent creation-time
+    bindings (M-039, see ``mutation._class_creation_bindings``) so the names
+    already resolve while the class is being built; these module-level
+    statements remain the authoritative post-class bindings.
 
     Args:
         orig_name: The original (unmangled) function name.

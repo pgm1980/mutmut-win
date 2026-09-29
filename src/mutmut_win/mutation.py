@@ -3,6 +3,7 @@
 import io
 import re
 import tokenize
+import unicodedata
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -458,15 +459,13 @@ class MutationVisitor(cst.CSTVisitor):
         #    refuted at the code): combine_mutations_to_source rewrites the
         #    class body so that each mutated method's public trampoline
         #    wrapper, its private ``…__mutmut_orig`` copy AND all mutant
-        #    copies live INSIDE the class body, while their lookup names
-        #    (``…__mutmut_orig_ref`` and the ``…__mutmut_mutants`` dict) are
-        #    only bound at module level AFTER the class statement.  A class
-        #    decorator that touches members during class creation — calling,
-        #    registering or introspecting them, as @dataclass-style
-        #    registries do — would meet half-built trampolines (NameError on
-        #    the not-yet-bound module names) and see the private copies as
-        #    unexpected class members.  Keep decorated classes unmutated
-        #    wholesale.
+        #    copies live INSIDE the class body.  A class decorator that
+        #    touches members during class creation — calling, registering or
+        #    introspecting them, as @dataclass-style registries do — still
+        #    sees those private copies as unexpected class members (their
+        #    lookup module names are pre-bound at class-creation time since
+        #    M-039, so calls no longer NameError, but member-visible private
+        #    copies remain).  Keep decorated classes unmutated wholesale.
         # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
         # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
         # a free function (no instance/class arg). Other decorators stay skipped.
@@ -678,6 +677,10 @@ def function_trampoline_arrangement(
     returned separately: they must be emitted at MODULE level — for methods
     AFTER the class definition — because a dict in a class body becomes an
     ``enum.Enum`` member and its annotation broke ``NamedTuple`` (issue #77).
+    For methods the original-scope nodes additionally end with class-body
+    creation-time bindings (:func:`_class_creation_bindings`, M-039): a
+    ``global`` statement plus module-global assignments that make the
+    wrapper's names resolvable while the class itself is still being built.
 
     :return: A tuple of (nodes for the original scope, module-level lookup
         nodes, mutant names)"""
@@ -765,6 +768,13 @@ def function_trampoline_arrangement(
         mutant_names.append(mutant_name)
         nodes.append(candidate.with_changes(name=cst.Name(mutant_name)))
 
+    if class_name is not None:
+        # M-039: bind the wrapper's module-level names at class-creation
+        # time, directly after THIS method's own nodes (not collected at the
+        # class end) so an interleaved class attribute, decorator or enum
+        # member creation between two methods already sees them.
+        nodes.extend(_class_creation_bindings(mangled_name, mutant_names))
+
     lookup_nodes = _unannotated_trampoline_lookup(
         orig_name=name,
         mutants=mutant_names,
@@ -775,6 +785,94 @@ def function_trampoline_arrangement(
     lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
     return nodes, lookup_nodes, mutant_names
+
+
+def _class_creation_bindings(
+    mangled_name: str, mutant_names: Sequence[str]
+) -> list[cst.SimpleStatementLine]:
+    """Bind a method's trampoline module globals at class-creation time.
+
+    The public wrapper (still inside the class body) resolves
+    ``<mangled>_orig_ref`` and ``<mangled>_mutants`` as GLOBAL names, but the
+    module-level capture and lookup only run AFTER the class statement
+    (issue #77).  Any call of the method while the class is being built —
+    ``enum`` member creation invoking ``__init__`` or
+    ``_generate_next_value_``, a class attribute computed from an own method,
+    a decorator defined in the class body — therefore raised NameError before
+    the trampoline could run (M-039).  A ``global`` statement inside the
+    class body binds both names at module scope WITHOUT touching the class
+    namespace: no ``enum.Enum`` member, no ``NamedTuple`` field — issue #77
+    stays preserved.  The ``__name__`` assignment mirrors
+    ``create_trampoline_lookup`` so ``MUTANT_UNDER_TEST`` activation and the
+    stats prefix already work during class creation; the unchanged post-class
+    capture and lookup rebind both names after the class statement exactly as
+    before.
+
+    No other class-body statement may read either name before this
+    declaration (SyntaxError "used prior to global declaration"); the
+    source-name collision check in :func:`function_trampoline_arrangement`
+    guarantees that.
+
+    :param mangled_name: Private name prefix including the ``__mutmut`` suffix.
+    :param mutant_names: Mangled names of this method's mutants.
+    :return: Statements to emit directly after the method's own nodes.
+    """
+    type_ignore = cst.TrailingWhitespace(comment=cst.Comment("# type: ignore"))
+    public_name = mangled_name.removesuffix("__mutmut")
+    mutants_dict = cst.Dict(
+        [
+            # Keys are the mangled mutant-name strings; values are the
+            # class-body-local mutant functions defined just above.
+            cst.DictElement(cst.SimpleString(repr(mutant_name)), cst.Name(mutant_name))
+            for mutant_name in mutant_names
+        ]
+    )
+    return [
+        cst.SimpleStatementLine(
+            body=[
+                cst.Global(
+                    [
+                        cst.NameItem(cst.Name(f"{mangled_name}_orig_ref")),
+                        cst.NameItem(cst.Name(f"{mangled_name}_mutants")),
+                    ]
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_orig_ref"))],
+                    value=cst.Name(f"{mangled_name}_orig"),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_mutants"))],
+                    value=mutants_dict,
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[
+                        cst.AssignTarget(
+                            cst.Attribute(
+                                value=cst.Name(f"{mangled_name}_orig"), attr=cst.Name("__name__")
+                            )
+                        )
+                    ],
+                    value=cst.SimpleString(repr(public_name)),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+    ]
 
 
 def _unannotated_trampoline_lookup(
@@ -927,6 +1025,32 @@ def _docstring_statement(function: cst.FunctionDef) -> cst.BaseStatement | None:
     return None
 
 
+def _compiled_parameter_name(name: str, class_name: str | None) -> str:
+    """Return the identifier CPython actually binds for a parameter name.
+
+    The tokenizer normalizes every identifier with NFKC (``U+00B5`` becomes
+    ``U+03BC``, the KELVIN SIGN becomes ``K``), and inside a class body
+    private name mangling additionally rewrites an identifier that starts
+    with two underscores but does not end with them to
+    ``_<class><name>`` — the leading underscores of the class name are
+    stripped, and a class name consisting only of underscores does not
+    mangle at all (``_Py_Mangle`` semantics of CPython 3.14).  NFKC runs
+    FIRST on the parameter and the class name, then the mangling rule is
+    applied to the normalized forms.
+
+    :param name: Raw parameter name as written in the source.
+    :param class_name: Raw enclosing class name, or ``None`` for a
+        top-level function (no mangling).
+    :return: The compiled identifier, for use in generated string keys.
+    """
+    compiled = unicodedata.normalize("NFKC", name)
+    if class_name is not None and compiled.startswith("__") and not compiled.endswith("__"):
+        stripped_class = unicodedata.normalize("NFKC", class_name).lstrip("_")
+        if stripped_class:
+            compiled = f"_{stripped_class}{compiled}"
+    return compiled
+
+
 def create_trampoline_wrapper(
     function: cst.FunctionDef,
     mangled_name: str,
@@ -947,10 +1071,16 @@ def create_trampoline_wrapper(
     ``yield from`` equivalent.  Methods whose complete positional signature is
     ``*args`` are supported as well: descriptor binding places the instance in
     that tuple and the wrapper forwards it without guessing a ``self`` name.
+
+    Keyword-only parameters are forwarded through a dict whose STRING keys
+    must be the identifiers CPython binds (M-040): NFKC-normalized and, for
+    methods, privately mangled (``__x`` in ``class C`` compiles to ``_C__x``
+    because the wrapper shares the class body).  Keyword names at CALL sites
+    are never mangled, so a caller overrides such a default with ``_C__x=…``.
     """
     named_params = [*function.params.posonly_params, *function.params.params]
     used_names = {
-        param.name.value
+        _compiled_parameter_name(param.name.value, class_name)
         for param in [
             *function.params.posonly_params,
             *function.params.params,
@@ -958,9 +1088,9 @@ def create_trampoline_wrapper(
         ]
     }
     if isinstance(function.params.star_arg, cst.Param):
-        used_names.add(function.params.star_arg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_arg.name.value, class_name))
     if function.params.star_kwarg is not None:
-        used_names.add(function.params.star_kwarg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_kwarg.name.value, class_name))
     args_local_name = _fresh_wrapper_name("_mutmut_args", used_names)
     kwargs_local_name = _fresh_wrapper_name("_mutmut_kwargs", used_names)
 
@@ -978,7 +1108,13 @@ def create_trampoline_wrapper(
     )
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
-        cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)
+        # M-040: the key is the COMPILED parameter name (NFKC + private
+        # class mangling); the value expression is a CST name that the
+        # compiler renames identically, so both sides stay in sync.
+        cst.DictElement(
+            cst.SimpleString(repr(_compiled_parameter_name(p.name.value, class_name))),
+            p.name,
+        )
         for p in function.params.kwonly_params
     ]
     if isinstance(function.params.star_kwarg, cst.Param):
@@ -996,6 +1132,10 @@ def create_trampoline_wrapper(
         # captured immediately after class creation.  Rebinding the public
         # class name later therefore cannot break saved class aliases, and the
         # complete argument list above retains ordinary descriptor semantics.
+        # During class creation itself the same module globals already exist
+        # via the class-body creation-time bindings (M-039), so calls from
+        # ``__init__`` during enum member creation, class attributes computed
+        # from own methods, and class-body decorators resolve as well.
         return cst.Name(f"{mangled_name}_orig_ref")
 
     result: cst.BaseExpression = cst.Call(
@@ -1280,8 +1420,13 @@ def _is_generator(function: cst.FunctionDef) -> bool:
 class IsGeneratorVisitor(cst.CSTVisitor):
     """Check if a function is a generator.
 
-    We do so by checking if any child is a Yield statement, but not looking into
-    inner function definitions."""
+    We do so by checking if any child is a Yield statement, but not looking
+    into inner function definitions or lambda BODIES (both are their own
+    scope: a ``yield`` there makes only the nested callable a generator).
+    Lambda parameter DEFAULTS, however, are evaluated in the enclosing
+    scope — ``lambda x=(yield): x`` DOES make the surrounding (async)
+    function a generator — so they are visited explicitly before the body
+    is skipped (M-044)."""
 
     def __init__(self, original_function: cst.FunctionDef) -> None:
         self.is_generator = False
@@ -1292,6 +1437,17 @@ class IsGeneratorVisitor(cst.CSTVisitor):
         if self.original_function != node:
             return False
         return None
+
+    def visit_Lambda(self, node: cst.Lambda) -> bool | None:  # noqa: N802
+        # do not recurse into the lambda BODY (own scope), but evaluate its
+        # parameter defaults in this scope like the compiler does.  A var-*
+        # parameter cannot carry a default in valid Python source, so only
+        # the three ordinary parameter groups are visited.
+        params = node.params
+        for param in (*params.posonly_params, *params.params, *params.kwonly_params):
+            if param.default is not None:
+                param.default.visit(self)
+        return False
 
     # ARG002: libcst CSTVisitor requires the node parameter in visitor methods
     def visit_Yield(self, node: cst.Yield) -> bool | None:  # noqa: N802, ARG002
