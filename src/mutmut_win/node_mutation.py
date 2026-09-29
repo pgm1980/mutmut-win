@@ -103,20 +103,30 @@ def operator_number(
 # ---------------------------------------------------------------------------
 
 
-def _crcr_literal(value: int | float) -> cst.BaseExpression:
+def _crcr_literal(value: int | float, original: cst.Integer | cst.Float) -> cst.BaseExpression:
     """Render a CRCR replacement value as a libcst literal.
 
     A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
     has no negative-literal node. Integer magnitudes beyond CPython's int→str
     digit limit render hexadecimally via :func:`_int_token` (M-045).
+
+    The replaced node's parentheses transfer to the OUTERMOST replacement
+    node (M-046): on the literal they would fake a bound like ``-(1)`` where
+    the source said ``(-1)``, and losing them entirely turns ``(2).bit_length()``
+    into the SyntaxError ``0.bit_length()``.
     """
     if isinstance(value, int):
-        literal: cst.BaseExpression = cst.Integer(_int_token(abs(value)))
+        literal: cst.Integer | cst.Float = cst.Integer(_int_token(abs(value)))
     else:
         literal = cst.Float(repr(abs(value)))
     if value < 0:
-        return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
-    return literal
+        return cst.UnaryOperation(
+            operator=cst.Minus(),
+            expression=literal,
+            lpar=original.lpar,
+            rpar=original.rpar,
+        )
+    return literal.with_changes(lpar=original.lpar, rpar=original.rpar)
 
 
 def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
@@ -130,6 +140,11 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
     ``-orig`` collapse to a single ``-1`` — which matters because there is no
     visitor-level dedup. Non-finite floats are left alone; ``Imaginary`` literals
     stay with ``operator_number``.
+
+    Parentheses: the replacement carries the original literal's own ``lpar``/
+    ``rpar`` (so ``(2).bit_length()`` stays valid), and a negative candidate at
+    a ``**`` base is parenthesised by the visitor (``(-1) ** x``, not the
+    rebinding ``-1 ** x``).
     """
     orig: int | float
     candidates: tuple[int | float, ...]
@@ -148,7 +163,7 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
         if value == orig or value in seen:
             continue
         seen.add(value)
-        yield _crcr_literal(value)
+        yield _crcr_literal(value, node)
 
 
 def operator_string(

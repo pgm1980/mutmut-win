@@ -9,10 +9,13 @@ Profile.ADVANCED.
 
 from __future__ import annotations
 
+import ast
+
 import libcst as cst
 from hypothesis import given
 from hypothesis import strategies as st
 
+from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.node_mutation import operator_relational_matrix
 
 
@@ -128,6 +131,62 @@ class TestNumberCrcr:
         # (0.0, 1.0, -1.0): 1.0 is the literal's own value -> skipped. Pins the
         # self-skip and loop control flow on the float path.
         assert _crcr_sequence("1.0") == ["0.0", "-1.0"]
+
+
+class TestCrcrParentheses:
+    """M-046 (issue #168): the CRCR replacement node must carry the original
+    literal's parentheses, and a negative replacement at a ``**`` base must be
+    parenthesised by the visitor — otherwise '(2).bit_length()' degrades to
+    the SyntaxError '0.bit_length()' (whole file lost) and '2 ** x' mutates to
+    '-1 ** x', which binds as -(1 ** x), not the promised (-1) ** x.
+    """
+
+    def test_parenthesized_integer_keeps_parens(self) -> None:
+        assert _crcr_rendered("(2)") == {"(0)", "(1)", "(-1)", "(-2)"}
+
+    def test_unparenthesized_literals_stay_bare(self) -> None:
+        # Control: the existing pins must stay green — no blanket parens.
+        assert _crcr_rendered("7") == {"0", "1", "-1", "-7"}
+
+    def test_parenthesized_float_keeps_parens(self) -> None:
+        assert _crcr_rendered("(2.5)") == {"(0.0)", "(1.0)", "(-2.5)"}
+
+    def test_attribute_access_end_to_end(self) -> None:
+        code, names = mutate_file_contents("m.py", "def f():\n    return (2).bit_length()\n")
+        ast.parse(code)  # SyntaxError 'invalid decimal literal' before the fix
+        assert "(0).bit_length()" in code
+        assert "(-1).bit_length()" in code
+        assert names
+
+    def test_power_base_is_parenthesized_end_to_end(self) -> None:
+        code, _names = mutate_file_contents("m.py", "def f(x):\n    return 2 ** x\n")
+        ast.parse(code)
+        assert "(-1) ** x" in code
+        assert "(-2) ** x" in code
+        assert "-1 ** x" not in code
+
+    def test_power_base_under_outer_minus(self) -> None:
+        code, _names = mutate_file_contents("m.py", "def f(x):\n    return -2 ** x\n")
+        ast.parse(code)
+        assert "-(-1) ** x" in code
+
+    def test_power_exponent_stays_unparenthesized(self) -> None:
+        code, _names = mutate_file_contents("m.py", "def f():\n    return 2 ** 3\n")
+        ast.parse(code)
+        assert "2 ** -1" in code  # exponent position: no parens
+        assert "(2) ** -1" not in code
+        assert "2 ** (-1)" not in code
+
+    def test_float_power_base_is_parenthesized(self) -> None:
+        code, _names = mutate_file_contents("m.py", "def f(x):\n    return 2.5 ** x\n")
+        ast.parse(code)
+        assert "(-2.5) ** x" in code
+
+    @given(n=st.integers(min_value=0, max_value=10**6))
+    def test_parenthesized_attribute_property(self, n: int) -> None:
+        source = f"def f(x):\n    return ({n}).bit_length()\n"
+        code, _names = mutate_file_contents("m.py", source)
+        ast.parse(code)
 
 
 def _if_node(src: str) -> cst.If:

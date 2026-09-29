@@ -327,6 +327,12 @@ class MutationVisitor(cst.CSTVisitor):
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
+                    # Precedence repair (M-046): a bare unary replacement at
+                    # a ** base must be parenthesised BEFORE the candidate is
+                    # recorded, so downstream sees the repaired node.
+                    mutated_node = _parenthesize_power_base(
+                        self.get_metadata(ParentNodeProvider, node, None), node, mutated_node
+                    )
                     # Bug #4: drop any mutation of a typing.cast(...) call that would
                     # change the first argument — it has no runtime effect and the
                     # resulting mutants are unkillable equivalents.
@@ -484,6 +490,42 @@ class _SubtreeIdCollector(cst.CSTVisitor):
     def on_visit(self, node: cst.CSTNode) -> bool:
         self._target.add(id(node))
         return True
+
+
+def _parenthesize_power_base(
+    parent: cst.CSTNode | None,
+    node: cst.CSTNode,
+    mutated_node: cst.CSTNode,
+) -> cst.CSTNode:
+    """Parenthesise a replacement that would rebind as the base of ``**``.
+
+    A bare ``UnaryOperation`` at a power base rebinds: ``-1 ** x`` parses as
+    ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046 / issue #168). The
+    repair is deliberately narrow — it fires only when the replaced node IS
+    the left operand of a ``cst.Power`` binary operation and the candidate is
+    an unparenthesised ``UnaryOperation`` — so every other mutant keeps its
+    exact rendering and mutant ids stay stable.
+
+    Args:
+        parent: The replaced node's parent from ``ParentNodeProvider``.
+        node: The original node being replaced.
+        mutated_node: The operator's candidate replacement.
+
+    Returns:
+        The candidate, parenthesised where the power-base context demands it.
+    """
+    if (
+        isinstance(parent, cst.BinaryOperation)
+        and isinstance(parent.operator, cst.Power)
+        and parent.left is node
+        and isinstance(mutated_node, cst.UnaryOperation)
+        and not mutated_node.lpar
+    ):
+        return mutated_node.with_changes(
+            lpar=[cst.LeftParen()],
+            rpar=[cst.RightParen()],
+        )
+    return mutated_node
 
 
 MODULE_STATEMENT = cst.SimpleStatementLine | cst.BaseCompoundStatement
