@@ -27,6 +27,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.browser import _get_diff_for_mutant, _load_source_file_data
+from mutmut_win.config import MutmutConfig
 from mutmut_win.exceptions import AmbiguousMutantNameError, StaleStagingError
 from mutmut_win.file_setup import get_mutant_name
 from mutmut_win.models import SourceFileMutationData
@@ -393,3 +394,52 @@ def test_locate_roundtrips_every_canonical_module_path(components: list[str]) ->
         mutant_name = get_mutant_name(source_rel, "x_f__mutmut_1")
 
         assert locate_staged_source_for_mutant(mutant_name) == source_rel
+
+
+class TestFallbackToleratesNonUtf8Staging:
+    """M-116: staged files keep their source encoding (e.g. cp1252) — the
+    fallback must never abort with a UnicodeDecodeError scanning them.
+
+    The fix came with M-115's identity-based location (no file contents
+    are read anymore); these pins guard against a reintroduction of a
+    strict UTF-8 scan."""
+
+    @staticmethod
+    def _stage_cp1252_neighbor(tmp_path: Path) -> Path:
+        latin = tmp_path / "mutants" / "src" / "latin.py"
+        payload = "# coding: cp1252\nlabel = 'caf\xe9'\n".encode("cp1252")
+        latin.write_bytes(payload)
+        # Fixture guard: these bytes are genuinely not valid UTF-8.
+        try:
+            payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return latin
+        raise AssertionError("fixture must be non-UTF-8")
+
+    def test_unknown_mutant_with_cp1252_staging_reports_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _stage_mutants_file(tmp_path)
+        self._stage_cp1252_neighbor(tmp_path)
+
+        result = _get_diff_for_mutant("mod.x_nope__mutmut_9", path=None)
+
+        assert "not found" in result
+
+    def test_target_mutant_is_found_despite_non_utf8_neighbor_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _stage_mutants_file(tmp_path)
+        latin = self._stage_cp1252_neighbor(tmp_path)
+        # Force the config walk to fail so the DB-only fallback runs, and
+        # make the non-UTF-8 file the first entry of the mutants scan.
+        TestBrowserDiffSingleSource._force_mutants_rglob_order(monkeypatch, latin)
+        empty_config = MutmutConfig(paths_to_mutate=[])
+
+        with patch("mutmut_win.config.load_config", return_value=empty_config):
+            diff = _get_diff_for_mutant("mod.x_f__mutmut_1", path=None)
+
+        assert "-    return 1" in diff
+        assert "+    return 2" in diff
