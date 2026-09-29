@@ -324,8 +324,17 @@ def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
     hardlink.  Revalidating both the open handle and directory entry before
     returning makes this suitable for confirming that a competing publisher
     won an idempotent, same-payload race.
+
+    The parent identity is captured through the bounded retry ladder
+    (:func:`_capture_parent_identity`, M-012): this probe runs once per
+    task, phase and stats publication, and a single transient
+    filter-driver resolve failure must not escape as a fatal
+    ``UnsafeAtomicWriteError``.  Only genuinely structural rejections and
+    a real mid-probe parent-identity change propagate; a transient failure
+    of the recheck leaves the match unproven (``False``), handing the
+    decision to the strict writer.
     """
-    parent_identity = _checked_parent(path)
+    parent_identity = _capture_parent_identity(path)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -368,7 +377,13 @@ def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
             leaf_after = path.lstat()
         except OSError:
             return False
-        _checked_parent(path, parent_identity)
+        try:
+            _checked_parent(path, parent_identity)
+        except _TransientParentInspectionError:
+            # The recheck could not *observe* the parent: the match stays
+            # unproven, the strict writer (with its own ladder) decides.
+            # A real identity change or structural rejection still raises.
+            return False
         return (
             bytes(received) == payload
             and _identity(after) == before_identity
@@ -462,6 +477,11 @@ def _capture_parent_identity(path: Path) -> FileIdentity:
     backoff ladder (M-069).  The capture precedes any publication, so
     retrying it cannot race or weaken a publication tripwire; a genuinely
     redirected or linked parent still fails closed.
+
+    Callers: the strict writer (:func:`atomic_write_bytes`), the
+    compare-and-swap path and — since M-012 — the idempotent probe behind
+    :func:`ensure_atomic_bytes`; the same read-only "capture before any
+    publication" justification covers all of them.
     """
     delays = (0.0, *_PARENT_CAPTURE_RETRY_DELAYS)
     for index, delay in enumerate(delays):
