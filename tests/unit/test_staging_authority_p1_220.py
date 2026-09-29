@@ -11,9 +11,12 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 import mutmut_win.atomic_file as atomic_file_module
 import mutmut_win.file_setup as file_setup_module
+from mutmut_win.exceptions import UnsafeStagingError
 from mutmut_win.file_setup import _copy_with_retry, create_mutants_for_file
 from mutmut_win.models import SourceFileMutationData
 
@@ -206,3 +209,142 @@ def test_timestamp_copy_fallback_without_nofollow_utime_support(
     assert destination.stat().st_mtime_ns == source_mtime_ns
     assert not destination.samefile(sentinel)
     assert sentinel.read_bytes() == b"EXTERNAL-SENTINEL"
+
+
+def test_copy_with_retry_makes_exactly_max_attempts_with_full_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-088: permanently locked files see exactly ``max_attempts`` copies.
+
+    The historic loop swallowed the last iteration's ``OSError`` and then ran
+    an unconditional extra ``copy_once()`` — six outer attempts for the
+    default of five, the last one without a preceding backoff pause.
+    """
+    source = tmp_path / "source.py"
+    destination = tmp_path / "staged.py"
+    source.write_text("payload\n", encoding="utf-8")
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def locked_copy(_src: object, _dst: object) -> None:
+        calls.append("copy")
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", locked_copy)
+    monkeypatch.setattr(file_setup_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(PermissionError, match="locked"):
+        _copy_with_retry(source, destination, max_attempts=5)
+
+    assert calls == ["copy"] * 5
+    assert sleeps == pytest.approx([0.1, 0.2, 0.4, 0.8])
+
+
+def test_copy_with_retry_recovers_after_transient_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.py"
+    destination = tmp_path / "staged.py"
+    source.write_text("payload\n", encoding="utf-8")
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def flaky_copy(_src: object, _dst: object) -> None:
+        calls.append("copy")
+        if len(calls) <= 2:
+            raise PermissionError("locked")
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", flaky_copy)
+    monkeypatch.setattr(file_setup_module.time, "sleep", sleeps.append)
+
+    _copy_with_retry(source, destination, max_attempts=5)
+
+    assert calls == ["copy"] * 3
+    assert sleeps == pytest.approx([0.1, 0.2])
+
+
+def test_copy_with_retry_rejects_non_positive_max_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Conscious hardening (M-088): without the historic bonus attempt, a
+    budget of zero could never publish anything — fail fast instead."""
+    calls: list[str] = []
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", lambda _s, _d: calls.append("copy"))
+
+    with pytest.raises(ValueError, match="max_attempts"):
+        _copy_with_retry(tmp_path / "source.py", tmp_path / "staged.py", max_attempts=0)
+
+    assert calls == []
+
+
+def test_copy_with_retry_propagates_non_oserror_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.py"
+    destination = tmp_path / "staged.py"
+    source.write_text("payload\n", encoding="utf-8")
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def refusing_copy(_src: object, _dst: object) -> None:
+        calls.append("copy")
+        raise UnsafeStagingError("hardlink substitute detected")
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", refusing_copy)
+    monkeypatch.setattr(file_setup_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(UnsafeStagingError, match="hardlink"):
+        _copy_with_retry(source, destination, max_attempts=3)
+
+    assert calls == ["copy"]
+    assert sleeps == []
+
+
+@given(
+    max_attempts=st.integers(min_value=1, max_value=8),
+    failures=st.integers(min_value=0, max_value=8),
+)
+def test_copy_with_retry_exact_attempt_budget(max_attempts: int, failures: int) -> None:
+    """Q-42 property: the attempt budget and backoff ladder are exact.
+
+    ``atomic_copy_file`` is stubbed, so fixed non-existent paths suffice and
+    no function-scoped fixture is needed under ``@given``.
+    """
+    from pathlib import Path
+
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def flaky_copy(_src: object, _dst: object) -> None:
+        calls.append("copy")
+        if len(calls) <= failures:
+            raise OSError("locked")
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(file_setup_module, "atomic_copy_file", flaky_copy)
+        patcher.setattr(file_setup_module.time, "sleep", sleeps.append)
+        if failures < max_attempts:
+            _copy_with_retry(
+                Path("copy-retry-nowhere-src.py"),
+                Path("copy-retry-nowhere-dst.py"),
+                max_attempts=max_attempts,
+            )
+        else:
+            with pytest.raises(OSError, match="locked"):
+                _copy_with_retry(
+                    Path("copy-retry-nowhere-src.py"),
+                    Path("copy-retry-nowhere-dst.py"),
+                    max_attempts=max_attempts,
+                )
+
+    if failures < max_attempts:
+        assert len(calls) == failures + 1
+    else:
+        assert len(calls) == max_attempts
+        assert len(sleeps) == max_attempts - 1
+    assert sleeps == [0.1 * 2**index for index in range(len(sleeps))]
