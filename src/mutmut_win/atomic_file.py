@@ -60,6 +60,24 @@ class AtomicPreconditionError(UnsafeAtomicWriteError):
     """
 
 
+class AtomicPathLengthError(OSError):
+    """A Windows path-length limit blocked the private atomic-write sibling.
+
+    Raised when the operating system rejects the freshly generated sibling
+    name with a path-length winerror (3/123/206) and the measured lengths
+    actually exceed the NTFS component budget (255 UTF-16 units) or the
+    legacy total-path budget (259 UTF-16 units without LongPathsEnabled).
+    The message names the target path, both measured lengths and the
+    LongPathsEnabled registry option; the original OS error is preserved
+    as ``__cause__`` and its errno/winerror are carried on this instance.
+
+    Deliberately NOT an :class:`UnsafeAtomicWriteError`: an over-long name
+    is an operability limit, not a safety finding — existing callers
+    catching ``OSError`` (staging copy retries, pytest boundary
+    preparation) keep working unchanged.
+    """
+
+
 #: Bounded backoff for transient Windows filter-driver interference.  The
 #: pytest phase guard republishes its execution sentinel once per test report;
 #: under that create/replace churn, antivirus or indexer filters transiently
@@ -193,7 +211,91 @@ def _sibling_diagnostics(
     )
 
 
+#: NTFS counts file-name components in UTF-16 code units, not Python code
+#: points: components above 255 units are rejected with winerror 123/206
+#: even when LongPathsEnabled covers the total path (M-010).
+_MAX_NTFS_COMPONENT_UTF16 = 255
+#: Without LongPathsEnabled, Win32 rejects absolute paths above 259 UTF-16
+#: units.  The sibling schema needs '.' + the 51-unit suffix plus one
+#: separator on top of the parent, so parents up to 206 units can always
+#: carry a sibling (with the embedded name cut to zero if needed); longer
+#: parents are the documented residual window, diagnosed via
+#: :class:`AtomicPathLengthError` rather than silently worked around.
+_MAX_LEGACY_PATH_UTF16 = 259
+
+
+def _utf16_len(text: str) -> int:
+    """Return the length of *text* in UTF-16 code units as NTFS/Win32 count.
+
+    ``surrogatepass`` keeps lone surrogates encodable: Windows file names
+    may contain unpaired surrogates (``sys.getfilesystemencodeerrors()`` is
+    ``surrogatepass`` under CPython on Windows), and a plain encode would
+    raise ``UnicodeEncodeError`` — not an ``OSError`` — for names that
+    publish fine today.
+    """
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _truncate_to_utf16_budget(text: str, budget: int) -> str:
+    """Keep the longest prefix of *text* fitting *budget* UTF-16 units.
+
+    Truncation removes whole code points from the end, so an astral
+    character's surrogate pair is never split in half.
+    """
+    truncated = text[:budget]
+    while _utf16_len(truncated) > budget:
+        truncated = truncated[:-1]
+    return truncated
+
+
+def _sibling_name(path: Path, token: str) -> str:
+    """Build the random sibling name for *path* inside Windows name budgets.
+
+    For names that fit, the schema stays byte-identical to the historic
+    ``.{name}.mutmut-atomic-{token}.tmp``.  Only on overflow is the
+    EMBEDDED base name shortened — never the random token — first to the
+    255-unit NTFS component budget, then to the 259-unit legacy total-path
+    budget; the 128-bit token keeps every sibling unique even when the
+    embedded name is cut to zero (M-010).
+    """
+    suffix = f".mutmut-atomic-{token}.tmp"
+    component_budget = _MAX_NTFS_COMPONENT_UTF16 - 1 - _utf16_len(suffix)
+    parent_units = _utf16_len(os.fspath(path.parent.absolute()))
+    path_budget = _MAX_LEGACY_PATH_UTF16 - parent_units - 1 - 1 - _utf16_len(suffix)
+    budget = min(component_budget, max(path_budget, 0))
+    embedded = _truncate_to_utf16_budget(path.name, budget)
+    return f".{embedded}{suffix}"
+
+
+def _is_path_length_failure(exc: OSError, temp_path: Path) -> bool:
+    """Classify *exc* as a Windows path-length rejection of *temp_path*.
+
+    Classification runs strictly over ``winerror`` plus the MEASURED
+    lengths — never over errno or the exception type: winerror 3 and 206
+    arrive as ``FileNotFoundError`` (errno 2) and only 123 keeps
+    ``OSError``/errno 22.  A winerror-3 failure on a path within both
+    budgets is a genuine "path not found", not a length rejection, and
+    must not be re-labelled.
+    """
+    winerror = getattr(exc, "winerror", None)
+    if winerror not in (3, 123, 206):
+        return False
+    if _utf16_len(temp_path.name) > _MAX_NTFS_COMPONENT_UTF16:
+        return True
+    return _utf16_len(os.fspath(temp_path.absolute())) > _MAX_LEGACY_PATH_UTF16
+
+
 def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
+    """Open a fresh, exclusively-created and fully validated sibling of *path*.
+
+    The sibling name embeds the target's base name so crash leftovers stay
+    attributable to their target; on overflow the embedded name — never
+    the random token — is truncated to the Windows name budgets (see
+    :func:`_sibling_name`), and an OS length rejection that truncation
+    cannot cure is translated into :class:`AtomicPathLengthError` (M-010).
+    The returned fd is owned by the caller and closed exactly once on
+    every exit route (M-066).
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -203,7 +305,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
     validation_attempts_left = len(_SIBLING_VALIDATION_RETRY_DELAYS) + 1
     while True:
         token = secrets.token_hex(16)
-        temp_path = path.with_name(f".{path.name}.mutmut-atomic-{token}.tmp")
+        temp_path = path.with_name(_sibling_name(path, token))
         try:
             fd = os.open(temp_path, flags, 0o600)
         except FileExistsError:
@@ -213,6 +315,23 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                     f"could not allocate a unique atomic-write sibling for {path}"
                 ) from None
             continue
+        except OSError as exc:
+            if _is_path_length_failure(exc, temp_path):
+                original_errno = exc.errno if exc.errno is not None else 0
+                original_winerror = getattr(exc, "winerror", 0)
+                raise AtomicPathLengthError(
+                    original_errno,
+                    "atomic-write sibling name exceeds the Windows path budgets: "
+                    f"target={path} "
+                    f"component_utf16={_utf16_len(temp_path.name)}/{_MAX_NTFS_COMPONENT_UTF16}, "
+                    f"total_utf16={_utf16_len(os.fspath(temp_path.absolute()))}"
+                    f"/{_MAX_LEGACY_PATH_UTF16}; enable LongPathsEnabled "
+                    "(HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem) "
+                    "or shorten the target path",
+                    str(temp_path),
+                    original_winerror,
+                ) from exc
+            raise
 
         fd_owned = True
         try:
@@ -607,7 +726,10 @@ def atomic_write_bytes(
     sibling creation, and the final replace (MBR-2026-09-14-01 follow-up).
     Every other condition — publication races, mid-publication parent or
     sibling substitution — fails immediately with the original taxonomy;
-    retrying those would weaken the attack tripwires.
+    retrying those would weaken the attack tripwires.  A sibling name that
+    no longer fits the Windows component or total-path budgets after
+    truncation fails as :class:`AtomicPathLengthError` naming the measured
+    lengths (M-010).
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
