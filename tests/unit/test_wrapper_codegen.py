@@ -173,7 +173,9 @@ _IDENTIFIER_STRATEGY = st.from_regex(
 )
 
 
-_CLASS_NAME_STRATEGY = st.sampled_from([None, "C", "_C", "__C", "\uff23", "_", "__"])
+# 'X'/'_X' pin lstrip("_") exactly: an lstrip of any charset containing 'X'
+# would empty the class name and silently disable private mangling.
+_CLASS_NAME_STRATEGY = st.sampled_from([None, "C", "_C", "__C", "\uff23", "_", "__", "X", "_X"])
 
 
 class TestCompiledParameterNameOracle:
