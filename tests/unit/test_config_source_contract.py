@@ -49,7 +49,7 @@ class TestSetupCfgReadBoundary:
         # silently returned MutmutConfig() defaults.
         (tmp_path / "setup.cfg").mkdir()
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
             load_config(tmp_path)
 
     def test_directory_setup_cfg_is_an_error_on_the_pyproject_fallback_path(
@@ -60,7 +60,7 @@ class TestSetupCfgReadBoundary:
         (tmp_path / "pyproject.toml").write_text("[tool.other]\nfoo = 1\n", encoding="utf-8")
         (tmp_path / "setup.cfg").mkdir()
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
             load_config(tmp_path)
 
     def test_byte_range_locked_setup_cfg_is_a_config_error(
@@ -70,7 +70,7 @@ class TestSetupCfgReadBoundary:
         # PermissionError — this kills any fix that only guards open().
         locked_file("setup.cfg")
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
             load_config(tmp_path)
 
     def test_missing_setup_cfg_still_yields_defaults(self, tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ class TestSetupCfgReadBoundary:
 
             mp.setattr(Path, "open", failing_open)
 
-            with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
                 load_config(project)
 
     def test_file_not_found_from_open_still_yields_defaults(self) -> None:
@@ -139,6 +139,7 @@ class TestSetupCfgReadBoundary:
         ),
         newline=st.sampled_from(["\n", "\r\n"]),
     )
+    @settings(deadline=None)
     def test_read_string_route_matches_configparser_read_route(
         self,
         sections: list[tuple[str, list[tuple[str, str]]]],
@@ -188,13 +189,17 @@ class TestConfigDecodingBoundary:
             '[tool.mutmut]\npaths_to_mutate = ["src/"]\n'.encode("utf-16")
         )
 
-        with pytest.raises(ConfigError, match=r"Failed to read pyproject\.toml"):
+        with pytest.raises(
+            ConfigError, match=r"^Failed to read pyproject\.toml: file is not valid UTF-8"
+        ):
             load_config(tmp_path)
 
     def test_utf16_setup_cfg_is_a_config_error(self, tmp_path: Path) -> None:
         (tmp_path / "setup.cfg").write_bytes("[mutmut]\npaths_to_mutate = src/\n".encode("utf-16"))
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(
+            ConfigError, match=r"^Failed to read setup\.cfg: file is not valid UTF-8"
+        ):
             load_config(tmp_path)
 
     def test_utf16_setup_cfg_is_an_error_on_the_pyproject_fallback_path(
@@ -203,7 +208,7 @@ class TestConfigDecodingBoundary:
         (tmp_path / "pyproject.toml").write_text("[tool.other]\nfoo = 1\n", encoding="utf-8")
         (tmp_path / "setup.cfg").write_bytes("[mutmut]\npaths_to_mutate = src/\n".encode("utf-16"))
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
             load_config(tmp_path)
 
     def test_utf8_bom_setup_cfg_still_reports_the_parse_error(self, tmp_path: Path) -> None:
@@ -211,7 +216,7 @@ class TestConfigDecodingBoundary:
         # error — unchanged behaviour, just via the new read boundary.
         (tmp_path / "setup.cfg").write_bytes(b"\xef\xbb\xbf[mutmut]\npaths_to_mutate = src/\n")
 
-        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+        with pytest.raises(ConfigError, match=r"^Failed to read setup\.cfg"):
             load_config(tmp_path)
 
 
@@ -261,10 +266,19 @@ class TestPyprojectToolStructure:
     def test_non_table_tool_is_a_config_error(self, tmp_path: Path, toml_value: str) -> None:
         (tmp_path / "pyproject.toml").write_text(f"tool = {toml_value}\n", encoding="utf-8")
 
-        with pytest.raises(ConfigError, match=r"\[tool\] must be a table"):
+        with pytest.raises(
+            ConfigError, match=r"^Invalid pyproject\.toml: \[tool\] must be a table"
+        ):
+            load_config(tmp_path)
+
+    def test_non_table_tool_message_names_the_type(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("tool = 1\n", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match=r"\[tool\] must be a table, got int$"):
             load_config(tmp_path)
 
     @given(st.one_of(_TOML_INT64, st.booleans(), st.lists(st.integers(0, 99), max_size=3)))
+    @settings(deadline=None)
     def test_any_non_table_tool_literal_is_a_config_error(
         self, value: int | bool | list[int]
     ) -> None:
@@ -309,7 +323,20 @@ class TestPyprojectMutmutStructure:
         with pytest.raises(InvalidConfigValueError, match="expected a table"):
             load_config(tmp_path)
 
+    def test_non_table_mutmut_message_is_word_exact(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[tool]\nmutmut = 1\n", encoding="utf-8")
+
+        with pytest.raises(
+            InvalidConfigValueError,
+            match=(
+                r"expected a table, got int \(an array of tables such as "
+                r"\[\[tool\.mutmut\]\] is not supported\)$"
+            ),
+        ):
+            load_config(tmp_path)
+
     @given(st.one_of(_TOML_INT64, st.booleans(), st.lists(st.integers(0, 99), max_size=3)))
+    @settings(deadline=None)
     def test_any_non_table_mutmut_literal_is_invalid_config_value(
         self, value: int | bool | list[int]
     ) -> None:
@@ -416,6 +443,27 @@ class TestSetupCfgValidationBoundary:
         ):
             load_config(tmp_path)
 
+    def test_validation_context_pins_the_project_root_not_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The validator context carries project_dir into the model — an
+        # absolute paths_to_mutate entry inside the project relativizes
+        # against the PROJECT even when the process cwd is elsewhere.
+        # (Kills 'context={}' in _validate_config_mapping: without the
+        # context the entry resolves against the foreign cwd and fails.)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.mutmut]\npaths_to_mutate = ["{(tmp_path / "src").as_posix()}"]\n',
+            encoding="utf-8",
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        config = load_config(tmp_path)
+
+        assert config.paths_to_mutate == ["src"]
+
     @given(
         st.sampled_from(
             [
@@ -429,6 +477,7 @@ class TestSetupCfgValidationBoundary:
             ]
         )
     )
+    @settings(deadline=None)
     def test_every_invalid_setup_cfg_value_is_invalid_config_value(
         self, key_value: tuple[str, str]
     ) -> None:
@@ -488,6 +537,55 @@ class TestConfigErrorChannelCli:
         payload = json.loads(result.stdout)
         assert payload["exit_code"] == 2
         assert "setup.cfg" in payload["error"]
+
+
+class TestSetupCfgTypoWarningBoundary:
+    """M-080 diagnostics, carried in the gate's sole test file (Q-41).
+
+    The full behavioural suite lives in test_hardening_132.py
+    (TestSetupCfgParity); these three pin the diagnostic-parser wiring
+    so the targeted config.py mutation gate kills its mutants.
+    """
+
+    def test_unknown_mutmut_key_still_warns(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nzz_typo = 1\n", encoding="utf-8"
+        )
+
+        load_config(tmp_path)
+
+        assert "zz_typo" in capsys.readouterr().err
+
+    def test_default_only_key_does_not_warn(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Kills removing the sentinel default_section: without it the
+        # effective view returns and the false warning reappears.
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\nauthor_note = x\n[mutmut]\npaths_to_mutate = src/\n",
+            encoding="utf-8",
+        )
+
+        load_config(tmp_path)
+
+        assert capsys.readouterr().err == ""
+
+    def test_double_default_headers_do_not_fail(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Kills strict=True in the diagnostic parser: it would reject
+        # the repeated [DEFAULT] headers the strict parser accepts.
+        (tmp_path / "setup.cfg").write_text(
+            "[DEFAULT]\na = 1\n[DEFAULT]\nb = 2\n[mutmut]\npaths_to_mutate = src/\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(tmp_path)
+
+        assert config.paths_to_mutate == ["src/"]
+        assert capsys.readouterr().err == ""
 
 
 class TestLoadConfigTotalContract:
