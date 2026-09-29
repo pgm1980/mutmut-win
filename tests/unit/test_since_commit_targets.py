@@ -309,6 +309,11 @@ class TestInvalidRefContract:
 
         assert result.exit_code == 2
         assert "git diff failed (exit 128): fatal: bad revision \ufffd" in result.output
+        # Prose lives on stderr (the #127/A6 convention; in --output json
+        # mode a redirect_stdout(sys.stderr) wrapper would mask a wrong
+        # err flag, so pin the routing here in text mode).
+        assert "git diff failed (exit 128): fatal: bad revision \ufffd" in result.stderr
+        assert result.stdout == ""
         assert "paths" not in captured
 
     def test_text_stderr_seam_is_passed_through_undecoded(
