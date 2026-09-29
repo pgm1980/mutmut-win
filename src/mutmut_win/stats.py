@@ -484,7 +484,10 @@ def _editable_source_path(direct_url: str) -> Path | None:
     parsed = urllib.parse.urlparse(raw_url)
     if parsed.scheme.casefold() != "file" or parsed.netloc not in {"", "localhost"}:
         return None
-    raw_path = urllib.request.url2pathname(urllib.parse.unquote(parsed.path))
+    # ``url2pathname`` percent-decodes on Windows already; a leading
+    # ``unquote`` would re-decode literal ``%HH`` sequences in the source
+    # location (M-060).
+    raw_path = urllib.request.url2pathname(parsed.path)
     if os.name == "nt" and len(raw_path) >= 3 and raw_path[0] == "/" and raw_path[2] == ":":
         raw_path = raw_path[1:]
     return Path(raw_path)
