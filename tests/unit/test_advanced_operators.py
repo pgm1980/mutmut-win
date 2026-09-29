@@ -132,6 +132,11 @@ class TestNumberCrcr:
         # self-skip and loop control flow on the float path.
         assert _crcr_sequence("1.0") == ["0.0", "-1.0"]
 
+    def test_nonfinite_float_yields_nothing(self) -> None:
+        # The isfinite guard is load-bearing: without it the -orig candidate
+        # for 1e400 renders repr(inf), which is not a valid float token.
+        assert _crcr_sequence("1e400") == []
+
 
 class TestCrcrParentheses:
     """M-046 (issue #168): the CRCR replacement node must carry the original
