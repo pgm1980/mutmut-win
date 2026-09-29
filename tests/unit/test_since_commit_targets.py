@@ -19,6 +19,7 @@ coverage lives in ``tests/integration/test_since_commit_git_subproject.py``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -44,23 +45,37 @@ class GitDiffRecorder:
     to the process working directory and limits the diff to that subtree.
     The dispatcher returns different payloads for the two forms so a
     missing ``--relative`` cannot accidentally pass.
+
+    ``text_stdout`` switches the double to the text-mode seam (third-party
+    subprocess doubles may return ``str``); ``stderr`` can be ``bytes`` or
+    ``str``.  Every call's argv AND kwargs are recorded so the exact
+    ``subprocess.run`` contract stays assertable.
     """
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict[str, Any]] = []
         self.relative_stdout = b""
         self.root_relative_stdout = b""
+        self.text_stdout: str | None = None
+        self.stderr: bytes | str = b""
         self.returncode = 0
 
-    def __call__(self, argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
+        self.kwargs.append(dict(kwargs))
         if argv[:2] != ["git", "diff"]:
             raise AssertionError(
                 f"unexpected subprocess argv while expecting a git diff call: {argv!r}"
             )
-        stdout = self.relative_stdout if "--relative" in argv else self.root_relative_stdout
+        if self.text_stdout is not None:
+            stdout: bytes | str = self.text_stdout
+        else:
+            stdout = self.relative_stdout if "--relative" in argv else self.root_relative_stdout
         return subprocess.CompletedProcess(
-            args=argv, returncode=self.returncode, stdout=stdout, stderr=b""
+            args=argv, returncode=self.returncode, stdout=stdout, stderr=self.stderr
         )
 
 
@@ -175,6 +190,264 @@ class TestSubprojectRuns:
         assert result.exit_code == 2
         assert "git diff failed" in result.output
         assert "paths" not in captured
+
+
+class TestGitInvocationContract:
+    """The exact ``subprocess.run`` call is part of the #102/#128 contract."""
+
+    def test_captures_output_and_pins_the_relative_base_to_the_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = tmp_path / "repo" / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0"
+        git_diff.root_relative_stdout = b"proj/src/mod.py\0"
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        # capture_output feeds the #102 returncode check and the name
+        # decoding; cwd is the base git resolves --relative against.
+        assert git_diff.kwargs == [{"capture_output": True, "cwd": project}]
+
+
+class TestTargetFilterContract:
+    """Only existing production ``.py`` files inside the project are targets."""
+
+    @staticmethod
+    def _make_project(tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "README.md").write_text("docs\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_mod.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        # src/deleted.py intentionally NOT created: a deleted file in the
+        # diff must not become a mutation target.
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    def test_deleted_non_py_and_test_files_are_not_targets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0src/deleted.py\0README.md\0tests/test_mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_existing_name_outside_the_project_is_never_a_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # Fail-closed: a changed name that canonicalizes outside the
+        # project root is excluded, never mutated.
+        project = tmp_path / "repo" / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        outside = tmp_path / "repo" / "esc"
+        outside.mkdir()
+        (outside / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"../esc/mod.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert "No mutation-target .py files changed" in result.output
+        assert "paths" not in captured
+
+
+class TestInvalidRefContract:
+    """The #102 failure path: exit 2, decoded stderr, clean JSON channel."""
+
+    @staticmethod
+    def _make_project(tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    def test_message_embeds_the_replacement_decoded_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # Non-empty stderr with an invalid UTF-8 byte: the decode must use
+        # errors="replace" (U+FFFD) and the exact message format is contract.
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_diff.returncode = 128
+        git_diff.stderr = b"fatal: bad revision \xff\n"
+        git_diff.relative_stdout = b""
+        git_diff.root_relative_stdout = b""
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 2
+        assert "git diff failed (exit 128): fatal: bad revision \ufffd" in result.output
+        assert "paths" not in captured
+
+    def test_text_stderr_seam_is_passed_through_undecoded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_diff.returncode = 128
+        git_diff.stderr = "fatal: bad revision\n"
+        git_diff.relative_stdout = b""
+        git_diff.root_relative_stdout = b""
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 2
+        assert "git diff failed (exit 128): fatal: bad revision" in result.output
+
+    def test_json_channel_stays_pure_and_reports_exit_code_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_diff.returncode = 128
+        git_diff.stderr = b"fatal: bad revision\n"
+        git_diff.relative_stdout = b""
+        git_diff.root_relative_stdout = b""
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, "--output", "json")
+
+        assert result.exit_code == 2
+        # stdout carries ONLY the machine-readable error object; the prose
+        # goes to stderr even in JSON mode.
+        payload = json.loads(result.stdout)
+        assert payload["exit_code"] == 2
+        assert "git diff failed (exit 128)" in payload["error"]
+        assert "git diff failed" in result.stderr
+
+
+class TestStdoutSeams:
+    """Bytes and text ``stdout`` doubles both parse to the same names."""
+
+    @staticmethod
+    def _make_project(tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        # A space in the name is why git uses -z: text seams must not
+        # collapse it (whitespace-splitting loses the name).
+        (project / "src" / "my mod.py").write_text("x = 2\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    def test_text_stdout_with_nul_separator_keeps_spaced_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_diff.text_stdout = "src/mod.py\0src/my mod.py\0"
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py", "src/my mod.py"]
+
+    def test_text_stdout_with_newline_separator_splits_and_filters(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.text_stdout = "src/mod.py\nsrc/deleted.py\n"
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_undecodable_name_is_surrogate_escaped_not_fatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+    ) -> None:
+        # git -z preserves arbitrary path bytes; an invalid UTF-8 name must
+        # decode via surrogateescape and then simply fail the existence
+        # check instead of aborting the run.
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_diff.relative_stdout = b"src/mod.py\0src/bad\xff.py\0"
+        git_diff.root_relative_stdout = git_diff.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+
+class TestGitChangedNamesUnit:
+    """Direct unit pins for the NUL/newline name decoding (M-021 helper)."""
+
+    def test_nul_terminated_bytes_decode_without_empty_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.cli import _git_changed_names
+
+        monkeypatch.chdir(tmp_path)
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"], returncode=0, stdout=b"src/mod.py\0", stderr=b""
+        )
+        with patch("subprocess.run", return_value=completed):
+            assert _git_changed_names("HEAD~1", json_stdout=None) == ["src/mod.py"]
+
+    def test_text_newline_output_splits_without_empty_tail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.cli import _git_changed_names
+
+        monkeypatch.chdir(tmp_path)
+        completed = subprocess.CompletedProcess(
+            args=["git", "diff"], returncode=0, stdout="src/mod.py\n", stderr=b""
+        )
+        with patch("subprocess.run", return_value=completed):
+            assert _git_changed_names("HEAD~1", json_stdout=None) == ["src/mod.py"]
 
 
 class TestTestsDirCanonicalization:
@@ -332,6 +605,13 @@ class TestProjectRelativeParts:
         from mutmut_win.cli import _project_relative_parts
 
         assert _project_relative_parts("/tests/", tmp_path) == ("tests",)
+
+    def test_leading_separator_strip_removes_only_separators(self, tmp_path: Path) -> None:
+        from mutmut_win.cli import _project_relative_parts
+
+        # '/Xsrc' is the directory 'Xsrc' at the project root — the legacy
+        # leading-separator strip must not eat the 'X'.
+        assert _project_relative_parts("/Xsrc", tmp_path) == ("xsrc",)
 
     def test_backslash_separators_normalize(self, tmp_path: Path) -> None:
         from mutmut_win.cli import _project_relative_parts
