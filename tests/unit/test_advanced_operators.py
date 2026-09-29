@@ -177,6 +177,15 @@ class TestCrcrParentheses:
         assert "(2) ** -1" not in code
         assert "2 ** (-1)" not in code
 
+    def test_power_base_nonunary_candidate_stays_unparenthesized(self) -> None:
+        # The repair targets UnaryOperation candidates only: the +1
+        # candidate of operator_number at a ** base is a plain Integer and
+        # must keep its diff-minimal bare form.
+        code, _names = mutate_file_contents("m.py", "def f(x):\n    return 2 ** x\n")
+        ast.parse(code)
+        assert "3 ** x" in code
+        assert "(3) ** x" not in code
+
     def test_float_power_base_is_parenthesized(self) -> None:
         code, _names = mutate_file_contents("m.py", "def f(x):\n    return 2.5 ** x\n")
         ast.parse(code)
