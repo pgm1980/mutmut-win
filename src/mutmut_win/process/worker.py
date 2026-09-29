@@ -1943,7 +1943,8 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
         import psutil  # type: ignore[import-untyped,unused-ignore]
 
         root_create_time = psutil.Process(proc.pid).create_time()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):
+    # The bare PEP 758 form breaks the pinned Semgrep 1.175 parser (M-004 contract)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):  # fmt: skip
         root_create_time = None
 
     if job_handle is not None:

@@ -53,7 +53,8 @@ def _tree_cpu_seconds(root_pid: int) -> dict[int, float]:
     try:
         root = psutil.Process(root_pid)
         members = [root, *root.children(recursive=True)]
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    # The bare PEP 758 form breaks the pinned Semgrep 1.175 parser (M-004 contract)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):  # fmt: skip
         return result
     for member in members:
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
