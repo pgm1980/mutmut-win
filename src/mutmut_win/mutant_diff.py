@@ -108,6 +108,10 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
     and glob patterns go through the same matcher as ``run``, but these
     commands operate on a single mutant — an ambiguous pattern fails with
     the candidate list instead of guessing (or applying everything).
+    Duplicate or overlapping ``paths_to_mutate`` roots are deduplicated
+    by canonical file identity in generation order (M-113), so a repeated
+    root never makes an exact name ambiguous; only DIFFERENT files owning
+    the same name are (a genuine collision).
 
     Args:
         pattern: Mutant name or fnmatch pattern supplied by the user.
@@ -122,9 +126,20 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
         AmbiguousMutantNameError: If more than one mutant matches.
     """
     matches: list[tuple[str, SourceFileMutationData]] = []
+    seen_sources: set[Path] = set()
     for path in walk_source_files(config):
         if config.should_ignore_for_mutation(path):
             continue
+        # Duplicate/overlapping ``paths_to_mutate`` roots visit the same
+        # file twice (M-113): deduplicate by canonical file identity —
+        # exactly like the generation walk (orchestrator ``seen_sources``:
+        # ignore check first, ``Path.resolve()`` key, first spelling wins)
+        # so the same sidecar and staging path are used. Only genuinely
+        # different files owning one name stay ambiguous.
+        resolved_source = path.resolve()
+        if resolved_source in seen_sources:
+            continue
+        seen_sources.add(resolved_source)
         m = SourceFileMutationData(path=str(path))
         m.load()
         matches.extend((key, m) for key in match_mutant_names([pattern], m.exit_code_by_key))

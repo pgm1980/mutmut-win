@@ -17,7 +17,8 @@ line has (the label is exactly as wide as the old field width).
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, ClassVar
+from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,14 +27,11 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
+from mutmut_win.config import load_config
 from mutmut_win.exceptions import AmbiguousMutantNameError, StaleStagingError
 from mutmut_win.models import MutationResult, SourceFileMutationData
 from mutmut_win.mutant_diff import render_function_diff, resolve_mutant
 from mutmut_win.test_mapping import match_mutant_names
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # UI-012 — the shared matcher
@@ -186,6 +184,104 @@ class TestResolveMutant:
 
         with pytest.raises(FileNotFoundError):
             resolve_mutant("mod.x_parse__mutmut_1", _config())
+
+
+def _write_pyproject(paths: list[str]) -> None:
+    """Write a pyproject.toml whose config survives the validation path."""
+    import json
+
+    entries = ", ".join(json.dumps(entry) for entry in paths)
+    Path("pyproject.toml").write_text(
+        f"[tool.mutmut]\npaths_to_mutate = [{entries}]\n", encoding="utf-8"
+    )
+
+
+@pytest.mark.usefixtures("staged_project")
+class TestResolveMutantDuplicateRoots:
+    """M-113: duplicate/overlapping roots must not make a name ambiguous."""
+
+    @pytest.mark.parametrize(
+        "paths",
+        [["src/", "src/"], ["src", "src/"], ["src", "SRC"]],
+        ids=["identical", "trailing-slash", "case-alias"],
+    )
+    def test_duplicate_roots_resolve_an_exact_name(self, paths: list[str]) -> None:
+        # The config goes through the regular validation path (pyproject +
+        # load_config) so the duplicate entries are provably preserved.
+        _write_pyproject(paths)
+        config = load_config()
+        assert config.paths_to_mutate == paths
+
+        name, data = resolve_mutant("mod.x_foo__mutmut_1", config)
+
+        assert name == "mod.x_foo__mutmut_1"
+        assert Path(data.path) == Path("src/mod.py")
+
+    def test_overlapping_roots_cover_the_nested_file(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "sub").mkdir(parents=True)
+        (tmp_path / "src" / "sub" / "m.py").write_text(
+            "def bar() -> int:\n    return 1\n", encoding="utf-8"
+        )
+        (tmp_path / "mutants" / "src" / "sub").mkdir(parents=True)
+        data = SourceFileMutationData(path="src/sub/m.py")
+        data.exit_code_by_key = {"sub.m.x_bar__mutmut_1": 0}
+        data.save()
+        _write_pyproject(["src", "src/sub"])
+        config = load_config()
+
+        name, owner = resolve_mutant("sub.m.x_bar__mutmut_1", config)
+
+        assert name == "sub.m.x_bar__mutmut_1"
+        assert Path(owner.path) == Path("src/sub/m.py")
+
+    def test_genuine_cross_file_collision_stays_ambiguous(self, tmp_path: Path) -> None:
+        # Only DIFFERENT files owning the same key are ambiguous — that is
+        # the fail-closed contract show/apply keep after the deduplication.
+        (tmp_path / "src" / "other.py").write_text(
+            "def foo() -> int:\n    return 1\n", encoding="utf-8"
+        )
+        other = SourceFileMutationData(path="src/other.py")
+        other.exit_code_by_key = {"mod.x_foo__mutmut_1": 0}
+        other.save()
+
+        with pytest.raises(AmbiguousMutantNameError):
+            resolve_mutant("mod.x_foo__mutmut_1", _config())
+
+    def test_ignored_duplicate_does_not_consume_the_seen_slot(self) -> None:
+        # Mirrors the generation order (orchestrator seen_sources): the
+        # ignore check runs BEFORE deduplication, so an ignored alias never
+        # shadows the same file walked again through another root.
+        config = MagicMock()
+        config.paths_to_mutate = ["src", "src"]
+        config.should_ignore_for_mutation.side_effect = [True, False]
+
+        name, data = resolve_mutant("mod.x_foo__mutmut_1", config)
+
+        assert name == "mod.x_foo__mutmut_1"
+        assert Path(data.path) == Path("src/mod.py")
+
+
+@given(root_lists=st.lists(st.sampled_from(["src", "src/", "SRC"]), min_size=1, max_size=4))
+@settings(max_examples=25, deadline=None)
+def test_any_root_alias_combination_resolves_like_a_single_root(root_lists: list[str]) -> None:
+    """M-113: resolution depends on file identity, not on root spelling."""
+    import contextlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+        root = Path(tmp)
+        (root / "src").mkdir()
+        (root / "src" / "mod.py").write_text("def foo() -> int:\n    return 1\n", encoding="utf-8")
+        (root / "mutants" / "src").mkdir(parents=True)
+        data = SourceFileMutationData(path="src/mod.py")
+        data.exit_code_by_key = {"mod.x_foo__mutmut_1": 0}
+        data.save()
+        _write_pyproject(root_lists)
+
+        name, owner = resolve_mutant("mod.x_foo__mutmut_1", load_config())
+
+        assert name == "mod.x_foo__mutmut_1"
+        assert Path(owner.path) == Path("src/mod.py")
 
 
 class TestTimeEstimatesGlob:
