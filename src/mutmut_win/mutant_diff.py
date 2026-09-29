@@ -85,7 +85,9 @@ def find_mutant(mutant_name: str, config: MutmutConfig) -> SourceFileMutationDat
 
     Returns:
         The ``SourceFileMutationData`` for the source file that owns
-        *mutant_name*.
+        *mutant_name*. Read-only: corrupt sidecars are never healed
+        (deleted) — that is the generation path's job under the workspace
+        lock (M-026).
 
     Raises:
         FileNotFoundError: If no source file contains *mutant_name*.
@@ -94,7 +96,7 @@ def find_mutant(mutant_name: str, config: MutmutConfig) -> SourceFileMutationDat
         if config.should_ignore_for_mutation(path):
             continue
         m = SourceFileMutationData(path=str(path))
-        m.load()
+        m.load(heal_corrupt=False)
         if mutant_name in m.exit_code_by_key:
             return m
 
@@ -141,7 +143,11 @@ def resolve_mutant(pattern: str, config: MutmutConfig) -> tuple[str, SourceFileM
             continue
         seen_sources.add(resolved_source)
         m = SourceFileMutationData(path=str(path))
-        m.load()
+        # Read-only (M-026): a corrupt sidecar yields no candidates here
+        # instead of being healed (deleted) — even through a redirected
+        # mutants/ root. Healing belongs to the generation path under the
+        # workspace lock.
+        m.load(heal_corrupt=False)
         matches.extend((key, m) for key in match_mutant_names([pattern], m.exit_code_by_key))
 
     if not matches:
@@ -480,7 +486,10 @@ def _encode_git_patch(diff: str, source_encoding: str) -> bytes:
 def _render_function_diff(path: Path | str, mutant_name: str) -> tuple[str, str]:
     """Render one diff and return its verified Python source encoding."""
     metadata = SourceFileMutationData(path=str(path))
-    metadata.load()
+    # Read-only (M-026): rendering must never heal (delete) a corrupt
+    # sidecar — an unverifiable metadata state fails closed instead, and
+    # healing stays with the generation path under the workspace lock.
+    metadata.load(heal_corrupt=False)
     source_bytes = _read_source_bytes_matching_staging(path, metadata.source_hash)
     module = read_mutants_module(
         path,

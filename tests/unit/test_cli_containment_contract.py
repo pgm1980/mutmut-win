@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,9 +15,6 @@ from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig
 from mutmut_win.exceptions import ProcessContainmentError
 from mutmut_win.models import MutationRunResult
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -93,3 +92,49 @@ def test_executor_containment_failure_has_traceback_in_debug_mode(
     assert result.exit_code == 1
     assert "Traceback (most recent call last)" in result.output
     assert "ProcessContainmentError: Windows Job Object unavailable" in result.output
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+def test_show_refuses_redirected_mutants_root_without_touching_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-026: ``show`` is a reader and rejects redirected state roots.
+
+    A Junction'd ``mutants/`` used to pass the plain ``is_dir()`` check, so
+    the healing metadata walk could delete an external ``<source>.py.meta``
+    through it. Like run/apply/export, show now fails closed first.
+    """
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "external"
+    (target / "src").mkdir(parents=True)
+    corrupt_payload = b"\xffnot json\x00"
+    corrupt_sidecar = target / "src" / "mod.py.meta"
+    corrupt_sidecar.write_bytes(corrupt_payload)
+    junction = tmp_path / "mutants"
+    cmd_executable = Path(os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"))
+    created = subprocess.run(  # noqa: S603 - cmd builtin creates the test Junction
+        [cmd_executable, "/d", "/u", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        encoding="utf-16-le",
+        errors="replace",
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"could not create Junction: {created.stdout}{created.stderr}")
+
+    try:
+        result = CliRunner().invoke(cli, ["show", "mod.x_f__mutmut_1"])
+        sidecar_exists = corrupt_sidecar.exists()
+        sidecar_bytes = corrupt_sidecar.read_bytes() if sidecar_exists else None
+    finally:
+        # Remove the Junction itself, never its target, so tmp_path cleanup
+        # stays unambiguous.
+        if junction.exists() and junction.is_junction():
+            junction.rmdir()
+
+    assert result.exit_code == 1
+    assert "Refusing show" in result.output
+    assert "link, junction" in result.output
+    assert sidecar_exists
+    assert sidecar_bytes == corrupt_payload

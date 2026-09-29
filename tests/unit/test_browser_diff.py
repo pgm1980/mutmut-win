@@ -139,6 +139,23 @@ class TestBrowserDiffSingleSource:
         with pytest.raises(StaleStagingError, match="before showing or applying"):
             _get_diff_for_mutant("src.mod.x_f__mutmut_1", path=None)
 
+    def test_db_fallback_with_corrupt_sidecar_never_deletes_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # M-026: a corrupt sidecar is NOT healed away by the read-only
+        # fallback — the browser shares the no-delete reading contract of
+        # the overview (whatever fails, fails without touching metadata).
+        monkeypatch.chdir(tmp_path)
+        _stage_mutants_file(tmp_path)
+        corrupt = tmp_path / "mutants" / "src" / "mod.py.meta"
+        payload = b"\xffnot json\x00"
+        corrupt.write_bytes(payload)
+
+        with pytest.raises(StaleStagingError, match="before showing or applying"):
+            _get_diff_for_mutant("mod.x_f__mutmut_1", path=None)
+
+        assert corrupt.read_bytes() == payload
+
     def test_known_path_refuses_stale_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

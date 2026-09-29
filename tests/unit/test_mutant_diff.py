@@ -8,20 +8,28 @@ read_mutant_function, get_diff_for_mutant, and apply_mutant.
 from __future__ import annotations
 
 import codecs
+import contextlib
 import hashlib
 import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import libcst as cst
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.constants import Profile
-from mutmut_win.exceptions import StaleStagingError
+from mutmut_win.exceptions import (
+    AmbiguousMutantNameError,
+    MutmutWinError,
+    StaleStagingError,
+)
 from mutmut_win.file_setup import create_mutants_for_file
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.mutant_diff import (
@@ -35,6 +43,7 @@ from mutmut_win.mutant_diff import (
     read_original_function,
     render_function_diff,
     render_function_diff_bytes,
+    resolve_mutant,
 )
 from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.test_mapping import function_definition_location_from_key
@@ -265,6 +274,93 @@ class TestFindMutant:
                 find_mutant("mod.x_missing__mutmut_1", config)
         finally:
             os.chdir(orig)
+
+
+# ---------------------------------------------------------------------------
+# M-026 — read-only resolution never heals (deletes) corrupt sidecars
+# ---------------------------------------------------------------------------
+
+
+class TestReadPathsNeverHealCorruptSidecars:
+    """``show``/browser/``find_mutant`` are readers — healing is the
+    generation path's job (under the workspace lock)."""
+
+    def _stage_corrupt_sidecar(self, tmp_path: Path, payload: bytes) -> Path:
+        source = tmp_path / "src" / "mod.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(_PLAIN_SOURCE, encoding="utf-8")
+        meta = tmp_path / "mutants" / "src" / "mod.py.meta"
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        meta.write_bytes(payload)
+        return meta
+
+    def test_resolve_mutant_never_deletes_corrupt_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        payload = b"not json"
+        meta = self._stage_corrupt_sidecar(tmp_path, payload)
+
+        with pytest.raises(FileNotFoundError, match="Could not find mutant"):
+            resolve_mutant("mod.x_nope__mutmut_1", _make_config(paths=["src/"]))
+
+        assert meta.exists()
+        assert meta.read_bytes() == payload
+
+    def test_find_mutant_never_deletes_corrupt_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        payload = b"not json"
+        meta = self._stage_corrupt_sidecar(tmp_path, payload)
+
+        with pytest.raises(FileNotFoundError, match="Could not find mutant"):
+            find_mutant("mod.x_foo__mutmut_1", _make_config(paths=["src/"]))
+
+        assert meta.exists()
+        assert meta.read_bytes() == payload
+
+    def test_render_function_diff_never_deletes_corrupt_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        payload = b"not json"
+        meta = self._stage_corrupt_sidecar(tmp_path, payload)
+
+        # Controlled refusal (no source hash to prove staging freshness) —
+        # and the corrupt sidecar survives for the next run to heal.
+        with pytest.raises(StaleStagingError, match="before showing or applying"):
+            render_function_diff("src/mod.py", "mod.x_foo__mutmut_1")
+
+        assert meta.exists()
+        assert meta.read_bytes() == payload
+
+
+@given(payload=st.binary(max_size=256))
+@settings(max_examples=25, deadline=None)
+def test_read_paths_never_delete_arbitrary_sidecar_bytes(payload: bytes) -> None:
+    """M-026: no reader deletes a sidecar, whatever its bytes are."""
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        contextlib.chdir(tmp),
+    ):
+        root = Path(tmp)
+        source = root / "src" / "mod.py"
+        source.parent.mkdir(parents=True)
+        source.write_text(_PLAIN_SOURCE, encoding="utf-8")
+        meta = root / "mutants" / "src" / "mod.py.meta"
+        meta.parent.mkdir(parents=True)
+        meta.write_bytes(payload)
+        config = _make_config(paths=["src/"])
+
+        with contextlib.suppress(FileNotFoundError, AmbiguousMutantNameError):
+            resolve_mutant("mod.x_probe__mutmut_1", config)
+        with contextlib.suppress(FileNotFoundError):
+            find_mutant("mod.x_probe__mutmut_1", config)
+        with contextlib.suppress(MutmutWinError, FileNotFoundError):
+            render_function_diff("src/mod.py", "mod.x_probe__mutmut_1")
+
+        assert meta.read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------
