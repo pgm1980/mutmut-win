@@ -191,6 +191,36 @@ class TestCompiledParameterNameOracle:
         )
 
 
+class TestLambdaGeneratorIdentity:
+    """M-044: a generator lambda must not change the surrounding function.
+
+    ``IsGeneratorVisitor`` had no ``visit_Lambda``, so a ``yield`` in a
+    lambda BODY leaked into the enclosing function's verdict: the public
+    wrapper became ``return (yield from ...)`` and returned a generator
+    object instead of the value, or an async function was wrongly excluded
+    as an async generator.
+    """
+
+    def test_sync_function_with_generator_lambda_returns_value(self) -> None:
+        source = "def f(a):\n    g = lambda: (yield)\n    return a + 1\n"
+        ns, _names = _exec_clean(source)
+        assert ns["f"](1) == 2  # used to return a generator object
+
+    def test_async_function_with_generator_lambda_is_mutated_and_awaits(self) -> None:
+        source = "async def f(a):\n    g = lambda: (yield)\n    return a + 1\n"
+        ns, names = _exec_clean(source)
+        assert any(name.startswith("x_f__mutmut_") for name in names)  # was excluded
+        assert asyncio.run(ns["f"](1)) == 2
+
+    def test_async_lambda_default_yield_stays_excluded(self) -> None:
+        # guard (M-044 review): defaults are evaluated in the enclosing
+        # scope, so this IS an async generator and must stay unmutated
+        # ('return' with value would even be a SyntaxError in a generator).
+        source = "async def f(a):\n    g = lambda x=(yield): x\n    a + 1\n"
+        _code, names = mutate_file_contents("m.py", source)
+        assert not any(name.startswith("x_f__mutmut_") for name in names)
+
+
 class TestStarArgsMethods:
     def test_method_with_only_star_args_is_mutated_and_dispatches(self) -> None:
         # A1-MT-003/MW221-024: the complete ``*args`` tuple, including the

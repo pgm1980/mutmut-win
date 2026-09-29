@@ -618,7 +618,12 @@ decorator defined in the class body — used to fail the import with NameError
 because the wrapper's module-level lookup names were bound only after the
 class statement; the class body now carries creation-time `global` bindings
 that bypass the class namespace (no enum member, no NamedTuple field), while
-the post-class capture and lookup stay byte-identical. Details:
+the post-class capture and lookup stay byte-identical. The same codegen pass
+fixes the generator verdict: a `yield` inside a lambda body no longer turns
+the surrounding function into a generator (the wrapper returned a generator
+object instead of the value, and async functions with such lambdas were
+wrongly excluded wholesale), while `yield` in a lambda default still counts
+because defaults are evaluated in the enclosing scope. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.

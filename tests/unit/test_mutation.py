@@ -367,7 +367,8 @@ class TestIsGenerator:
         module = cst.parse_module("def foo():\n    return 1\n")
         func = module.body[0]
         assert isinstance(func, cst.FunctionDef)
-        assert not _is_generator(func)
+        # exact bool: the API contract is a bool return, not any falsy value
+        assert _is_generator(func) is False
 
     def test_generator_returns_true(self) -> None:
         module = cst.parse_module("def foo():\n    yield 1\n")
@@ -382,6 +383,63 @@ class TestIsGenerator:
         assert isinstance(func, cst.FunctionDef)
         # foo does not yield, only bar does
         assert not _is_generator(func)
+
+    def test_lambda_yield_not_counted(self) -> None:
+        # M-044: a lambda body is its own scope — a yield there makes only
+        # the LAMBDA a generator, not the surrounding function.
+        code = "def foo():\n    g = lambda: (yield)\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_default_yield_still_counted(self) -> None:
+        # guard against over-fixing (M-044 review): parameter defaults are
+        # evaluated in the ENCLOSING scope, so this foo IS a generator.
+        code = "def foo():\n    g = lambda x=(yield): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
+
+    def test_nested_lambda_default_body_yield_not_counted(self) -> None:
+        # the inner lambda's BODY yield must not leak through the outer
+        # lambda's default expression
+        code = "def foo():\n    g = lambda x=(lambda: (yield)): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_param_without_default_and_body_yield_not_counted(self) -> None:
+        # a default-less lambda parameter plus a yield only in the lambda
+        # BODY: foo is not a generator, and the default visit loop must skip
+        # the parameter instead of dereferencing its absent default.
+        code = "def foo():\n    g = lambda x: (yield)\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_posonly_and_kwonly_defaults_counted(self) -> None:
+        # the default visit loop covers every ordinary parameter group:
+        # positional-only (with a default) and keyword-only defaults are
+        # evaluated in the enclosing scope as well.
+        code = "def foo():\n    g = lambda x=1, /, *, k=(yield): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
+
+    def test_yield_in_outermost_comprehension_iterable_counted(self) -> None:
+        # guard (M-044 review): the outermost for-iterable is evaluated in
+        # the enclosing scope — this foo IS a generator and must not be
+        # excluded by any scope boundary the visitor adds.
+        code = "def foo():\n    return [x for x in (yield)]\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
 
 
 # --- create_mutations ---------------------------------------------------------

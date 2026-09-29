@@ -1420,8 +1420,13 @@ def _is_generator(function: cst.FunctionDef) -> bool:
 class IsGeneratorVisitor(cst.CSTVisitor):
     """Check if a function is a generator.
 
-    We do so by checking if any child is a Yield statement, but not looking into
-    inner function definitions."""
+    We do so by checking if any child is a Yield statement, but not looking
+    into inner function definitions or lambda BODIES (both are their own
+    scope: a ``yield`` there makes only the nested callable a generator).
+    Lambda parameter DEFAULTS, however, are evaluated in the enclosing
+    scope — ``lambda x=(yield): x`` DOES make the surrounding (async)
+    function a generator — so they are visited explicitly before the body
+    is skipped (M-044)."""
 
     def __init__(self, original_function: cst.FunctionDef) -> None:
         self.is_generator = False
@@ -1432,6 +1437,17 @@ class IsGeneratorVisitor(cst.CSTVisitor):
         if self.original_function != node:
             return False
         return None
+
+    def visit_Lambda(self, node: cst.Lambda) -> bool | None:  # noqa: N802
+        # do not recurse into the lambda BODY (own scope), but evaluate its
+        # parameter defaults in this scope like the compiler does.  A var-*
+        # parameter cannot carry a default in valid Python source, so only
+        # the three ordinary parameter groups are visited.
+        params = node.params
+        for param in (*params.posonly_params, *params.params, *params.kwonly_params):
+            if param.default is not None:
+                param.default.visit(self)
+        return False
 
     # ARG002: libcst CSTVisitor requires the node parameter in visitor methods
     def visit_Yield(self, node: cst.Yield) -> bool | None:  # noqa: N802, ARG002
