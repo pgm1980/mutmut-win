@@ -1120,11 +1120,17 @@ def apply(mutant_name: str) -> None:
                     f"{artifact_path}: {exc}; source was not changed"
                 ) from exc
             apply_mutant(resolved_name, config)
+            # M-074: the receipt names the mutant that was actually
+            # written; with a glob input the resolved identity would
+            # otherwise be missing from every operator/CI log. Emitted
+            # inside the try so `resolved_name` is always bound here.
+            if resolved_name != mutant_name:
+                click.echo(f"Applied mutant '{resolved_name}' (matched '{mutant_name}').")
+            else:
+                click.echo(f"Applied mutant '{resolved_name}'.")
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
-
-    click.echo(f"Applied mutant '{mutant_name}'.")
 
 
 @cli.command()

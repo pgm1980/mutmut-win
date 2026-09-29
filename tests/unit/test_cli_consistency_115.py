@@ -27,7 +27,7 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
-from mutmut_win.config import load_config
+from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.exceptions import AmbiguousMutantNameError, StaleStagingError
 from mutmut_win.models import MutationResult, SourceFileMutationData
 from mutmut_win.mutant_diff import render_function_diff, resolve_mutant
@@ -320,6 +320,43 @@ class TestTimeEstimatesGlob:
         assert result.exit_code == 0
         assert "mod.x_parse__mutmut_1" in result.output
         assert "mod.x_Parse__mutmut_1" not in result.output
+
+
+class TestApplyReportsResolvedMutant:
+    """M-074: apply's receipt names the mutant it wrote, not the pattern."""
+
+    def _invoke_apply(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argument: str) -> str:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir()
+        with (
+            patch("mutmut_win.cli.load_config", return_value=MutmutConfig(paths_to_mutate=[])),
+            patch(
+                "mutmut_win.cli.resolve_mutant",
+                return_value=("mod.x_foo__mutmut_2", MagicMock()),
+            ) as resolve_mock,
+            patch("mutmut_win.cli.apply_mutant") as apply_mock,
+            patch("mutmut_win.cli.invalidate_latest_run_evidence"),
+        ):
+            result = CliRunner().invoke(cli, ["apply", argument])
+        assert result.exit_code == 0, result.output
+        apply_mock.assert_called_once()
+        resolve_mock.assert_called_once()
+        return result.output
+
+    def test_glob_apply_receipt_shows_the_resolved_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = self._invoke_apply(tmp_path, monkeypatch, "*__mutmut_2")
+
+        assert "Applied mutant 'mod.x_foo__mutmut_2' (matched '*__mutmut_2')." in output
+
+    def test_exact_apply_receipt_has_no_matched_suffix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output = self._invoke_apply(tmp_path, monkeypatch, "mod.x_foo__mutmut_2")
+
+        assert "Applied mutant 'mod.x_foo__mutmut_2'." in output
+        assert "(matched" not in output
 
 
 # ---------------------------------------------------------------------------
