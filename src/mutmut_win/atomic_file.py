@@ -223,6 +223,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 ) from None
             continue
 
+        fd_owned = True
         try:
             opened_stat = os.fstat(fd)
             leaf_stat = temp_path.lstat()
@@ -244,6 +245,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 or opened_identity != _identity(leaf_stat)
                 or leaf_stat.st_nlink != 1
             ):
+                fd_owned = False
                 os.close(fd)
                 with contextlib.suppress(OSError):
                     temp_path.unlink()
@@ -258,11 +260,16 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 continue
             return fd, temp_path, opened_identity
         except BaseException:
-            # The validation-failure path already closed and unlinked its own
-            # fd before deciding to retry or fail; suppressing the second
-            # close keeps every exit route uniform.
-            with contextlib.suppress(OSError):
-                os.close(fd)
+            # Ownership rule (M-066): the validation-failure branch already
+            # closed — and unlinked — its own fd before deciding to retry or
+            # fail, and Windows recycles descriptor numbers immediately, so
+            # only a still-owned fd may be closed here; a second close could
+            # hit a descriptor a concurrent thread just received.  The second
+            # unlink attempt stays unconditional: after a failed first
+            # unlink the entry may still need cleaning up.
+            if fd_owned:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
             with contextlib.suppress(OSError):
                 temp_path.unlink()
             raise
