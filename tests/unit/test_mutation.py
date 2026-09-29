@@ -243,6 +243,32 @@ class TestPragmaNoMutateLines:
         legacy = _pragma_block_range(source.split("\n"), 2)
         assert pragma_no_mutate_lines(source) == set(legacy)
 
+    def test_block_starts_suite_after_blank_line_between_header_and_body(self) -> None:
+        # the NL/COMMENT skip between the header's NEWLINE and the suite's
+        # INDENT must not end the block (token-path boundary).
+        src = "def f():  # pragma: no mutate block\n\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_block_starts_suite_after_comment_line_between_header_and_body(self) -> None:
+        src = "def f():  # pragma: no mutate block\n# lead\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_block_pragma_on_final_line_without_newline_or_suite(self) -> None:
+        # EOF right after the pragma's logical line: no suite, no crash.
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate block") == {1}
+
+    def test_block_pragma_with_trailing_blank_line_after_simple_statement(self) -> None:
+        # trailing NL tokens after the pragma's NEWLINE must be skipped and
+        # still yield no suite (the next significant token is code, not INDENT).
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate block\n\ny = 2\n") == {1}
+
+    def test_block_covers_nested_indented_suite_completely(self) -> None:
+        # nested INDENT/DEDENT inside the suite must not end the block at the
+        # FIRST inner DEDENT - the block only ends when the pragma header's own
+        # suite dedents (INDENT/DEDENT depth counting).
+        src = "if x:  # pragma: no mutate block\n    if y:\n        a = 1\n    b = 2\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4}
+
     def test_suffix_helper_return_values(self) -> None:
         # direct probe of the classifier: pins the exact return value so the
         # caller-equivalent mutants (unknown / empty -> a non-"" sentinel) die
