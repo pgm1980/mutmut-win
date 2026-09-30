@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from mutmut_win.db import MutationRunState
-    from mutmut_win.models import GenerationDegradation, MutationResult
+    from mutmut_win.models import GenerationDegradation, MutationResult, MutationRunResult
 
 
 @click.group()
@@ -79,6 +79,31 @@ def _warn_treat_timeout_as_kill_deprecated() -> None:
         "infinite-loop detection (since v2.5.0). The flag stays functional "
         "in 2.x and will be removed in a future major release.",
         err=True,
+    )
+
+
+def _timeout_as_kill_score_line(result: MutationRunResult) -> str:
+    """One named stderr line for the deprecated timeout-as-kill score (M-025).
+
+    ``--treat-timeout-as-kill`` changes the ``--min-score`` gate but not the
+    reported score: the JSON ``score`` field and the text summary always stay
+    raw (CI contract). This line is the single place that names the effective
+    (timeouts-counted-as-kills) score next to the raw score, so a passing gate
+    is no longer silent about the value it actually judged.
+
+    Args:
+        result: The finished (non-interrupted, non-aborted, non-dry) run
+            result with at least one testable mutant.
+
+    Returns:
+        The ready-to-echo line, e.g. ``Score with timeouts counted as
+        kills (deprecated --treat-timeout-as-kill): 100.0% (raw score 50.0%)``.
+    """
+    effective = result.compute_score(treat_timeout_as_kill=True)
+    raw = result.compute_score(treat_timeout_as_kill=False)
+    return (
+        "Score with timeouts counted as kills (deprecated "
+        f"--treat-timeout-as-kill): {effective:.1f}% (raw score {raw:.1f}%)"
     )
 
 
@@ -512,7 +537,8 @@ def _is_mutation_target(
     help=(
         "(DEPRECATED — superseded by infinite-loop detection; removal in a "
         "future major release.) Count TIMEOUT mutants toward the kill bucket "
-        "for --min-score and score reporting. Workaround for Bug #71 "
+        "for the --min-score gate and one dedicated stderr line; the reported "
+        "JSON score and text summary stay raw. Workaround for Bug #71 "
         "(Hypothesis tests turn infinite-loop mutations into TIMEOUT)."
     ),
 )
@@ -931,6 +957,18 @@ def run(
         click.echo("No testable mutants were generated; mutation run failed closed.", err=True)
         sys.exit(1)
 
+    # --- Deprecated timeout-as-kill score honesty (M-025) ---
+    # The flag changes the gate, not the reported score: the JSON ``score``
+    # field and the text summary stay raw (CI contract, additive only). One
+    # named stderr line names the effective score the gate judges next to
+    # the raw score, whether or not --min-score was given. Interrupted,
+    # aborted and empty runs have exited above; the line is still confined
+    # to real runs with at least one testable mutant — a preview or an
+    # all-skipped run has no score to adjust.
+    testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
+    if treat_timeout_as_kill and not dry_run and testable > 0:
+        click.echo(_timeout_as_kill_score_line(result), err=True)
+
     # --- Score gate ---
     if min_score is not None:
         surface_report = _mutation_surface_report(result.degraded_files)
@@ -945,7 +983,6 @@ def run(
                 err=True,
             )
             sys.exit(1)
-        testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
         if testable <= 0:
             # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
             # below threshold' blamed a score that never existed.

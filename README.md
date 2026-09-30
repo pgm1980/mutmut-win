@@ -420,6 +420,12 @@ The denominator excludes `skipped`, historical or future-authoritative
 creates new `no tests` verdicts: an unobserved mutant runs the full suite.
 Always read the bucket counts next to the percentage.
 
+The deprecated `run --treat-timeout-as-kill` flag (see `results`) only
+changes what the `--min-score` gate judges: the JSON `score` field and the
+text summary always report the raw score, and the effective
+timeouts-counted-as-kills value is printed as one dedicated stderr line
+next to it.
+
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:
 

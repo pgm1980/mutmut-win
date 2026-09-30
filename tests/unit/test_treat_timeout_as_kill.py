@@ -7,6 +7,12 @@ method that takes the flag. Default behaviour is unchanged (timeouts stay in
 their own bucket); the switch lets projects with known infinite-loop signals
 report the adjusted score without changing the underlying result store.
 
+M-025 (issue #160): the flag changes the `--min-score` gate but not the
+reported score. The contract is now explicit — the JSON ``score`` field and
+the text summary always stay RAW; with the flag set, one named stderr line
+reports the effective (timeouts-as-kills) score next to the raw score, and
+the gate judges exactly that effective value.
+
 See critique-model-service ``_misc/mutmut-win-bugs.md`` Bug #5 (this repo's
 issue #71) for the original observation — 76 timeout mutants in one sprint
 where every single one corresponds to a Hypothesis test triggering an
@@ -15,7 +21,34 @@ infinite loop.
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+from click.testing import CliRunner
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
+
+from mutmut_win.cli import _timeout_as_kill_score_line, cli
 from mutmut_win.models import MutationRunResult
+
+pytestmark = pytest.mark.usefixtures("isolated_cli_workspace")
+
+_SCORE_LINE_MARKER = "timeouts counted as kills"
+
+
+def _invoke_run_with(result: MutationRunResult, *args: str) -> tuple[int, str, str]:
+    """Invoke ``run`` with runner/executor/orchestrator mocked out."""
+    orchestrator = MagicMock()
+    orchestrator.run.return_value = result
+    with (
+        patch("mutmut_win.cli.MutationOrchestrator", return_value=orchestrator),
+        patch("mutmut_win.cli.PytestRunner"),
+        patch("mutmut_win.cli.SpawnPoolExecutor"),
+        patch("mutmut_win.cli.load_config", return_value=MagicMock(model_copy=MagicMock())),
+    ):
+        outcome = CliRunner().invoke(cli, ["run", *args])
+    return outcome.exit_code, outcome.stderr, outcome.stdout
 
 
 def test_compute_score_default_excludes_timeouts() -> None:
@@ -82,3 +115,111 @@ def test_compute_score_all_timeouts_with_flag_gives_full_score() -> None:
     )
     assert result.compute_score() == 0.0
     assert result.compute_score(treat_timeout_as_kill=True) == 100.0
+
+
+# ---------------------------------------------------------------------------
+# M-025 — the flag gates on the effective score, the reported score stays raw
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutAsKillScoreReporting:
+    def test_score_line_names_effective_and_raw_score(self) -> None:
+        result = MutationRunResult(total_mutants=10, killed=5, timeout=5)
+
+        line = _timeout_as_kill_score_line(result)
+
+        assert _SCORE_LINE_MARKER in line
+        assert "100.0%" in line
+        assert "50.0%" in line
+        assert line.startswith("Score with")
+
+    def test_run_reports_gate_score_when_gate_passes(self) -> None:
+        result = MutationRunResult(
+            total_mutants=10,
+            killed=5,
+            timeout=5,
+            execution_basis_complete=True,
+        )
+
+        exit_code, stderr, _stdout = _invoke_run_with(
+            result, "--treat-timeout-as-kill", "--min-score", "100"
+        )
+
+        # The effective score (kills + timeouts) passes the gate ...
+        assert exit_code == 0, stderr
+        # ... and is reported even though the gate passed.
+        assert _SCORE_LINE_MARKER in stderr
+        assert "100.0%" in stderr
+        assert "50.0%" in stderr
+
+    def test_json_score_stays_raw_while_stderr_carries_the_line(self) -> None:
+        result = MutationRunResult(total_mutants=10, killed=5, timeout=5)
+
+        exit_code, stderr, stdout = _invoke_run_with(
+            result, "--output", "json", "--treat-timeout-as-kill"
+        )
+
+        assert exit_code == 0, stderr
+        payload = json.loads(stdout)
+        assert payload["score"] == 50.0
+        assert _SCORE_LINE_MARKER in stderr
+        assert "100.0%" in stderr
+
+    def test_dry_run_never_prints_the_score_line(self) -> None:
+        orchestrator = MagicMock()
+        orchestrator.dry_run.return_value = MutationRunResult(total_mutants=3)
+        with (
+            patch("mutmut_win.cli.MutationOrchestrator", return_value=orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+            patch("mutmut_win.cli.load_config", return_value=MagicMock(model_copy=MagicMock())),
+        ):
+            outcome = CliRunner().invoke(cli, ["run", "--dry-run", "--treat-timeout-as-kill"])
+
+        assert outcome.exit_code == 0, outcome.stderr
+        assert _SCORE_LINE_MARKER not in outcome.stderr
+
+    def test_aborted_run_never_prints_the_score_line(self) -> None:
+        result = MutationRunResult(total_mutants=5, killed=2, run_aborted=True)
+
+        exit_code, stderr, _stdout = _invoke_run_with(result, "--treat-timeout-as-kill")
+
+        assert exit_code == 1
+        assert _SCORE_LINE_MARKER not in stderr
+
+    def test_no_testable_mutants_never_prints_the_score_line(self) -> None:
+        result = MutationRunResult(total_mutants=4, skipped=4, execution_basis_complete=True)
+
+        exit_code, stderr, _stdout = _invoke_run_with(result, "--treat-timeout-as-kill")
+
+        assert exit_code == 0, stderr
+        assert _SCORE_LINE_MARKER not in stderr
+
+    def test_run_help_no_longer_promises_score_reporting(self) -> None:
+        outcome = CliRunner().invoke(cli, ["run", "--help"])
+
+        collapsed = " ".join(outcome.output.split())
+        assert "and score reporting" not in collapsed
+        assert "stay raw" in collapsed
+
+
+@given(
+    killed=st.integers(min_value=0, max_value=50),
+    timeout=st.integers(min_value=0, max_value=50),
+    survived=st.integers(min_value=0, max_value=50),
+)
+@settings(max_examples=40, deadline=None)
+def test_score_line_always_matches_compute_score(killed: int, timeout: int, survived: int) -> None:
+    """The stderr line and the JSON score never disagree about their basis."""
+    assume(killed + timeout + survived > 0)
+    result = MutationRunResult(
+        total_mutants=killed + timeout + survived,
+        killed=killed,
+        timeout=timeout,
+        survived=survived,
+    )
+
+    line = _timeout_as_kill_score_line(result)
+
+    assert f"{result.compute_score(treat_timeout_as_kill=True):.1f}%" in line
+    assert f"{result.compute_score(treat_timeout_as_kill=False):.1f}%" in line
