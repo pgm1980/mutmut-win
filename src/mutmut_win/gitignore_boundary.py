@@ -11,8 +11,12 @@ The boundary mirrors Git's layered ignore semantics for walk pruning:
 
 * every directory may carry its own ``.gitignore`` whose patterns apply
   relative to that directory;
-* deeper files take precedence over shallower ones; within one file the last
-  matching pattern decides;
+* deeper files take precedence over shallower ones; within one file the
+  last matching pattern decides, with Git's directory-marker precedence:
+  a negation that hits the candidate only through an ancestor directory
+  marker cannot override a real path match, a directory's own end-anchored
+  marker counts as a path match, and at equal priority the later pattern
+  wins (M-017);
 * a directory matched as ignored prunes its whole subtree — Git cannot
   re-include files below an excluded directory;
 * loading is fail-closed: an unreadable, undecodable, or invalid ignore
@@ -38,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -49,6 +54,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+#: Name of pathspec's directory-marker capture group (SimpleGiBackend's
+#: ``_DIR_MARK``).  Guarded at load time because the whole precedence logic
+#: depends on it.
+_DIR_MARK = "ps_d"
 
 
 def _candidate(prefix: str, name: str) -> str:
@@ -66,6 +76,131 @@ def _relative_to_base(candidate: str, base: str) -> str | None:
     if candidate.startswith(prefix):
         return candidate[len(prefix) :]
     return None
+
+
+@dataclass(frozen=True)
+class _CompiledIgnorePattern:
+    """One compiled gitignore pattern with Git's marker-precedence data.
+
+    ``regex`` is pathspec's compiled search pattern; ``anchored`` embeds it
+    end-anchored (``(?:...)\\Z``) so a directory probe can prove the pattern
+    hits the candidate's OWN trailing slash rather than only an ancestor's.
+    ``include`` is ``True`` for positive (ignoring) patterns and ``False``
+    for negations (M-017).
+    """
+
+    regex: re.Pattern[str]
+    anchored: re.Pattern[str]
+    include: bool
+
+
+_dir_marker_guard_done: bool = False
+
+
+def _verify_dir_marker_support() -> None:
+    """Fail loudly when pathspec stops exposing the directory marker.
+
+    The precedence evaluation depends on pathspec's ``ps_d`` capture group;
+    silently deciding without it would mis-prune walks.  Guarded once per
+    process (M-017).
+    """
+
+    global _dir_marker_guard_done
+    if _dir_marker_guard_done:
+        return
+    spec = GitIgnoreSpec.from_lines(["a/"])
+    first = next(iter(spec.patterns), None)
+    first_regex = getattr(first, "regex", None) if first is not None else None
+    if first_regex is None or _DIR_MARK not in first_regex.groupindex:
+        raise RuntimeError(
+            "pathspec no longer exposes the ps_d directory marker group; "
+            "gitignore marker precedence would silently degrade"
+        )
+    _dir_marker_guard_done = True
+
+
+def _compile_ignore_patterns(spec: Any) -> tuple[_CompiledIgnorePattern, ...]:
+    """Compile pathspec patterns into the precedence-aware representation."""
+
+    compiled: list[_CompiledIgnorePattern] = []
+    for pattern in spec.patterns:
+        include = getattr(pattern, "include", None)
+        if include is None:
+            continue  # comment-only pattern carries no rule either way
+        try:
+            regex = pattern.regex
+            anchored = re.compile(f"(?:{regex.pattern})\\Z", regex.flags)
+        except Exception:
+            logger.debug(
+                "gitignore pattern compilation failed for %r",
+                getattr(pattern, "regex", pattern),
+                exc_info=True,
+            )
+            continue
+        compiled.append(
+            _CompiledIgnorePattern(regex=regex, anchored=anchored, include=bool(include))
+        )
+    return tuple(compiled)
+
+
+def _match_priority(
+    compiled: _CompiledIgnorePattern,
+    relative: str,
+    *,
+    directory: bool,
+) -> int | None:
+    """Classify one pattern's match on the candidate.
+
+    Returns ``2`` for a real path match, ``1`` for a match that only an
+    ancestor directory marker (or, for file candidates, any directory
+    marker) provides, and ``None`` when the pattern does not match at all.
+    A directory's OWN end-anchored trailing-slash marker counts as a path
+    match — that is what keeps whitelist idioms like ``*`` / ``!*/``
+    traversable (M-017).
+    """
+
+    try:
+        has_marker = _DIR_MARK in compiled.regex.groupindex
+        match = compiled.regex.search(relative)
+        if match is not None and (not has_marker or match.start(_DIR_MARK) == -1):
+            return 2
+        if directory and has_marker:
+            dir_probe = f"{relative}/"
+            anchored = compiled.anchored.search(dir_probe)
+            if anchored is not None and anchored.end(_DIR_MARK) == len(dir_probe):
+                return 2
+        if match is not None:
+            return 1
+        return None
+    except Exception:
+        logger.debug("gitignore pattern evaluation failed for %r", relative, exc_info=True)
+        return None
+
+
+def _evaluate_level_patterns(
+    patterns: tuple[_CompiledIgnorePattern, ...],
+    relative: str,
+    *,
+    directory: bool,
+) -> bool | None:
+    """Decide one level for one candidate with Git's precedence rule.
+
+    A decision is adopted when the pattern is a positive (ignoring) marker
+    match — ancestors propagate exclusion — or when its priority is at least
+    the current one; at equal priority the later pattern in the file wins,
+    exactly like Git (M-017).
+    """
+
+    decision: bool | None = None
+    priority = 0
+    for compiled in patterns:
+        current = _match_priority(compiled, relative, directory=directory)
+        if current is None:
+            continue
+        if (compiled.include and current == 1) or current >= priority:
+            decision = compiled.include
+            priority = current
+    return decision
 
 
 def _safe_pattern_match(pattern: Any, relative: str) -> Any | None:
@@ -94,7 +229,7 @@ class _IgnoreLevel:
     """
 
     base: str
-    patterns: tuple[Any, ...]
+    patterns: tuple[_CompiledIgnorePattern, ...] = ()
     rules_unknown: bool = False
 
 
@@ -128,6 +263,7 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         return None
+    _verify_dir_marker_support()
     try:
         spec = GitIgnoreSpec.from_lines(lines)
     except ValueError as exc:
@@ -141,7 +277,7 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
             type(exc).__name__,
         )
         return _IgnoreLevel(base=base, patterns=(), rules_unknown=True)
-    return _IgnoreLevel(base=base, patterns=tuple(spec.patterns))
+    return _IgnoreLevel(base=base, patterns=_compile_ignore_patterns(spec))
 
 
 @dataclass(frozen=True)
@@ -439,14 +575,11 @@ class GitignoreBoundary:
                 # subtree: pruning there could drop files a readable "!"
                 # re-inclusion below the broken level would keep (M-015).
                 return False
-            probes = (relative, f"{relative}/") if directory else (relative,)
-            decision: bool | None = None
-            for pattern in level.patterns:
-                # Git applies the LAST matching pattern; within one level the
-                # pattern order in the file already provides that ordering.
-                for probe in probes:
-                    if _safe_pattern_match(pattern, probe) is not None:
-                        decision = bool(getattr(pattern, "include", True))
+            # Within one level Git applies directory-marker precedence (M-017):
+            # a marker-only negation cannot override a real path match, an
+            # end-anchored own marker on a directory counts as a path match,
+            # and at equal priority the later pattern in the file wins.
+            decision = _evaluate_level_patterns(level.patterns, relative, directory=directory)
             if decision is not None:
                 return decision
         return False
