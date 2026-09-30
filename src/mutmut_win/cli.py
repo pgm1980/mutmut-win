@@ -269,6 +269,152 @@ def _load_result_snapshot_or_exit(
         sys.exit(1)
 
 
+def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
+    """Changed tracked files since ``ref``, relative to the process CWD (M-021).
+
+    Runs ``git diff --name-only -z --relative <ref>``.  Without
+    ``--relative`` git reports repo-root-relative names while the target
+    filter checks them against the process CWD — a run from a repository
+    subproject (monorepo) selected nothing and still exited 0 (BC-015 /
+    CLI-02).  ``--relative`` makes git report CWD-relative names AND limits
+    the diff to the CWD subtree, which is exactly the project scope
+    (``paths_to_mutate`` is rejected outside the project by config).
+
+    Args:
+        ref: The git revision to diff against, one argv element.
+        json_stdout: JSON error channel for the returncode contract (#102).
+
+    Returns:
+        The changed file names, decoded from NUL-separated bytes.
+
+    Raises:
+        SystemExit: Exit 2 when git itself rejects the ref (issue #102).
+    """
+    import subprocess as sp
+
+    # git command is fully controlled — the ref travels as a single argv
+    # element and git validates it. Diff against the REF alone (no ..HEAD):
+    # committed AND working-tree changes count — the documented "check what
+    # you just changed" workflow includes uncommitted edits (issue #128
+    # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
+    # the process default anyway; it is spelled out because --relative
+    # derives the output base from it (setting it alone fixes nothing).
+    git_result = sp.run(  # noqa: S603 — git CLI with controlled args
+        [  # noqa: S607 — git is a well-known executable
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            ref,
+        ],
+        capture_output=True,
+        cwd=Path.cwd(),
+    )
+    # Issue #102 / A3-CM-006: the returncode was never checked — an
+    # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
+    if git_result.returncode != 0:
+        stderr = (
+            git_result.stderr.decode("utf-8", errors="replace")
+            if isinstance(git_result.stderr, bytes)
+            else git_result.stderr
+        )
+        message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
+        click.echo(message, err=True)
+        _emit_json_error(json_stdout, message, 2)
+        sys.exit(2)
+
+    if isinstance(git_result.stdout, bytes):
+        return [
+            raw.decode("utf-8", errors="surrogateescape")
+            for raw in git_result.stdout.split(b"\0")
+            if raw
+        ]
+    # Test doubles and third-party subprocess seams may still
+    # return text. Production uses bytes so ``-z`` can preserve
+    # every pathname without Git's C-style quoting.
+    separator = "\0" if "\0" in git_result.stdout else "\n"
+    return [name for name in git_result.stdout.split(separator) if name]
+
+
+def _project_relative_parts(path_text: str, project_root: Path) -> tuple[str, ...] | None:
+    """Canonical project-relative parts of a path or pytest node id (M-024).
+
+    Absolute entries and ``..``-aliases used to bypass the incremental
+    tests_dir exclusion because the comparison used raw ``Path.parts``:
+    an absolute entry kept its drive anchor and ``tests/../tests`` kept
+    its ``..`` component, so neither ever prefix-matched a changed name
+    and changed test files became mutation targets (CLI-03).
+
+    Both sides of the exclusion comparison go through this helper:
+
+    - a pytest node-id suffix (``::``) is split off,
+    - drive-anchored relative forms (``C:tests``) are not comparable to a
+      project root and yield ``None`` (they were already ineffective),
+    - root-without-drive forms (``/tests``) stay lexically project-relative
+      (the previous code stripped leading separators — same meaning),
+    - everything else is joined onto ``project_root``, normpath-collapsed
+      and mapped through ``relative_to`` (case-insensitive on Windows),
+      with a ``resolve(strict=False)`` fallback for alias spellings
+      (8.3 short names, junctions, subst drives).
+
+    Args:
+        path_text: A configured tests_dir entry or a changed git name.
+        project_root: The project directory (the process CWD).
+
+    Returns:
+        Normcased parts relative to ``project_root``; an empty tuple when
+        the entry IS the project root (``'.'`` — the historic
+        exclude-everything semantics); ``None`` when the entry is anchored
+        outside the project or not comparable at all.
+    """
+    text = path_text.split("::", 1)[0]
+    parsed = Path(text)
+    if parsed.drive and not parsed.root:
+        # 'C:tests' is relative to the drive's current directory, not to
+        # the project — not comparable (and never effective before).
+        return None
+    if parsed.root and not parsed.drive:
+        # '/tests' historically behaved like 'tests' because leading
+        # separators were stripped; keep that lexical meaning instead of
+        # failing the exclusion filter open.
+        text = text.lstrip("/\\")
+    root = Path(os.path.normpath(project_root))
+    candidate = Path(os.path.normpath(root / text))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        # Alias spellings the lexical pass cannot see (8.3 short names,
+        # junctions, subst drives) resolve through the filesystem.
+        try:
+            relative = candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+        except ValueError:
+            return None
+    return tuple(os.path.normcase(part) for part in relative.parts)
+
+
+def _is_mutation_target(
+    name: str,
+    tests_dir_parts: tuple[tuple[str, ...], ...],
+    project_root: Path,
+) -> bool:
+    """Whether a changed file name is an incremental mutation target."""
+
+    # Deleted files and test files used to become mutation targets.
+    if not name.casefold().endswith(".py") or not Path(name).exists():
+        return False
+    parts = _project_relative_parts(name, project_root)
+    if parts is None:
+        # The name is anchored outside the project or not comparable: an
+        # exclusion filter must fail closed — never a mutation target.
+        return False
+    # Component-prefix match (issue #128 / 360°-A4): the old
+    # parts[0] comparison against the FULL tests_dir string never
+    # matched nested dirs like "tests/unit/" — changed TEST files
+    # became mutation targets.
+    return all(parts[: len(td)] != td for td in tests_dir_parts)
+
+
 @cli.command()
 @click.option("--max-children", type=int, default=None, help="Number of worker processes.")
 @click.option(
@@ -569,62 +715,26 @@ def run(
 
         # --since-commit: resolve changed .py files via git
         if since_commit is not None:
-            import subprocess as sp
-
-            # git command is fully controlled — commit hash is validated by git itself.
-            # Diff against the REF alone (no ..HEAD): committed AND
-            # working-tree changes count — the documented "check what you
-            # just changed" workflow includes uncommitted edits (issue #128
-            # / 360°-A4). Untracked files stay invisible to git diff.
-            git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-                ["git", "diff", "--name-only", "-z", since_commit],  # noqa: S607 — git is a well-known executable
-                capture_output=True,
-            )
-            # Issue #102 / A3-CM-006: the returncode was never checked — an
-            # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
-            if git_result.returncode != 0:
-                stderr = (
-                    git_result.stderr.decode("utf-8", errors="replace")
-                    if isinstance(git_result.stderr, bytes)
-                    else git_result.stderr
-                )
-                message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
-
-            def _comparison_parts(path_text: str) -> tuple[str, ...]:
-                return tuple(os.path.normcase(part) for part in Path(path_text).parts)
-
+            # M-021: --relative makes git report project-relative names, so
+            # monorepo runs from a repository subfolder select their own
+            # targets instead of silently no-op'ing with exit 0.
+            changed_names = _git_changed_names(since_commit, json_stdout=json_stdout)
+            # M-024: both sides of the tests_dir exclusion canonicalize
+            # through _project_relative_parts, so absolute entries and
+            # '..'-aliases no longer fail open.
+            project_root = Path.cwd()
             tests_dir_parts = tuple(
-                _comparison_parts(target.split("::", 1)[0].strip("/").strip("\\"))
-                for target in config.tests_dir
+                parts
+                for parts in (
+                    _project_relative_parts(entry, project_root) for entry in config.tests_dir
+                )
+                if parts is not None
             )
-
-            def _is_mutation_target(name: str) -> bool:
-                # Deleted files and test files used to become mutation targets.
-                if not name.casefold().endswith(".py") or not Path(name).exists():
-                    return False
-                parts = _comparison_parts(name)
-                # Component-prefix match (issue #128 / 360°-A4): the old
-                # parts[0] comparison against the FULL tests_dir string never
-                # matched nested dirs like "tests/unit/" — changed TEST files
-                # became mutation targets.
-                return all(parts[: len(td)] != td for td in tests_dir_parts)
-
-            if isinstance(git_result.stdout, bytes):
-                changed_names = [
-                    raw.decode("utf-8", errors="surrogateescape")
-                    for raw in git_result.stdout.split(b"\0")
-                    if raw
-                ]
-            else:
-                # Test doubles and third-party subprocess seams may still
-                # return text. Production uses bytes so ``-z`` can preserve
-                # every pathname without Git's C-style quoting.
-                separator = "\0" if "\0" in git_result.stdout else "\n"
-                changed_names = [name for name in git_result.stdout.split(separator) if name]
-            changed_py = [name for name in changed_names if _is_mutation_target(name)]
+            changed_py = [
+                name
+                for name in changed_names
+                if _is_mutation_target(name, tests_dir_parts, project_root)
+            ]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."
                 # A valid diff with no changed production target is an
