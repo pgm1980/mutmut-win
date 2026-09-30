@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    InvalidConfigValueError,
     MutantNameDispatchError,
     MutationSurfaceDegradedWarning,
     OrchestratorError,
@@ -90,6 +92,18 @@ _MIN_TIMEOUT: float = 5.0
 #: (the budget scales with the measured clean-run wall time above this) —
 #: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
+
+#: Upper bound for any single mutation-task timeout budget (M-103 / EDGE-05).
+#: Windows' WaitForSingleObject — the timeout primitive beneath every
+#: subprocess wait — accepts DWORD milliseconds, silently truncates values
+#: at or above 2**32 ms (~49.7 days), and treats 0xFFFFFFFF as INFINITE;
+#: ``Popen.wait(timeout=inf)`` only raises OverflowError deep inside the
+#: worker's recovery path.  A finite-but-unusable budget (for example
+#: ``timeout_multiplier=1e308`` overflowing the fallback product to inf)
+#: must therefore fail closed at dispatch time: 2_000_000 s (~23 days)
+#: stays safely inside the DWORD range while remaining far beyond any
+#: legitimate suite budget.
+_MAX_TIMEOUT: float = 2_000_000.0
 
 #: Bounded re-observation delays when at least one basis snapshot in a
 #: stability proof is incomplete (transiently locked or unreadable inputs).
@@ -1732,16 +1746,26 @@ def _apply_timeouts(
 ) -> list[MutationTask]:
     """Return a copy of *tasks* with ``timeout_seconds`` computed from *stats*.
 
-    The budget for a task with timing data is
-    ``max(_MIN_TIMEOUT, startup_floor + estimated_time * multiplier)`` —
-    the additive floor covers the constant process overhead the multiplier
-    cannot scale (issue #105 / DOG-001: 175/244 pilot mutants timed out
-    with FINISHED pytest summaries in their tails).
+    The selective per-test budget ``max(_MIN_TIMEOUT, startup_floor +
+    estimated_time * multiplier)`` applies ONLY when the task has a
+    non-empty ``tests`` selection, ``test_selection_is_authoritative`` is
+    True, AND the estimated time is greater than zero — the additive floor
+    covers the constant process overhead the multiplier cannot scale
+    (issue #105 / DOG-001: 175/244 pilot mutants timed out with FINISHED
+    pytest summaries in their tails).
 
-    Without any timing data the task runs the full suite, so its budget is
-    ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)`` — the
-    measured wall time of exactly such a run; a flat 60s would pseudo-
-    timeout every suite that takes longer than a minute.
+    Every other task runs the FULL suite (no node-id arguments), so its
+    budget is ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)``
+    — the measured wall time of exactly such a run; a flat 60s would
+    pseudo-timeout every suite that takes longer than a minute (issue
+    #130 / 360°-B3).  The authority bit decides which branch runs: the
+    pipeline always calls :func:`_assign_tests_to_tasks` first, which
+    overwrites it with ``MutmutStats.mapping_is_authoritative`` — False
+    on every production path of the current collector — so the fallback
+    is the NORMAL case even for tasks WITH timing data, and the selective
+    branch is reachable only for directly constructed (test) tasks
+    despite the ``MutationTask`` field default of True.  See the README
+    section "Map & budget".
 
     ``estimated_time`` stays free of the floor: it means "estimated TEST
     runtime" and feeds the independent mutant-task sort.
@@ -1755,6 +1779,15 @@ def _apply_timeouts(
 
     Returns:
         New list of ``MutationTask`` instances with updated timeout values.
+
+    Raises:
+        InvalidConfigValueError: If a computed budget is not finite or
+            exceeds ``_MAX_TIMEOUT``.  Such a budget (for example from an
+            extreme finite ``timeout_multiplier``) would silently truncate
+            inside the Windows wait primitives instead of timing out, so
+            it fails closed before any dispatch.  The error surfaces
+            through ``run`` as a domain error (exit 1), because only the
+            orchestrator knows the measured wall time behind the product.
     """
     updated: list[MutationTask] = []
     for task in tasks:
@@ -1768,6 +1801,7 @@ def _apply_timeouts(
 
         if task.tests and task.test_selection_is_authoritative and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
+            base = f"estimated test time {estimated:g}s"
         else:
             # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
             # FULL suite (no node-id args) — budget it like one. The old
@@ -1776,6 +1810,17 @@ def _apply_timeouts(
             # never imported by tests). The mean still feeds the independent
             # mutant-task sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
+            base = f"clean-run wall time {clean_wall_seconds:g}s"
+
+        if not math.isfinite(timeout) or timeout > _MAX_TIMEOUT:
+            raise InvalidConfigValueError(
+                f"timeout_multiplier={multiplier!r} applied to the {base} "
+                f"produces an unusable timeout budget of {timeout!r}s for "
+                f"mutant {task.mutant_name!r}. Budgets must stay finite and "
+                f"at or below {_MAX_TIMEOUT:.0f}s — larger values silently "
+                "truncate inside the Windows wait primitives instead of "
+                "timing out. Reduce [tool.mutmut].timeout_multiplier."
+            )
 
         updated.append(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})

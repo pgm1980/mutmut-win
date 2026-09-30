@@ -22,8 +22,13 @@ class StagingNamespaceCollisionError(ConfigError):
 class InvalidConfigValueError(ConfigError):
     """A specific configuration value failed validation.
 
-    Producer: config loading wraps pydantic validation failures
-    (issue #114 / A4-QX-006 — the class used to exist without one).
+    Producers: config loading wraps pydantic validation failures
+    (issue #114 / A4-QX-006 — the class used to exist without one), and
+    the orchestrator's timeout-budget validation rejects computed budgets
+    that are not finite or exceed the dispatch ceiling (M-103 / EDGE-05).
+    The latter surfaces through ``run`` as a domain error ("Error: …" on
+    stderr, exit 1), because only the orchestrator knows the measured
+    wall time behind the product — it is not a config-load failure.
     """
 
 

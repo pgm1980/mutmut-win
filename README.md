@@ -264,7 +264,11 @@ extra_paths = ["benchmarks/"]         # sibling packages: copied + on worker PYT
 # Execution
 max_children = 8                      # workers (default: CPU count; generation
                                        # uses at most 61 workers on Windows)
-timeout_multiplier = 30               # scales the measured per-mutant test time
+timeout_multiplier = 30               # scales the measured test time (or, for
+                                       # full-suite fallback tasks, the clean-run
+                                       # wall time); a budget that is not finite
+                                       # or exceeds the ceiling (~23 days) fails
+                                       # the run closed before dispatch
 clean_run_timeout = 300               # budget (s) for the clean baseline / stats runs
 forced_fail_timeout = 120             # budget (s) for the forced-fail verification
 generation_timeout = 300              # max seconds without generation progress
