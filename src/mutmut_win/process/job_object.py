@@ -175,12 +175,17 @@ def assign_process_to_job(job_handle: int, pid: int) -> None:
     assigns it to the job, then closes the process handle (the job keeps
     its own reference).
 
-    Production callers prevent work during assignment. Direct subprocesses
-    start with ``CREATE_SUSPENDED`` and use this PID-based helper before they
-    resume. Worker-pool interpreters use ``assign_process_handle_to_job`` on
-    the handle returned by ``CreateProcess`` while their primary thread is
-    still suspended. Assignment failure is therefore handled before any
-    uncontained Python startup or task code can run.
+    Production never calls this PID-based helper: real children are placed
+    in their Job atomically through the ``PROC_THREAD_ATTRIBUTE_JOB_LIST``
+    startup attribute inside ``CreateProcessW``, so no uncontained process
+    ever exists.  The documented compatibility/integration cases that DO
+    assign by PID pass a REAL, still-suspended process (started with
+    ``CREATE_SUSPENDED`` and resumed only after a successful assignment);
+    Popen test doubles never pass a pid — a synthetic pid fed to
+    OpenProcess could attach an unrelated foreign process to the Job.
+    Worker-pool interpreters use ``assign_process_handle_to_job`` on the
+    handle returned by ``CreateProcess`` while their primary thread is
+    still suspended.
 
     Args:
         job_handle: Handle returned by ``create_kill_on_close_job()``.

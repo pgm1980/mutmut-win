@@ -1639,9 +1639,15 @@ def _pytest_base_cmd() -> list[str]:
 def _create_task_job(pid: int | None = None) -> int | None:
     """Create a per-task Windows Job (issue #82 / A2-EW-008).
 
-    Production creates the child atomically in this Job.  The optional *pid*
-    retains the old assign-before-resume path only for Popen test doubles;
-    real processes never cross that non-atomic boundary.
+    Production creates the child atomically inside this Job via the
+    ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` startup attribute, so membership and
+    process creation are one kernel operation and no PID-based assignment
+    happens at all.  The optional *pid* is only for a REAL, still-suspended
+    process that the documented compatibility/integration cases assign
+    before resuming (``tests/integration/test_kill_proc_tree.py``); Popen
+    test doubles always pass ``None`` — a synthetic pid must never reach
+    OpenProcess/AssignProcessToJobObject, where it could attach a foreign
+    process to the Job.
     """
     if sys.platform != "win32":
         return None
@@ -1681,9 +1687,18 @@ def _popen_contained(
     """Start one subprocess with a parent-owned containment boundary.
 
     Windows passes the Job through ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` so
-    membership and process creation are one kernel operation. Unit tests that
-    replace ``subprocess.Popen`` retain the old suspended handshake; no real
-    production child uses that compatibility branch.
+    membership and process creation are one kernel operation — that is the
+    only path real production children take (M-144).  The suspended
+    handshake branch below serves only Popen TEST DOUBLES left in place by
+    unit tests that replace ``subprocess.Popen``; a double's synthetic pid
+    is never assigned to the Job.  A ``subprocess.Popen`` replaced after
+    import is fail-closed refused instead: a replacing subclass before
+    anything starts, and a real instance returned by a function wrapper
+    immediately after the launch, before any Job creation — both raise
+    ``ProcessContainmentError``.  The wrapper kill only guarantees that no
+    user code ran if the replacement passed ``CREATE_SUSPENDED`` through
+    unchanged; otherwise ``_kill_proc_tree`` terminates the tree
+    best-effort.
     """
     if sys.platform != "win32":
         launch_cmd = cmd

@@ -300,9 +300,21 @@ def _run_type_check_process(
     The Windows Job Object handle is created as the first statement of the
     protected launch region, after every fallible setup step, so no setup
     failure can leak the kill-on-close handle (M-128).
+
+    Launch contract (M-144 / AR-05): on Windows with the import-time
+    ``subprocess.Popen`` intact, the checker is created atomically inside
+    its Job Object (``AtomicJobPopen``).  The non-atomic compatibility
+    branch serves only Popen test doubles; a ``subprocess.Popen`` replaced
+    after import is fail-closed refused — a replacing subclass before any
+    launch, a real instance returned by a function wrapper immediately
+    after the launch and before the PID-based assign/resume path — via
+    ``ProcessContainmentError``, with writer and Job handle cleaned up by
+    the existing except path.
     """
     from mutmut_win.process.worker import (
         _contained_creationflags,
+        _refuse_real_process_from_replaced_popen,
+        _refuse_replaced_popen_subclass,
         _resume_after_containment,
         configure_ephemeral_pytest_environment,
     )
@@ -363,7 +375,16 @@ def _run_type_check_process(
                     **popen_kwargs,
                 )
             else:
+                # M-144 (AR-05): this compatibility branch exists only for
+                # Popen test doubles.  A Popen replaced after import is
+                # refused BEFORE any launch (a subclass could start a real,
+                # uncontained process) and a real instance returned by a
+                # function wrapper is refused right after the launch and
+                # before the PID-based assign/resume path; the except path
+                # below closes writer and Job handle exactly once.
+                _refuse_replaced_popen_subclass(_REAL_POPEN_TYPE)
                 process = subprocess.Popen(type_check_command, **popen_kwargs)  # noqa: S603
+                _refuse_real_process_from_replaced_popen(process, _REAL_POPEN_TYPE)
             stdout_capture.close_writer()
             stderr_capture.close_writer()
         except BaseException as exc:

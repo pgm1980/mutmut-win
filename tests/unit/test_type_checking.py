@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -1165,6 +1166,68 @@ class TestRootIdentityBoundCleanup:
             _run_type_check_process(["mypy"], timeout=7)
 
         terminate.assert_called_once_with(process, None, root_create_time=1234.5)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
+class TestReplacedPopenBarrier:
+    """AR-05 / M-144 (COR-001, TQ-006): the R1-decided replaced-Popen
+    refusal barriers also guard the type-checker's non-atomic compatibility
+    branch (P08_ENTSCHEIDUNGEN T6).  A Popen replaced after import must
+    never reach the PID-based assign/resume path."""
+
+    def test_replaced_popen_subclass_is_refused_before_start(self) -> None:
+        """The subclass is rejected before its __init__ can start anything;
+        the already-created Job handle is closed exactly once."""
+
+        class NeverStartingPopen(subprocess.Popen):  # type: ignore[misc,unused-ignore]
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                pytest.fail("a replaced Popen subclass must be refused before __init__")
+
+        with (
+            patch("mutmut_win.type_checking.subprocess.Popen", NeverStartingPopen),
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=777),
+            patch("mutmut_win.type_checking._close_type_checker_job") as close_job,
+            pytest.raises(ProcessContainmentError, match="Popen subclass"),
+        ):
+            _run_type_check_process(["mypy"], timeout=1)
+
+        close_job.assert_called_once_with(777)
+
+    def test_real_instance_from_replaced_wrapper_is_refused_before_assignment(
+        self,
+    ) -> None:
+        """A function wrapper returning a real Popen instance is refused
+        before the PID-based job assignment and safely terminated; the
+        already-created Job handle is closed exactly once."""
+
+        class _RealPopen(subprocess.Popen):  # type: ignore[misc,unused-ignore]
+            pass
+
+        real_instance = MagicMock(spec=_RealPopen)
+        real_instance.pid = 99999
+        real_instance.wait = MagicMock(return_value=0)
+
+        def wrapper_popen(*_args: object, **_kwargs: object) -> object:
+            return real_instance
+
+        with (
+            patch("mutmut_win.type_checking.subprocess.Popen", wrapper_popen),
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=777),
+            patch("mutmut_win.type_checking._assign_type_checker_to_job") as assign,
+            patch("mutmut_win.type_checking._close_type_checker_job") as close_job,
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.worker._resume_after_containment") as resume,
+            # Safety net for the pre-fix state: the synthetic pid must never
+            # reach the real process table through the identity capture.
+            patch("psutil.Process", side_effect=psutil.NoSuchProcess(99999)),
+            pytest.raises(ProcessContainmentError, match="replaced after import"),
+        ):
+            _run_type_check_process(["mypy"], timeout=1)
+
+        assign.assert_not_called()
+        resume.assert_not_called()
+        close_job.assert_called_once_with(777)
+        kill_tree.assert_called_once_with(real_instance)
 
 
 class TestSetupFailureNeverLeaksJobHandle:
