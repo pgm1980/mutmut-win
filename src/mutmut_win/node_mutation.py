@@ -1,7 +1,9 @@
 """This module contains the mutations for individual nodes, e.g. replacing a != b with a == b."""
 
+import ast
 import math
 import re
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
 
@@ -32,21 +34,90 @@ TAGGED_OPERATORS_TYPE = Sequence[
 NON_ESCAPE_SEQUENCE = re.compile(r"((?<!\\)[^\\]+)")
 
 
+def _literal_value(token: str) -> str | bytes:
+    """Evaluate a complete string-literal token, suppressing escape warnings.
+
+    ``ast.literal_eval`` (and libcst's ``evaluated_value``) emit a
+    SyntaxWarning for invalid escape sequences such as ``'\\d'`` in a regex
+    or path literal. ``create_mutants_for_file`` records every warning with
+    ``record=True`` / ``simplefilter('always')`` and forwards it to the user,
+    so evaluating one warning per candidate would flood the orchestrator
+    channel (M-049). Only SyntaxWarning is suppressed — unexpected errors
+    propagate, keeping the evaluation fail-closed.
+
+    Args:
+        token: A complete string-literal token (prefix + quotes + body).
+
+    Returns:
+        The constant value of the token (``str`` or ``bytes``).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        # mypy: literal_eval is typed Any; a string-literal token always
+        # evaluates to str or bytes.
+        return cast("str | bytes", ast.literal_eval(token))
+
+
+def _int_token(value: int) -> str:
+    """Render a nonnegative integer as a libcst-safe literal token.
+
+    CPython refuses to convert integers with more than
+    ``sys.get_int_max_str_digits()`` decimal digits (default 4300) to a
+    string, so ``repr`` raises ``ValueError`` — which used to abort mutant
+    generation for the whole file (M-045 / issue #168). ``hex`` has no such
+    limit and produces a valid ``cst.Integer`` token, so oversized values
+    fall back to hexadecimal rendering. Only nonnegative values ever reach
+    this helper (the ``evaluated_value`` of a ``cst.Integer`` and ``abs()``
+    in ``_crcr_literal``), so the result is never the ``-0x…`` spelling that
+    ``cst.Integer`` would reject.
+
+    Args:
+        value: Nonnegative integer to render.
+
+    Returns:
+        ``repr(value)`` when within the digit limit, else ``hex(value)``.
+    """
+    try:
+        return repr(value)
+    except ValueError:
+        return hex(value)
+
+
 def operator_number(
     node: cst.BaseNumber,
 ) -> Iterable[cst.BaseNumber]:
-    """Mutate numeric literals by incrementing their value."""
-    if isinstance(node, (cst.Integer, cst.Float)):
+    """Mutate numeric literals by incrementing their value.
+
+    Integer increments whose decimal rendering would exceed CPython's
+    int→str digit limit render hexadecimally (see :func:`_int_token`) instead
+    of crashing the run; every literal within the limit stays byte-identical.
+    Float and imaginary increments that round back to the original value
+    (magnitudes from 2**53 upward) are not published — they would be
+    equivalent mutants.
+    """
+    if isinstance(node, cst.Integer):
+        yield node.with_changes(value=_int_token(node.evaluated_value + 1))
+    elif isinstance(node, cst.Float):
         new_value = node.evaluated_value + 1
         # 1e400 is a legal literal evaluating to inf, but repr(inf) is not a
         # valid float token — with_changes would raise CSTValidationError and
         # kill mutant generation for the whole file (issue #78 / A1-NM-007).
-        if isinstance(new_value, float) and not math.isfinite(new_value):
+        if not math.isfinite(new_value):
+            return
+        # Rounding: from magnitudes of 2**53 upward the nearest float to
+        # x + 1 is x itself — the candidate would differ textually
+        # ('1e20' -> '1e+20') yet be value-equal, i.e. an unkillable
+        # equivalent mutant (M-098).
+        if new_value == node.evaluated_value:
             return
         yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
         new_imag = node.evaluated_value + 1j
         if not (math.isfinite(new_imag.real) and math.isfinite(new_imag.imag)):
+            return
+        # Same rounding bound as the float branch (M-098): '1e20j' + 1j
+        # rounds back to 1e20j.
+        if new_imag == node.evaluated_value:
             return
         yield node.with_changes(value=repr(new_imag))
     else:
@@ -58,19 +129,30 @@ def operator_number(
 # ---------------------------------------------------------------------------
 
 
-def _crcr_literal(value: int | float) -> cst.BaseExpression:
+def _crcr_literal(value: int | float, original: cst.Integer | cst.Float) -> cst.BaseExpression:
     """Render a CRCR replacement value as a libcst literal.
 
     A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
-    has no negative-literal node.
+    has no negative-literal node. Integer magnitudes beyond CPython's int→str
+    digit limit render hexadecimally via :func:`_int_token` (M-045).
+
+    The replaced node's parentheses transfer to the OUTERMOST replacement
+    node (M-046): on the literal they would fake a bound like ``-(1)`` where
+    the source said ``(-1)``, and losing them entirely turns ``(2).bit_length()``
+    into the SyntaxError ``0.bit_length()``.
     """
-    magnitude = abs(value)
-    literal: cst.BaseExpression = (
-        cst.Integer(str(magnitude)) if isinstance(value, int) else cst.Float(repr(magnitude))
-    )
+    if isinstance(value, int):
+        literal: cst.Integer | cst.Float = cst.Integer(_int_token(abs(value)))
+    else:
+        literal = cst.Float(repr(abs(value)))
     if value < 0:
-        return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
-    return literal
+        return cst.UnaryOperation(
+            operator=cst.Minus(),
+            expression=literal,
+            lpar=original.lpar,
+            rpar=original.rpar,
+        )
+    return literal.with_changes(lpar=original.lpar, rpar=original.rpar)
 
 
 def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
@@ -84,6 +166,11 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
     ``-orig`` collapse to a single ``-1`` — which matters because there is no
     visitor-level dedup. Non-finite floats are left alone; ``Imaginary`` literals
     stay with ``operator_number``.
+
+    Parentheses: the replacement carries the original literal's own ``lpar``/
+    ``rpar`` (so ``(2).bit_length()`` stays valid), and a negative candidate at
+    a ``**`` base is parenthesised by the visitor (``(-1) ** x``, not the
+    rebinding ``-1 ** x``).
     """
     orig: int | float
     candidates: tuple[int | float, ...]
@@ -102,13 +189,19 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
         if value == orig or value in seen:
             continue
         seen.add(value)
-        yield _crcr_literal(value)
+        yield _crcr_literal(value, node)
 
 
 def operator_string(
     node: cst.BaseString,
 ) -> Iterable[cst.BaseString]:
     """Mutate string literals: prepend/append XX, lowercase, uppercase.
+
+    Case variants that only re-spell escape notation (hex digits of
+    ``\\x``/``\\u``/``\\U``, ``\\N{...}`` names) are value-equal to the
+    original and are not published — they would be unkillable equivalent
+    mutants (M-049). Raw strings and bytes ``\\N{...}`` genuinely change
+    their value and stay published.
 
     f-strings mutate their literal TEXT parts only (one mutant per part,
     XX-wrapped) — format specs and expressions live in
@@ -141,11 +234,21 @@ def operator_string(
             lambda x: NON_ESCAPE_SEQUENCE.sub(lambda match: match.group(1).upper(), x),
         ]
 
+        # Value-based equivalence filter (M-049): the case variants only
+        # re-spell hex-escape digits (\x, \u, \U) and \N{...} names, which
+        # are case-insensitive — such candidates are value-equal to the
+        # original and therefore unkillable equivalent mutants. The original
+        # value is computed once; \N{...} in bytes literals and raw strings
+        # genuinely change the value and stay published.
+        original_literal_value = _literal_value(old_value)
+
         for mut_func in supported_str_mutations:
             new_value = f"{prefix}{value[0]}{mut_func(value[1:-1])}{value[-1]}"
             if new_value == value:
                 continue
             if new_value == old_value:
+                continue
+            if _literal_value(new_value) == original_literal_value:
                 continue
             yield node.with_changes(value=new_value)
 
@@ -254,6 +357,9 @@ def operator_unsymmetrical_string_methods_swap(
 #: Expression types that can safely replace their enclosing node bare: they
 #: bind at least as tightly as a call and cannot carry hanging continuation
 #: lines unless already parenthesized (then the lpar check applies anyway).
+#: One exception is context-dependent and handled in the visitor (M-047): a
+#: bare DECIMAL integer is invalid directly before an attribute dot, so
+#: ``_parenthesize_for_context`` adds parens in exactly that position.
 _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.Name,
     cst.Integer,
@@ -273,6 +379,28 @@ _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.DictComp,
     cst.Tuple,
 )
+
+
+def _is_bare_decimal_integer(expression: cst.CSTNode) -> bool:
+    """True for an unparenthesised decimal ``cst.Integer``.
+
+    A bare decimal integer directly before an attribute dot is invalid —
+    ``0.bit_length()`` tokenises the dot as the start of a float and is a
+    SyntaxError (M-047 / issue #168). Hex/octal/binary integers keep their
+    prefix character before the dot and stay valid, as do floats and
+    imaginaries. Already-parenthesised integers are safe by construction.
+
+    Args:
+        expression: Candidate replacement node.
+
+    Returns:
+        True when the node is a decimal integer without its own parentheses.
+    """
+    return (
+        isinstance(expression, cst.Integer)
+        and not expression.lpar
+        and expression.value[:2].lower() not in {"0x", "0o", "0b"}
+    )
 
 
 def _safe_unwrap(expression: cst.BaseExpression) -> cst.BaseExpression:

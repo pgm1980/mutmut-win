@@ -1,5 +1,6 @@
 """This module contains code for managing mutant creation for whole files."""
 
+import ast
 import io
 import re
 import tokenize
@@ -20,7 +21,11 @@ from libcst.metadata import (
 )
 
 from mutmut_win.constants import Profile
-from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
+from mutmut_win.node_mutation import (
+    OPERATORS_TYPE,
+    _is_bare_decimal_integer,
+    operators_for_profile,
+)
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
 
 if TYPE_CHECKING:
@@ -190,7 +195,16 @@ class MutationVisitor(cst.CSTVisitor):
     Ignore nodes at lines `ignore_lines` and several other cases
     (e.g. nodes within type annotations).
 
-    The created mutations will be accessible at `self.mutations`."""
+    The created mutations will be accessible at `self.mutations`.
+
+    Two candidate-local guards run before a mutation is recorded: a
+    context-sensitive parenthesisation that fixes bare unary replacements at
+    a ``**`` base and bare decimal integers at an attribute base (M-046,
+    M-047), and a pattern-local syntax gate that discards candidates which
+    cannot legally appear inside a ``case`` pattern, e.g. ``case +1``
+    (M-048). Both keep the file-wide compile net in create_mutants_for_file
+    as the last line of defence.
+    """
 
     METADATA_DEPENDENCIES = (
         PositionProvider,
@@ -225,6 +239,11 @@ class MutationVisitor(cst.CSTVisitor):
         # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
         # whose first argument is a pure type annotation (see Bug #4).
         self._skip_subtree_ids: set[int] = set()
+        # id() -> enclosing case-pattern root for every node inside a match
+        # pattern (M-048 pattern-local syntax gate). Filled in on_visit when
+        # a MatchCase is entered; node identity stays valid for the whole
+        # visitor run.
+        self._pattern_root_by_id: dict[int, cst.MatchPattern] = {}
 
     def on_visit(self, node: cst.CSTNode) -> bool:
         if id(node) in self._skip_subtree_ids:
@@ -256,6 +275,13 @@ class MutationVisitor(cst.CSTVisitor):
         # are observable-equivalent — see Bug #4.
         if isinstance(node, cst.Call) and self._is_typing_cast_call(node) and node.args:
             node.args[0].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+
+        # Pattern-local syntax gate (M-048): record for every node inside a
+        # case PATTERN which pattern it belongs to, so _create_mutations can
+        # probe candidates against the pattern sub-grammar. Guards are plain
+        # expressions and deliberately not part of the mapping.
+        if isinstance(node, cst.MatchCase):
+            node.pattern.visit(_PatternRootCollector(node.pattern, self._pattern_root_by_id))
 
         if self._should_mutate_node(node):
             self._create_mutations(node)
@@ -324,9 +350,26 @@ class MutationVisitor(cst.CSTVisitor):
             # mypy: the is_cast guard already proves node is a cst.Call
             assert isinstance(node, cst.Call)  # noqa: S101 - narrow-only assert
             original_first_arg = node.args[0] if node.args else None
+        pattern_root = self._pattern_root_by_id.get(id(node))
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
+                    # Context-sensitive parenthesisation (Q-55): a bare unary
+                    # replacement at a ** base (M-046) and a bare decimal
+                    # integer at an attribute base (M-047) must be
+                    # parenthesised BEFORE the candidate is recorded, so the
+                    # gate below probes the repaired node.
+                    mutated_node = _parenthesize_for_context(
+                        self.get_metadata(ParentNodeProvider, node, None), node, mutated_node
+                    )
+                    # Pattern-local syntax gate (M-048): match patterns are a
+                    # strict sub-grammar; discard candidates that cannot
+                    # appear in a case pattern instead of losing the whole
+                    # file in the file-wide safety net.
+                    if pattern_root is not None and not _pattern_candidate_parses(
+                        pattern_root, node, mutated_node
+                    ):
+                        continue
                     # Bug #4: drop any mutation of a typing.cast(...) call that would
                     # change the first argument — it has no runtime effect and the
                     # resulting mutants are unkillable equivalents.
@@ -484,6 +527,115 @@ class _SubtreeIdCollector(cst.CSTVisitor):
     def on_visit(self, node: cst.CSTNode) -> bool:
         self._target.add(id(node))
         return True
+
+
+def _parenthesize_for_context(
+    parent: cst.CSTNode | None,
+    node: cst.CSTNode,
+    mutated_node: cst.CSTNode,
+) -> cst.CSTNode:
+    """Parenthesise a replacement only where the parent context demands it.
+
+    Two contexts rebind or invalidate a bare replacement (Q-55, issue #168):
+
+    - the base of ``**``: a bare ``UnaryOperation`` rebinds — ``-1 ** x``
+      parses as ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046);
+    - the base of an attribute access: a bare decimal integer swallows the
+      dot into a float token — ``0.bit_length()`` is a SyntaxError (M-047).
+
+    Everything else stays untouched: mutant texts remain diff-minimal, and
+    mapping keys under profile ALL keep their valid bare form.
+
+    Args:
+        parent: The replaced node's parent from ``ParentNodeProvider``.
+        node: The original node being replaced.
+        mutated_node: The operator's candidate replacement.
+
+    Returns:
+        The candidate, parenthesised where the context demands it.
+    """
+    if (
+        isinstance(parent, cst.BinaryOperation)
+        and isinstance(parent.operator, cst.Power)
+        and parent.left is node
+    ):
+        if isinstance(mutated_node, cst.UnaryOperation) and not mutated_node.lpar:
+            return mutated_node.with_changes(
+                lpar=[cst.LeftParen()],
+                rpar=[cst.RightParen()],
+            )
+        return mutated_node
+    if (
+        isinstance(parent, cst.Attribute)
+        and parent.value is node
+        and _is_bare_decimal_integer(mutated_node)
+    ):
+        return mutated_node.with_changes(
+            lpar=[cst.LeftParen()],
+            rpar=[cst.RightParen()],
+        )
+    return mutated_node
+
+
+class _PatternRootCollector(cst.CSTVisitor):
+    """Map every node id inside a match pattern to that pattern's root node.
+
+    Feeds the pattern-local syntax gate (M-048): for any node inside a
+    ``case`` pattern, the gate needs the enclosing pattern to render the
+    candidate in place and probe it. ``MatchCase.guard`` is deliberately NOT
+    part of the subtree — guards are plain expressions that every operator
+    may mutate freely.
+    """
+
+    def __init__(self, root: cst.MatchPattern, mapping: dict[int, cst.MatchPattern]) -> None:
+        super().__init__()
+        self._root = root
+        self._mapping = mapping
+
+    def on_visit(self, node: cst.CSTNode) -> bool:
+        self._mapping[id(node)] = self._root
+        return True
+
+
+def _pattern_candidate_parses(
+    pattern_root: cst.MatchPattern,
+    node: cst.CSTNode,
+    mutated_node: cst.CSTNode,
+) -> bool:
+    """Probe a candidate replacement inside a match pattern for valid syntax.
+
+    Match patterns are a strict expression sub-grammar: ``case +1`` and
+    ``case --1`` are SyntaxErrors even though ``+1``/``--1`` are fine as
+    expressions, and a single invalid mutant made the file-wide safety net
+    drop every mutant of the file with a loud SyntaxWarning (M-048 /
+    issue #168). The candidate is rendered into its enclosing pattern and
+    parsed inside a synthetic ``match`` statement.
+
+    Only ``SyntaxError`` rejects a candidate; any other error propagates
+    (fail-closed). SyntaxWarnings are suppressed locally because
+    ``create_mutants_for_file`` records warnings with ``record=True`` /
+    ``simplefilter('always')`` and forwards them to the user — string
+    patterns with invalid escapes would otherwise leak one warning per
+    candidate into the orchestrator channel.
+
+    Args:
+        pattern_root: The enclosing ``case`` pattern of ``node``.
+        node: The original node being replaced.
+        mutated_node: The operator's candidate replacement.
+
+    Returns:
+        True when the probed pattern parses, False on ``SyntaxError``.
+    """
+    candidate = pattern_root.deep_replace(node, mutated_node)
+    rendered = cst.Module(body=[]).code_for_node(candidate)
+    probe = f"match _:\n    case {rendered}:\n        pass\n"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        try:
+            ast.parse(probe)
+        except SyntaxError:
+            return False
+    return True
 
 
 MODULE_STATEMENT = cst.SimpleStatementLine | cst.BaseCompoundStatement
