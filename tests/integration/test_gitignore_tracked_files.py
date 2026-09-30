@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from mutmut_win import gitignore_boundary
 from mutmut_win.config import MutmutConfig
 from mutmut_win.file_setup import copy_src_dir, walk_source_files
 from mutmut_win.gitignore_boundary import GitignoreBoundary
@@ -295,3 +296,84 @@ class TestTrackedGitlinkDirectory:
         cache.mkdir()
         (cache / "dropped.py").write_text("x = 1\n", encoding="utf-8")
         assert boundary.excludes_directory("cache") is True
+
+
+class TestWorktreeTrackedCacheInvalidation:
+    """AR-04 (COR-004/SEC-002): .git files must invalidate the tracked cache.
+
+    A linked worktree carries a ``.git`` FILE; without an index path the
+    cache key used to collapse to ``(root, 0, 0)`` and never changed again,
+    so every later boundary in the same process kept the FIRST tracked set.
+    """
+
+    def _make_worktree(self, tmp_path: Path) -> Path:
+        main = tmp_path / "main"
+        main.mkdir()
+        _init_repo(main)
+        (main / ".gitignore").write_text("hidden.py\n", encoding="utf-8")
+        _git(main, "add", ".gitignore")
+        _git(main, "commit", "-q", "-m", "init")
+        _git(main, "worktree", "add", "--quiet", str(tmp_path / "wt"))
+        worktree = tmp_path / "wt"
+        (worktree / "hidden.py").write_text("SECRET = 1\n", encoding="utf-8")
+        return worktree
+
+    @staticmethod
+    def _counting_git(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        """Wrap the boundary's git invocation with a call counter."""
+        real_run = gitignore_boundary.subprocess.run
+        calls = [0]
+
+        def counting_run(*args: object, **kwargs: object) -> object:
+            calls[0] += 1
+            return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(gitignore_boundary.subprocess, "run", counting_run)
+        return calls
+
+    def test_worktree_index_change_invalidates_tracked_cache(self, tmp_path: Path) -> None:
+        """The acceptance probe: ``git add -f`` between two loads in one
+        process must become visible without any private cache reset."""
+        worktree = self._make_worktree(tmp_path)
+        before = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        _git(worktree, "add", "-f", "hidden.py")
+        after = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        assert before is True
+        assert after is False
+
+    def test_unchanged_worktree_index_reuses_the_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        worktree = self._make_worktree(tmp_path)
+        calls = self._counting_git(monkeypatch)
+        first = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        second = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        assert first is True
+        assert second is True
+        assert calls[0] == 1
+
+    def test_worktree_index_replacement_invalidates_the_cache(self, tmp_path: Path) -> None:
+        """Taking the forced add back out rewrites the index; the next load
+        must observe the removal."""
+        worktree = self._make_worktree(tmp_path)
+        _git(worktree, "add", "-f", "hidden.py")
+        tracked = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        _git(worktree, "rm", "--quiet", "--cached", "hidden.py")
+        reverted = GitignoreBoundary.load(worktree).excludes_file("hidden.py")
+        assert tracked is False
+        assert reverted is True
+
+    def test_unresolvable_gitdir_marker_does_not_reuse_any_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a trustworthy index identity there is no cache reuse:
+        every load re-observes git and stays fail-open on failure."""
+        (tmp_path / ".gitignore").write_text("*_gen.py\n", encoding="utf-8")
+        (tmp_path / ".git").write_text("gitdir: ../missing-gitdir\n", encoding="utf-8")
+        (tmp_path / "x_gen.py").write_text("x = 1\n", encoding="utf-8")
+        calls = self._counting_git(monkeypatch)
+        first = GitignoreBoundary.load(tmp_path)
+        second = GitignoreBoundary.load(tmp_path)
+        assert first.excludes_file("x_gen.py") is False
+        assert second.excludes_file("x_gen.py") is False
+        assert calls[0] == 2

@@ -49,12 +49,10 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from pathspec import GitIgnoreSpec
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +350,35 @@ def _parse_stage_record(record: str) -> tuple[str | None, str]:
     return match.group("mode"), match.group("path")
 
 
+def _resolve_gitdir_index(marker: Path) -> Path | None:
+    """Resolve the index path behind a ``.git`` FILE (AR-04 / COR-004).
+
+    Linked worktrees and submodules carry a ``.git`` file whose single
+    ``gitdir: <path>`` line points at their private git directory; the
+    per-worktree index lives directly in that git directory.  Relative
+    pointers resolve against the directory holding the ``.git`` file.
+    Returns ``None`` whenever the pointer cannot be resolved reliably —
+    callers must then forgo cache reuse instead of pinning a timeless key.
+    """
+    try:
+        text = marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):  # fmt: skip
+        return None
+    prefix = "gitdir:"
+    if not text.startswith(prefix):
+        return None
+    gitdir = text[len(prefix) :].strip()
+    if not gitdir:
+        return None
+    pointer = Path(gitdir)
+    if not pointer.is_absolute():
+        pointer = marker.parent / pointer
+    try:
+        return pointer.resolve() / "index"
+    except OSError:  # pragma: no cover - resolve() on Windows defers OS errors
+        return None
+
+
 def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     """Load the tracked-file set from the Git index (M-001).
 
@@ -369,18 +396,25 @@ def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     if marker is None:
         return _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=False)
 
-    # Cache key from the index file's identity when available.
-    cache_key: tuple[str, int, int] = (str(project_root), 0, 0)
-    index_path = marker.parent / ".git" / "index" if marker.is_dir() else None
+    # Cache key from the index file's identity when available.  A ``.git``
+    # FILE (linked worktree / submodule) contributes no index path by
+    # itself: resolve the actual worktree index from its ``gitdir:`` pointer
+    # so cache reuse is bound to THAT index's identity (AR-04 / COR-004).
+    # Without a trustworthy index identity there is no cache reuse at all —
+    # a timeless ``(root, 0, 0)`` key would freeze the first observation for
+    # the rest of the process (SEC-002).
+    index_path = marker / "index" if marker.is_dir() else _resolve_gitdir_index(marker)
+    cache_key: tuple[str, int, int] | None = None
     if index_path is not None and index_path.exists():
         try:
             stat = index_path.stat()
             cache_key = (str(project_root), stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            pass
-    cached = _TRACKED_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+        except OSError:  # pragma: no cover - stat raced with index removal
+            cache_key = None
+    if cache_key is not None:
+        cached = _TRACKED_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
     env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
@@ -460,8 +494,15 @@ def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     return index
 
 
-def _cache_tracked(key: tuple[str, int, int], index: _TrackedIndex) -> None:
-    """Store the index in the process-local cache (bounded)."""
+def _cache_tracked(key: tuple[str, int, int] | None, index: _TrackedIndex) -> None:
+    """Store the index in the process-local cache (bounded).
+
+    ``key is None`` means no trustworthy index identity exists (e.g. an
+    unresolvable ``.git`` file pointer); caching then would pin this
+    observation forever, so the call is a no-op (AR-04).
+    """
+    if key is None:
+        return
     if len(_TRACKED_CACHE) >= _TRACKED_CACHE_MAX:
         _TRACKED_CACHE.clear()
     _TRACKED_CACHE[key] = index
