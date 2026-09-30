@@ -1,6 +1,6 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-09-28.
+> Last refresh: 2026-09-29.
 
 ## Sanierung v2.21.4 → **Ziel: v3.0.0** (Sprints 43–47, R0–R4)
 
@@ -20,11 +20,25 @@
   Sprint-43-Backlog; 51 AP-Issues #141–#191 + 5 Milestones; Semgrep-Gate pass
   (ein adjudiziertes Finding für den Q-01-Harness-Import, Commit e1f1217);
   pip-audit clean.
-- **Sprint 44 (R1) läuft:** AP-00b bis AP-08b — alle 9 P1-Gruppen + 6 begleitende
+- **Sprint 44 (R1) abgeschlossen:** AP-00b bis AP-08b — alle 9 P1-Gruppen + 6 begleitende
   P2/P3-Gruppen umgesetzt (M-140, M-142, M-145, M-008, M-143, M-034, M-002, M-031,
   M-003, M-001, M-006, M-007, M-005, M-114, M-009, M-144, M-004, M-139).
-  P-17 ist fuer beide fragilen Tests erloschen. Semgrep-Gate PASS (25 Findings,
-  0 unerwartet), pip-audit clean. Finale Vollsuite laeuft.
+  P-17 ist fuer beide fragilen Tests erloschen. Phasengate gruen: Vollsuite
+  2731 passed / 43 skipped / 1 bekannt flaky (cicd-export, einzeln gruen),
+  Semgrep-Gate PASS, pip-audit clean. P-08 (R1): M-008=A, M-003=A, M-144 S2=A
+  (Entscheidungsdoku `P08_ENTSCHEIDUNGEN_M-008_M-003_M-144.md` im Review-Workspace).
+- **Sprint 45 (R2) abgeschlossen** auf `fix/v2.21.5-remediation-r1`: Alle 25
+  R2-Arbeitspakete (AP-09 bis AP-32 inkl. AP-29b) gemergt; 86 Gruppen
+  bearbeitet — 76 nicht-blockierte vollständig umgesetzt, 10 P-08-Gruppen
+  warten auf die GPT-6-Astra-Entscheidungen (Vorlage + Prompt im
+  Review-Workspace). Produktionsweise: R2-Mitte parallele Subagenten
+  (Worktree-Isolation), nach Session-Abbruecken Uebernahme durch die
+  orchestrierende Instanz (AP-12, AP-22, AP-26, AP-29, AP-29b selbst
+  implementiert). Bekannte offene Punkte: Issue #192 (P1, Gate-Infrastruktur
+  fuer gezielte Mutation-Gates — vier Belege), Version-Governance-Tests
+  erwarten den Release-Bump auf 3.0.0, per-AP-Gate-Luecken bei AP-14/AP-20
+  (M-035)/AP-23/AP-17 dokumentiert (Abdeckung im Phasengate bzw. nach
+  #192-Fix).
 - **Parallelisierung (Auftraggeber-Freigabe):** Ab R2 duerfen Subagenten parallel
   an mehreren Arbeitspaketen arbeiten (Worktree-Isolation, P-12). Der Nutzer hat
   ein hohes Tokenlimit und kann bei Ueberschreitung ohne Kontextverlust wechseln.
