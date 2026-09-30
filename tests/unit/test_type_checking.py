@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from mutmut_win.exceptions import TypeCheckCommandError
 from mutmut_win.type_checking import (
@@ -412,6 +413,161 @@ class TestMypyJsonlBlankLineTolerance:
             pytest.raises(TypeCheckCommandError, match="did not return JSON"),
         ):
             run_type_checker(["mypy", "--output=json", "."])
+
+
+class TestStructuralReportValidation:
+    """M-127: syntactically valid JSON with a foreign structure used to
+    escape the documented error taxonomy as raw KeyError / TypeError /
+    AttributeError (cli.py only catches MutmutWinError)."""
+
+    @pytest.mark.parametrize(
+        ("command", "stdout"),
+        [
+            (["pyright", "--outputjson", "."], "[]"),
+            (["pyright", "--outputjson", "."], "null"),
+            (["pyright", "--outputjson", "."], "5"),
+            (["pyright", "--outputjson", "."], json.dumps({"generalDiagnostics": [5]})),
+            (
+                ["pyright", "--outputjson", "."],
+                json.dumps({"generalDiagnostics": [{"severity": "error"}]}),
+            ),
+            (["pyrefly", "check", "."], "[]"),
+            (["pyrefly", "check", "."], json.dumps({"errors": [5]})),
+            (["pyrefly", "check", "."], json.dumps({"errors": [{"path": "a.py"}]})),
+            (["mypy", "--output=json", "."], "[1]"),
+            (["mypy", "--output=json", "."], json.dumps({"file": "a.py"})),
+            (["ty", "check", "."], json.dumps({"a": 1})),
+            (["ty", "check", "."], json.dumps([5])),
+            (["ty", "check", "."], json.dumps([{"severity": "major"}])),
+            (["mychecker", "."], "[]"),
+        ],
+    )
+    def test_structurally_invalid_reports_raise_domain_error(
+        self, command: list[str], stdout: str
+    ) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout),
+            ),
+            pytest.raises(TypeCheckCommandError, match="structurally unexpected"),
+        ):
+            run_type_checker(command)
+
+    def test_pyright_warning_without_range_is_ignored_not_rejected(self) -> None:
+        # Validation must not be stricter than the historical accesses:
+        # filtered-out severities never have their fields read.
+        stdout = json.dumps({"generalDiagnostics": [{"severity": "warning", "message": "w"}]})
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(stdout),
+        ):
+            errors = run_type_checker(["pyright", "--outputjson", "."])
+        assert errors == []
+
+    def test_mypy_note_without_line_is_ignored_not_rejected(self) -> None:
+        stdout = json.dumps({"file": "a.py", "message": "n", "severity": "note"}) + "\n"
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(stdout, returncode=1),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+        assert errors == []
+
+    def test_ty_minor_without_location_is_ignored_not_rejected(self) -> None:
+        stdout = json.dumps([{"severity": "minor"}])
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(stdout),
+        ):
+            errors = run_type_checker(["ty", "check", "."])
+        assert errors == []
+
+    def test_error_message_names_checker_and_chains_the_cause(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("5"),
+            ),
+            pytest.raises(TypeCheckCommandError, match="pyright") as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert "structurally unexpected" in message
+        assert "5" in message  # the bounded stdout excerpt is part of the message
+        assert isinstance(exc_info.value.__cause__, ValidationError)
+
+    def test_error_message_names_the_pyright_fallback_for_unknown_checkers(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("5"),
+            ),
+            pytest.raises(TypeCheckCommandError, match="unknown checker"),
+        ):
+            run_type_checker(["mychecker", "."])
+
+    def test_error_message_excerpt_is_bounded(self) -> None:
+        # stdout may be up to 16 MiB — the schema-failure message must not
+        # embed it whole (unlike the decode-failure message, unchanged).
+        stdout = json.dumps("x" * 5000)
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert len(message) < 1200
+        assert message.count("x") < 1000
+
+
+#: Recursive arbitrary JSON values: the never-a-foreign-exception property
+#: must hold for ANY syntactically valid report, not just hand-picked ones.
+_ANY_JSON_VALUE = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text(max_size=5),
+    lambda children: (
+        st.lists(children, max_size=3) | st.dictionaries(st.text(max_size=5), children, max_size=3)
+    ),
+    max_leaves=10,
+)
+
+_PROPERTY_COMMANDS = [
+    ["pyright", "--outputjson", "."],
+    ["pyrefly", "check", "."],
+    ["mypy", "--output=json", "."],
+    ["ty", "check", "."],
+    ["mychecker", "."],
+]
+
+
+class TestNoForeignExceptionProperty:
+    """Q-68: decode + validate + parse must yield list[TypeCheckingError] or
+    TypeCheckCommandError for any stdout — never a foreign exception."""
+
+    @given(value=_ANY_JSON_VALUE, command=st.sampled_from(_PROPERTY_COMMANDS))
+    def test_any_json_report_either_parses_or_raises_the_domain_error(
+        self, value: Any, command: list[str]
+    ) -> None:
+        # json.dumps is always single-line (newlines are escaped), so the
+        # mypy JSONL branch decodes exactly one diagnostic line.
+        stdout = json.dumps(value)
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(stdout),
+        ):
+            try:
+                errors = run_type_checker(command)
+            except TypeCheckCommandError:
+                return
+        assert isinstance(errors, list)
+        assert all(isinstance(error, TypeCheckingError) for error in errors)
 
 
 class TestCheckerDetection:
