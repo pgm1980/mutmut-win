@@ -612,11 +612,28 @@ _RE_PATTERN_FUNCTIONS: set[str] = {
 }
 
 
+def _regex_pattern_arg_index(args: Sequence[cst.Arg]) -> int | None:
+    """Return the index of the regex pattern argument, or ``None`` (M-099).
+
+    ``args[0]`` counts when it is a plain positional (no keyword, no star);
+    otherwise the ``pattern=`` keyword argument (also without star) is used.
+    Starred or otherwise unbindable calls (``*parts``, ``**kw``) yield ``None``
+    so they never receive regex mutations.
+    """
+    if args and args[0].keyword is None and args[0].star == "":
+        return 0
+    for index, arg in enumerate(args):
+        if arg.keyword is not None and arg.keyword.value == "pattern" and arg.star == "":
+            return index
+    return None
+
+
 def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     """Mutate regex patterns in ``re.*()`` calls.
 
     Recognises calls like ``re.compile(r"\\d+")``, ``re.match(r"^foo", text)``,
-    etc. and mutates the pattern string (first argument).
+    etc. and mutates the pattern string — the first positional argument or,
+    for reordered keyword calls, the ``pattern=`` argument (M-099).
     """
     from mutmut_win.regex_mutation import mutate_regex_pattern
 
@@ -628,11 +645,14 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     if node.func.attr.value not in _RE_PATTERN_FUNCTIONS:
         return
 
-    # The first positional argument should be a string literal (the pattern).
+    # The pattern argument is positional or bound via ``pattern=``.
     if not node.args:
         return
-    first_arg = node.args[0]
-    if not isinstance(first_arg.value, cst.SimpleString):
+    pattern_index = _regex_pattern_arg_index(node.args)
+    if pattern_index is None:
+        return
+    pattern_arg = node.args[pattern_index]
+    if not isinstance(pattern_arg.value, cst.SimpleString):
         return
 
     # Mutate the runtime pattern, not the Python source-token payload.  In a
@@ -640,7 +660,7 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     # regex engine receives one; mutating the token therefore missed shorthand
     # operators and diverged from the equivalent raw spelling.  Bytes patterns
     # remain outside this string-only engine.
-    pattern = first_arg.value.evaluated_value
+    pattern = pattern_arg.value.evaluated_value
     if not isinstance(pattern, str):
         return
 
@@ -663,9 +683,15 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
         if serialized.evaluated_value != mutated_pattern:
             continue
 
-        new_string = first_arg.value.with_changes(value=serialized.value)
-        new_arg = first_arg.with_changes(value=new_string)
-        yield node.with_changes(args=[new_arg, *node.args[1:]])
+        new_string = pattern_arg.value.with_changes(value=serialized.value)
+        new_arg = pattern_arg.with_changes(value=new_string)
+        yield node.with_changes(
+            args=[
+                *node.args[:pattern_index],
+                new_arg,
+                *node.args[pattern_index + 1 :],
+            ]
+        )
 
 
 # ---------------------------------------------------------------------------
