@@ -793,13 +793,22 @@ class DatabaseRunLocks:
         for path in database_lock_paths_for_db(self.db_path):
             if path in self._locks:
                 continue
-            lock = WorkspaceRunLock(path)
+            lock: WorkspaceRunLock | None = None
             try:
+                lock = WorkspaceRunLock(path)
                 lock.acquire()
+                self._locks[path] = lock
             except BaseException:
-                self.release()
+                # Roll back completely, even under interruption: an acquired
+                # but unregistered lock has no other owner and is released
+                # here (try/finally so an interrupt cannot skip the rest of
+                # the rollback), then every registered partial lock follows.
+                try:
+                    if lock is not None and lock.acquired and path not in self._locks:
+                        lock.release()
+                finally:
+                    self.release()
                 raise
-            self._locks[path] = lock
 
     def acquire(self) -> Self:
         if not self.acquired:
@@ -813,9 +822,17 @@ class DatabaseRunLocks:
         self._acquire_current_paths()
 
     def release(self) -> None:
-        for lock in reversed(tuple(self._locks.values())):
-            lock.release()
-        self._locks.clear()
+        """Release every partial lock, completing even under interruption.
+
+        Callbacks run in LIFO order (identity lock before path lock, the map
+        cleared last) and every stage runs even when a previous one raised;
+        the propagating exception carries the others as chained context
+        (M-093).
+        """
+        with contextlib.ExitStack() as stack:
+            stack.callback(self._locks.clear)
+            for lock in tuple(self._locks.values()):
+                stack.callback(lock.release)
 
     def __enter__(self) -> Self:
         return self.acquire()
