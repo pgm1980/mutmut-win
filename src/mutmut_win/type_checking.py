@@ -260,7 +260,12 @@ def _redirect_checker_caches(environment: dict[str, str], runtime_dir: Path) -> 
 def _run_type_check_process(
     type_check_command: list[str], *, timeout: float
 ) -> subprocess.CompletedProcess[str]:
-    """Run a checker with bounded process-tree cleanup and bounded output."""
+    """Run a checker with bounded process-tree cleanup and bounded output.
+
+    The Windows Job Object handle is created as the first statement of the
+    protected launch region, after every fallible setup step, so no setup
+    failure can leak the kill-on-close handle (M-128).
+    """
     from mutmut_win.process.worker import (
         _contained_creationflags,
         _resume_after_containment,
@@ -275,7 +280,10 @@ def _run_type_check_process(
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stdout_capture,
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stderr_capture,
     ):
-        job_handle = _create_type_checker_job()
+        # M-128: every fallible setup step (environment sanitize, ephemeral
+        # pytest directories with exist_ok=False mkdirs, cache redirect,
+        # creationflags) runs BEFORE any Job Object handle exists, so a
+        # setup failure can no longer leak a kill-on-close handle.
         checker_environment = _type_checker_environment()
         configure_ephemeral_pytest_environment(checker_environment, Path(runtime_name))
         _redirect_checker_caches(checker_environment, Path(runtime_name))
@@ -296,7 +304,13 @@ def _run_type_check_process(
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         process: subprocess.Popen[bytes]
+        job_handle: int | None = None
         try:
+            # First statement inside the protected region (M-128): the Job
+            # Object must exist before the suspended launch (atomic-launch
+            # contract), and every later failure is covered by the cleanup
+            # below.
+            job_handle = _create_type_checker_job()
             # S603: type_check_command is a trusted list supplied by the mutmut
             # framework, not untrusted shell input.  PIPE is deliberately not
             # used: descendants retaining inherited pipe handles made the old

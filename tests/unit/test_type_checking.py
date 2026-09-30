@@ -12,7 +12,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from mutmut_win.exceptions import TypeCheckCommandError
+from mutmut_win.exceptions import ProcessContainmentError, TypeCheckCommandError
 from mutmut_win.type_checking import (
     TypeCheckingError,
     _redirect_checker_caches,
@@ -833,6 +833,99 @@ class TestBoundedProcessRunner:
         captured_member.kill.assert_called_once_with()
         process.kill.assert_called_once_with()
         assert process.wait.call_args_list[-1].kwargs["timeout"] > 0
+
+
+class TestSetupFailureNeverLeaksJobHandle:
+    """M-128: the unguarded window between Job Object creation and the
+    protected launch could raise (ephemeral mkdir, environment sanitize,
+    creationflags) and leak the kill-on-close handle until process exit."""
+
+    def _instrumented_handles(self, monkeypatch: pytest.MonkeyPatch) -> tuple[list[int], list[int]]:
+        created: list[int] = []
+        closed: list[int] = []
+        monkeypatch.setattr(
+            "mutmut_win.type_checking._create_type_checker_job",
+            lambda: created.append(4242) or 4242,
+        )
+        monkeypatch.setattr("mutmut_win.type_checking._close_type_checker_job", closed.append)
+        return created, closed
+
+    def test_ephemeral_environment_failure_never_leaks_the_job_handle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created, closed = self._instrumented_handles(monkeypatch)
+
+        def boom(environment: dict[str, str], runtime_dir: Path) -> None:  # noqa: ARG001
+            raise OSError("mkdir failed")
+
+        # Resolved at call time through the local worker import.
+        monkeypatch.setattr(
+            "mutmut_win.process.worker.configure_ephemeral_pytest_environment", boom
+        )
+
+        with pytest.raises(OSError, match="mkdir failed"):
+            _run_type_check_process(["mypy", "--output=json", "."], timeout=1)
+
+        assert set(created) <= set(closed)
+
+    def test_environment_setup_failure_never_leaks_the_job_handle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created, closed = self._instrumented_handles(monkeypatch)
+
+        def boom() -> dict[str, str]:
+            raise RuntimeError("environment exploded")
+
+        monkeypatch.setattr("mutmut_win.type_checking._type_checker_environment", boom)
+
+        with pytest.raises(RuntimeError, match="environment exploded"):
+            _run_type_check_process(["mypy", "--output=json", "."], timeout=1)
+
+        assert set(created) <= set(closed)
+
+    def test_creationflags_setup_failure_never_leaks_the_job_handle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created, closed = self._instrumented_handles(monkeypatch)
+
+        def boom(base: int) -> int:  # noqa: ARG001
+            raise RuntimeError("creationflags exploded")
+
+        monkeypatch.setattr("mutmut_win.process.worker._contained_creationflags", boom)
+
+        with pytest.raises(RuntimeError, match="creationflags exploded"):
+            _run_type_check_process(["mypy", "--output=json", "."], timeout=1)
+
+        assert set(created) <= set(closed)
+
+    def test_atomic_launch_failure_closes_the_handle_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created, closed = self._instrumented_handles(monkeypatch)
+        failing_launch = MagicMock(side_effect=OSError("launch failed"))
+        monkeypatch.setattr("mutmut_win.process.atomic_spawn.AtomicJobPopen", failing_launch)
+
+        with pytest.raises(ProcessContainmentError, match="atomically"):
+            _run_type_check_process(["mypy", "--output=json", "."], timeout=1)
+
+        assert created == [4242]
+        assert closed == [4242]
+
+    def test_non_atomic_launch_failure_closes_the_handle_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created, closed = self._instrumented_handles(monkeypatch)
+        failing_launch = MagicMock(side_effect=OSError("launch failed"))
+
+        with (
+            patch("mutmut_win.type_checking.sys.platform", "linux"),
+            patch("mutmut_win.type_checking.subprocess.Popen", failing_launch),
+            pytest.raises(OSError, match="launch failed"),
+        ):
+            _run_type_check_process(["mypy", "--output=json", "."], timeout=1)
+
+        assert created == [4242]
+        assert closed == [4242]
 
 
 class TestPyrightSeverityFilter:
