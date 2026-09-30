@@ -680,6 +680,21 @@ def run(
             _emit_json_error(json_stdout, message, 2)
             sys.exit(2)
 
+        # M-073 / issue #160: a dry-run preview executes no tests, so its
+        # result can never carry a complete execution basis — the gate would
+        # fail AFTER the preview with the misleading runtime diagnosis
+        # "Execution basis incomplete" (exit 1). Reject the incompatible
+        # request upfront as the same class of usage conflict as the subset
+        # selection above, before any generation or --force deletion runs.
+        if min_score is not None and dry_run:
+            message = (
+                "--min-score cannot be combined with --dry-run: "
+                "a preview executes no tests and cannot authorize a score"
+            )
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 2)
+            sys.exit(2)
+
         # --- Apply CLI overrides to config ---
         overrides: dict[str, object] = {}
         if max_children is not None:

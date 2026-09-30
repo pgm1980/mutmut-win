@@ -186,7 +186,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
 | `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) - committed **and** uncommitted tracked changes; paths are evaluated relative to the project directory, so monorepo subprojects are supported; untracked files need a full run |
-| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets (exit 2) |
+| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets and with `--dry-run` (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
 | `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
