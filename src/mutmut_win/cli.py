@@ -31,6 +31,7 @@ from mutmut_win.db import (
 from mutmut_win.exceptions import (
     MutmutWinError,
     StagingNamespaceCollisionError,
+    UnsafeStagingError,
     UnsafeWorkspaceStateError,
 )
 from mutmut_win.mutant_diff import apply_mutant, render_function_diff_bytes, resolve_mutant
@@ -165,6 +166,18 @@ _FORCE_CLEANUP_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 def _remove_force_cleanup_root(path: Path) -> bool:
     """Remove one ``--force`` root, retrying through transient filter locks.
 
+    The ``mutants/`` staging root goes through
+    :func:`mutmut_win.file_setup.remove_staging_root` so DOS read-only
+    staging leaves (the mirror preserves the source mode) are cleared
+    through the established ``onexc`` hook instead of surviving
+    ``rmtree(ignore_errors=True)`` forever (M-020). Without that hook the
+    tree stayed after every retry and the refusal below blamed "files in
+    use?" for what was a read-only attribute. An unsafe leaf (hardlinks,
+    reparse points, identity changes) raises ``UnsafeStagingError``
+    immediately; every other ``OSError`` (including sharing violations on
+    writable leaves) keeps the retry semantics below. ``.mutmut-cache``
+    stays with the plain best-effort removal.
+
     Returns ``True`` when the root is gone.  The refusal after every retry
     fails deliberately: partial deletions must never run as a clean slate
     (issue #101 / A3-FD-009), and a persistent lock is indistinguishable
@@ -172,10 +185,25 @@ def _remove_force_cleanup_root(path: Path) -> bool:
     """
     import shutil
 
+    from mutmut_win.file_setup import remove_staging_root
+
     for delay in (0.0, *_FORCE_CLEANUP_RETRY_DELAYS):
         if delay:
             time.sleep(delay)
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            if path.name == "mutants":
+                remove_staging_root()
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+        except FileNotFoundError:
+            pass
+        except UnsafeStagingError:
+            raise
+        except OSError:
+            # Transient filter/AV locks keep the retry semantics; without
+            # ignore_errors the walk aborted at the first failure, so each
+            # retry restarts the tree from the root.
+            continue
         if not path.exists():
             return True
     return False
@@ -849,7 +877,19 @@ def run(
                         click.echo(refusal, err=True)
                         _emit_json_error(json_stdout, refusal, 1)
                         sys.exit(1)
-                    if not _remove_force_cleanup_root(p):
+                    try:
+                        removed = _remove_force_cleanup_root(p)
+                    except UnsafeStagingError as exc:
+                        # M-020: an unsafe leaf (hardlinked read-only file,
+                        # reparse point, identity change) is refused with its
+                        # own diagnosis instead of a raw traceback — and,
+                        # for a locked hardlink, instead of the misleading
+                        # "files in use?" refusal below.
+                        message = f"Refusing --force cleanup of {dirname}/: {exc}"
+                        click.echo(message, err=True)
+                        _emit_json_error(json_stdout, message, 1)
+                        sys.exit(1)
+                    if not removed:
                         # Issue #101 / A3-FD-009: rmtree(ignore_errors=True)
                         # plus an unconditional success message sold a
                         # PARTIAL deletion (files locked by another process)

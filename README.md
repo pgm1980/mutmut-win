@@ -189,7 +189,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets and with `--dry-run` (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
-| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
+| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate); read-only staging leaves are cleared through the identity-checked removal hook, hardlinked/redirected leaves are refused with exit 1 |
 | `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
