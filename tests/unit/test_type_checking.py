@@ -570,6 +570,158 @@ class TestNoForeignExceptionProperty:
         assert all(isinstance(error, TypeCheckingError) for error in errors)
 
 
+class TestReportErrorMessages:
+    """Exact-message pins for the decode/schema failure channels (M-059 /
+    M-127): mutation-gate hardening against message-text mutants."""
+
+    def test_decode_failure_message_carries_stdout_and_stderr_exactly(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("not json", returncode=0, stderr="boom details"),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["mypy", "--output=json", "."])
+        message = str(exc_info.value)
+        assert "did not return JSON. Got: not json" in message
+        assert "(stderr: boom details)" in message
+
+    def test_schema_failure_message_opens_with_checker_and_location(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed('{"wrong": 1}'),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert message.startswith(
+            "pyright returned a structurally unexpected report at generalDiagnostics: "
+        )
+        assert '. stdout excerpt: {"wrong": 1}' in message
+
+    def test_schema_failure_marks_the_report_root(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("5"),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert "at <root>: " in message
+        assert "stdout excerpt: 5" in message
+
+    def test_schema_failure_reports_the_first_deviation(self) -> None:
+        # Two deviations: entry 0 is not an object, entry 1 misses the
+        # error fields — the message must name the FIRST one.
+        stdout = json.dumps({"generalDiagnostics": [5, {"severity": "error"}]})
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        assert "generalDiagnostics.0" in str(exc_info.value)
+
+    def test_unknown_checker_label_is_the_exact_fallback_phrase(self) -> None:
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("5"),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["mychecker", "."])
+        assert str(exc_info.value).startswith(
+            "unknown checker (pyright parser fallback) returned a structurally unexpected report"
+        )
+
+    def test_excerpt_at_the_boundary_stays_verbatim(self) -> None:
+        # len == _REPORT_EXCERPT_CHARS (512): the excerpt is returned whole.
+        stdout = json.dumps("x" * 510)  # 510 chars + 2 quotes = 512
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert f"stdout excerpt: {stdout}" in message
+        assert "[truncated]" not in message
+
+    def test_excerpt_beyond_the_boundary_carries_the_marker(self) -> None:
+        stdout = json.dumps("x" * 5000)
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout),
+            ),
+            pytest.raises(TypeCheckCommandError) as exc_info,
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+        message = str(exc_info.value)
+        assert "…[truncated]" in message
+        assert message.count("x") < 1000
+
+
+class TestParserGuardMessages:
+    """M-127: the public parse_* guards report the offending container type
+    (direct callers must never crash with a foreign exception)."""
+
+    def test_pyright_rejects_non_object_reports(self) -> None:
+        with pytest.raises(TypeCheckCommandError, match="expected a JSON object, got list"):
+            parse_pyright_report([])
+
+    def test_pyrefly_rejects_non_object_reports(self) -> None:
+        with pytest.raises(TypeCheckCommandError, match="expected a JSON object, got list"):
+            parse_pyrefly_report([])
+
+    def test_mypy_rejects_non_array_reports(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError, match="expected a JSON array of diagnostics, got dict"
+        ):
+            parse_mypy_report({"file": "a.py"})
+
+    def test_ty_rejects_non_array_reports(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError, match="expected a JSON array of diagnostics, got dict"
+        ):
+            parse_ty_report({"a": 1})
+
+    def test_pyright_rejects_non_object_entries(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError,
+            match=r'expected JSON objects in "generalDiagnostics", got int',
+        ):
+            parse_pyright_report({"generalDiagnostics": [5]})
+
+    def test_pyrefly_rejects_non_object_entries(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError, match=r'expected JSON objects in "errors", got int'
+        ):
+            parse_pyrefly_report({"errors": [5]})
+
+    def test_mypy_rejects_non_object_entries(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError, match="expected JSON objects as diagnostics, got int"
+        ):
+            parse_mypy_report([5])
+
+    def test_ty_rejects_non_object_entries(self) -> None:
+        with pytest.raises(
+            TypeCheckCommandError, match="expected JSON objects as diagnostics, got int"
+        ):
+            parse_ty_report([5])
+
+
 class TestCheckerDetection:
     """Issue #92 / A3-CM-008: detection was exact list membership — the
     Windows-normal command forms fell into the pyright branch, json.loads
