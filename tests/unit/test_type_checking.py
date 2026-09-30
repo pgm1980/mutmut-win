@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import psutil
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -15,8 +16,11 @@ from pydantic import ValidationError
 from mutmut_win.exceptions import ProcessContainmentError, TypeCheckCommandError
 from mutmut_win.type_checking import (
     TypeCheckingError,
+    _capture_root_create_time,
     _redirect_checker_caches,
     _run_type_check_process,
+    _snapshot_process_tree,
+    _terminate_type_checker_tree,
     parse_mypy_report,
     parse_pyrefly_report,
     parse_pyright_report,
@@ -835,7 +839,9 @@ class TestBoundedProcessRunner:
         assert result.stdout == ""
         assert result.stderr == ""
         process.wait.assert_called_once_with(timeout=7)
-        terminate_tree.assert_called_once_with(process, None)
+        # Popen doubles capture no kernel identity (AR-01): the cleanup is
+        # called without a root identity and therefore sweeps nothing.
+        terminate_tree.assert_called_once_with(process, None, root_create_time=None)
 
     def test_internal_child_controls_are_sanitized_from_type_checker_environment(
         self, monkeypatch: pytest.MonkeyPatch
@@ -919,7 +925,7 @@ class TestBoundedProcessRunner:
         ):
             _run_type_check_process(["mypy"], timeout=7)
 
-        terminate.assert_called_once_with(process, 77)
+        terminate.assert_called_once_with(process, 77, root_create_time=None)
         close_job.assert_not_called()  # termination owns the one-and-only close
 
     def test_windows_job_is_assigned_and_closed_after_success(self) -> None:
@@ -954,7 +960,7 @@ class TestBoundedProcessRunner:
         ):
             _run_type_check_process(["mypy"], timeout=7)
 
-        terminate.assert_called_once_with(process, None)
+        terminate.assert_called_once_with(process, None, root_create_time=None)
 
     def test_job_close_failure_does_not_skip_fallback_kill_or_mask_timeout(self) -> None:
         process = MagicMock()
@@ -967,6 +973,9 @@ class TestBoundedProcessRunner:
         with (
             patch("mutmut_win.type_checking._create_type_checker_job", return_value=91),
             patch("mutmut_win.type_checking._assign_type_checker_to_job", return_value=True),
+            patch(
+                "mutmut_win.type_checking._capture_root_create_time", return_value=1234.5
+            ) as capture,
             patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
             patch(
                 "mutmut_win.type_checking._snapshot_process_tree",
@@ -982,9 +991,180 @@ class TestBoundedProcessRunner:
             _run_type_check_process(["mypy"], timeout=7)
 
         assert exc_info.value is timeout
+        capture.assert_called_once_with(process)
         captured_member.kill.assert_called_once_with()
         process.kill.assert_called_once_with()
         assert process.wait.call_args_list[-1].kwargs["timeout"] > 0
+
+
+class TestRootIdentityBoundCleanup:
+    """AR-01 / M-009 (C-001, SEC-001, DOC-009): the type-checker cleanup must
+    never walk or kill PPID edges without a root identity that was captured
+    at safe creation time and carried through to the teardown.
+
+    A psutil Process object's own identity check only protects against reuse
+    of the CHILD pid; it cannot prove the provenance of a parent->child edge.
+    An older foreign orphan that merely carries the stored PPID must not be
+    attributed to this checker instance.  Only fake processes are used; no
+    real foreign PID is ever terminated."""
+
+    def _live_process(self, pid: int, ppid: int, create_time: float | None) -> MagicMock:
+        process = MagicMock()
+        process.pid = pid
+        process.info = {"pid": pid, "ppid": ppid, "create_time": create_time}
+        process.create_time.return_value = create_time
+        return process
+
+    @pytest.mark.parametrize(
+        "root_error",
+        [psutil.NoSuchProcess(4242), psutil.AccessDenied(4242)],
+        ids=["no-such-process", "access-denied"],
+    )
+    def test_cleanup_with_unobservable_root_never_kills_by_ppid(
+        self, root_error: Exception
+    ) -> None:
+        """Unreadable root identity at cleanup → no PPID sweep at all.
+
+        Job close and the direct-child kill remain the authoritative cleanup;
+        the older foreign orphan (create_time < root) and every other
+        unverified PPID edge stay untouched (fail-closed)."""
+        checker_root = MagicMock()
+        checker_root.pid = 4242
+        checker_root.wait.return_value = 0
+        foreign_orphan = self._live_process(5001, 4242, 900.0)
+        legitimate_child = self._live_process(5003, 4242, 1001.0)
+
+        with (
+            patch("psutil.Process", side_effect=root_error),
+            patch("psutil.process_iter", return_value=[foreign_orphan, legitimate_child]),
+            patch("psutil.wait_procs", return_value=([], [])),
+            patch("mutmut_win.type_checking._close_type_checker_job") as close_job,
+        ):
+            _terminate_type_checker_tree(checker_root, 77)
+
+        assert foreign_orphan.kill.call_count == 0
+        assert legitimate_child.kill.call_count == 0
+        close_job.assert_called_once_with(77)
+        checker_root.kill.assert_called_once_with()
+
+    def test_snapshot_without_root_identity_returns_no_members(self) -> None:
+        """DOC-009: None means no verified identity — no unverified walk,
+        neither on Windows nor on any other platform."""
+        foreign_orphan = self._live_process(5001, 4242, 900.0)
+
+        with patch("psutil.process_iter", return_value=[foreign_orphan]):
+            assert _snapshot_process_tree(4242, None) == []
+
+    def test_captured_identity_cleans_only_monotone_descendants_after_root_exit(
+        self,
+    ) -> None:
+        """A create_time captured at launch still works after the root ended:
+        only descendants with ctime >= their verified parent are killed."""
+        checker_root = MagicMock()
+        checker_root.pid = 4242
+        checker_root.wait.return_value = 0
+        exited_root = self._live_process(4242, 1, 1000.0)
+        foreign_orphan = self._live_process(5001, 4242, 900.0)
+        legitimate_child = self._live_process(5003, 4242, 1000.5)
+        legitimate_grandchild = self._live_process(5004, 5003, 1001.0)
+
+        with (
+            patch("psutil.Process", side_effect=psutil.NoSuchProcess(4242)),
+            patch(
+                "psutil.process_iter",
+                return_value=[exited_root, foreign_orphan, legitimate_child, legitimate_grandchild],
+            ),
+            patch("psutil.wait_procs", return_value=([], [])),
+        ):
+            _terminate_type_checker_tree(checker_root, None, root_create_time=1000.0)
+
+        assert foreign_orphan.kill.call_count == 0
+        legitimate_child.kill.assert_called_once_with()
+        legitimate_grandchild.kill.assert_called_once_with()
+        checker_root.kill.assert_called_once_with()
+
+    def test_snapshot_ignores_observable_root_with_foreign_create_time(self) -> None:
+        """Object identity is not provenance: a live psutil object on the
+        root PID whose create_time does not match the captured identity is
+        not this checker and must not be killed."""
+        foreign_root = self._live_process(4242, 1, 9999.0)
+        legitimate_child = self._live_process(5003, 4242, 1000.5)
+
+        with (
+            patch("psutil.Process", return_value=foreign_root),
+            patch("psutil.process_iter", return_value=[foreign_root, legitimate_child]),
+        ):
+            members = _snapshot_process_tree(4242, 1000.0)
+
+        assert foreign_root not in members
+        assert [member.pid for member in members] == [5003]
+
+    def test_snapshot_returns_verified_root_before_its_descendants(self) -> None:
+        """With a matching live root, it is killed first (members[0]) so it
+        cannot spawn more children while descendants are terminated."""
+        live_root = self._live_process(4242, 1, 1000.0)
+        legitimate_child = self._live_process(5003, 4242, 1000.5)
+
+        with (
+            patch("psutil.Process", return_value=live_root),
+            patch("psutil.process_iter", return_value=[live_root, legitimate_child]),
+        ):
+            members = _snapshot_process_tree(4242, 1000.0)
+
+        assert [member.pid for member in members] == [4242, 5003]
+
+    def test_capture_reads_identity_once_while_handle_reserves_the_pid(self) -> None:
+        real_process = MagicMock(spec=subprocess.Popen)
+        real_process.pid = 4242
+
+        with patch("psutil.Process") as process_mock:
+            process_mock.return_value.create_time.return_value = 1234.5
+            assert _capture_root_create_time(real_process) == 1234.5
+
+        process_mock.assert_called_once_with(4242)
+
+    @pytest.mark.parametrize(
+        "observation_failure",
+        [
+            psutil.NoSuchProcess(4242),
+            psutil.AccessDenied(4242),
+            OSError("process table unavailable"),
+        ],
+        ids=["no-such-process", "access-denied", "os-error"],
+    )
+    def test_capture_returns_none_on_observation_failure(
+        self, observation_failure: Exception
+    ) -> None:
+        """A capture failure leaves no identity → later cleanup sweeps nothing."""
+        real_process = MagicMock(spec=subprocess.Popen)
+        real_process.pid = 4242
+
+        with patch("psutil.Process", side_effect=observation_failure):
+            assert _capture_root_create_time(real_process) is None
+
+    def test_capture_never_queries_psutil_for_a_popen_double(self) -> None:
+        """A double's synthetic pid must never reach the process table."""
+        double = MagicMock()  # deliberately unspec'd: not a real Popen
+
+        with patch("psutil.Process") as process_mock:
+            assert _capture_root_create_time(double) is None
+
+        process_mock.assert_not_called()
+
+    def test_run_type_check_process_threads_captured_identity_into_cleanup(self) -> None:
+        process = MagicMock()
+        process.pid = 123
+        process.wait.return_value = 0
+
+        with (
+            patch("mutmut_win.type_checking._create_type_checker_job", return_value=None),
+            patch("mutmut_win.type_checking._capture_root_create_time", return_value=1234.5),
+            patch("mutmut_win.type_checking.subprocess.Popen", return_value=process),
+            patch("mutmut_win.type_checking._terminate_type_checker_tree") as terminate,
+        ):
+            _run_type_check_process(["mypy"], timeout=7)
+
+        terminate.assert_called_once_with(process, None, root_create_time=1234.5)
 
 
 class TestSetupFailureNeverLeaksJobHandle:

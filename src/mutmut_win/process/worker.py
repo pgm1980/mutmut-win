@@ -1845,23 +1845,31 @@ def _abort_posix_gated_process(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _iter_descendants(root_pid: int, root_create_time: float | None = None) -> list[Any]:
-    """Collect live descendant processes of *root_pid* by walking ppids.
+    """Collect identity-verified descendant processes of *root_pid* by walking ppids.
 
     Unlike ``psutil.Process(root_pid).children(recursive=True)`` this also
     works when the root itself ALREADY EXITED (issue #82 / A2-EW-008):
     Windows does not re-parent orphans, so their recorded ppid keeps
     pointing at the dead pid.
 
-    Identity verification (M-009): when *root_create_time* is provided, an
-    edge parent→child is only accepted if the child's create_time is >=
-    the parent's create_time — the same rule psutil's ``children()``
-    applies internally.  This prevents the walker from following stale
-    PPID edges left by PID recycling.  Nodes whose create_time is not
-    readable (AccessDenied, None) are neither traversed nor returned.
-    When *root_create_time* is None (psutil unavailable or unreadable),
-    the unverified walk is preserved for the non-win32 path; callers
-    that can supply the time always should (fail-closed).
+    Identity rule (M-009 / AR-01) — the same rule for every caller and
+    platform: an edge parent→child is only accepted if the child's
+    create_time is >= the parent's verified create_time, which prevents
+    the walker from following stale PPID edges left by PID recycling.
+    Nodes whose create_time is not readable (AccessDenied, None) are
+    neither traversed nor returned.  When *root_create_time* is None the
+    walk deliberately returns NOTHING on every platform: there is no
+    unverified fallback, because psutil's per-Process object identity only
+    protects against reuse of a child PID — it cannot prove the
+    provenance of the parent→child edge itself, and an unverified edge
+    can attribute (and kill) a foreign orphan (C-001 / SEC-001).  Callers
+    must capture the root create_time at safe creation time, while the
+    launch handle still reserves the PID, and pass it through; without it
+    they must not kill by PPID at all (fail-closed).
     """
+    if root_create_time is None:
+        return []
+
     import psutil  # type: ignore[import-untyped,unused-ignore]
 
     children_by_ppid: dict[int, list[Any]] = {}
@@ -1878,11 +1886,7 @@ def _iter_descendants(root_pid: int, root_create_time: float | None = None) -> l
     descendants: list[Any] = []
     # Track the verified create_time for each accepted node so the edge
     # check applies against the direct parent, not just the root.
-    pending: list[tuple[int, float]] = []
-    if root_create_time is not None:
-        pending.append((root_pid, root_create_time))
-    else:
-        pending.append((root_pid, float("inf")))
+    pending: list[tuple[int, float]] = [(root_pid, root_create_time)]
     seen: set[int] = set()
     while pending:
         current_pid, parent_ctime = pending.pop()
@@ -1890,18 +1894,13 @@ def _iter_descendants(root_pid: int, root_create_time: float | None = None) -> l
             if child.pid in seen:
                 continue
             child_ctime = create_times.get(child.pid)
-            if root_create_time is not None:
-                # Verified walk: reject nodes with unreadable or older
-                # create_times (stale PPID from PID recycling).
-                if child_ctime is None or child_ctime < parent_ctime:
-                    continue
-                seen.add(child.pid)
-                descendants.append(child)
-                pending.append((child.pid, child_ctime))
-            else:
-                seen.add(child.pid)
-                descendants.append(child)
-                pending.append((child.pid, child_ctime or float("inf")))
+            # Verified walk: reject nodes with unreadable or older
+            # create_times (stale PPID from PID recycling).
+            if child_ctime is None or child_ctime < parent_ctime:
+                continue
+            seen.add(child.pid)
+            descendants.append(child)
+            pending.append((child.pid, child_ctime))
     return descendants
 
 

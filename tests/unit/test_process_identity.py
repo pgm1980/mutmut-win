@@ -58,15 +58,19 @@ class TestIterDescendantsIdentity:
 
         assert result == []
 
-    def test_without_root_time_the_walk_is_unverified(self) -> None:
-        """root_create_time=None preserves the legacy unverified walk."""
+    def test_without_root_time_the_walk_is_fail_closed(self) -> None:
+        """AR-01: root_create_time=None means no verified root identity.
+
+        There is deliberately no unverified fallback walk on any platform:
+        without the captured identity the walker returns nothing, so callers
+        cannot kill by PPID at all (fail-closed)."""
         root = self._fake_process(4242, 1, 1000.0)
         orphan = self._fake_process(5001, 4242, 900.0)
 
         with patch("psutil.process_iter", return_value=[root, orphan]):
             result = worker_module._iter_descendants(4242)
 
-        assert {p.pid for p in result} == {5001}
+        assert result == []
 
     def test_kill_proc_tree_skips_sweep_without_root_time(self) -> None:
         """_kill_proc_tree fail-closed: no root time → no sweep."""
