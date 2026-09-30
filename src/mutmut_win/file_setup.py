@@ -34,7 +34,7 @@ from typing import IO, TYPE_CHECKING, Literal
 
 import libcst as cst
 
-from mutmut_win.atomic_file import atomic_copy_file, atomic_write_bytes
+from mutmut_win.atomic_file import AtomicPathLengthError, atomic_copy_file, atomic_write_bytes
 from mutmut_win.constants import (
     SOURCE_ROOT_NAMES,
     WORKSPACE_EXCLUDED_DIR_NAMES,
@@ -1383,6 +1383,11 @@ def _copy_with_retry(
                 # with an external hardlink.
                 atomic_copy_file(src, dst)
                 return
+            except AtomicPathLengthError:
+                # A deterministic name-length rejection never clears on
+                # retry; fail immediately instead of burning the backoff
+                # ladder (M-010).
+                raise
             except OSError:
                 if attempt >= max_attempts:
                     raise

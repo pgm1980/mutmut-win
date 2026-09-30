@@ -60,6 +60,24 @@ class AtomicPreconditionError(UnsafeAtomicWriteError):
     """
 
 
+class AtomicPathLengthError(OSError):
+    """A Windows path-length limit blocked the private atomic-write sibling.
+
+    Raised when the operating system rejects the freshly generated sibling
+    name with a path-length winerror (3/123/206) and the measured lengths
+    actually exceed the NTFS component budget (255 UTF-16 units) or the
+    legacy total-path budget (259 UTF-16 units without LongPathsEnabled).
+    The message names the target path, both measured lengths and the
+    LongPathsEnabled registry option; the original OS error is preserved
+    as ``__cause__`` and its errno/winerror are carried on this instance.
+
+    Deliberately NOT an :class:`UnsafeAtomicWriteError`: an over-long name
+    is an operability limit, not a safety finding — existing callers
+    catching ``OSError`` (staging copy retries, pytest boundary
+    preparation) keep working unchanged.
+    """
+
+
 #: Bounded backoff for transient Windows filter-driver interference.  The
 #: pytest phase guard republishes its execution sentinel once per test report;
 #: under that create/replace churn, antivirus or indexer filters transiently
@@ -160,49 +178,124 @@ def _checked_parent(path: Path, expected: FileIdentity | None = None) -> FileIde
     return identity
 
 
-def _dump_sibling_diagnostics(
-    temp_path: Path,
+def _sibling_diagnostics(
     opened_stat: os.stat_result,
     leaf_stat: os.stat_result,
-) -> None:
-    """Best-effort telemetry for sibling validation exhaustion.
+) -> str:
+    """Format the one-line field diagnostics for sibling validation exhaustion.
 
     Field evidence (MBR-2026-09-14-01 follow-up): under filter-driver
     enumeration in child processes, ``os.fstat`` can report one link more
-    than the path-view ``lstat`` for the same freshly created inode.  Keep
-    the dump so exhaustion stays diagnosable in the field.
+    than the path-view ``lstat`` for the same freshly created inode.  The
+    exhaustion diagnosis therefore travels inside the raised
+    :class:`UnsafeAtomicWriteError` message — a fixed sink path under the
+    shared ``%TEMP%`` followed prepared links onto other files (M-067) and
+    grew without bound; the message keeps the same fields (M-067).
     """
-    import json
 
-    def fields(st: os.stat_result) -> dict[str, object]:
-        return {
-            "st_mode": st.st_mode,
-            "st_dev": st.st_dev,
-            "st_ino": st.st_ino,
-            "st_nlink": st.st_nlink,
-            "st_size": st.st_size,
-            "st_file_attributes": getattr(st, "st_file_attributes", None),
-            "st_reparse_tag": getattr(st, "st_reparse_tag", None),
-        }
+    def fields(prefix: str, file_stat: os.stat_result) -> str:
+        return (
+            f"{prefix}st_mode={file_stat.st_mode}, "
+            f"{prefix}st_dev={file_stat.st_dev}, "
+            f"{prefix}st_ino={file_stat.st_ino}, "
+            f"{prefix}st_nlink={file_stat.st_nlink}, "
+            f"{prefix}st_size={file_stat.st_size}, "
+            f"{prefix}st_file_attributes={getattr(file_stat, 'st_file_attributes', None)}, "
+            f"{prefix}st_reparse_tag={getattr(file_stat, 'st_reparse_tag', None)}"
+        )
 
-    payload = {
-        "temp_path": str(temp_path),
-        "pid": os.getpid(),
-        "opened": fields(opened_stat),
-        "leaf": fields(leaf_stat),
-        "identity_mismatch": _identity(opened_stat) != _identity(leaf_stat),
-    }
-    try:
-        import tempfile as _tempfile
+    return (
+        f"pid={os.getpid()}, {fields('opened_', opened_stat)}, "
+        f"{fields('leaf_', leaf_stat)}, "
+        f"identity_mismatch={_identity(opened_stat) != _identity(leaf_stat)}"
+    )
 
-        target = Path(_tempfile.gettempdir()) / "mutmut-sibling-diag.jsonl"
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
-    except OSError:
-        pass
+
+#: NTFS counts file-name components in UTF-16 code units, not Python code
+#: points: components above 255 units are rejected with winerror 123/206
+#: even when LongPathsEnabled covers the total path (M-010).
+_MAX_NTFS_COMPONENT_UTF16 = 255
+#: Without LongPathsEnabled, Win32 rejects absolute paths above 259 UTF-16
+#: units.  The sibling schema needs '.' + the 51-unit suffix plus one
+#: separator on top of the parent, so parents up to 206 units can always
+#: carry a sibling (with the embedded name cut to zero if needed); longer
+#: parents are the documented residual window, diagnosed via
+#: :class:`AtomicPathLengthError` rather than silently worked around.
+_MAX_LEGACY_PATH_UTF16 = 259
+
+
+def _utf16_len(text: str) -> int:
+    """Return the length of *text* in UTF-16 code units as NTFS/Win32 count.
+
+    ``surrogatepass`` keeps lone surrogates encodable: Windows file names
+    may contain unpaired surrogates (``sys.getfilesystemencodeerrors()`` is
+    ``surrogatepass`` under CPython on Windows), and a plain encode would
+    raise ``UnicodeEncodeError`` — not an ``OSError`` — for names that
+    publish fine today.
+    """
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _truncate_to_utf16_budget(text: str, budget: int) -> str:
+    """Keep the longest prefix of *text* fitting *budget* UTF-16 units.
+
+    Truncation removes whole code points from the end, so an astral
+    character's surrogate pair is never split in half.
+    """
+    truncated = text[:budget]
+    while _utf16_len(truncated) > budget:
+        truncated = truncated[:-1]
+    return truncated
+
+
+def _sibling_name(path: Path, token: str) -> str:
+    """Build the random sibling name for *path* inside Windows name budgets.
+
+    For names that fit, the schema stays byte-identical to the historic
+    ``.{name}.mutmut-atomic-{token}.tmp``.  Only on overflow is the
+    EMBEDDED base name shortened — never the random token — first to the
+    255-unit NTFS component budget, then to the 259-unit legacy total-path
+    budget; the 128-bit token keeps every sibling unique even when the
+    embedded name is cut to zero (M-010).
+    """
+    suffix = f".mutmut-atomic-{token}.tmp"
+    component_budget = _MAX_NTFS_COMPONENT_UTF16 - 1 - _utf16_len(suffix)
+    parent_units = _utf16_len(os.fspath(path.parent.absolute()))
+    path_budget = _MAX_LEGACY_PATH_UTF16 - parent_units - 1 - 1 - _utf16_len(suffix)
+    budget = min(component_budget, max(path_budget, 0))
+    embedded = _truncate_to_utf16_budget(path.name, budget)
+    return f".{embedded}{suffix}"
+
+
+def _is_path_length_failure(exc: OSError, temp_path: Path) -> bool:
+    """Classify *exc* as a Windows path-length rejection of *temp_path*.
+
+    Classification runs strictly over ``winerror`` plus the MEASURED
+    lengths — never over errno or the exception type: winerror 3 and 206
+    arrive as ``FileNotFoundError`` (errno 2) and only 123 keeps
+    ``OSError``/errno 22.  A winerror-3 failure on a path within both
+    budgets is a genuine "path not found", not a length rejection, and
+    must not be re-labelled.
+    """
+    winerror = getattr(exc, "winerror", None)
+    if winerror not in (3, 123, 206):
+        return False
+    if _utf16_len(temp_path.name) > _MAX_NTFS_COMPONENT_UTF16:
+        return True
+    return _utf16_len(os.fspath(temp_path.absolute())) > _MAX_LEGACY_PATH_UTF16
 
 
 def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
+    """Open a fresh, exclusively-created and fully validated sibling of *path*.
+
+    The sibling name embeds the target's base name so crash leftovers stay
+    attributable to their target; on overflow the embedded name — never
+    the random token — is truncated to the Windows name budgets (see
+    :func:`_sibling_name`), and an OS length rejection that truncation
+    cannot cure is translated into :class:`AtomicPathLengthError` (M-010).
+    The returned fd is owned by the caller and closed exactly once on
+    every exit route (M-066).
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -212,7 +305,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
     validation_attempts_left = len(_SIBLING_VALIDATION_RETRY_DELAYS) + 1
     while True:
         token = secrets.token_hex(16)
-        temp_path = path.with_name(f".{path.name}.mutmut-atomic-{token}.tmp")
+        temp_path = path.with_name(_sibling_name(path, token))
         try:
             fd = os.open(temp_path, flags, 0o600)
         except FileExistsError:
@@ -222,7 +315,25 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                     f"could not allocate a unique atomic-write sibling for {path}"
                 ) from None
             continue
+        except OSError as exc:
+            if _is_path_length_failure(exc, temp_path):
+                original_errno = exc.errno if exc.errno is not None else 0
+                original_winerror = getattr(exc, "winerror", 0)
+                raise AtomicPathLengthError(
+                    original_errno,
+                    "atomic-write sibling name exceeds the Windows path budgets: "
+                    f"target={path} "
+                    f"component_utf16={_utf16_len(temp_path.name)}/{_MAX_NTFS_COMPONENT_UTF16}, "
+                    f"total_utf16={_utf16_len(os.fspath(temp_path.absolute()))}"
+                    f"/{_MAX_LEGACY_PATH_UTF16}; enable LongPathsEnabled "
+                    "(HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem) "
+                    "or shorten the target path",
+                    str(temp_path),
+                    original_winerror,
+                ) from exc
+            raise
 
+        fd_owned = True
         try:
             opened_stat = os.fstat(fd)
             leaf_stat = temp_path.lstat()
@@ -244,25 +355,35 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 or opened_identity != _identity(leaf_stat)
                 or leaf_stat.st_nlink != 1
             ):
+                fd_owned = False
                 os.close(fd)
                 with contextlib.suppress(OSError):
                     temp_path.unlink()
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
-                    _dump_sibling_diagnostics(temp_path, opened_stat, leaf_stat)
+                    # One-line field diagnosis in the error itself: the
+                    # pytest child's truncated output tail shows the last
+                    # traceback line reliably, and no file outside the
+                    # operation's own directory is ever touched (M-067).
                     raise UnsafeAtomicWriteError(
-                        f"exclusive atomic-write sibling is not a private regular file: {temp_path}"
+                        "exclusive atomic-write sibling is not a private regular file: "
+                        f"{temp_path} ({_sibling_diagnostics(opened_stat, leaf_stat)})"
                     )
                 retry_index = len(_SIBLING_VALIDATION_RETRY_DELAYS) - validation_attempts_left
                 time.sleep(_SIBLING_VALIDATION_RETRY_DELAYS[retry_index])
                 continue
             return fd, temp_path, opened_identity
         except BaseException:
-            # The validation-failure path already closed and unlinked its own
-            # fd before deciding to retry or fail; suppressing the second
-            # close keeps every exit route uniform.
-            with contextlib.suppress(OSError):
-                os.close(fd)
+            # Ownership rule (M-066): the validation-failure branch already
+            # closed — and unlinked — its own fd before deciding to retry or
+            # fail, and Windows recycles descriptor numbers immediately, so
+            # only a still-owned fd may be closed here; a second close could
+            # hit a descriptor a concurrent thread just received.  The second
+            # unlink attempt stays unconditional: after a failed first
+            # unlink the entry may still need cleaning up.
+            if fd_owned:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
             with contextlib.suppress(OSError):
                 temp_path.unlink()
             raise
@@ -605,7 +726,10 @@ def atomic_write_bytes(
     sibling creation, and the final replace (MBR-2026-09-14-01 follow-up).
     Every other condition — publication races, mid-publication parent or
     sibling substitution — fails immediately with the original taxonomy;
-    retrying those would weaken the attack tripwires.
+    retrying those would weaken the attack tripwires.  A sibling name that
+    no longer fits the Windows component or total-path budgets after
+    truncation fails as :class:`AtomicPathLengthError` naming the measured
+    lengths (M-010).
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
@@ -679,6 +803,12 @@ def create_exclusive_random_bytes(
     with ``O_EXCL`` in a real, identity-checked directory. Unlike
     :func:`atomic_write_bytes`, this helper never calls ``replace``: a
     pre-existing user path is therefore never an eligible publication target.
+
+    A validation failure of the freshly created file is retried through
+    ``_SIBLING_VALIDATION_RETRY_DELAYS`` (fresh random name, fresh
+    ``O_EXCL`` creation, full revalidation) — a budget kept strictly
+    separate from the 32-attempt collision budget, whose exhaustion still
+    ends in ``FileExistsError`` (M-013).
     """
     if not prefix or Path(prefix).name != prefix or Path(suffix).name != suffix:
         raise ValueError("exclusive random file prefix/suffix must be plain names")
@@ -695,7 +825,9 @@ def create_exclusive_random_bytes(
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
 
-    for _attempt in range(32):
+    collision_attempts_left = 32
+    validation_attempts_left = len(_SIBLING_VALIDATION_RETRY_DELAYS) + 1
+    while True:
         path = directory / f"{prefix}{secrets.token_hex(16)}{suffix}"
         fd: int | None = None
         identity: FileIdentity | None = None
@@ -704,11 +836,26 @@ def create_exclusive_random_bytes(
             try:
                 fd = os.open(path, flags, 0o600)
             except FileExistsError:
+                collision_attempts_left -= 1
+                if collision_attempts_left <= 0:
+                    raise FileExistsError(
+                        f"could not allocate a unique exclusive file in {directory}"
+                    ) from None
                 continue
 
             opened = os.fstat(fd)
             identity = _identity(opened)
             leaf = path.lstat()
+            # Handle-derived link counts are deliberately NOT part of the
+            # rejection condition — the same reasoning as in
+            # ``_open_random_sibling``: Windows filter drivers transiently
+            # report zero or two links for a fresh ``O_EXCL`` inode
+            # (CX221-071; MBR-2026-09-14-01 follow-up field data) while the
+            # path view stays at one.  Exclusive creation, handle/path
+            # identity equality, regular-file shape and the path-view link
+            # count carry the private-file contract; a hardlink attack on
+            # this fresh random name would already have failed the
+            # ``O_EXCL`` creation above (M-013).
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or stat.S_ISLNK(leaf.st_mode)
@@ -716,12 +863,28 @@ def create_exclusive_random_bytes(
                 or identity[0] < 0
                 or identity[1] <= 0
                 or identity != _identity(leaf)
-                or opened.st_nlink != 1
                 or leaf.st_nlink != 1
             ):
-                raise UnsafeAtomicWriteError(
-                    f"exclusive random file is not a private regular file: {path}"
-                )
+                # Ownership is released before the close so an OSError from
+                # the close itself never triggers a second close in the
+                # finally.  The own fresh ``O_EXCL`` entry is unlinked BY
+                # NAME — a name nobody else can have created — because a
+                # handle/path identity flap would defeat an
+                # identity-checked cleanup and leave the entry behind.
+                owned_fd = fd
+                fd = None
+                os.close(owned_fd)
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                identity = None
+                validation_attempts_left -= 1
+                if validation_attempts_left <= 0:
+                    raise UnsafeAtomicWriteError(
+                        f"exclusive random file is not a private regular file: {path}"
+                    )
+                retry_index = len(_SIBLING_VALIDATION_RETRY_DELAYS) - validation_attempts_left
+                time.sleep(_SIBLING_VALIDATION_RETRY_DELAYS[retry_index])
+                continue
 
             _checked_parent(path, parent_identity)
             _write_all(fd, payload)
@@ -739,8 +902,6 @@ def create_exclusive_random_bytes(
                     os.close(fd)
             if not keep:
                 _cleanup_owned_temp(path, identity)
-
-    raise FileExistsError(f"could not allocate a unique exclusive file in {directory}")
 
 
 def atomic_copy_file(source: Path, destination: Path) -> None:

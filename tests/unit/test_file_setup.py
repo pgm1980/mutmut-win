@@ -5,16 +5,19 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from mutmut_win.atomic_file import AtomicPathLengthError
 from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import configured_staging_relative_path
 from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
+    _copy_with_retry,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
@@ -1508,3 +1511,34 @@ class TestCreateMutantsForFile:
             create_mutants_for_file(Path("src/../src/mod.py"), output)
 
         assert not output.exists()
+
+
+def test_copy_with_retry_does_not_retry_path_length_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-010: a deterministic name-length rejection never clears on retry.
+
+    ``AtomicPathLengthError`` means the destination name cannot fit the
+    Windows path budgets; five attempts with 1.5 s of backoff pauses would
+    only stall every staged copy of an unpublishable target.
+    """
+    import mutmut_win.file_setup as file_setup_module
+
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"x")
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def failing_copy(_source: Path, _destination: Path) -> None:
+        attempts["count"] += 1
+        raise AtomicPathLengthError(22, "simulated length failure", "ignored", 123)
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", failing_copy)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    with pytest.raises(AtomicPathLengthError, match="simulated length failure"):
+        _copy_with_retry(source, tmp_path / "dst.bin")
+
+    assert attempts["count"] == 1
+    assert sleeps == []
