@@ -657,3 +657,39 @@ class TestHypothesisProperties:
         """Property: never more than MAX_MUTATIONS_PER_PATTERN results."""
         results = mutate_regex_pattern(pattern)
         assert len(results) <= MAX_MUTATIONS_PER_PATTERN
+
+
+class TestCodepointBoundRanges:
+    """M-050: single-point ranges at the Unicode bounds must not crash chr()."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "[" + chr(0) + "-" + chr(0) + "]",
+            "[^" + chr(0) + "-" + chr(0) + "]",
+            "[" + chr(0x10FFFF) + "-" + chr(0x10FFFF) + "]",
+            "[^" + chr(0x10FFFF) + "-" + chr(0x10FFFF) + "]",
+            "[" + chr(0x10FFFE) + "-" + chr(0x10FFFE) + "]",
+        ],
+        ids=["lower", "lower-negated", "upper", "upper-negated", "off-by-one-probe"],
+    )
+    def test_range_at_codepoint_bounds_does_not_raise(self, pattern: str) -> None:
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        results = mutate_regex_pattern(pattern)
+        assert all(_is_valid_regex(result) for result in results)
+        if not pattern.startswith("[^"):
+            assert any(result.startswith("[^") for result in results)
+
+    def test_operator_level_with_non_raw_literal_at_upper_bound(self) -> None:
+        import libcst as cst
+
+        from mutmut_win.node_mutation import operator_regex
+
+        call = cst.parse_expression('re.compile("[\\U0010ffff-\\U0010ffff]")')
+        mutants = list(operator_regex(call))
+        for mutant in mutants:
+            assert isinstance(mutant, cst.Call)
+            pattern_arg = mutant.args[0].value
+            assert isinstance(pattern_arg, cst.SimpleString)
+            assert isinstance(pattern_arg.evaluated_value, str)

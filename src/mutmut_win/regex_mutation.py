@@ -24,7 +24,12 @@ survive per pattern.
 from __future__ import annotations
 
 import re
+import sys
 import warnings
+
+#: Highest valid Unicode codepoint (``sys.maxunicode``, 0x10FFFF on the
+#: supported runtime); chr() raises for anything outside ``0.._MAX_UNICODE_CODEPOINT``.
+_MAX_UNICODE_CODEPOINT: int = sys.maxunicode
 
 #: Maximum mutations per single regex pattern (prevents combinatorial explosion
 #: on pathological patterns). Raised in Phase 3 (v2.18.0) from 5 so the full
@@ -268,6 +273,11 @@ def _mutate_classes(pattern: str) -> list[str]:
         for m in _RANGE_RE.finditer(body):
             lo, hi = ord(m.group(1)), ord(m.group(2))
             for lo2, hi2 in ((lo + 1, hi), (lo, hi - 1)):
+                # chr() is only defined on the Unicode codepoint domain: a
+                # single-point range at either bound (U+0000 or U+10FFFF)
+                # shifts one end out of it and used to abort generation.
+                if not (0 <= lo2 <= _MAX_UNICODE_CODEPOINT and 0 <= hi2 <= _MAX_UNICODE_CODEPOINT):
+                    continue
                 new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
                 results.append(f"{before}[{mark}{new_body}]{after}")
     return results
