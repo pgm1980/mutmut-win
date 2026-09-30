@@ -7,6 +7,9 @@ from pathlib import Path
 import libcst as cst
 import pytest
 
+import mutmut_win.orchestrator as orchestrator_module
+from mutmut_win.exceptions import OrchestratorError
+from mutmut_win.stats import RunBasisEvidence
 from mutmut_win.type_checker_filter import (
     FailedTypeCheckMutant,
     MutatedMethodLocation,
@@ -242,3 +245,51 @@ class TestMutatedMethodsCollector:
     def test_count_matches_mutated_methods(self) -> None:
         collector = self._collect(_SIMPLE_MUTATED_SOURCE)
         assert len(collector.found_mutants) == 2
+
+
+class TestTypeCheckerStagingPostCheck:
+    """M-063: a checker that writes into mutants/ gets its own diagnosis."""
+
+    def _staging(self, digest: str, complete: bool = True) -> RunBasisEvidence:
+        return RunBasisEvidence(digest=digest, complete=complete)
+
+    def test_changed_complete_staging_blames_the_checker(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        staging = self._staging("a" * 64)
+        changed = self._staging("b" * 64)
+        monkeypatch.setattr(
+            orchestrator_module,
+            "build_staging_context_evidence",
+            lambda: changed,
+        )
+        with pytest.raises(OrchestratorError, match="type checker modified mutants/"):
+            orchestrator_module._verify_type_checker_left_staging_intact(staging)
+
+    def test_unchanged_staging_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        staging = self._staging("a" * 64)
+        monkeypatch.setattr(
+            orchestrator_module,
+            "build_staging_context_evidence",
+            lambda: staging,
+        )
+        orchestrator_module._verify_type_checker_left_staging_intact(staging)
+
+    def test_incomplete_post_check_is_not_blamed_on_the_checker(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        staging = self._staging("a" * 64)
+        incomplete = self._staging("b" * 64, complete=False)
+        monkeypatch.setattr(
+            orchestrator_module,
+            "build_staging_context_evidence",
+            lambda: incomplete,
+        )
+        # The unobservable path from M-062 owns this case, not the checker
+        # blame; the post-check must stay silent here.
+        orchestrator_module._verify_type_checker_left_staging_intact(staging)

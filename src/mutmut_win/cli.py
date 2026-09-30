@@ -188,9 +188,15 @@ def _stable_live_basis(config: MutmutConfig, path: Path) -> str:
     first = build_run_basis_evidence(config, excluded_paths=excluded_paths)
     second = build_run_basis_evidence(config, excluded_paths=excluded_paths)
     if first != second:
+        if first.complete and second.complete:
+            raise MutmutWinError(
+                "source, test, configuration, dependency, or environment inputs changed "
+                "while CI/CD evidence was being validated"
+            )
         raise MutmutWinError(
-            "source, test, configuration, dependency, or environment inputs changed "
-            "while CI/CD evidence was being validated"
+            "the execution basis could not be completely observed while CI/CD "
+            "evidence was being validated (transiently locked or unreadable "
+            "inputs); rerun with --basis-diagnostics"
         )
     if not first.complete:
         raise MutmutWinError(

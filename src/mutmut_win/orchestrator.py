@@ -69,6 +69,8 @@ from mutmut_win.stats import (
 from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import TaskEvent
     from mutmut_win.process.executor import SpawnPoolExecutor
@@ -84,6 +86,16 @@ _MIN_TIMEOUT: float = 5.0
 #: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
 
+#: Bounded re-observation delays when at least one basis snapshot in a
+#: stability proof is incomplete (transiently locked or unreadable inputs).
+#: Together with the two initial builds this caps the proof at
+#: ``2 + len(_BASIS_REOBSERVE_DELAYS)`` full basis computations.
+_BASIS_REOBSERVE_DELAYS: tuple[float, ...] = (0.25, 1.0)
+
+#: Single bounded re-measurement before an incomplete staging snapshot is
+#: reported as unobservable instead of as drift.
+_STAGING_REOBSERVE_DELAYS: tuple[float, ...] = (0.25,)
+
 
 def _only_ambient_basis_changed(
     previous: RunBasisEvidence,
@@ -96,6 +108,32 @@ def _only_ambient_basis_changed(
         and current.core_complete
         and previous.core_digest is not None
         and previous.core_digest == current.core_digest
+    )
+
+
+def _classify_observed_basis_pair(
+    previous: RunBasisEvidence,
+    current: RunBasisEvidence,
+) -> RunBasisEvidence:
+    """Classify two fully observed but unequal basis snapshots."""
+
+    if _only_ambient_basis_changed(previous, current):
+        print(
+            "The ambient interpreter, dependency, or environment basis changed "
+            "while it was being fingerprinted. The run will continue for "
+            "diagnostics only; verdict reuse, --min-score, and CI/CD export "
+            "remain disabled."
+        )
+        return RunBasisEvidence(
+            digest=current.digest,
+            complete=False,
+            core_digest=current.core_digest,
+            core_complete=True,
+        )
+    raise OrchestratorError(
+        "source, test, configuration, dependency, or environment inputs changed "
+        "while their run basis "
+        "was being fingerprinted"
     )
 
 
@@ -119,15 +157,69 @@ def _validate_staging_unchanged(
     expected: RunBasisEvidence,
     source_data_by_file: dict[str, SourceFileMutationData],
 ) -> None:
-    """Reject any stable executable staging drift since generation completed."""
+    """Reject real staging drift; re-observe transient incompleteness.
+
+    An incomplete snapshot (transiently locked or unreadable inputs) is
+    re-measured once before it is reported as "could not be completely
+    observed" — it must never masquerade as executable-staging drift.
+    """
 
     _validate_generated_staging(source_data_by_file)
     current = build_staging_context_evidence()
-    if not current.complete or current != expected:
+    if not current.complete:
+        for delay in _STAGING_REOBSERVE_DELAYS:
+            time.sleep(delay)
+            current = build_staging_context_evidence()
+            if current.complete:
+                break
+        if not current.complete:
+            raise OrchestratorError(
+                "executable staging tree could not be completely observed "
+                "(transiently locked or unreadable inputs); rerun with "
+                "--basis-diagnostics"
+            )
+    if current != expected:
         raise OrchestratorError(
             "executable staging files changed after mutant generation; the run cannot "
             "authorize cached verdicts, score gates, or CI/CD export"
         )
+
+
+def _verify_type_checker_left_staging_intact(staging_evidence: RunBasisEvidence) -> None:
+    """Fail with a checker-specific diagnosis if ``mutants/`` changed under it.
+
+    A checker writing into the staging tree (for example an unknown
+    checker's cache directory) would otherwise surface later as generic
+    staging drift.  An incomplete post-check snapshot stays on the separated
+    unobservable path from M-062 and is not blamed on the checker here.
+    """
+
+    post_checker_evidence = build_staging_context_evidence()
+    if post_checker_evidence.complete and post_checker_evidence != staging_evidence:
+        raise OrchestratorError(
+            "the type checker modified mutants/ (for example by writing "
+            "a cache directory); configure its cache outside mutants/"
+        )
+
+
+@contextlib.contextmanager
+def _watched_basis_phase(phase_text: str, completion_text: str) -> Iterator[None]:
+    """Cover one basis-fingerprint phase with the diagnostic stall watchdog.
+
+    The watchdog only dumps stacks on stalls (stderr) and never aborts the
+    run; it is closed on every path, including exceptions, because its
+    faulthandler timer is process-global and must not leak into later
+    phases.  ``StallWatchdog`` is imported locally so tests can patch
+    ``mutmut_win.stall_watchdog.StallWatchdog``.
+    """
+
+    from mutmut_win.stall_watchdog import StallWatchdog
+
+    print(phase_text)
+    started = time.monotonic()
+    with StallWatchdog():
+        yield
+    print(f"{completion_text} in {time.monotonic() - started:.1f}s")
 
 
 class MutationOrchestrator:
@@ -279,7 +371,15 @@ class MutationOrchestrator:
         )
 
     def _stable_run_basis_evidence(self) -> RunBasisEvidence:
-        """Capture one stable execution-basis snapshot or fail closed."""
+        """Capture one stable execution-basis snapshot or fail closed.
+
+        Two fully observed but unequal snapshots keep the historical
+        classification (ambient degradation vs. terminal drift).  When at
+        least one snapshot of a pair is incomplete, the pair is re-observed
+        with bounded delays: a stable equal pair is accepted (complete or
+        degraded), persistent incompleteness raises "could not be completely
+        observed" instead of misreporting transient locks as drift.
+        """
         excluded_paths = self._basis_excluded_paths()
         first = build_run_basis_evidence(
             self._config,
@@ -289,26 +389,27 @@ class MutationOrchestrator:
             self._config,
             excluded_paths=excluded_paths,
         )
-        if first != second:
-            if _only_ambient_basis_changed(first, second):
-                print(
-                    "The ambient interpreter, dependency, or environment basis changed "
-                    "while it was being fingerprinted. The run will continue for "
-                    "diagnostics only; verdict reuse, --min-score, and CI/CD export "
-                    "remain disabled."
-                )
-                return RunBasisEvidence(
-                    digest=second.digest,
-                    complete=False,
-                    core_digest=second.core_digest,
-                    core_complete=True,
-                )
-            raise OrchestratorError(
-                "source, test, configuration, dependency, or environment inputs changed "
-                "while their run basis "
-                "was being fingerprinted"
+        if first == second:
+            return first
+        if first.complete and second.complete:
+            return _classify_observed_basis_pair(first, second)
+        previous = second
+        for delay in _BASIS_REOBSERVE_DELAYS:
+            time.sleep(delay)
+            current = build_run_basis_evidence(
+                self._config,
+                excluded_paths=excluded_paths,
             )
-        return first
+            if current == previous:
+                return current
+            if current.complete and previous.complete:
+                return _classify_observed_basis_pair(previous, current)
+            previous = current
+        raise OrchestratorError(
+            "source, test, configuration, dependency, or environment inputs "
+            "could not be completely observed while their run basis was being "
+            "fingerprinted; rerun with --basis-diagnostics"
+        )
 
     def _run_with_identity(self) -> MutationRunResult:
         """Run under the workspace lock and publish one truthful run snapshot.
@@ -447,7 +548,11 @@ class MutationOrchestrator:
         if terminal_status == "completed":
             execution_basis_deauthorized = False
             try:
-                live_basis = self._stable_run_basis_evidence()
+                with _watched_basis_phase(
+                    "Verifying execution basis after the run…",
+                    "Execution basis verified",
+                ):
+                    live_basis = self._stable_run_basis_evidence()
             except OrchestratorError:
                 invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
@@ -459,6 +564,13 @@ class MutationOrchestrator:
             ):
                 invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
+                if not live_basis.core_complete:
+                    raise OrchestratorError(
+                        "the execution basis could not be completely observed "
+                        "after the mutation run (transiently locked or unreadable "
+                        "inputs); the run was recorded as failed and cannot "
+                        "authorize CI/CD export; rerun with --basis-diagnostics"
+                    )
                 raise OrchestratorError(
                     "source, test, configuration, or project-contained import "
                     "inputs changed during the mutation run; "
@@ -698,6 +810,7 @@ class MutationOrchestrator:
                 source_data_by_file,
                 self._config.type_check_command,
             )
+            _verify_type_checker_left_staging_intact(staging_evidence)
         if not all_tasks:
             # Every mutant was caught by the type checker — a legitimate,
             # successful run, not an IndexError (issue #93 / A3-OS-010).
@@ -764,10 +877,14 @@ class MutationOrchestrator:
         # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
         print("Collecting test timing statistics…")
-        stats_context = build_stats_context_fingerprint(
-            self._config,
-            excluded_paths=self._basis_excluded_paths(),
-        )
+        with _watched_basis_phase(
+            "Re-fingerprinting execution basis for timing stats…",
+            "Timing-stats basis fingerprinted",
+        ):
+            stats_context = build_stats_context_fingerprint(
+                self._config,
+                excluded_paths=self._basis_excluded_paths(),
+            )
         mutmut_stats: MutmutStats = collect_or_load_stats(
             self._runner,
             context_fingerprint=stats_context,

@@ -204,6 +204,14 @@ results are persisted, the score gate is skipped).
 
 ### Execution-basis diagnostics
 
+Inputs that are transiently locked or unreadable (antivirus scanners, indexers,
+fresh publications) are re-read with short bounded delays before any verdict:
+hashing retries Windows sharing violations on open, and incomplete basis or
+staging snapshots are re-observed a bounded number of times. Inputs that stay
+unobservable are reported as "could not be completely observed" (rerun with
+`--basis-diagnostics`) — distinct from real drift, which keeps its terminal
+"inputs changed" diagnosis.
+
 To investigate a changing execution basis, create an evidence directory outside
 your project and Python installation, then use a fresh absolute destination:
 
@@ -276,6 +284,13 @@ type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
                                       # Checker-rejected mutants count as caught;
                                       # errors replicated from the original code
                                       # are subtracted, not counted as kills.
+                                      # mutmut-win redirects MYPY_CACHE_DIR into
+                                      # an ephemeral directory so the checker
+                                      # never writes into mutants/; any checker
+                                      # that still writes there fails the run
+                                      # with a checker-specific diagnosis
+                                      # (a --cache-dir argument in the command
+                                      # overrides the redirect).
 
 # Advanced
 max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited
