@@ -277,6 +277,13 @@ type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
                                       # Checker-rejected mutants count as caught;
                                       # errors replicated from the original code
                                       # are subtracted, not counted as kills.
+                                      # mutmut-win redirects MYPY_CACHE_DIR into
+                                      # an ephemeral directory so the checker
+                                      # never writes into mutants/; any checker
+                                      # that still writes there fails the run
+                                      # with a checker-specific diagnosis
+                                      # (a --cache-dir argument in the command
+                                      # overrides the redirect).
 
 # Advanced
 max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited

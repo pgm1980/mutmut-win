@@ -241,6 +241,21 @@ def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: i
         logger.error("type-checker cleanup failed (%s): %s", label, cleanup_exc)
 
 
+def _redirect_checker_caches(environment: dict[str, str], runtime_dir: Path) -> None:
+    """Point checker cache directories at the ephemeral per-run directory.
+
+    mypy resolves its default ``.mypy_cache`` relative to the process cwd,
+    which is ``mutants/`` during type-check filtering; writing it there
+    invalidates the strict staging evidence.  The variable deliberately
+    overrides any inherited value (the ephemeral environment overrides
+    ``HYPOTHESIS_STORAGE_DIRECTORY`` the same way).  A ``--cache-dir``
+    argument in the checker argv still wins over the variable and is caught
+    by the orchestrator's post-check fail-safe instead.
+    """
+
+    environment["MYPY_CACHE_DIR"] = str(runtime_dir / "mypy-cache")
+
+
 def _run_type_check_process(
     type_check_command: list[str], *, timeout: float
 ) -> subprocess.CompletedProcess[str]:
@@ -262,6 +277,7 @@ def _run_type_check_process(
         job_handle = _create_type_checker_job()
         checker_environment = _type_checker_environment()
         configure_ephemeral_pytest_environment(checker_environment, Path(runtime_name))
+        _redirect_checker_caches(checker_environment, Path(runtime_name))
         popen_kwargs: dict[str, Any] = {
             "env": checker_environment,
             "stdout": stdout_capture.writer_fd,

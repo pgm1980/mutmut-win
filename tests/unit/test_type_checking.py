@@ -12,6 +12,7 @@ import pytest
 from mutmut_win.exceptions import TypeCheckCommandError
 from mutmut_win.type_checking import (
     TypeCheckingError,
+    _redirect_checker_caches,
     _run_type_check_process,
     parse_mypy_report,
     parse_pyrefly_report,
@@ -19,6 +20,26 @@ from mutmut_win.type_checking import (
     parse_ty_report,
     run_type_checker,
 )
+
+
+class TestRedirectCheckerCaches:
+    """M-063: checker caches must land in the ephemeral runtime directory."""
+
+    def test_overrides_inherited_relative_value(self, tmp_path: Path) -> None:
+        environment = {"MYPY_CACHE_DIR": ".mypy_cache"}
+
+        _redirect_checker_caches(environment, tmp_path)
+
+        result = Path(environment["MYPY_CACHE_DIR"])
+        assert result.is_absolute()
+        assert result == tmp_path / "mypy-cache"
+
+    def test_sets_value_in_empty_environment(self, tmp_path: Path) -> None:
+        environment: dict[str, str] = {}
+
+        _redirect_checker_caches(environment, tmp_path)
+
+        assert Path(environment["MYPY_CACHE_DIR"]) == tmp_path / "mypy-cache"
 
 
 def _completed(stdout: str = "", returncode: int = 0, stderr: str = "") -> MagicMock:

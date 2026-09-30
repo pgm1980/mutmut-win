@@ -183,6 +183,23 @@ def _validate_staging_unchanged(
         )
 
 
+def _verify_type_checker_left_staging_intact(staging_evidence: RunBasisEvidence) -> None:
+    """Fail with a checker-specific diagnosis if ``mutants/`` changed under it.
+
+    A checker writing into the staging tree (for example an unknown
+    checker's cache directory) would otherwise surface later as generic
+    staging drift.  An incomplete post-check snapshot stays on the separated
+    unobservable path from M-062 and is not blamed on the checker here.
+    """
+
+    post_checker_evidence = build_staging_context_evidence()
+    if post_checker_evidence.complete and post_checker_evidence != staging_evidence:
+        raise OrchestratorError(
+            "the type checker modified mutants/ (for example by writing "
+            "a cache directory); configure its cache outside mutants/"
+        )
+
+
 class MutationOrchestrator:
     """Coordinates the full mutation testing pipeline.
 
@@ -767,6 +784,7 @@ class MutationOrchestrator:
                 source_data_by_file,
                 self._config.type_check_command,
             )
+            _verify_type_checker_left_staging_intact(staging_evidence)
         if not all_tasks:
             # Every mutant was caught by the type checker — a legitimate,
             # successful run, not an IndexError (issue #93 / A3-OS-010).
