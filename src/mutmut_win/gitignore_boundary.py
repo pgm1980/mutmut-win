@@ -109,10 +109,11 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
     exclude.  The run-basis completeness channel stays with the raw file
     hash (an unreadable file lowers ``complete`` there); a compiled-but-
     invalid file only widens the walk, which is cost, not wrong results.
+    UTF-8 files may start with a BOM, which Git skips (``utf-8-sig``).
     """
     ignore_file = directory / ".gitignore"
     try:
-        text = ignore_file.read_bytes().decode("utf-8")
+        text = ignore_file.read_bytes().decode("utf-8-sig")
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:

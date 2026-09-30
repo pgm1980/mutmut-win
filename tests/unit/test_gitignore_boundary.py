@@ -509,3 +509,40 @@ class TestUnknownLevelsAndBom:
         )
         boundary = GitignoreBoundary.load(project).descend_forced("src")
         assert boundary.excludes_file("a.py") is False
+
+    def test_bom_first_pattern_is_honoured(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", b"\xef\xbb\xbf.lake/\n*.log\n"),
+        )
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_directory(".lake") is True
+        assert boundary.excludes_file("a.log") is True
+
+    def test_bom_in_child_level_is_honoured(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.py\n"),
+            ("src/.gitignore", b"\xef\xbb\xbfsecret/\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("src")
+        assert boundary.excludes_directory("secret") is True
+
+    def test_bom_reinclusion_in_child_level(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.py\n"),
+            ("src/.gitignore", b"\xef\xbb\xbf!keep.py\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("src")
+        assert boundary.excludes_file("keep.py") is False
+
+    def test_bom_only_file_carries_no_rules(self, tmp_path: Path) -> None:
+        project = _make_project(tmp_path, (".gitignore", b"\xef\xbb\xbf"))
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_file("anything.py") is False
+
+    def test_bom_before_comment_then_rule(self, tmp_path: Path) -> None:
+        project = _make_project(tmp_path, (".gitignore", b"\xef\xbb\xbf# c\n.lake/\n"))
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_directory(".lake") is True
