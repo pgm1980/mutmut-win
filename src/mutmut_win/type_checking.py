@@ -10,9 +10,10 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import psutil  # type: ignore[import-untyped,unused-ignore]
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator
 
 from mutmut_win.constants import INTERNAL_CHILD_ENVIRONMENT_VARS
 from mutmut_win.exceptions import ProcessContainmentError, TypeCheckCommandError
@@ -259,7 +260,12 @@ def _redirect_checker_caches(environment: dict[str, str], runtime_dir: Path) -> 
 def _run_type_check_process(
     type_check_command: list[str], *, timeout: float
 ) -> subprocess.CompletedProcess[str]:
-    """Run a checker with bounded process-tree cleanup and bounded output."""
+    """Run a checker with bounded process-tree cleanup and bounded output.
+
+    The Windows Job Object handle is created as the first statement of the
+    protected launch region, after every fallible setup step, so no setup
+    failure can leak the kill-on-close handle (M-128).
+    """
     from mutmut_win.process.worker import (
         _contained_creationflags,
         _resume_after_containment,
@@ -274,7 +280,10 @@ def _run_type_check_process(
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stdout_capture,
         BoundedOutputCapture(max_tail_bytes=_MAX_CHECKER_OUTPUT_BYTES) as stderr_capture,
     ):
-        job_handle = _create_type_checker_job()
+        # M-128: every fallible setup step (environment sanitize, ephemeral
+        # pytest directories with exist_ok=False mkdirs, cache redirect,
+        # creationflags) runs BEFORE any Job Object handle exists, so a
+        # setup failure can no longer leak a kill-on-close handle.
         checker_environment = _type_checker_environment()
         configure_ephemeral_pytest_environment(checker_environment, Path(runtime_name))
         _redirect_checker_caches(checker_environment, Path(runtime_name))
@@ -295,7 +304,13 @@ def _run_type_check_process(
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         process: subprocess.Popen[bytes]
+        job_handle: int | None = None
         try:
+            # First statement inside the protected region (M-128): the Job
+            # Object must exist before the suspended launch (atomic-launch
+            # contract), and every later failure is covered by the cleanup
+            # below.
+            job_handle = _create_type_checker_job()
             # S603: type_check_command is a trusted list supplied by the mutmut
             # framework, not untrusted shell input.  PIPE is deliberately not
             # used: descendants retaining inherited pipe handles made the old
@@ -374,6 +389,222 @@ def _run_type_check_process(
         )
 
 
+def _decode_checker_report(checker: str | None, stdout: str, stderr: str) -> Any:
+    """Decode checker stdout into one decoded JSON report value (M-059).
+
+    mypy speaks JSONL: every non-blank stdout line is one JSON diagnostic
+    object.  A finding-free ``mypy --output=json`` run still writes exactly
+    one blank line (the success summary collapses to a bare newline in mypy
+    1.19.1), and blank lines may also appear between diagnostics, so
+    whitespace-only lines are skipped.  Fail-closed is preserved: any other
+    non-JSON line (text-mode mypy output, a ``Success: no issues found in 1
+    source file`` summary, garbage) aborts with TypeCheckCommandError instead
+    of silently filtering to zero findings.  All other checkers emit one JSON
+    document, decoded as a whole.
+
+    Raises:
+        TypeCheckCommandError: If stdout is not the checker's expected JSON
+            shape at the syntax level (see the mypy blank-line rule above).
+    """
+    try:
+        if checker == "mypy":
+            return [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        return json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise TypeCheckCommandError(
+            f"type check command did not return JSON. Got: {stdout} (stderr: {stderr})"
+        ) from exc
+
+
+class _PyrightDiagnostic(BaseModel):
+    """Shape contract for one pyright ``generalDiagnostics`` entry (M-127).
+
+    Only the keys the parser actually reads are checked, and only for
+    entries the severity filter keeps: validation must never be stricter
+    than the historical accesses — a warning without ``range`` stays
+    acceptable and ignored.  Values stay untyped (``Any``): a non-string
+    ``severity`` means "not an error" today and must not start failing.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    severity: Any = None
+    file: Any = None
+    message: Any = None
+    range: Any = None
+
+    @model_validator(mode="after")
+    def _error_entries_must_carry_the_accessed_keys(self) -> Self:
+        if self.severity != "error":
+            return self
+        for field in ("file", "message", "range"):
+            if field not in self.model_fields_set:
+                raise ValueError(f"error diagnostic is missing '{field}'")
+        if not isinstance(self.range, dict):
+            raise ValueError("'range' must be a JSON object")
+        start = self.range.get("start")
+        if not isinstance(start, dict) or "line" not in start:
+            raise ValueError("'range.start' must be a JSON object with a 'line' key")
+        return self
+
+
+class _PyrightReport(BaseModel):
+    """Top-level pyright report contract; unknown keys are ignored."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # The key is pyright's documented camelCase wire name; an alias would
+    # change the validation error location away from the wire format.
+    generalDiagnostics: list[_PyrightDiagnostic]  # noqa: N815
+
+
+class _PyreflyError(BaseModel):
+    """Shape contract for one pyrefly ``errors`` entry (M-127).
+
+    pyrefly reports carry no severity — every entry is read, so every
+    entry must carry the three accessed keys.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: Any
+    line: Any
+    concise_description: Any
+
+
+class _PyreflyReport(BaseModel):
+    """Top-level pyrefly report contract; unknown keys are ignored."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    errors: list[_PyreflyError]
+
+
+class _MypyDiagnostic(BaseModel):
+    """Shape contract for one mypy JSONL diagnostic (M-127).
+
+    ``severity`` is read for EVERY entry, so the key is required (a missing
+    key was a raw KeyError before); ``file``/``line``/``message`` are only
+    read for ``severity == "error"``.  Values stay untyped (``Any``).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    severity: Any
+    file: Any = None
+    line: Any = None
+    message: Any = None
+
+    @model_validator(mode="after")
+    def _error_entries_must_carry_the_accessed_keys(self) -> Self:
+        if self.severity == "error":
+            for field in ("file", "line", "message"):
+                if field not in self.model_fields_set:
+                    raise ValueError(f"error diagnostic is missing '{field}'")
+        return self
+
+
+class _TyDiagnostic(BaseModel):
+    """Shape contract for one 'ty' code-quality report entry (M-127).
+
+    ``severity`` is read for EVERY entry, so the key is required;
+    ``location``/``description`` and the nested begin position are only
+    checked for the severities the filter keeps.  Values stay untyped.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    severity: Any
+    location: Any = None
+    description: Any = None
+
+    @model_validator(mode="after")
+    def _finding_entries_must_carry_the_accessed_keys(self) -> Self:
+        if self.severity not in ("major", "critical", "blocker"):
+            return self
+        for field in ("location", "description"):
+            if field not in self.model_fields_set:
+                raise ValueError(f"{self.severity} diagnostic is missing '{field}'")
+        if not isinstance(self.location, dict):
+            raise ValueError("'location' must be a JSON object")
+        for key in ("path", "positions"):
+            if key not in self.location:
+                raise ValueError(f"'location' is missing '{key}'")
+        positions = self.location["positions"]
+        if not isinstance(positions, dict) or "begin" not in positions:
+            raise ValueError("'location.positions' must be an object with a 'begin' key")
+        begin = positions["begin"]
+        if not isinstance(begin, dict) or "line" not in begin:
+            raise ValueError("'location.positions.begin' must be an object with a 'line' key")
+        return self
+
+
+_PYRIGHT_REPORT_SCHEMA: TypeAdapter[_PyrightReport] = TypeAdapter(_PyrightReport)
+_PYREFLY_REPORT_SCHEMA: TypeAdapter[_PyreflyReport] = TypeAdapter(_PyreflyReport)
+_MYPY_REPORT_SCHEMA: TypeAdapter[list[_MypyDiagnostic]] = TypeAdapter(list[_MypyDiagnostic])
+_TY_REPORT_SCHEMA: TypeAdapter[list[_TyDiagnostic]] = TypeAdapter(list[_TyDiagnostic])
+
+#: Per-checker schema; unknown checkers keep the historic pyright fallback.
+_REPORT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
+    "pyright": _PYRIGHT_REPORT_SCHEMA,
+    "pyrefly": _PYREFLY_REPORT_SCHEMA,
+    "mypy": _MYPY_REPORT_SCHEMA,
+    "ty": _TY_REPORT_SCHEMA,
+}
+
+#: Maximum stdout characters embedded in a schema-failure message; the full
+#: report may be up to 16 MiB (the BoundedOutputCapture limit).
+_REPORT_EXCERPT_CHARS: int = 512
+
+
+def _checker_label(checker: str | None) -> str:
+    """Return the checker name for messages; unknown checkers ride pyright."""
+    return checker or "unknown checker (pyright parser fallback)"
+
+
+def _stdout_excerpt(stdout: str) -> str:
+    """Return a bounded stdout excerpt for schema-failure messages."""
+    if len(stdout) <= _REPORT_EXCERPT_CHARS:
+        return stdout
+    return stdout[:_REPORT_EXCERPT_CHARS] + "…[truncated]"
+
+
+def _parse_report(checker: str | None, report: Any, stdout: str) -> list[TypeCheckingError]:
+    """Validate the decoded report's structure, then parse it (M-127).
+
+    Syntactically valid JSON with a foreign structure used to escape the
+    documented error taxonomy as raw KeyError/TypeError/AttributeError
+    (cli.py only catches MutmutWinError, so those surfaced as tracebacks).
+    Every schema deviation becomes TypeCheckCommandError with the checker
+    name and a bounded stdout excerpt; the original ValidationError stays
+    chained as ``__cause__``.
+
+    Raises:
+        TypeCheckCommandError: If the report does not match the checker's
+            expected structure (container forms and the keys the parser
+            reads for severity-passing entries).
+    """
+    schema = _REPORT_SCHEMAS.get(checker or "", _PYRIGHT_REPORT_SCHEMA)
+    try:
+        schema.validate_python(report)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first["loc"]) or "<root>"
+        raise TypeCheckCommandError(
+            f"{_checker_label(checker)} returned a structurally unexpected report "
+            f"at {location}: {first['msg']}. "
+            f"stdout excerpt: {_stdout_excerpt(stdout)}"
+        ) from exc
+    if checker == "pyrefly":
+        return parse_pyrefly_report(report)
+    if checker == "mypy":
+        return parse_mypy_report(report)
+    if checker == "ty":
+        return parse_ty_report(report)
+    # Unknown checkers fall through to the pyright parser (historic default).
+    return parse_pyright_report(report)
+
+
 def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
     """Run an external type checker and return a list of errors.
 
@@ -390,7 +621,10 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
             non-finding status (anything but 0/1 — e.g. mypy 2 = fatal,
             pyright 3/4 = config or usage error), or does not return valid
             JSON output (issue #114 / A4-QX-023 — these were bare
-            ``Exception`` raises).
+            ``Exception`` raises). mypy JSONL decoding ignores whitespace-only
+            lines: a finding-free mypy run writes a single blank line. A
+            syntactically valid but structurally unexpected report (M-127)
+            is also rejected here — never as a raw KeyError/TypeError.
     """
     try:
         completed_process = _run_type_check_process(
@@ -414,26 +648,11 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
 
     checker = _detect_checker(type_check_command)
 
-    try:
-        report: Any = (
-            [json.loads(line) for line in completed_process.stdout.splitlines()]
-            if checker == "mypy"
-            else json.loads(completed_process.stdout)
-        )
-    except json.JSONDecodeError as exc:
-        raise TypeCheckCommandError(
-            f"type check command did not return JSON. "
-            f"Got: {completed_process.stdout} (stderr: {completed_process.stderr})"
-        ) from exc
+    report: Any = _decode_checker_report(
+        checker, completed_process.stdout, completed_process.stderr
+    )
 
-    if checker == "pyrefly":
-        return parse_pyrefly_report(report)
-    if checker == "mypy":
-        return parse_mypy_report(report)
-    if checker == "ty":
-        return parse_ty_report(report)
-    # Unknown checkers fall through to the pyright parser (historic default).
-    return parse_pyright_report(report)
+    return _parse_report(checker, report, completed_process.stdout)
 
 
 def parse_pyright_report(result: dict[str, Any]) -> list[TypeCheckingError]:
@@ -441,12 +660,26 @@ def parse_pyright_report(result: dict[str, Any]) -> list[TypeCheckingError]:
 
     Only ``severity == "error"`` diagnostics count (A3-CM-011): pyright emits
     ``error | warning | information``, and warnings must not kill mutants.
+
+    Raises:
+        TypeCheckCommandError: If the result is not a JSON object, lacks
+            ``generalDiagnostics``, or an entry is not a JSON object.
     """
+    if not isinstance(result, dict):
+        raise TypeCheckCommandError(
+            f"Invalid pyright report: expected a JSON object, got {type(result).__name__}."
+        )
     if "generalDiagnostics" not in result:
         raise TypeCheckCommandError(
             f'Invalid pyright report. Could not find key "generalDiagnostics". '
             f"Found: {set(result.keys())}"
         )
+    for diagnostic in result["generalDiagnostics"]:
+        if not isinstance(diagnostic, dict):
+            raise TypeCheckCommandError(
+                "Invalid pyright report: expected JSON objects in "
+                f'"generalDiagnostics", got {type(diagnostic).__name__}.'
+            )
 
     return [
         TypeCheckingError(
@@ -460,11 +693,26 @@ def parse_pyright_report(result: dict[str, Any]) -> list[TypeCheckingError]:
 
 
 def parse_pyrefly_report(result: dict[str, Any]) -> list[TypeCheckingError]:
-    """Parse a pyrefly JSON report into a list of TypeCheckingError instances."""
+    """Parse a pyrefly JSON report into a list of TypeCheckingError instances.
+
+    Raises:
+        TypeCheckCommandError: If the result is not a JSON object, lacks
+            ``errors``, or an entry is not a JSON object.
+    """
+    if not isinstance(result, dict):
+        raise TypeCheckCommandError(
+            f"Invalid pyrefly report: expected a JSON object, got {type(result).__name__}."
+        )
     if "errors" not in result:
         raise TypeCheckCommandError(
             f'Invalid pyrefly report. Could not find key "errors". Found: {set(result.keys())}'
         )
+    for error in result["errors"]:
+        if not isinstance(error, dict):
+            raise TypeCheckCommandError(
+                f'Invalid pyrefly report: expected JSON objects in "errors", '
+                f"got {type(error).__name__}."
+            )
 
     return [
         TypeCheckingError(
@@ -477,7 +725,24 @@ def parse_pyrefly_report(result: dict[str, Any]) -> list[TypeCheckingError]:
 
 
 def parse_mypy_report(result: list[dict[str, Any]]) -> list[TypeCheckingError]:
-    """Parse a mypy JSON report into a list of TypeCheckingError instances."""
+    """Parse a mypy JSON report into a list of TypeCheckingError instances.
+
+    Raises:
+        TypeCheckCommandError: If the result is not a JSON array of JSON
+            objects.
+    """
+    if not isinstance(result, list):
+        raise TypeCheckCommandError(
+            f"Invalid mypy report: expected a JSON array of diagnostics, "
+            f"got {type(result).__name__}."
+        )
+    for diagnostic in result:
+        if not isinstance(diagnostic, dict):
+            raise TypeCheckCommandError(
+                f"Invalid mypy report: expected JSON objects as diagnostics, "
+                f"got {type(diagnostic).__name__}."
+            )
+
     return [
         TypeCheckingError(
             file_path=Path(diagnostic["file"]).absolute(),
@@ -490,7 +755,23 @@ def parse_mypy_report(result: list[dict[str, Any]]) -> list[TypeCheckingError]:
 
 
 def parse_ty_report(result: list[dict[str, Any]]) -> list[TypeCheckingError]:
-    """Parse a 'ty' type checker report into a list of TypeCheckingError instances."""
+    """Parse a 'ty' type checker report into a list of TypeCheckingError instances.
+
+    Raises:
+        TypeCheckCommandError: If the result is not a JSON array of JSON
+            objects.
+    """
+    if not isinstance(result, list):
+        raise TypeCheckCommandError(
+            f"Invalid ty report: expected a JSON array of diagnostics, got {type(result).__name__}."
+        )
+    for diagnostic in result:
+        if not isinstance(diagnostic, dict):
+            raise TypeCheckCommandError(
+                f"Invalid ty report: expected JSON objects as diagnostics, "
+                f"got {type(diagnostic).__name__}."
+            )
+
     # assuming the gitlab code quality report format, these severities seem okay
     # https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format
     return [
