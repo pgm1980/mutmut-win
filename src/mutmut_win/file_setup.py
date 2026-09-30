@@ -2460,8 +2460,11 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
     case-insensitive identity. The result MUST equal
     ``orig.__module__ + '.' + mangled_name``: the trampoline's prefix check
     and the stats mapping both depend on that identity — a root that is
-    importable but not stripped turns every one of its mutants into
-    ``no tests``.
+    importable but not stripped makes every mutant name unmatchable (the
+    trampoline silently runs the original, so mutants survive). The
+    orchestrator's name-consistency gate
+    (``_verify_runtime_mutant_names``, M-053) fails such a run closed
+    before dispatch instead of reporting silent survivors.
 
     For example::
 
@@ -2472,7 +2475,9 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
 
     Known limitation (documented in the README): a project whose tests
     import a root PACKAGE literally named ``src``/``source`` (``import
-    src.foo``) is not supported — the layout convention wins.
+    src.foo``) is not supported — the layout convention wins, and the
+    name-consistency gate fails such a run closed before dispatch (M-053)
+    instead of letting every mutant survive silently.
 
     Args:
         relative_source_path: Path to the source file, relative to the project

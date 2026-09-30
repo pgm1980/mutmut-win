@@ -130,8 +130,9 @@ tags are immutable release provenance and are never moved or deleted.
    ```
 
    The run validates the clean suite, collects per-test timing stats,
-   verifies the mutation machinery with a forced-fail check, and then
-   executes all mutants in parallel.
+   verifies the mutation machinery (a name-consistency gate plus a
+   forced-fail trampoline check), and then executes all mutants in
+   parallel.
 
 3. Inspect the outcome:
 
@@ -486,9 +487,17 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
    only when exact source and mutation-universe content digests match; output,
    metadata, and the generation fingerprint are published transactionally.
 2. **Validate**: the unmutated suite must pass inside `mutants/`; a
-   forced-fail check proves the trampoline actually switches mutants —
-   the failure must come from the trampoline's own exception, a hung or
-   unrelated failure fails the gate.
+   name-consistency gate then proves that the runtime function names
+   recorded by the stats run can address the generated mutants — a
+   mutated tree imported under a root that mutant names do not strip (for
+   example an `extra_paths` entry, or tests importing a literal `src`
+   package) would otherwise silently run originals and report everything
+   as `survived`, so the run fails closed before dispatch. Finally, a
+   forced-fail check proves the trampoline wrapper is installed and reads
+   `MUTANT_UNDER_TEST` — the failure must come from the trampoline's own
+   exception, a hung or unrelated failure fails the gate. The global
+   `fail` sentinel does not switch a concrete mutant; name dispatch is
+   what the consistency gate proves.
 3. **Map & budget**: a stats run records per-test durations and a diagnostic
    test↔function mapping. The current collector cannot prove completeness
    across subprocesses, threads and native launchers, so on-disk mappings are

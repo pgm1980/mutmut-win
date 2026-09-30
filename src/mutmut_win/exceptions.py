@@ -74,6 +74,24 @@ class ForcedFailError(OrchestratorError):
     """The forced-fail validation test failed."""
 
 
+class MutantNameDispatchError(OrchestratorError):
+    """A runtime function key recorded by the stats run cannot address a mutant.
+
+    Producer: the orchestrator's name-consistency gate
+    (``_verify_runtime_mutant_names``, M-053) compares the trampoline hit
+    keys (``orig.__module__ + '.' + orig.__name__``) with the function keys
+    of every generated mutant.  A dotted-suffix divergence proves that the
+    worker's ``MUTANT_UNDER_TEST`` name can never match the trampoline's
+    dispatch prefix — the trampoline would silently run the original, so
+    every affected mutant would survive without ever being executed.
+    Typical trigger: the mutated tree is imported under a root (for
+    example an ``extra_paths`` entry) that the mutant names do not strip.
+
+    The gate fails closed before any verdict producer; the CLI renders it
+    like every other domain error ("Error: …" on stderr, exit 1).
+    """
+
+
 class UnsupportedPytestVersionError(OrchestratorError):
     """The target venv's pytest is outside the validated execution range.
 
