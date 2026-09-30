@@ -90,6 +90,110 @@ def test_sharing_violation_holder_blocks_open(tmp_path: Path) -> None:
         pass
 
 
+def test_sharing_violation_second_holder_raises_winerror_32_before_yield(tmp_path: Path) -> None:
+    """AR-13 (PERF-005/TQ-004): a second holder must fail before the context body.
+
+    Without an explicit restype CreateFileW returned ``c_int(-1)`` while
+    ``INVALID_HANDLE_VALUE`` is the unsigned pointer value, so the equality
+    check never matched: the body was entered despite ERROR_SHARING_VIOLATION
+    and the finally's CloseHandle(INVALID_HANDLE_VALUE) replaced the real
+    error 32 with error 6.
+    """
+    path = tmp_path / "held.txt"
+    path.write_bytes(b"payload")
+
+    second_body_entered = False
+    with (
+        windows_fs_util.sharing_violation_holder(path),
+        pytest.raises(OSError, match=r"sharing violation holder \(error 32\)") as excinfo,
+        windows_fs_util.sharing_violation_holder(path),
+    ):
+        second_body_entered = True
+
+    assert not second_body_entered, "second holder must fail before the context body"
+    assert excinfo.value.winerror == 32, "ERROR_SHARING_VIOLATION must survive cleanup"
+
+
+def test_sharing_violation_holder_native_signatures_declared() -> None:
+    """CreateFileW/CloseHandle need pointer-width HANDLE signatures (AR-13).
+
+    Mirrors the production contract pinned for ``job_object._kernel32``
+    (audit A2-JT-006): ctypes defaults every untyped binding to ``c_int``,
+    truncating 64-bit HANDLE values on Win64.
+    """
+    from ctypes import wintypes
+
+    kernel32 = windows_fs_util._kernel32
+
+    assert tuple(kernel32.CreateFileW.argtypes or ()) == (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,  # lpSecurityAttributes (wintypes has no LPSECURITY_ATTRIBUTES on 3.14)
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    assert kernel32.CreateFileW.restype is wintypes.HANDLE
+    assert tuple(kernel32.CloseHandle.argtypes or ()) == (wintypes.HANDLE,)
+    assert kernel32.CloseHandle.restype is wintypes.BOOL
+
+
+def test_valid_holder_closes_acquired_handle_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AR-13 acceptance: close exactly the acquired 64-bit handle, exactly once.
+
+    Spies on the module's own kernel32 binding: one CreateFileW, one
+    successful CloseHandle with the full pointer-width value, and never a
+    CloseHandle on INVALID_HANDLE_VALUE.
+    """
+    path = tmp_path / "held.txt"
+    path.write_bytes(b"payload")
+
+    kernel32 = windows_fs_util._kernel32
+    real_create = kernel32.CreateFileW
+    real_close = kernel32.CloseHandle
+    create_results: list[object] = []
+    close_results: list[tuple[object, object]] = []
+
+    def spying_create(*args: object) -> object:
+        result = real_create(*args)
+        create_results.append(result)
+        return result
+
+    def spying_close(handle_value: object) -> object:
+        result = real_close(handle_value)
+        close_results.append((handle_value, result))
+        return result
+
+    monkeypatch.setattr(kernel32, "CreateFileW", spying_create)
+    monkeypatch.setattr(kernel32, "CloseHandle", spying_close)
+
+    with windows_fs_util.sharing_violation_holder(path):
+        pass
+
+    assert len(create_results) == 1
+    acquired = create_results[0]
+    assert isinstance(acquired, int)
+    assert acquired != windows_fs_util._INVALID_HANDLE_VALUE
+    assert close_results == [(acquired, 1)]
+
+
+def test_sharing_violation_holder_repeated_use_leaks_no_handles(tmp_path: Path) -> None:
+    """AR-13 acceptance: repeated acquire/release cycles must not leak handles."""
+    import psutil
+
+    path = tmp_path / "held.txt"
+    path.write_bytes(b"payload")
+    baseline = psutil.Process().num_handles()
+    for _ in range(5):
+        with windows_fs_util.sharing_violation_holder(path):
+            pass
+    assert psutil.Process().num_handles() <= baseline, "holder handles must be closed"
+
+
 def test_near_max_length_path_reaches_component_limit(tmp_path: Path) -> None:
     path = windows_fs_util.near_max_length_path(tmp_path, suffix=".txt")
     assert len(path.name) == 255

@@ -25,6 +25,7 @@ from __future__ import annotations
 import _winapi
 import contextlib
 import ctypes
+import ctypes.wintypes
 import msvcrt
 import os
 import stat
@@ -52,6 +53,31 @@ _SHARE_MODE_NONE = 0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 #: NTFS caps path components at 255 UTF-16 code units.
 _MAX_COMPONENT_UTF16_UNITS = 255
+
+# A private WinDLL instance with use_last_error=True (same contract as the
+# production ``mutmut_win.process.job_object`` bindings): ctypes captures the
+# thread-local Win32 error immediately after every foreign call, so
+# ``ctypes.get_last_error()`` reports the real error code.
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+# Explicit C signatures (AR-13 / PERF-005 / TQ-004; same pattern as
+# job_object._kernel32, audit A2-JT-006). Without argtypes/restype ctypes
+# defaults every binding to c_int: INVALID_HANDLE_VALUE then arrives as
+# signed -1 instead of the unsigned pointer value stored above, and 64-bit
+# HANDLE arguments are truncated before CloseHandle on Win64. With HANDLE as
+# restype, a NULL result is returned as ``None``.
+_kernel32.CreateFileW.argtypes = [
+    ctypes.wintypes.LPCWSTR,  # lpFileName
+    ctypes.wintypes.DWORD,  # dwDesiredAccess
+    ctypes.wintypes.DWORD,  # dwShareMode
+    ctypes.wintypes.LPVOID,  # lpSecurityAttributes (LPSECURITY_ATTRIBUTES; always None here)
+    ctypes.wintypes.DWORD,  # dwCreationDisposition
+    ctypes.wintypes.DWORD,  # dwFlagsAndAttributes
+    ctypes.wintypes.HANDLE,  # hTemplateFile
+]
+_kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+_kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]  # hObject
+_kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
 
 class JunctionUnavailableError(RuntimeError):
@@ -150,13 +176,18 @@ def sharing_violation_holder(path: Path) -> Iterator[Path]:
 
     Yields:
         The same path while the sharing-violation handle is open.
+
+    Raises:
+        OSError: Carrying the native ``winerror`` when CreateFileW fails —
+            for example 32 (``ERROR_SHARING_VIOLATION``) when another holder
+            already owns the file. The context body is never entered and no
+            handle is closed in that case.
     """
 
     if not path.is_file():
         msg = f"sharing_violation_holder requires an existing file, got {path}"
         raise OSError(msg)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.CreateFileW(
+    handle = _kernel32.CreateFileW(
         str(path),
         _GENERIC_READ,
         _SHARE_MODE_NONE,
@@ -165,13 +196,16 @@ def sharing_violation_holder(path: Path) -> Iterator[Path]:
         0,
         None,
     )
-    if handle == _INVALID_HANDLE_VALUE:
-        msg = f"CreateFileW failed for sharing violation holder (error {ctypes.get_last_error()})"
-        raise OSError(msg)
+    # Capture the Win32 error before any further call can replace it, and
+    # never yield — or close — a handle that was not acquired (AR-13).
+    if handle is None or handle == _INVALID_HANDLE_VALUE:
+        error_code = ctypes.get_last_error()
+        msg = f"CreateFileW failed for sharing violation holder (error {error_code})"
+        raise OSError(error_code, msg, str(path), error_code)
     try:
         yield path
     finally:
-        kernel32.CloseHandle(handle)
+        _kernel32.CloseHandle(handle)
 
 
 def near_max_length_path(directory: Path, suffix: str = ".txt") -> Path:
