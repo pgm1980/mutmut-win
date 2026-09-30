@@ -909,6 +909,23 @@ def run(
             click.echo(message, err=True)
             _emit_json_error(json_stdout, message, 1)
             sys.exit(1)
+        except KeyboardInterrupt as exc:
+            # M-076 / issue #160: Ctrl-C landing outside the worker event
+            # loop (fingerprinting prelude, generation, clean run, stats,
+            # forced-fail, type check, --dry-run, post-processing) used to
+            # escape to Click's standalone abort handling — "Aborted!" and
+            # exit 1, with an empty stdout even under --output json. Exit
+            # 130 is reserved for user interrupts in the documented run
+            # contract; the orchestrator has already marked an existing DB
+            # run as 'interrupted' before re-raising. Notes attached by the
+            # orchestrator (e.g. a failed cached-verdict revocation) are
+            # surfaced instead of swallowed.
+            for note in getattr(exc, "__notes__", ()):
+                click.echo(f"Note: {note}", err=True)
+            message = "Run interrupted before completion (Ctrl-C); no score was produced."
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 130)
+            sys.exit(130)
 
     # --- Output ---
     if output == "json":

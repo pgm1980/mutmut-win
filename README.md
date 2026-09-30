@@ -199,8 +199,11 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 Exit codes of `run`: `0` success, `1` runtime failure, failed
 `--min-score` gate or aborted run (worker pool collapsed — the unchecked
 remainder is reported and the score gate is skipped), `2` invalid
-configuration or option value, `130` interrupted (Ctrl-C — partial
-results are persisted, the score gate is skipped).
+configuration or option value, `130` interrupted (Ctrl-C — partial results
+are persisted, the score gate is skipped). `130` covers every Ctrl-C during
+`run`, including phases before the worker pool starts; when no result JSON
+exists yet (`--output json`), a JSON error object with `exit_code: 130` is
+emitted on stdout instead.
 
 ### Execution-basis diagnostics
 
