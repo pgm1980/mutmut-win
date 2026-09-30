@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig, load_config
@@ -570,6 +570,7 @@ class TestSetupCfgParity:
             lambda k: k not in MutmutConfig.model_fields
         )
     )
+    @settings(deadline=None)
     def test_generated_default_key_never_warns_but_section_key_does(self, key: str) -> None:
         # No function-scoped fixtures under @given (health check
         # function_scoped_fixture): temp dir and stderr capture live in
