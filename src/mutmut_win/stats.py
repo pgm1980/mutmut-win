@@ -25,6 +25,7 @@ import os
 import stat
 import sys
 import sysconfig
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -53,9 +54,44 @@ from mutmut_win.gitignore_boundary import GitignoreBoundary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import BinaryIO
 
     from mutmut_win.config import MutmutConfig
     from mutmut_win.runner import PytestRunner
+
+#: Delays between bounded re-open attempts for transient Windows sharing
+#: violations in ``_open_for_hash``.
+_CONTEXT_OPEN_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5)
+
+#: ``ERROR_SHARING_VIOLATION``: another process holds the file without
+#: ``FILE_SHARE_READ`` while we try to open it for hashing.  Range locks
+#: (winerror 33) surface on read, not open, and stay covered by the
+#: orchestrator's snapshot re-observation instead of this open-level retry.
+_SHARING_VIOLATION_WINERROR: int = 32
+
+
+def _open_for_hash(path: Path) -> BinaryIO:
+    """Open ``path`` for hashing, retrying only transient sharing violations.
+
+    A freshly published or concurrently scanned input file can be briefly
+    held without ``FILE_SHARE_READ`` (antivirus, indexer); such opens are
+    retried with bounded delays.  Every other ``PermissionError`` (for
+    example ACL denial, winerror 5) and every exhausted retry re-raises so
+    the caller keeps its fail-closed ``unreadable:`` verdict.
+    """
+
+    last: PermissionError | None = None
+    for delay in (None, *_CONTEXT_OPEN_RETRY_DELAYS):
+        if delay is not None:
+            time.sleep(delay)
+        try:
+            return path.open("rb")
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) != _SHARING_VIOLATION_WINERROR:
+                raise
+            record_event("hash-open-retry", path=str(path))
+            last = exc
+    raise last  # type: ignore[misc]
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:
@@ -421,7 +457,7 @@ def _hash_context_file(
         if absolute in seen:
             hasher.update(b"already-hashed\0")
             return True
-        with absolute.open("rb") as stream:
+        with _open_for_hash(absolute) as stream:
             before = os.fstat(stream.fileno())
             _record_file_observation("before", before)
             if not stat.S_ISREG(before.st_mode):
@@ -442,7 +478,7 @@ def _hash_context_file(
             # On POSIX this catches rename-and-replace; on Windows it avoids
             # comparing ``fstat().st_ctime`` with the path-stat value, whose
             # semantics differ on current CPython releases.
-            with absolute.open("rb") as rebound:
+            with _open_for_hash(absolute) as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
                 _record_file_observation("rebound", rebound_handle)
         if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
