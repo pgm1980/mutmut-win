@@ -6,7 +6,6 @@ Ported from mutmut 3.5.0 ResultBrowser, adapted to use mutmut_win's DB layer.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from threading import Thread
@@ -24,12 +23,13 @@ from mutmut_win.db import (
     RunBasisIncompleteness,
     known_run_basis_incompleteness,
 )
-from mutmut_win.exceptions import CacheEnvironmentError, CorruptCacheError
+from mutmut_win.exceptions import CacheEnvironmentError, CorruptCacheError, ProcessContainmentError
 from mutmut_win.models import (
     MutationResult,
     SourceFileMutationData,
     read_owned_source_metadata,
 )
+from mutmut_win.process.foreground import run_foreground_contained
 
 if TYPE_CHECKING:
     from textual.binding import Binding
@@ -584,7 +584,15 @@ class ResultBrowser(App[None]):
         return str(row[0]) if row else None
 
     def _run_subprocess_command(self, command: str, args: list[str]) -> None:
-        """Suspend the TUI, run a mutmut-win sub-command, then resume.
+        """Suspend the TUI, run a contained mutmut-win sub-command, then resume.
+
+        The child runs inside a kill-on-close Windows Job Object
+        (:func:`mutmut_win.process.foreground.run_foreground_contained`), so
+        a hard TUI death (window close, Task Manager) cannot leave the
+        mutation-run process tree running (M-057 / issue #158).  Containment
+        is fail-closed: when no Job Object can be established the failure is
+        reported on the suspended console and NO uncontained fallback launch
+        happens.
 
         Args:
             command: Sub-command name (e.g. ``"run"``).
@@ -593,7 +601,12 @@ class ResultBrowser(App[None]):
         with self.suspend():
             subprocess_args = [sys.executable, "-m", "mutmut_win", command, *args]
             print(">", *subprocess_args)
-            subprocess.run(subprocess_args, check=False)  # noqa: S603 — controlled invocation
+            try:
+                exit_code = run_foreground_contained(subprocess_args)
+            except ProcessContainmentError as exc:
+                print(f"refusing to start an uncontained child: {exc}")
+            else:
+                print(f"[{command} exit code: {exit_code}]")
             input("Press Enter to return to browser...")
 
         self._read_data()

@@ -154,6 +154,13 @@ tags are immutable release provenance and are never moved or deleted.
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
 
+All `browse` TUI actions (`r`/`f`/`m`/`a`/`t`) run their `mutmut-win`
+sub-command inside a Windows Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: if the TUI dies hard, the kernel
+terminates the whole child process tree. When no Job Object can be
+established the action is refused outright — there is no uncontained
+fallback.
+
 `run` persists a new run attempt before staging or generation starts and
 finalizes its exact mutant plan only after successful generation. `results`,
 `browse`, and `export-cicd-stats` use that current run snapshot as their
