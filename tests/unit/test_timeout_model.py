@@ -20,21 +20,29 @@ timeout any suite that takes longer than a minute.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
+from mutmut_win.db import load_current_run
+from mutmut_win.exceptions import InvalidConfigValueError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.orchestrator import (
     _FALLBACK_TIMEOUT,
+    _MAX_TIMEOUT,
     _MIN_TIMEOUT,
     MutationOrchestrator,
     _apply_timeouts,
+    _assign_tests_to_tasks,
     _compute_startup_floor,
 )
+from mutmut_win.stats import MutmutStats
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -200,3 +208,145 @@ class TestRunAnnouncesTheTimeoutModel:
         # The mocked clean run returns instantly -> the floor clamps to the
         # minimum; the line shows the actual number used.
         assert f"{_MIN_TIMEOUT:.1f}s" in out
+
+
+class TestBudgetUpperBound:
+    """M-103 / EDGE-05: unusable budgets fail closed before dispatch.
+
+    A finite-but-extreme ``timeout_multiplier`` (config only requires
+    ``gt=0``/``allow_inf_nan=False``) overflows the fallback budget to
+    ``inf`` or far past the ceiling.  ``model_copy`` does not validate, so
+    the worker would pass ``inf``/huge values into the Windows wait
+    primitives, which silently truncate at the DWORD boundary instead of
+    timing out — the check must live in ``_apply_timeouts``.
+    """
+
+    def test_extreme_finite_multiplier_fails_closed(self) -> None:
+        # max(60, 2.0 * 1e308) == inf.
+        with pytest.raises(InvalidConfigValueError, match="timeout_multiplier"):
+            _apply_timeouts([_task()], {}, 1e308, startup_floor=5.0, clean_wall_seconds=2.0)
+
+    def test_finite_budget_above_the_ceiling_fails_closed(self) -> None:
+        # 5000s x 1000 = 5e6s: finite, but far above _MAX_TIMEOUT — the
+        # bound is not an infinity check in disguise.
+        with pytest.raises(InvalidConfigValueError, match="clean-run wall time 5000s"):
+            _apply_timeouts([_task()], {}, 1000.0, startup_floor=5.0, clean_wall_seconds=5000.0)
+
+    def test_budget_at_the_ceiling_is_accepted(self) -> None:
+        [result] = _apply_timeouts(
+            [_task()], {}, 10.0, startup_floor=5.0, clean_wall_seconds=_MAX_TIMEOUT / 10.0
+        )
+        assert result.timeout_seconds == pytest.approx(_MAX_TIMEOUT)
+
+    def test_authoritative_branch_is_bounded_too(self) -> None:
+        task = _task(tests=["t1"], test_selection_is_authoritative=True)
+        with pytest.raises(InvalidConfigValueError, match="estimated test time"):
+            _apply_timeouts([task], {"t1": 1e300}, 1e6, startup_floor=5.0, clean_wall_seconds=1.0)
+
+
+class TestPipelineRejectsUnusableBudgets:
+    def test_extreme_multiplier_aborts_before_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src"
+        source.mkdir()
+        (source / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+        executor = MagicMock()
+        runner = MagicMock()
+        runner.run_clean_test.return_value = 0
+        runner.run_forced_fail.return_value = 1
+        runner.run_stats.return_value = None
+        runner.collect_tests.return_value = []
+        orch = MutationOrchestrator(
+            MutmutConfig(max_children=1, timeout_multiplier=1e308, paths_to_mutate=["src"]),
+            runner=runner,
+            executor=executor,
+            db_path=tmp_path / "budget.sqlite",
+        )
+
+        with pytest.raises(InvalidConfigValueError, match="timeout_multiplier"):
+            orch.run()
+        assert executor.start.call_count == 0
+        current = load_current_run(tmp_path / "budget.sqlite")
+        assert current is not None
+        assert current.status == "failed"
+
+
+class TestBudgetBoundsProperty:
+    @settings(max_examples=100, deadline=None)
+    @given(
+        multiplier=st.floats(
+            min_value=1e-6, max_value=1e308, allow_nan=False, allow_infinity=False
+        ),
+        clean=st.floats(min_value=0.0, max_value=1e7, allow_nan=False, allow_infinity=False),
+    )
+    def test_fallback_budget_is_finite_and_bounded_or_rejected(
+        self, multiplier: float, clean: float
+    ) -> None:
+        try:
+            [result] = _apply_timeouts(
+                [_task()], {}, multiplier, startup_floor=5.0, clean_wall_seconds=clean
+            )
+        except InvalidConfigValueError:
+            return
+        assert math.isfinite(result.timeout_seconds)
+        assert 0 < result.timeout_seconds <= _MAX_TIMEOUT
+
+    @settings(max_examples=75, deadline=None)
+    @given(
+        multiplier=st.floats(
+            min_value=1e-6, max_value=1e308, allow_nan=False, allow_infinity=False
+        ),
+        estimated=st.floats(min_value=1e-9, max_value=1e300, allow_nan=False, allow_infinity=False),
+        floor=st.floats(min_value=0.0, max_value=1e6, allow_nan=False, allow_infinity=False),
+    )
+    def test_authoritative_budget_is_finite_and_bounded_or_rejected(
+        self, multiplier: float, estimated: float, floor: float
+    ) -> None:
+        task = _task(tests=["t1"], test_selection_is_authoritative=True)
+        try:
+            [result] = _apply_timeouts(
+                [task], {"t1": estimated}, multiplier, startup_floor=floor, clean_wall_seconds=1.0
+            )
+        except InvalidConfigValueError:
+            return
+        assert math.isfinite(result.timeout_seconds)
+        assert 0 < result.timeout_seconds <= _MAX_TIMEOUT
+
+
+class TestProductionFallbackRule:
+    """M-102 characterization: pin the ACTUAL production budget rule.
+
+    A docstring correction cannot rot green; this test protects the
+    documented claim against silent drift: after ``_assign_tests_to_tasks``
+    overwrites the authority bit with ``MutmutStats.mapping_is_authoritative``
+    (always False with the current collector), every task — even WITH
+    timing data — receives the full-suite fallback budget.
+    """
+
+    def test_non_authoritative_mapping_gives_timing_tasks_the_full_suite_budget(
+        self,
+    ) -> None:
+        tasks = _assign_tests_to_tasks(
+            [_task("calc.x_add__mutmut_1")],
+            MutmutStats(
+                tests_by_mangled_function_name={"calc.x_add": {"tests/test_calc.py::test_add"}},
+                duration_by_test={"tests/test_calc.py::test_add": 30.0},
+                mapping_is_authoritative=False,
+            ),
+        )
+        [assigned] = tasks
+        assert assigned.tests  # scheduling hint present
+        assert assigned.test_selection_is_authoritative is False
+
+        [budgeted] = _apply_timeouts(
+            tasks,
+            {"tests/test_calc.py::test_add": 30.0},
+            2.0,
+            startup_floor=5.0,
+            clean_wall_seconds=100.0,
+        )
+        assert budgeted.estimated_time > 0
+        assert budgeted.timeout_seconds == pytest.approx(max(_FALLBACK_TIMEOUT, 100.0 * 2.0))

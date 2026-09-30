@@ -1,0 +1,9 @@
+[project]
+name = "extra-paths-layout-fixture"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.mutmut]
+paths_to_mutate = ["lib/pkg"]
+extra_paths = ["lib"]
+tests_dir = ["tests/"]

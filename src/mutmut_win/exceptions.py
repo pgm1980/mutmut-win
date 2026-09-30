@@ -22,8 +22,13 @@ class StagingNamespaceCollisionError(ConfigError):
 class InvalidConfigValueError(ConfigError):
     """A specific configuration value failed validation.
 
-    Producer: config loading wraps pydantic validation failures
-    (issue #114 / A4-QX-006 — the class used to exist without one).
+    Producers: config loading wraps pydantic validation failures
+    (issue #114 / A4-QX-006 — the class used to exist without one), and
+    the orchestrator's timeout-budget validation rejects computed budgets
+    that are not finite or exceed the dispatch ceiling (M-103 / EDGE-05).
+    The latter surfaces through ``run`` as a domain error ("Error: …" on
+    stderr, exit 1), because only the orchestrator knows the measured
+    wall time behind the product — it is not a config-load failure.
     """
 
 
@@ -72,6 +77,24 @@ class CleanTestFailedError(OrchestratorError):
 
 class ForcedFailError(OrchestratorError):
     """The forced-fail validation test failed."""
+
+
+class MutantNameDispatchError(OrchestratorError):
+    """A runtime function key recorded by the stats run cannot address a mutant.
+
+    Producer: the orchestrator's name-consistency gate
+    (``_verify_runtime_mutant_names``, M-053) compares the trampoline hit
+    keys (``orig.__module__ + '.' + orig.__name__``) with the function keys
+    of every generated mutant.  A dotted-suffix divergence proves that the
+    worker's ``MUTANT_UNDER_TEST`` name can never match the trampoline's
+    dispatch prefix — the trampoline would silently run the original, so
+    every affected mutant would survive without ever being executed.
+    Typical trigger: the mutated tree is imported under a root (for
+    example an ``extra_paths`` entry) that the mutant names do not strip.
+
+    The gate fails closed before any verdict producer; the CLI renders it
+    like every other domain error ("Error: …" on stderr, exit 1).
+    """
 
 
 class UnsupportedPytestVersionError(OrchestratorError):

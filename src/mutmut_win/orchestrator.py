@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,8 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    InvalidConfigValueError,
+    MutantNameDispatchError,
     MutationSurfaceDegradedWarning,
     OrchestratorError,
     StaleStagingError,
@@ -66,7 +69,11 @@ from mutmut_win.stats import (
     collect_or_load_stats,
     context_allows_result_reuse,
 )
-from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
+from mutmut_win.test_mapping import (
+    mangled_name_from_mutant_name,
+    match_mutant_names,
+    tests_for_mutant_names,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -85,6 +92,18 @@ _MIN_TIMEOUT: float = 5.0
 #: (the budget scales with the measured clean-run wall time above this) —
 #: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
+
+#: Upper bound for any single mutation-task timeout budget (M-103 / EDGE-05).
+#: Windows' WaitForSingleObject — the timeout primitive beneath every
+#: subprocess wait — accepts DWORD milliseconds, silently truncates values
+#: at or above 2**32 ms (~49.7 days), and treats 0xFFFFFFFF as INFINITE;
+#: ``Popen.wait(timeout=inf)`` only raises OverflowError deep inside the
+#: worker's recovery path.  A finite-but-unusable budget (for example
+#: ``timeout_multiplier=1e308`` overflowing the fallback product to inf)
+#: must therefore fail closed at dispatch time: 2_000_000 s (~23 days)
+#: stays safely inside the DWORD range while remaining far beyond any
+#: legitimate suite budget.
+_MAX_TIMEOUT: float = 2_000_000.0
 
 #: Bounded re-observation delays when at least one basis snapshot in a
 #: stability proof is incomplete (transiently locked or unreadable inputs).
@@ -230,7 +249,12 @@ class MutationOrchestrator:
     1. Walk source files and generate mutants (via ``mutation.mutate_file_contents``).
     2. Run clean test baseline to ensure the suite passes without mutations.
     3. Collect per-test timing statistics.
-    4. Run a forced-fail check to verify the trampoline mechanism.
+    4. Verify name dispatch and the trampoline: a consistency gate matches
+       the runtime function keys recorded by the stats run against the
+       generated mutant names (a divergent import root would silently run
+       originals), then a forced-fail run proves the trampoline wrapper is
+       installed and reads ``MUTANT_UNDER_TEST`` — the global 'fail'
+       sentinel does not switch a concrete mutant.
     5. Build ``MutationTask`` objects with computed wall-clock timeouts.
     6. Start a ``SpawnPoolExecutor`` and stream events.
     7. Map exit codes to statuses, persist results, return summary.
@@ -892,11 +916,21 @@ class MutationOrchestrator:
         )
         _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
+        # M-053: prove NAME dispatch before any verdict producer.  The
+        # forced-fail run below only proves that the trampoline wrapper is
+        # installed and reads MUTANT_UNDER_TEST (its 'fail' sentinel
+        # terminates before the prefix dispatch); the stats keys above are
+        # the only runtime evidence for the actual mutant-name dispatch.
+        _verify_runtime_mutant_names(all_generated_names, mutmut_stats)
+
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
         # ------------------------------------------------------------------
         print("Running forced-fail verification…")
-        # Pick the first mutant name as the activation token.
+        # NOTE (M-053): this name is NOT an activation token — the forced
+        # fail run activates the global 'fail' sentinel, whose trampoline
+        # branch terminates before the name-prefix dispatch.  Name-based
+        # dispatch is proven by _verify_runtime_mutant_names above.
         first_mutant = all_tasks[0].mutant_name
         ff_exit = self._runner.run_forced_fail(first_mutant)
         if ff_exit == 0:
@@ -1712,16 +1746,26 @@ def _apply_timeouts(
 ) -> list[MutationTask]:
     """Return a copy of *tasks* with ``timeout_seconds`` computed from *stats*.
 
-    The budget for a task with timing data is
-    ``max(_MIN_TIMEOUT, startup_floor + estimated_time * multiplier)`` —
-    the additive floor covers the constant process overhead the multiplier
-    cannot scale (issue #105 / DOG-001: 175/244 pilot mutants timed out
-    with FINISHED pytest summaries in their tails).
+    The selective per-test budget ``max(_MIN_TIMEOUT, startup_floor +
+    estimated_time * multiplier)`` applies ONLY when the task has a
+    non-empty ``tests`` selection, ``test_selection_is_authoritative`` is
+    True, AND the estimated time is greater than zero — the additive floor
+    covers the constant process overhead the multiplier cannot scale
+    (issue #105 / DOG-001: 175/244 pilot mutants timed out with FINISHED
+    pytest summaries in their tails).
 
-    Without any timing data the task runs the full suite, so its budget is
-    ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)`` — the
-    measured wall time of exactly such a run; a flat 60s would pseudo-
-    timeout every suite that takes longer than a minute.
+    Every other task runs the FULL suite (no node-id arguments), so its
+    budget is ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)``
+    — the measured wall time of exactly such a run; a flat 60s would
+    pseudo-timeout every suite that takes longer than a minute (issue
+    #130 / 360°-B3).  The authority bit decides which branch runs: the
+    pipeline always calls :func:`_assign_tests_to_tasks` first, which
+    overwrites it with ``MutmutStats.mapping_is_authoritative`` — False
+    on every production path of the current collector — so the fallback
+    is the NORMAL case even for tasks WITH timing data, and the selective
+    branch is reachable only for directly constructed (test) tasks
+    despite the ``MutationTask`` field default of True.  See the README
+    section "Map & budget".
 
     ``estimated_time`` stays free of the floor: it means "estimated TEST
     runtime" and feeds the independent mutant-task sort.
@@ -1735,6 +1779,15 @@ def _apply_timeouts(
 
     Returns:
         New list of ``MutationTask`` instances with updated timeout values.
+
+    Raises:
+        InvalidConfigValueError: If a computed budget is not finite or
+            exceeds ``_MAX_TIMEOUT``.  Such a budget (for example from an
+            extreme finite ``timeout_multiplier``) would silently truncate
+            inside the Windows wait primitives instead of timing out, so
+            it fails closed before any dispatch.  The error surfaces
+            through ``run`` as a domain error (exit 1), because only the
+            orchestrator knows the measured wall time behind the product.
     """
     updated: list[MutationTask] = []
     for task in tasks:
@@ -1748,6 +1801,7 @@ def _apply_timeouts(
 
         if task.tests and task.test_selection_is_authoritative and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
+            base = f"estimated test time {estimated:g}s"
         else:
             # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
             # FULL suite (no node-id args) — budget it like one. The old
@@ -1756,6 +1810,17 @@ def _apply_timeouts(
             # never imported by tests). The mean still feeds the independent
             # mutant-task sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
+            base = f"clean-run wall time {clean_wall_seconds:g}s"
+
+        if not math.isfinite(timeout) or timeout > _MAX_TIMEOUT:
+            raise InvalidConfigValueError(
+                f"timeout_multiplier={multiplier!r} applied to the {base} "
+                f"produces an unusable timeout budget of {timeout!r}s for "
+                f"mutant {task.mutant_name!r}. Budgets must stay finite and "
+                f"at or below {_MAX_TIMEOUT:.0f}s — larger values silently "
+                "truncate inside the Windows wait primitives instead of "
+                "timing out. Reduce [tool.mutmut].timeout_multiplier."
+            )
 
         updated.append(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})
@@ -1799,6 +1864,121 @@ def _assign_tests_to_tasks(
             )
         )
     return result
+
+
+def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutStats) -> None:
+    """Fail closed when a runtime function key cannot address any mutant.
+
+    The stats run records trampoline hits under the RUNTIME name of each
+    mutated function — ``orig.__module__ + '.' + orig.__name__`` — while
+    mutant names are built from the staged PATH via
+    :func:`mutmut_win.file_setup.get_mutant_name`, which strips only the
+    ``src``/``source`` roots.  Workers activate a mutant through
+    ``MUTANT_UNDER_TEST=<mutant name>`` and the trampoline compares that
+    value against its own runtime prefix: on divergence it silently calls
+    the original, so every affected mutant survives without ever running.
+
+    This gate derives the function key of EVERY generated mutant (the
+    complete pre-filter set — partial ``--mutant-names`` runs must not
+    narrow the proof) and compares it with the recorded runtime keys.  A
+    runtime key ``k`` that is not itself a generated key but is
+    dotted-suffix-related to a generated key ``g`` proves the divergence —
+    but only when ``g`` was never observed at runtime; a ``g`` observed
+    under both names is a double import, which only warrants a warning.
+    Runtime keys with NO suffix relation to any generated key are ignored:
+    stale cache keys prove nothing.  Names without a well-formed numeric
+    ``__mutmut_`` suffix are skipped — they cannot be trampoline-dispatched
+    and generation well-formedness is owned elsewhere.
+
+    Invariant (``mutation.py`` emits trampolines only for functions with at
+    least one mutant): in a consistent layout the runtime keys are a subset
+    of the generated function keys, so the suffix relation is a
+    conservative narrowing — an unmutated function can never trigger it.
+
+    Args:
+        all_generated_names: Complete set of generated mutant names,
+            captured before any ``--mutant-names``/type-checker filtering.
+        stats: Timing stats whose ``tests_by_mangled_function_name`` keys
+            carry the runtime function names recorded by the stats run.
+
+    Raises:
+        MutantNameDispatchError: If a runtime key proves that name-based
+            dispatch can never reach its suffix-related generated mutant.
+    """
+    generated_keys: set[str] = set()
+    for name in all_generated_names:
+        try:
+            generated_keys.add(mangled_name_from_mutant_name(name))
+        except ValueError:
+            continue
+    if not generated_keys or not stats.tests_by_mangled_function_name:
+        return
+
+    # Index every dotted suffix of every generated key once, so the
+    # ``g.endswith('.' + k)`` lookup stays linear in the runtime keys.
+    suffix_index: dict[str, list[str]] = {}
+    for key in generated_keys:
+        remainder = key
+        while True:
+            suffix_index.setdefault(remainder, []).append(key)
+            dot = remainder.find(".")
+            if dot == -1:
+                break
+            remainder = remainder[dot + 1 :]
+
+    def _generated_suffixes_of(key: str) -> set[str]:
+        # Reverse direction (k.endswith('.' + g)): every dotted suffix of
+        # the runtime key that is itself a generated key.
+        found: set[str] = set()
+        remainder = key
+        while True:
+            if remainder in generated_keys:
+                found.add(remainder)
+            dot = remainder.find(".")
+            if dot == -1:
+                break
+            remainder = remainder[dot + 1 :]
+        return found
+
+    runtime_keys = set(stats.tests_by_mangled_function_name)
+    divergent: list[tuple[str, str]] = []
+    for runtime_key in sorted(runtime_keys):
+        if runtime_key in generated_keys:
+            continue
+        related = sorted(
+            set(suffix_index.get(runtime_key, [])) | _generated_suffixes_of(runtime_key)
+        )
+        if not related:
+            continue
+        unobserved = [g for g in related if g not in runtime_keys]
+        if unobserved:
+            divergent.append((runtime_key, unobserved[0]))
+        else:
+            # Every suffix twin was observed under its generated name too:
+            # a double import (module reachable under two names), which
+            # still dispatches correctly — warn, do not abort.
+            print(
+                f"Warning: runtime function key {runtime_key!r} and generated key(s) "
+                f"{', '.join(repr(g) for g in related)} were both observed at "
+                "runtime — the module appears to be imported under two names. "
+                "mutmut-win dispatches the generated key; verify the import layout."
+            )
+    if not divergent:
+        return
+    examples = "\n".join(
+        f"  {runtime_key!r} != {generated_key!r}" for runtime_key, generated_key in divergent[:5]
+    )
+    more = f"\n  … and {len(divergent) - 5} more" if len(divergent) > 5 else ""
+    raise MutantNameDispatchError(
+        "the runtime function names recorded by the stats run cannot address "
+        "the generated mutants — the trampoline would silently run the "
+        f"originals:\n{examples}{more}\n"
+        "The mutated tree appears to be imported under a root (for example an "
+        "extra_paths entry, or a literal src/source package) that the mutant "
+        "names do not strip. Align paths_to_mutate with the import roots the "
+        "tests actually use, so mutant names equal "
+        "'<runtime module>.<mangled function>'."
+    )
 
 
 def _filter_with_type_checker(
