@@ -124,3 +124,65 @@ class TestTrackedIgnoredSourceInSelection:
 
         assert "src/x_gen.py" not in sources
         assert "src/ok.py" in sources
+
+
+class TestNestedExplicitRootInRealRepo:
+    """AR-02: nested explicit roots survive in a real git repo (M-001/M-032).
+
+    ``pkg/.gitignore`` excludes the configured root ``pkg/sub``; tracked and
+    untracked content below it must both stay reachable.
+    """
+
+    def _make_nested_root(self, root: Path) -> None:
+        (root / ".gitignore").write_text("nothing/\n", encoding="utf-8")
+        nested = root / "pkg" / "sub"
+        nested.mkdir(parents=True)
+        (root / "pkg" / ".gitignore").write_text("sub/\nsibling/\n", encoding="utf-8")
+        (nested / "api.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        (nested / "other.py").write_text("def g():\n    return 2\n", encoding="utf-8")
+
+    def test_untracked_nested_explicit_root_appears_in_mutation_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Untracked (not force-added) sources below the nested ignored root
+        are selected — the forced reset, not the tracked override, keeps
+        them."""
+        _init_repo(tmp_path)
+        self._make_nested_root(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["pkg/sub"], max_children=1)
+        sources = [str(s).replace("\\", "/") for s in walk_source_files(config)]
+
+        assert "pkg/sub/api.py" in sources
+        assert "pkg/sub/other.py" in sources
+
+    def test_tracked_and_untracked_mix_in_nested_explicit_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A force-added file below the nested root is selected via the
+        tracked override AND its untracked sibling via the forced reset."""
+        _init_repo(tmp_path)
+        self._make_nested_root(tmp_path)
+        _git(tmp_path, "add", "-f", "pkg/sub/api.py")
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["pkg/sub"], max_children=1)
+        sources = [str(s).replace("\\", "/") for s in walk_source_files(config)]
+
+        assert "pkg/sub/api.py" in sources
+        assert "pkg/sub/other.py" in sources
+
+    def test_nested_explicit_root_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _init_repo(tmp_path)
+        self._make_nested_root(tmp_path)
+        (tmp_path / "pkg" / "sibling").mkdir()
+        (tmp_path / "pkg" / "sibling" / "keep.txt").write_text("no\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["pkg/sub"], max_children=1)
+        copy_src_dir(config)
+
+        assert (tmp_path / "mutants" / "pkg" / "sub" / "api.py").is_file()
+        assert (tmp_path / "mutants" / "pkg" / "sub" / "other.py").is_file()
+        # The unconfigured ignored sibling stays out of staging.
+        assert not (tmp_path / "mutants" / "pkg" / "sibling").exists()

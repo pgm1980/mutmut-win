@@ -449,6 +449,101 @@ class TestTrackedIndexOverride:
             gitignore_boundary._load_tracked_index = original_load
 
 
+class TestForcedRootAtNestedBoundary:
+    """AR-02 (COR-002/C-003): the forced-root reset must be decided at the
+    boundary the descent actually reached, not at the walk root.
+
+    ``pkg/.gitignore`` rules load only while descending; a ``descend_forced``
+    branch decision taken on the root boundary never sees them, so the
+    explicit root was pinned as an excluded subtree instead of being reset.
+    """
+
+    def test_nested_gitignore_exclusion_triggers_forced_reset(self, tmp_path: Path) -> None:
+        """An explicit root excluded by a nested ignore file is force-reset."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n"),
+            ("pkg/sub/api.py", "def answer(): return 42\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+
+    def test_forced_root_below_nested_ignore_keeps_its_own_deeper_rules(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Only rules AT or BELOW the forced entry restart governance."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n"),
+            ("pkg/sub/.gitignore", "tmp/\n*.log\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+        assert boundary.excludes_directory("tmp") is True
+        assert boundary.excludes_file("drop.log") is True
+
+    def test_deeply_nested_forced_root_through_two_ignored_levels(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The reset also covers rules pinned by an excluded ancestor chain."""
+        project = _make_project(
+            tmp_path,
+            ("a/.gitignore", "b/\n"),
+            ("a/b/c/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("a", "b", "c")
+        assert boundary.excludes_file("api.py") is False
+
+    def test_forced_reset_discards_ancestral_negation_like_git_add_f(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """``git add -f`` force-adds the whole entry; ancestral negations
+        below an excluded directory cannot re-govern it after the reset."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n!sub/keep.py\n"),
+            ("pkg/sub/keep.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("keep.py") is False
+
+    def test_visible_entry_below_nested_ignore_still_descends_normally(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An entry NOT excluded by the nested rules keeps normal descent, so
+        file patterns from intermediate ignore files still prune inside it."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "*.log\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+        assert boundary.excludes_file("drop.log") is True
+
+    def test_unconfigured_nested_ignored_sibling_stays_excluded(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The forced reset applies to the configured entry only: a sibling
+        excluded by the same nested ignore file stays pruned for walks that
+        descend normally."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\nsibling/\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+            ("pkg/sibling/keep.txt", "keep\n"),
+        )
+        pkg = GitignoreBoundary.load(project).enter("pkg")
+        assert pkg.excludes_directory("sub") is True
+        assert pkg.excludes_directory("sibling") is True
+
+
 class TestUnknownLevelsAndBom:
     """M-015/M-014: broken child levels suspend inherited rules; BOM honoured."""
 

@@ -511,16 +511,20 @@ class GitignoreBoundary:
         it stay pruned — that is the MBR-2026-09-14-01 case: ``tests/`` is
         configured, ``tests/test_project/.lake`` is not.
 
-        The branch decision uses the PURE pattern verdict (without the
-        tracked override): a tracked-ignored configured entry keeps the
-        reset branch so untracked siblings retain their ``git add -f``
-        inclusion semantics (M-001 counter-review correction).
+        The branch decision evaluates the PURE pattern verdict at the
+        boundary the descent actually reached: intermediate ``.gitignore``
+        files load only while descending, so a rule from ``pkg/.gitignore``
+        deciding the fate of ``pkg/sub`` is invisible at the walk root
+        (AR-02 / COR-002).  The tracked override stays out of the decision:
+        a tracked-ignored configured entry keeps the reset branch so
+        untracked siblings retain their ``git add -f`` inclusion semantics
+        (M-001 counter-review correction).
         """
         relative = [part for part in parts if part not in {"", "."}]
         if not relative:
             return self
         parent = self.descend(*relative[:-1])
-        if self._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
+        if parent._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
             directory = self._directory.joinpath(*relative)
             prefix = "/".join(part for part in (self._prefix, *relative) if part)
             level = _load_ignore_level(directory, prefix)
