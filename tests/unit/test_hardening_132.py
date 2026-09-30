@@ -658,9 +658,9 @@ class TestRegexMutationDedup:
         import mutmut_win.regex_mutation as rm
 
         with (
-            patch.object(rm, "_mutate_quantifiers", return_value=["ab", "ab"]),
-            patch.object(rm, "_mutate_char_classes", return_value=["ab"]),
-            patch.object(rm, "_mutate_anchors", return_value=[]),
+            patch.object(rm, "_iter_quantifiers", return_value=["ab", "ab"]),
+            patch.object(rm, "_iter_char_classes", return_value=["ab"]),
+            patch.object(rm, "_iter_anchors", return_value=[]),
         ):
             assert rm.mutate_regex_pattern("a+b") == ["ab"]
 

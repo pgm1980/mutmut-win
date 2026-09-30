@@ -693,3 +693,193 @@ class TestCodepointBoundRanges:
             pattern_arg = mutant.args[0].value
             assert isinstance(pattern_arg, cst.SimpleString)
             assert isinstance(pattern_arg.evaluated_value, str)
+
+
+def _reference_eager(pattern: str) -> list[str]:
+    """Frozen copy of the pre-M-100 eager pipeline (differential oracle)."""
+    import mutmut_win.regex_mutation as rm
+
+    def ref_quantifiers(p: str) -> list[str]:
+        results: list[str] = []
+        class_spans = rm._class_spans(p)
+        for match in rm._QUANTIFIER_RE.finditer(p):
+            if rm._in_class(match.start(), class_spans):
+                continue
+            base, lazy = match.group(1), match.group(2)
+            start, end = match.start(), match.end()
+            is_exact = base.startswith("{") and "," not in base
+            replacements: list[str] = [""]
+            if not lazy and not is_exact:
+                replacements.append(base + "?")
+            if base == "+":
+                replacements.append("*")
+                replacements.append("{2,}")
+            elif base == "*":
+                replacements.append("+")
+            elif base == "?":
+                replacements.append("{1}")
+            else:
+                replacements.extend(rm._brace_variants(base))
+            for repl in replacements:
+                results.append(p[:start] + repl + p[end:])  # noqa: PERF401 — frozen eager oracle
+        return results
+
+    def ref_char_classes(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        for idx, letter in rm._shorthand_positions(p):
+            negated = letter.swapcase()
+            rest = p[idx + 2 :]
+            results.append(f"{p[:idx]}\\{negated}{rest}")
+            results.append(f"{p[:idx]}{letter}{rest}")
+            if not rm._in_class(idx, spans):
+                results.append(f"{p[:idx]}][\\{letter}\\{negated}]{rest}")
+        return results
+
+    def ref_anchors(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        i, n = 0, len(p)
+        while i < n:
+            char = p[i]
+            if char == "\\":
+                if i + 1 < n and p[i + 1] in rm._ESCAPED_ANCHORS and not rm._in_class(i, spans):
+                    results.append(p[:i] + p[i + 2 :])
+                i += 2
+                continue
+            if char in rm._TOP_LEVEL_ANCHORS and not rm._in_class(i, spans):
+                results.append(p[:i] + p[i + 1 :])
+            i += 1
+        return results
+
+    def ref_classes(p: str) -> list[str]:
+        results: list[str] = []
+        for start, end in rm._class_spans(p):
+            inner = p[start + 1 : end - 1]
+            negated = inner.startswith("^")
+            body = inner[1:] if negated else inner
+            mark = "^" if negated else ""
+            before, after = p[:start], p[end:]
+            if negated:
+                results.append(f"{before}[{body}]{after}")
+            else:
+                results.append(f"{before}[^{body}]{after}")
+            results.append(f"{before}[\\w\\W]{after}")
+            if body.startswith("]"):
+                continue
+            members = rm._class_members(body)
+            if len(members) >= 2:
+                for ms, me in members:
+                    results.append(f"{before}[{mark}{body[:ms] + body[me:]}]{after}")
+            for m in rm._RANGE_RE.finditer(body):
+                lo, hi = ord(m.group(1)), ord(m.group(2))
+                for lo2, hi2 in ((lo + 1, hi), (lo, hi - 1)):
+                    if not (
+                        0 <= lo2 <= rm._MAX_UNICODE_CODEPOINT
+                        and 0 <= hi2 <= rm._MAX_UNICODE_CODEPOINT
+                    ):
+                        continue
+                    new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
+                    results.append(f"{before}[{mark}{new_body}]{after}")
+        return results
+
+    def ref_groups(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        i, n = 0, len(p)
+        while i < n:
+            if p[i] == "\\":
+                i += 2
+                continue
+            if p[i] == "(" and not rm._in_class(i, spans):
+                if p[i : i + 3] == "(?=":
+                    results.append(f"{p[:i]}(?!{p[i + 3 :]}")
+                elif p[i : i + 3] == "(?!":
+                    results.append(f"{p[:i]}(?={p[i + 3 :]}")
+                elif p[i : i + 4] == "(?<=":
+                    results.append(f"{p[:i]}(?<!{p[i + 4 :]}")
+                elif p[i : i + 4] == "(?<!":
+                    results.append(f"{p[:i]}(?<={p[i + 4 :]}")
+                elif i + 1 < n and p[i + 1] != "?":
+                    results.append(f"{p[: i + 1]}?:{p[i + 1 :]}")
+            i += 1
+        return results
+
+    mutations: list[str] = []
+    mutations.extend(ref_quantifiers(pattern))
+    mutations.extend(ref_char_classes(pattern))
+    mutations.extend(ref_anchors(pattern))
+    mutations.extend(ref_classes(pattern))
+    mutations.extend(ref_groups(pattern))
+
+    valid: list[str] = []
+    seen: set[str] = set()
+    for m in mutations:
+        if m == pattern or m in seen:
+            continue
+        seen.add(m)
+        if rm._is_valid_regex(m):
+            valid.append(m)
+        if len(valid) >= rm.MAX_MUTATIONS_PER_PATTERN:
+            break
+    return valid
+
+
+class TestLazyCandidateGeneration:
+    """M-100: candidates materialize lazily; the cap also bounds memory."""
+
+    def test_sub_mutators_are_not_materialized_beyond_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.regex_mutation as rm
+
+        def fail_eager(_pattern: str) -> list[str]:
+            raise AssertionError("materialized beyond cap")
+
+        def fail_lazy(_pattern: str) -> list[str]:
+            raise AssertionError("materialized beyond cap")
+            yield ""  # pragma: no cover
+
+        monkeypatch.setattr(rm, "_mutate_char_classes", fail_eager)
+        monkeypatch.setattr(rm, "_iter_char_classes", fail_lazy, raising=False)
+        assert len(rm.mutate_regex_pattern("a?" * 50)) == 12
+
+    def test_lazy_peak_memory_is_fraction_of_eager(self) -> None:
+        import re as re_module
+        import tracemalloc
+
+        import mutmut_win.regex_mutation as rm
+
+        pattern = "a?" * 3000
+        re_module.purge()
+        tracemalloc.start()
+        eager = _reference_eager(pattern)
+        _, eager_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        re_module.purge()
+        tracemalloc.start()
+        lazy = rm.mutate_regex_pattern(pattern)
+        _, lazy_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        assert lazy == eager
+        assert lazy_peak < eager_peak / 5
+
+    @given(
+        p=st.text(alphabet="ab+*?{}[]^$\\d()-,0123", max_size=40),
+    )
+    def test_output_matches_frozen_eager_reference(self, p: str) -> None:
+        import mutmut_win.regex_mutation as rm
+
+        try:
+            expected: object = _reference_eager(p)
+        except Exception:  # the oracle may reject exotic input
+            expected = None
+        try:
+            actual: object = rm.mutate_regex_pattern(p)
+        except Exception:
+            actual = None
+        # None == None covers "both raise"; lazy never raises when eager does not.
+        assert actual == expected

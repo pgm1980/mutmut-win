@@ -23,9 +23,14 @@ survive per pattern.
 
 from __future__ import annotations
 
+import itertools
 import re
 import sys
 import warnings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 #: Highest valid Unicode codepoint (``sys.maxunicode``, 0x10FFFF on the
 #: supported runtime); chr() raises for anything outside ``0.._MAX_UNICODE_CODEPOINT``.
@@ -33,7 +38,10 @@ _MAX_UNICODE_CODEPOINT: int = sys.maxunicode
 
 #: Maximum mutations per single regex pattern (prevents combinatorial explosion
 #: on pathological patterns). Raised in Phase 3 (v2.18.0) from 5 so the full
-#: 14-sub-mutator suite can surface on a single construct.
+#: 14-sub-mutator suite can surface on a single construct.  Since M-100 the
+#: candidate pipeline is consumed lazily, so this cap also bounds how many
+#: candidates are ever materialized (memory is O(cap x pattern length), not
+#: O(candidates x pattern length)).
 MAX_MUTATIONS_PER_PATTERN: int = 12
 
 # ---------------------------------------------------------------------------
@@ -66,25 +74,26 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
         A list of mutated patterns. Each is a valid regex (verified via
         ``re.compile``). At most ``MAX_MUTATIONS_PER_PATTERN`` are returned.
     """
-    mutations: list[str] = []
-
-    mutations.extend(_mutate_quantifiers(pattern))
-    mutations.extend(_mutate_char_classes(pattern))
-    mutations.extend(_mutate_anchors(pattern))
-    mutations.extend(_mutate_classes(pattern))
-    mutations.extend(_mutate_groups(pattern))
+    mutations_iter = itertools.chain(
+        _iter_quantifiers(pattern),
+        _iter_char_classes(pattern),
+        _iter_anchors(pattern),
+        _iter_classes(pattern),
+        _iter_groups(pattern),
+    )
 
     # Validate, dedupe (issue #132 / 360°-C5: two generators can emit the
     # same candidate — duplicates would create same-named mutants) and
-    # filter invalid ones.
+    # filter invalid ones.  The chain is consumed lazily so the cap also
+    # bounds materialization (M-100); ``seen`` tracks valid candidates only.
     valid: list[str] = []
     seen: set[str] = set()
-    for m in mutations:
+    for m in mutations_iter:
         if m == pattern or m in seen:
             continue  # skip no-ops and duplicates
-        seen.add(m)
         if _is_valid_regex(m):
             valid.append(m)
+            seen.add(m)
         if len(valid) >= MAX_MUTATIONS_PER_PATTERN:
             break
 
@@ -118,8 +127,8 @@ def _brace_variants(brace: str) -> list[str]:
     return out
 
 
-def _mutate_quantifiers(pattern: str) -> list[str]:
-    """Mutate quantifiers (sub-mutators #2-#6).
+def _iter_quantifiers(pattern: str) -> Iterator[str]:
+    """Lazily yield quantifier mutations (sub-mutators #2-#6).
 
     Per quantifier: removal (#2); reluctant greedy->lazy (#6, skipping the exact
     ``{n}`` and an already-lazy quantifier); the require-count swaps (``+``<->``*``)
@@ -128,7 +137,6 @@ def _mutate_quantifiers(pattern: str) -> list[str]:
     downstream by ``re.compile`` and the ``seen`` set in
     :func:`mutate_regex_pattern`.
     """
-    results: list[str] = []
     class_spans = _class_spans(pattern)
 
     for match in _QUANTIFIER_RE.finditer(pattern):
@@ -155,10 +163,12 @@ def _mutate_quantifiers(pattern: str) -> list[str]:
             replacements.extend(_brace_variants(base))  # #3/#4 quantity ±1
 
         for repl in replacements:
-            mutated = pattern[:start] + repl + pattern[end:]
-            results.append(mutated)
+            yield pattern[:start] + repl + pattern[end:]
 
-    return results
+
+def _mutate_quantifiers(pattern: str) -> list[str]:
+    """List form of :func:`_iter_quantifiers` (kept for direct tests)."""
+    return list(_iter_quantifiers(pattern))
 
 
 #: Shorthand character-class letters (``\d \D \w \W \s \S``).
@@ -184,8 +194,8 @@ def _shorthand_positions(pattern: str) -> list[tuple[int, str]]:
     return positions
 
 
-def _mutate_char_classes(pattern: str) -> list[str]:
-    """Mutate shorthand character classes (sub-mutators #11-#13).
+def _iter_char_classes(pattern: str) -> Iterator[str]:
+    """Lazily yield shorthand character-class mutations (#11-#13).
 
     Per unescaped shorthand (``\\d`` etc.): #11 negation (``\\d`` <-> ``\\D`` via
     a case swap), #12 nullification (``\\d`` -> the literal ``d``), and #13
@@ -193,19 +203,22 @@ def _mutate_char_classes(pattern: str) -> list[str]:
     since ``[\\d]`` -> ``[[\\d\\D]]`` would be a (wrong) nested class. Every
     occurrence is mutated, not just the first.
     """
-    results: list[str] = []
     spans = _class_spans(pattern)
     for idx, letter in _shorthand_positions(pattern):
         negated = letter.swapcase()
         rest = pattern[idx + 2 :]
         # #11 negation: \d <-> \D
-        results.append(f"{pattern[:idx]}\\{negated}{rest}")
+        yield f"{pattern[:idx]}\\{negated}{rest}"
         # #12 nullification: \d -> d
-        results.append(f"{pattern[:idx]}{letter}{rest}")
+        yield f"{pattern[:idx]}{letter}{rest}"
         # #13 to-any: \d -> [\d\D] (outside a class only)
         if not _in_class(idx, spans):
-            results.append(f"{pattern[:idx]}[\\{letter}\\{negated}]{rest}")
-    return results
+            yield f"{pattern[:idx]}[\\{letter}\\{negated}]{rest}"
+
+
+def _mutate_char_classes(pattern: str) -> list[str]:
+    """List form of :func:`_iter_char_classes` (kept for direct tests)."""
+    return list(_iter_char_classes(pattern))
 
 
 #: A single-char range ``X-Y`` inside a class body (both ends unescaped).
@@ -231,8 +244,8 @@ def _class_members(content: str) -> list[tuple[int, int]]:
     return members
 
 
-def _mutate_classes(pattern: str) -> list[str]:
-    """Mutate character classes (sub-mutators #7-#10).
+def _iter_classes(pattern: str) -> Iterator[str]:
+    """Lazily yield character-class mutations (sub-mutators #7-#10).
 
     Per ``[...]`` span: #7 negation toggle (``[abc]`` <-> ``[^abc]``); #10 to-any
     (``[...]`` -> ``[\\w\\W]``); #8 child-removal (drop one member, needs >= 2 so
@@ -245,7 +258,6 @@ def _mutate_classes(pattern: str) -> list[str]:
     are derived independently from ``negated`` so the two cannot compensate for a
     mutation in one another.
     """
-    results: list[str] = []
     for start, end in _class_spans(pattern):
         inner = pattern[start + 1 : end - 1]  # everything between [ and ]
         negated = inner.startswith("^")
@@ -255,11 +267,11 @@ def _mutate_classes(pattern: str) -> list[str]:
 
         # #7 negation toggle
         if negated:
-            results.append(f"{before}[{body}]{after}")
+            yield f"{before}[{body}]{after}"
         else:
-            results.append(f"{before}[^{body}]{after}")
+            yield f"{before}[^{body}]{after}"
         # #10 to-any
-        results.append(f"{before}[\\w\\W]{after}")
+        yield f"{before}[\\w\\W]{after}"
 
         if body.startswith("]"):
             continue  # literal-] first member: skip the parsing-based #8/#9
@@ -268,7 +280,7 @@ def _mutate_classes(pattern: str) -> list[str]:
         members = _class_members(body)
         if len(members) >= 2:
             for ms, me in members:
-                results.append(f"{before}[{mark}{body[:ms] + body[me:]}]{after}")
+                yield f"{before}[{mark}{body[:ms] + body[me:]}]{after}"
         # #9 range ±1
         for m in _RANGE_RE.finditer(body):
             lo, hi = ord(m.group(1)), ord(m.group(2))
@@ -279,12 +291,16 @@ def _mutate_classes(pattern: str) -> list[str]:
                 if not (0 <= lo2 <= _MAX_UNICODE_CODEPOINT and 0 <= hi2 <= _MAX_UNICODE_CODEPOINT):
                     continue
                 new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
-                results.append(f"{before}[{mark}{new_body}]{after}")
-    return results
+                yield f"{before}[{mark}{new_body}]{after}"
 
 
-def _mutate_groups(pattern: str) -> list[str]:
-    """Mutate groups and look-arounds (#14 + #15).
+def _mutate_classes(pattern: str) -> list[str]:
+    """List form of :func:`_iter_classes` (kept for direct tests)."""
+    return list(_iter_classes(pattern))
+
+
+def _iter_groups(pattern: str) -> Iterator[str]:
+    """Lazily yield group and look-around mutations (#14 + #15).
 
     #14 look-around flip: ``(?=)`` <-> ``(?!)`` and ``(?<=)`` <-> ``(?<!)``.
     #15 group->non-capturing: a plain capturing ``(`` becomes ``(?:``. Both are
@@ -292,7 +308,6 @@ def _mutate_groups(pattern: str) -> list[str]:
     is a literal paren). A non-capturing ``(?:`` and named/other ``(?...)`` groups
     are left alone by #15.
     """
-    results: list[str] = []
     spans = _class_spans(pattern)
     i, n = 0, len(pattern)
     while i < n:
@@ -301,18 +316,22 @@ def _mutate_groups(pattern: str) -> list[str]:
             continue
         if pattern[i] == "(" and not _in_class(i, spans):
             if pattern[i : i + 3] == "(?=":
-                results.append(f"{pattern[:i]}(?!{pattern[i + 3 :]}")
+                yield f"{pattern[:i]}(?!{pattern[i + 3 :]}"
             elif pattern[i : i + 3] == "(?!":
-                results.append(f"{pattern[:i]}(?={pattern[i + 3 :]}")
+                yield f"{pattern[:i]}(?={pattern[i + 3 :]}"
             elif pattern[i : i + 4] == "(?<=":
-                results.append(f"{pattern[:i]}(?<!{pattern[i + 4 :]}")
+                yield f"{pattern[:i]}(?<!{pattern[i + 4 :]}"
             elif pattern[i : i + 4] == "(?<!":
-                results.append(f"{pattern[:i]}(?<={pattern[i + 4 :]}")
+                yield f"{pattern[:i]}(?<={pattern[i + 4 :]}"
             elif i + 1 < n and pattern[i + 1] != "?":
                 # plain capturing group -> non-capturing
-                results.append(f"{pattern[: i + 1]}?:{pattern[i + 1 :]}")
+                yield f"{pattern[: i + 1]}?:{pattern[i + 1 :]}"
         i += 1
-    return results
+
+
+def _mutate_groups(pattern: str) -> list[str]:
+    """List form of :func:`_iter_groups` (kept for direct tests)."""
+    return list(_iter_groups(pattern))
 
 
 #: Escaped single-letter anchors (``\A \Z \b \B``). A frozenset, so a missing
@@ -363,28 +382,31 @@ def _in_class(index: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
-def _mutate_anchors(pattern: str) -> list[str]:
-    """Remove anchors (#1): ``^``, ``$``, ``\\A``, ``\\Z``, ``\\b``, ``\\B``.
+def _iter_anchors(pattern: str) -> Iterator[str]:
+    """Lazily yield anchor removals (#1): ``^``, ``$``, ``\\A``, ``\\Z``, ``\\b``, ``\\B``.
 
     Uses the class-span tokenizer so a ``^`` inside ``[^...]`` (a class negation)
     and a ``\\b`` inside ``[\\b]`` (a backspace literal) are never mistaken for
     anchors. Each removal is a local string edit, leaving the rest byte-exact. A
     trailing backslash has no next char and is left alone.
     """
-    results: list[str] = []
     spans = _class_spans(pattern)
     i, n = 0, len(pattern)
     while i < n:
         char = pattern[i]
         if char == "\\":
             if i + 1 < n and pattern[i + 1] in _ESCAPED_ANCHORS and not _in_class(i, spans):
-                results.append(pattern[:i] + pattern[i + 2 :])
+                yield pattern[:i] + pattern[i + 2 :]
             i += 2
             continue
         if char in _TOP_LEVEL_ANCHORS and not _in_class(i, spans):
-            results.append(pattern[:i] + pattern[i + 1 :])
+            yield pattern[:i] + pattern[i + 1 :]
         i += 1
-    return results
+
+
+def _mutate_anchors(pattern: str) -> list[str]:
+    """List form of :func:`_iter_anchors` (kept for direct tests)."""
+    return list(_iter_anchors(pattern))
 
 
 def _is_valid_regex(pattern: str) -> bool:
