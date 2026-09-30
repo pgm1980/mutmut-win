@@ -187,10 +187,10 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
 | `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) - committed **and** uncommitted tracked changes; paths are evaluated relative to the project directory, so monorepo subprojects are supported; untracked files need a full run |
-| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets (exit 2) |
+| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets and with `--dry-run` (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
-| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
+| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate); read-only staging leaves are cleared through the identity-checked removal hook, hardlinked/redirected leaves are refused with exit 1 |
 | `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
@@ -200,8 +200,11 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 Exit codes of `run`: `0` success, `1` runtime failure, failed
 `--min-score` gate or aborted run (worker pool collapsed — the unchecked
 remainder is reported and the score gate is skipped), `2` invalid
-configuration or option value, `130` interrupted (Ctrl-C — partial
-results are persisted, the score gate is skipped).
+configuration or option value, `130` interrupted (Ctrl-C — partial results
+are persisted, the score gate is skipped). `130` covers every Ctrl-C during
+`run`, including phases before the worker pool starts; when no result JSON
+exists yet (`--output json`), a JSON error object with `exit_code: 130` is
+emitted on stdout instead.
 
 ### Execution-basis diagnostics
 
@@ -424,6 +427,12 @@ The denominator excludes `skipped`, historical or future-authoritative
 `no tests`, and unchecked mutants. The current non-authoritative mapper never
 creates new `no tests` verdicts: an unobserved mutant runs the full suite.
 Always read the bucket counts next to the percentage.
+
+The deprecated `run --treat-timeout-as-kill` flag (see `results`) only
+changes what the `--min-score` gate judges: the JSON `score` field and the
+text summary always report the raw score, and the effective
+timeouts-counted-as-kills value is printed as one dedicated stderr line
+next to it.
 
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:

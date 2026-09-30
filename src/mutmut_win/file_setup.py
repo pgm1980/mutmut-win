@@ -453,6 +453,82 @@ def purge_staging_runtime_artifacts() -> None:
             _unlink_staging_file(candidate)
 
 
+def _staging_leaf_is_readonly(path: Path) -> bool:
+    """Whether *path* currently carries the DOS read-only attribute (M-020).
+
+    The attribute check prefers ``st_file_attributes`` (Windows truth); the
+    ``S_IWRITE`` mode bit is the portable fallback. An uninspectable leaf
+    reports ``False`` so callers treat the failure as a plain retryable
+    ``OSError`` instead of guessing an attribute.
+    """
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    readonly_flag = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0)
+    if readonly_flag and metadata.st_file_attributes & readonly_flag:
+        return True
+    return not metadata.st_mode & stat.S_IWRITE
+
+
+def remove_staging_root() -> None:
+    """Delete the whole ``mutants/`` staging root, read-only leaves included (M-020).
+
+    ``--force`` cleanup used to call ``shutil.rmtree(..., ignore_errors=True)``,
+    which replaces any ``onexc`` hook with a no-op: staging publishes the
+    mirrored source mode, so a read-only source leaf kept its DOS read-only
+    attribute in ``mutants/``, survived every retry, and the run refused with
+    the misleading "files in use?" diagnosis. This entry point removes the
+    validated root WITHOUT ``ignore_errors`` through the established
+    read-only-aware hook, so the first unrecoverable error aborts the walk
+    (each caller retry restarts the tree) and surfaces as ``OSError`` or
+    :class:`~mutmut_win.exceptions.UnsafeStagingError`.
+
+    Safety boundaries of the ``onexc`` dispatch:
+
+    - Errors raised AT the root itself are re-raised unchanged: the root's
+      attributes are never changed (it may simply be another process's CWD
+      or a genuinely locked directory), and the CLI retry loop owns that
+      diagnosis. The comparison is lexical — normcase/abspath of the exact
+      object handed to ``rmtree`` — because CPython passes that original
+      object for root-level operations while children arrive as joined
+      strings.
+    - A ``PermissionError`` on a child is only treated as a read-only
+      removal when the leaf really carries the read-only attribute. A
+      locked-but-writable leaf (sharing violation, byte-range lock —
+      including a locked hardlink) keeps its plain ``PermissionError`` so
+      the caller keeps the retry/"files in use?" semantics instead of a
+      misleading hardlink refusal.
+    - Everything else delegates to :func:`_retry_readonly_removal`, whose
+      identity tripwire, hardlink refusal, and mode restoration apply.
+
+    Raises:
+        UnsafeStagingError: When the root is redirected, or a leaf cannot be
+            proven solely owned (hardlinks, reparse points, identity change).
+        OSError: When removal fails for non-attribute reasons (locks,
+            sharing violations, unreadable entries); ``FileNotFoundError``
+            propagates for callers that treat an already-gone root as done.
+    """
+    root = _validated_mutants_root()
+    # Lexical comparison is deliberate: resolve() would follow junctions and
+    # subst drives and no longer match the exact object handed to rmtree.
+    lexical_root = os.path.normcase(os.path.abspath(root))  # noqa: PTH100
+
+    def _remove_or_clear_attribute(
+        operation: Callable[[str], object],
+        raw_path: str,
+        error: BaseException,
+    ) -> None:
+        normalized = os.path.normcase(os.path.abspath(raw_path))  # noqa: PTH100
+        if normalized == lexical_root:
+            raise error
+        if isinstance(error, PermissionError) and not _staging_leaf_is_readonly(Path(raw_path)):
+            raise error
+        _retry_readonly_removal(operation, raw_path, error)
+
+    shutil.rmtree(root, onexc=_remove_or_clear_attribute)
+
+
 def _validated_staging_destination(destination: Path, mutants_root: Path) -> Path:
     """Return a contained lexical staging path with no redirected component."""
     lexical = destination.absolute()

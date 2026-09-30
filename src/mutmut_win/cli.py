@@ -31,6 +31,7 @@ from mutmut_win.db import (
 from mutmut_win.exceptions import (
     MutmutWinError,
     StagingNamespaceCollisionError,
+    UnsafeStagingError,
     UnsafeWorkspaceStateError,
 )
 from mutmut_win.mutant_diff import apply_mutant, render_function_diff_bytes, resolve_mutant
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from mutmut_win.db import MutationRunState
-    from mutmut_win.models import GenerationDegradation, MutationResult
+    from mutmut_win.models import GenerationDegradation, MutationResult, MutationRunResult
 
 
 @click.group()
@@ -79,6 +80,31 @@ def _warn_treat_timeout_as_kill_deprecated() -> None:
         "infinite-loop detection (since v2.5.0). The flag stays functional "
         "in 2.x and will be removed in a future major release.",
         err=True,
+    )
+
+
+def _timeout_as_kill_score_line(result: MutationRunResult) -> str:
+    """One named stderr line for the deprecated timeout-as-kill score (M-025).
+
+    ``--treat-timeout-as-kill`` changes the ``--min-score`` gate but not the
+    reported score: the JSON ``score`` field and the text summary always stay
+    raw (CI contract). This line is the single place that names the effective
+    (timeouts-counted-as-kills) score next to the raw score, so a passing gate
+    is no longer silent about the value it actually judged.
+
+    Args:
+        result: The finished (non-interrupted, non-aborted, non-dry) run
+            result with at least one testable mutant.
+
+    Returns:
+        The ready-to-echo line, e.g. ``Score with timeouts counted as
+        kills (deprecated --treat-timeout-as-kill): 100.0% (raw score 50.0%)``.
+    """
+    effective = result.compute_score(treat_timeout_as_kill=True)
+    raw = result.compute_score(treat_timeout_as_kill=False)
+    return (
+        "Score with timeouts counted as kills (deprecated "
+        f"--treat-timeout-as-kill): {effective:.1f}% (raw score {raw:.1f}%)"
     )
 
 
@@ -140,6 +166,18 @@ _FORCE_CLEANUP_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 def _remove_force_cleanup_root(path: Path) -> bool:
     """Remove one ``--force`` root, retrying through transient filter locks.
 
+    The ``mutants/`` staging root goes through
+    :func:`mutmut_win.file_setup.remove_staging_root` so DOS read-only
+    staging leaves (the mirror preserves the source mode) are cleared
+    through the established ``onexc`` hook instead of surviving
+    ``rmtree(ignore_errors=True)`` forever (M-020). Without that hook the
+    tree stayed after every retry and the refusal below blamed "files in
+    use?" for what was a read-only attribute. An unsafe leaf (hardlinks,
+    reparse points, identity changes) raises ``UnsafeStagingError``
+    immediately; every other ``OSError`` (including sharing violations on
+    writable leaves) keeps the retry semantics below. ``.mutmut-cache``
+    stays with the plain best-effort removal.
+
     Returns ``True`` when the root is gone.  The refusal after every retry
     fails deliberately: partial deletions must never run as a clean slate
     (issue #101 / A3-FD-009), and a persistent lock is indistinguishable
@@ -147,10 +185,25 @@ def _remove_force_cleanup_root(path: Path) -> bool:
     """
     import shutil
 
+    from mutmut_win.file_setup import remove_staging_root
+
     for delay in (0.0, *_FORCE_CLEANUP_RETRY_DELAYS):
         if delay:
             time.sleep(delay)
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            if path.name == "mutants":
+                remove_staging_root()
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+        except FileNotFoundError:
+            pass
+        except UnsafeStagingError:
+            raise
+        except OSError:
+            # Transient filter/AV locks keep the retry semantics; without
+            # ignore_errors the walk aborted at the first failure, so each
+            # retry restarts the tree from the root.
+            continue
         if not path.exists():
             return True
     return False
@@ -512,7 +565,8 @@ def _is_mutation_target(
     help=(
         "(DEPRECATED — superseded by infinite-loop detection; removal in a "
         "future major release.) Count TIMEOUT mutants toward the kill bucket "
-        "for --min-score and score reporting. Workaround for Bug #71 "
+        "for the --min-score gate and one dedicated stderr line; the reported "
+        "JSON score and text summary stay raw. Workaround for Bug #71 "
         "(Hypothesis tests turn infinite-loop mutations into TIMEOUT)."
     ),
 )
@@ -680,6 +734,21 @@ def run(
             _emit_json_error(json_stdout, message, 2)
             sys.exit(2)
 
+        # M-073 / issue #160: a dry-run preview executes no tests, so its
+        # result can never carry a complete execution basis — the gate would
+        # fail AFTER the preview with the misleading runtime diagnosis
+        # "Execution basis incomplete" (exit 1). Reject the incompatible
+        # request upfront as the same class of usage conflict as the subset
+        # selection above, before any generation or --force deletion runs.
+        if min_score is not None and dry_run:
+            message = (
+                "--min-score cannot be combined with --dry-run: "
+                "a preview executes no tests and cannot authorize a score"
+            )
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 2)
+            sys.exit(2)
+
         # --- Apply CLI overrides to config ---
         overrides: dict[str, object] = {}
         if max_children is not None:
@@ -808,7 +877,19 @@ def run(
                         click.echo(refusal, err=True)
                         _emit_json_error(json_stdout, refusal, 1)
                         sys.exit(1)
-                    if not _remove_force_cleanup_root(p):
+                    try:
+                        removed = _remove_force_cleanup_root(p)
+                    except UnsafeStagingError as exc:
+                        # M-020: an unsafe leaf (hardlinked read-only file,
+                        # reparse point, identity change) is refused with its
+                        # own diagnosis instead of a raw traceback — and,
+                        # for a locked hardlink, instead of the misleading
+                        # "files in use?" refusal below.
+                        message = f"Refusing --force cleanup of {dirname}/: {exc}"
+                        click.echo(message, err=True)
+                        _emit_json_error(json_stdout, message, 1)
+                        sys.exit(1)
+                    if not removed:
                         # Issue #101 / A3-FD-009: rmtree(ignore_errors=True)
                         # plus an unconditional success message sold a
                         # PARTIAL deletion (files locked by another process)
@@ -868,6 +949,23 @@ def run(
             click.echo(message, err=True)
             _emit_json_error(json_stdout, message, 1)
             sys.exit(1)
+        except KeyboardInterrupt as exc:
+            # M-076 / issue #160: Ctrl-C landing outside the worker event
+            # loop (fingerprinting prelude, generation, clean run, stats,
+            # forced-fail, type check, --dry-run, post-processing) used to
+            # escape to Click's standalone abort handling — "Aborted!" and
+            # exit 1, with an empty stdout even under --output json. Exit
+            # 130 is reserved for user interrupts in the documented run
+            # contract; the orchestrator has already marked an existing DB
+            # run as 'interrupted' before re-raising. Notes attached by the
+            # orchestrator (e.g. a failed cached-verdict revocation) are
+            # surfaced instead of swallowed.
+            for note in getattr(exc, "__notes__", ()):
+                click.echo(f"Note: {note}", err=True)
+            message = "Run interrupted before completion (Ctrl-C); no score was produced."
+            click.echo(message, err=True)
+            _emit_json_error(json_stdout, message, 130)
+            sys.exit(130)
 
     # --- Output ---
     if output == "json":
@@ -916,6 +1014,18 @@ def run(
         click.echo("No testable mutants were generated; mutation run failed closed.", err=True)
         sys.exit(1)
 
+    # --- Deprecated timeout-as-kill score honesty (M-025) ---
+    # The flag changes the gate, not the reported score: the JSON ``score``
+    # field and the text summary stay raw (CI contract, additive only). One
+    # named stderr line names the effective score the gate judges next to
+    # the raw score, whether or not --min-score was given. Interrupted,
+    # aborted and empty runs have exited above; the line is still confined
+    # to real runs with at least one testable mutant — a preview or an
+    # all-skipped run has no score to adjust.
+    testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
+    if treat_timeout_as_kill and not dry_run and testable > 0:
+        click.echo(_timeout_as_kill_score_line(result), err=True)
+
     # --- Score gate ---
     if min_score is not None:
         surface_report = _mutation_surface_report(result.degraded_files)
@@ -930,7 +1040,6 @@ def run(
                 err=True,
             )
             sys.exit(1)
-        testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
         if testable <= 0:
             # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
             # below threshold' blamed a score that never existed.
@@ -1514,7 +1623,31 @@ def _export_cicd_stats_locked() -> None:
         artifact_path.unlink(missing_ok=True)
         click.echo("No completed mutation verdicts found; CI/CD export failed closed.", err=True)
         sys.exit(1)
-    cicd = save_cicd_stats(pairs, mutants_dir)
+    # M-075 (issue #160): an externally removed or replaced staging directory
+    # is a domain failure, not a traceback. mutants/ is not a basis input, so
+    # every evidence check above passed and the export used to die inside the
+    # atomic writer with a raw UnsafeAtomicWriteError (an OSError, not a
+    # MutmutWinError). Fail closed with a clear message right before the
+    # write — and never CREATE the staging directory here: the atomic writer
+    # deliberately requires an existing parent so it cannot follow a
+    # redirection.
+    if not mutants_dir.is_dir():
+        message = (
+            "Staging directory mutants/ is missing or is not a directory; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'."
+        )
+        click.echo(message, err=True)
+        sys.exit(1)
+    # Report write failures HERE (path + cause, exit 1) instead of letting a
+    # raw OSError escape — the outer MutmutWinError handler would misfile it
+    # under 'could not acquire a consistent state'. The handler stays this
+    # narrow on purpose (issue #114 principle): foreign errors from anything
+    # but this one call must not be masked.
+    try:
+        cicd = save_cicd_stats(pairs, mutants_dir)
+    except OSError as exc:
+        click.echo(f"Could not write CI/CD artifact {artifact_path}: {exc}", err=True)
+        sys.exit(1)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
     # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a
     # 71.4% score invited verifying it with the WRONG denominator — the
