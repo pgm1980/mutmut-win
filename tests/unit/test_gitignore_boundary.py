@@ -438,3 +438,74 @@ class TestTrackedIndexOverride:
             assert deep.excludes_file("other.pyc") is True
         finally:
             gitignore_boundary._load_tracked_index = original_load
+
+
+class TestUnknownLevelsAndBom:
+    """M-015/M-014: broken child levels suspend inherited rules; BOM honoured."""
+
+    def test_unreadable_child_level_suspends_inherited_exclusions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.py\n"),
+            ("src/.gitignore", "!keep.py\n"),
+        )
+        broken = project / "src" / ".gitignore"
+        real_read_bytes = Path.read_bytes
+
+        def failing_read_bytes(self: Path) -> bytes:
+            if self == broken:
+                raise PermissionError(5, "Access is denied")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+        boundary = GitignoreBoundary.load(project).enter("src")
+        assert boundary.excludes_file("keep.py") is False
+
+    def test_invalid_pattern_child_level_suspends_inherited_exclusions(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.py\n"),
+            ("src/.gitignore", "!keep.py\n!\n"),
+        )
+        with caplog.at_level(logging.WARNING, logger="mutmut_win.gitignore_boundary"):
+            boundary = GitignoreBoundary.load(project).enter("src")
+        assert boundary.excludes_file("keep.py") is False
+        text = " ".join(
+            record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
+        )
+        assert ".gitignore" in text
+        assert "excludes nothing" in text
+
+    def test_deeper_readable_level_below_unknown_still_decides(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.py\n"),
+            ("src/.gitignore", "!\n"),
+            ("src/sub/.gitignore", "x.log\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("src").enter("sub")
+        assert boundary.excludes_file("x.log") is True
+        assert boundary.excludes_file("other.py") is False
+
+    def test_descend_forced_reset_with_unknown_level_excludes_nothing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "src/\n*.py\n"),
+            ("src/.gitignore", "!\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("src")
+        assert boundary.excludes_file("a.py") is False

@@ -15,8 +15,9 @@ The boundary mirrors Git's layered ignore semantics for walk pruning:
   matching pattern decides;
 * a directory matched as ignored prunes its whole subtree — Git cannot
   re-include files below an excluded directory;
-* loading is fail-closed: an unreadable or undecodable ignore file excludes
-  nothing and logs a warning.  A walk must never skip a file Git tracks;
+* loading is fail-closed: an unreadable, undecodable, or invalid ignore
+  file excludes nothing itself and suspends inherited rules in its own
+  subtree, with a warning.  A walk must never skip a file Git tracks;
   hashing or staging too much is merely cost, skipping tracked files is
   wrong results.
 
@@ -85,18 +86,29 @@ def _safe_pattern_match(pattern: Any, relative: str) -> Any | None:
 
 @dataclass(frozen=True)
 class _IgnoreLevel:
-    """One ``.gitignore`` file bound to the directory providing it."""
+    """One ``.gitignore`` file bound to the directory providing it.
+
+    ``rules_unknown`` marks a level whose file exists but could not be read
+    or compiled: the level itself carries no patterns and, in its subtree,
+    even inherited ancestor rules are suspended (M-015).
+    """
 
     base: str
     patterns: tuple[Any, ...]
+    rules_unknown: bool = False
 
 
 def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
     """Load one directory's ``.gitignore`` or fail closed to "no opinion".
 
     A missing file is the normal case and returns ``None`` (no level).
-    Unreadable or undecodable files also return ``None`` after a warning so
-    the walk stays conservative: such a file can never exclude anything.
+    Unreadable, undecodable, or invalid files produce a ``rules_unknown``
+    level after a warning: such a file can never exclude anything itself,
+    and its subtree also suspends inherited rules so a broken ``!``
+    re-inclusion cannot silently drop files the parent patterns would
+    exclude.  The run-basis completeness channel stays with the raw file
+    hash (an unreadable file lowers ``complete`` there); a compiled-but-
+    invalid file only widens the walk, which is cost, not wrong results.
     """
     ignore_file = directory / ".gitignore"
     try:
@@ -105,21 +117,29 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
         return None
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning(
-            "Ignoring unreadable .gitignore at %s (%s); it excludes nothing",
+            "Ignoring unreadable .gitignore at %s (%s); it excludes nothing "
+            "and suspends inherited rules in its subtree",
             ignore_file,
             type(exc).__name__,
         )
-        return None
+        return _IgnoreLevel(base=base, patterns=(), rules_unknown=True)
 
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         return None
     try:
         spec = GitIgnoreSpec.from_lines(lines)
-    except ValueError:
-        # pathspec rejects empty pattern lists; a comment-only file carries
-        # no rules either way.
-        return None
+    except ValueError as exc:
+        # pathspec raises GitIgnorePatternError (a ValueError subclass) for
+        # invalid pattern lines — a lone "!" or a trailing backslash, for
+        # example; empty lists cannot reach here because of the filter above.
+        logger.warning(
+            "Ignoring invalid .gitignore at %s (%s); it excludes nothing "
+            "and suspends inherited rules in its subtree",
+            ignore_file,
+            type(exc).__name__,
+        )
+        return _IgnoreLevel(base=base, patterns=(), rules_unknown=True)
     return _IgnoreLevel(base=base, patterns=tuple(spec.patterns))
 
 
@@ -413,6 +433,11 @@ class GitignoreBoundary:
             relative = _relative_to_base(candidate, level.base)
             if relative is None:
                 continue
+            if level.rules_unknown:
+                # A disturbed level suspends inherited rules for its whole
+                # subtree: pruning there could drop files a readable "!"
+                # re-inclusion below the broken level would keep (M-015).
+                return False
             probes = (relative, f"{relative}/") if directory else (relative,)
             decision: bool | None = None
             for pattern in level.patterns:
