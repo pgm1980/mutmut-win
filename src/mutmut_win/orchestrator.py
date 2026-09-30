@@ -69,6 +69,8 @@ from mutmut_win.stats import (
 from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import TaskEvent
     from mutmut_win.process.executor import SpawnPoolExecutor
@@ -198,6 +200,26 @@ def _verify_type_checker_left_staging_intact(staging_evidence: RunBasisEvidence)
             "the type checker modified mutants/ (for example by writing "
             "a cache directory); configure its cache outside mutants/"
         )
+
+
+@contextlib.contextmanager
+def _watched_basis_phase(phase_text: str, completion_text: str) -> Iterator[None]:
+    """Cover one basis-fingerprint phase with the diagnostic stall watchdog.
+
+    The watchdog only dumps stacks on stalls (stderr) and never aborts the
+    run; it is closed on every path, including exceptions, because its
+    faulthandler timer is process-global and must not leak into later
+    phases.  ``StallWatchdog`` is imported locally so tests can patch
+    ``mutmut_win.stall_watchdog.StallWatchdog``.
+    """
+
+    from mutmut_win.stall_watchdog import StallWatchdog
+
+    print(phase_text)
+    started = time.monotonic()
+    with StallWatchdog():
+        yield
+    print(f"{completion_text} in {time.monotonic() - started:.1f}s")
 
 
 class MutationOrchestrator:
@@ -526,7 +548,11 @@ class MutationOrchestrator:
         if terminal_status == "completed":
             execution_basis_deauthorized = False
             try:
-                live_basis = self._stable_run_basis_evidence()
+                with _watched_basis_phase(
+                    "Verifying execution basis after the run…",
+                    "Execution basis verified",
+                ):
+                    live_basis = self._stable_run_basis_evidence()
             except OrchestratorError:
                 invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
@@ -851,10 +877,14 @@ class MutationOrchestrator:
         # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
         print("Collecting test timing statistics…")
-        stats_context = build_stats_context_fingerprint(
-            self._config,
-            excluded_paths=self._basis_excluded_paths(),
-        )
+        with _watched_basis_phase(
+            "Re-fingerprinting execution basis for timing stats…",
+            "Timing-stats basis fingerprinted",
+        ):
+            stats_context = build_stats_context_fingerprint(
+                self._config,
+                excluded_paths=self._basis_excluded_paths(),
+            )
         mutmut_stats: MutmutStats = collect_or_load_stats(
             self._runner,
             context_fingerprint=stats_context,
