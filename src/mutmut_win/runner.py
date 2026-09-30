@@ -565,6 +565,13 @@ class PytestRunner:
                     f"Warning: stats collection failed — "
                     f"{decode_pytest_exit(exit_code)} (exit {exit_code})"
                 )
+                # The captured tail is the only place the real failure (for
+                # example an import error inside staging or a recursion
+                # storm) is visible — the phase itself runs with ``--tb=no``
+                # (issue #192).
+                diagnostic_tail = self._last_diagnostic_output
+                if diagnostic_tail:
+                    print(f"--- stats pytest output (tail) ---\n{diagnostic_tail}", flush=True)
                 return exit_code
 
             # Read the JSON file written by the plugin in the subprocess.
@@ -674,6 +681,15 @@ class PytestRunner:
         )
         if exit_code == 36:
             # A hung suite proves nothing about the trampoline — no verdict.
+            # The captured tail is still published: what the child printed
+            # before hanging is the only lead for diagnosing the stall
+            # (issue #192).
+            timeout_tail = self._last_diagnostic_output
+            if timeout_tail:
+                print(
+                    f"--- forced-fail output before timeout (tail) ---\n{timeout_tail}",
+                    flush=True,
+                )
             self._forced_fail_attributed = None
             return exit_code
         self._forced_fail_attributed = exit_code != 0 and FORCED_FAIL_MARKER in (

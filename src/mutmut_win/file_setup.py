@@ -36,6 +36,7 @@ import libcst as cst
 
 from mutmut_win.atomic_file import AtomicPathLengthError, atomic_copy_file, atomic_write_bytes
 from mutmut_win.constants import (
+    GENERATION_EXCLUDED_SELF_MODULES,
     SOURCE_ROOT_NAMES,
     WORKSPACE_EXCLUDED_DIR_NAMES,
     WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
@@ -2633,6 +2634,32 @@ class _FastPathMissError(Exception):
     """Internal sentinel: the .meta source fingerprint does not match."""
 
 
+def _is_generation_excluded_self_module(filename: Path) -> bool:
+    """Return whether *filename* is an engine self-instrumentation module.
+
+    The excluded modules (see
+    :data:`mutmut_win.constants.GENERATION_EXCLUDED_SELF_MODULES`) are part
+    of the runtime instrumentation the generated wrappers depend on; staging
+    a trampolined copy of them is structurally unsound, not merely risky.
+    The comparison resolves both sides, so a project-local file that merely
+    shares a basename stays mutable.
+    """
+
+    try:
+        resolved = filename.resolve()
+    except OSError:  # pragma: no cover - resolve of a read file rarely fails
+        return False
+    for module_name in GENERATION_EXCLUDED_SELF_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # pragma: no cover - engine modules always import
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None and Path(module_file).resolve() == resolved:
+            return True
+    return False
+
+
 def create_mutants_for_file(
     filename: Path,
     output_path: Path,
@@ -2721,6 +2748,32 @@ def create_mutants_for_file(
         separators=(",", ":"),
     )
     generation_fingerprint = hashlib.sha256(generation_payload.encode("utf-8")).hexdigest()
+
+    # Self-instrumentation exclusion (#192): the stats recorder must never be
+    # trampolined.  Under ``MUTANT_UNDER_TEST=stats`` every generated wrapper
+    # calls ``record_trampoline_hit``; a trampolined recorder calls itself for
+    # every recorded hit and recurses without bound, which breaks the stats
+    # phase for every gate that mutates the engine's own source tree.  The
+    # file still stages byte-identically so imports keep resolving.
+    if _is_generation_excluded_self_module(filename):
+        generated_hash = _atomic_write_generated_python(
+            output_path,
+            source,
+            source_encoding=source_encoding,
+        )
+        excluded_meta = SourceFileMutationData(path=str(meta_relative_path))
+        excluded_meta.exit_code_by_key = {}
+        try:
+            stat = filename.stat()
+            excluded_meta.source_mtime = stat.st_mtime
+            excluded_meta.source_size = stat.st_size
+        except OSError:
+            pass
+        excluded_meta.source_hash = source_hash
+        excluded_meta.generation_fingerprint = generation_fingerprint
+        excluded_meta.generated_hash = generated_hash
+        excluded_meta.save_generation_metadata()
+        return [], collected_warnings, False
 
     try:
         if allow_fast_path and output_path.exists():

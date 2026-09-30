@@ -484,9 +484,10 @@ def _is_mutation_target(
 )
 @click.option(
     "--tests-dir",
+    "tests_dir",
     type=str,
-    default=None,
-    help="Test directory (overrides pyproject.toml).",
+    multiple=True,
+    help="Test directory (overrides pyproject.toml). Repeatable.",
 )
 @click.option(
     "--profile",
@@ -606,7 +607,7 @@ def _is_mutation_target(
 def run(
     max_children: int | None,
     paths_to_mutate: tuple[str, ...],
-    tests_dir: str | None,
+    tests_dir: tuple[str, ...],
     profile: str | None,
     min_score: float | None,
     output: str,
@@ -755,8 +756,12 @@ def run(
             overrides["max_children"] = max_children
         if paths_to_mutate:
             overrides["paths_to_mutate"] = list(paths_to_mutate)
-        if tests_dir is not None:
-            overrides["tests_dir"] = [tests_dir]
+        if tests_dir:
+            # ``multiple=True`` accumulates every ``--tests-dir`` occurrence:
+            # click's historical last-wins silently dropped all earlier test
+            # files, so combined gates lost every kill carried only by the
+            # dropped files (issue #192).
+            overrides["tests_dir"] = list(tests_dir)
         if profile is not None:
             overrides["mutation_profile"] = profile
         if timeout_multiplier is not None:
