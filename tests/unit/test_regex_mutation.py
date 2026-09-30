@@ -6,7 +6,7 @@ import re
 import warnings
 
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from mutmut_win.regex_mutation import (
@@ -733,7 +733,7 @@ def _reference_eager(pattern: str) -> list[str]:
             results.append(f"{p[:idx]}\\{negated}{rest}")
             results.append(f"{p[:idx]}{letter}{rest}")
             if not rm._in_class(idx, spans):
-                results.append(f"{p[:idx]}][\\{letter}\\{negated}]{rest}")
+                results.append(f"{p[:idx]}[\\{letter}\\{negated}]{rest}")
         return results
 
     def ref_anchors(p: str) -> list[str]:
@@ -931,3 +931,42 @@ class TestInlineComments:
         spans = _scan_regex("a[#]b", verbose=True)
         assert spans.comment_spans == ()
         assert spans.class_spans == ((1, 4),)
+
+
+class TestVerboseEngineFlags:
+    """M-051: the engine accepts and honours the VERBOSE bit of flags."""
+
+    def test_verbose_comment_locked_via_flags_kwarg(self) -> None:
+        import re as re_module
+
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        pattern = "a+ # b" + chr(10)
+        results = mutate_regex_pattern(pattern, flags=re_module.VERBOSE)
+        assert results
+        for candidate in results:
+            assert "# b" + chr(10) in candidate
+            assert _is_valid_regex(candidate, re_module.VERBOSE)
+
+    @given(
+        core=st.text(alphabet="ab+*?^$", min_size=1, max_size=8),
+        comment=st.text(alphabet="ab+*?()[]^$d", max_size=10),
+    )
+    def test_verbose_mutants_keep_the_comment_suffix(self, core: str, comment: str) -> None:
+        import re as re_module
+
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        def compiles_verbose(text: str) -> bool:
+            try:
+                re_module.compile(text, re_module.X)
+            except re_module.error:
+                return False
+            return True
+
+        assume(compiles_verbose(core))
+        pattern = core + " # " + comment + chr(10)
+        assume(compiles_verbose(pattern))
+        for candidate in mutate_regex_pattern(pattern, flags=re_module.X):
+            assert candidate.endswith(" # " + comment + chr(10))
+            assert _is_valid_regex(candidate, re_module.X)

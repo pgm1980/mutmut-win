@@ -611,6 +611,99 @@ _RE_PATTERN_FUNCTIONS: set[str] = {
     "subn",
 }
 
+#: Zero-based positional index of the ``flags`` parameter per function
+#: (``inspect.signature`` under CPython 3.14.7; positional passing is
+#: deprecated since 3.13 but still valid to read).
+_FLAGS_POSITIONAL_INDEX: dict[str, int] = {
+    "compile": 1,
+    "match": 2,
+    "search": 2,
+    "fullmatch": 2,
+    "findall": 2,
+    "finditer": 2,
+    "split": 3,
+    "sub": 4,
+    "subn": 4,
+}
+
+
+def _static_re_flags_value(node: cst.CSTNode) -> int | None:
+    """Evaluate a flags expression statically, or return ``None``.
+
+    Supports ``re.<NAME>`` members (must be ``re.RegexFlag`` attributes),
+    integer literals, and ``|`` combinations thereof.  Any other expression
+    (names, calls, comparisons) is unknown.
+    """
+    if isinstance(node, cst.Attribute):
+        base = node.value
+        if isinstance(base, cst.Name) and base.value == "re":
+            name = node.attr.value
+            flag = getattr(re, name, None)
+            if isinstance(flag, re.RegexFlag):
+                return int(flag)
+        return None
+    if isinstance(node, cst.Integer):
+        value = node.evaluated_value
+        if isinstance(value, int):
+            return value
+        return None
+    if isinstance(node, cst.BinaryOperation) and isinstance(node.operator, cst.BitOr):
+        left = _static_re_flags_value(node.left)
+        right = _static_re_flags_value(node.right)
+        if left is None or right is None:
+            return None
+        return left | right
+    return None
+
+
+def _static_verbose_member(node: cst.CSTNode) -> bool:
+    """Return whether a BitOr operand statically carries ``re.VERBOSE``.
+
+    Monotonic under ``|``: one known VERBOSE operand proves the flag even
+    when the remaining operands are statically unknown.
+    """
+    value = _static_re_flags_value(node)
+    if value is not None:
+        return bool(value & re.VERBOSE)
+    if isinstance(node, cst.BinaryOperation) and isinstance(node.operator, cst.BitOr):
+        return _static_verbose_member(node.left) or _static_verbose_member(node.right)
+    return False
+
+
+def _resolve_verbose_flag(args: Sequence[cst.Arg], func_name: str) -> bool | None:
+    """Resolve whether ``re.VERBOSE`` is statically set for a call.
+
+    ``True``/``False`` mean the flag is proven set/unset; ``None`` means the
+    flags expression (or the argument shape, e.g. ``*args``) is unknown and
+    the caller must keep today's flagless behaviour.  A missing flags
+    argument counts as unset.
+    """
+    flags_expr: cst.CSTNode | None = None
+    for arg in args:
+        if arg.keyword is not None and arg.keyword.value == "flags" and arg.star == "":
+            flags_expr = arg.value
+            break
+    if flags_expr is None:
+        index = _FLAGS_POSITIONAL_INDEX[func_name]
+        for positional_seen, arg in enumerate(args):
+            if arg.keyword is not None:
+                return None  # keyword boundary before the positional slot
+            if positional_seen == index:
+                if arg.star != "":
+                    return None  # star at the flags slot: unknown
+                flags_expr = arg.value
+                break
+            if arg.star != "":
+                return None  # star swallows the positional counting
+        if flags_expr is None:
+            return False  # fewer positional arguments than the flags slot
+    value = _static_re_flags_value(flags_expr)
+    if value is not None:
+        return bool(value & re.VERBOSE)
+    if _static_verbose_member(flags_expr):
+        return True
+    return None
+
 
 def _regex_pattern_arg_index(args: Sequence[cst.Arg]) -> int | None:
     """Return the index of the regex pattern argument, or ``None`` (M-099).
@@ -664,7 +757,15 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     if not isinstance(pattern, str):
         return
 
-    for mutated_pattern in mutate_regex_pattern(pattern):
+    # Statically resolve re.VERBOSE (keyword, positional, or a monotonic
+    # BitOr member); a global inline (?x) prefix counts too.  Unknown flags
+    # keep today's flagless behaviour (M-051).
+    verbose = _resolve_verbose_flag(node.args, node.func.attr.value)
+    effective_flags = 0
+    if verbose or pattern.startswith("(?x)"):
+        effective_flags = re.VERBOSE
+
+    for mutated_pattern in mutate_regex_pattern(pattern, effective_flags):
         # ``repr`` chooses and escapes a safe Python literal independently for
         # every candidate.  Reusing the source quote delimiter made a valid
         # regex range mutation such as [!-#] -> ["-#] invalidate the complete

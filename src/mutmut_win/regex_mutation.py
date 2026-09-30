@@ -18,7 +18,12 @@ class-span tokenizer (``_class_spans`` / ``_in_class``):
 
 Every candidate is validated via ``re.compile()`` and de-duplicated — invalid
 or repeated patterns are silently dropped; at most ``MAX_MUTATIONS_PER_PATTERN``
-survive per pattern.
+survive per pattern.  ``(?#...)`` inline comments and, when the call site's
+statically resolvable flags include ``re.VERBOSE``, ``#`` line comments are
+locked spans: their text is never mutated (guaranteed equivalents), and
+verbose-only patterns validate under ``re.VERBOSE`` so they keep a mutation
+surface.  Unknown flags keep the flagless behaviour; scoped ``(?x:...)``
+groups are a documented limit.
 """
 
 from __future__ import annotations
@@ -66,17 +71,24 @@ _QUANTIFIER_RE = re.compile(
 )
 
 
-def mutate_regex_pattern(pattern: str) -> list[str]:
+def mutate_regex_pattern(pattern: str, flags: int = 0) -> list[str]:
     """Generate mutations for a single regex pattern string.
 
     Args:
         pattern: The raw regex pattern (without delimiters/quotes).
+            flags: Static ``re`` flags of the call site.  Only the
+                ``re.VERBOSE`` bit is honoured: it locks ``#`` line comments
+                out of mutation and lets ``_is_valid_regex`` compile
+                candidates with VERBOSE so verbose-only patterns keep a
+                mutation surface.  All other bits are deliberately ignored
+                (``re.DEBUG`` would print per candidate; ``re.LOCALE`` and
+                ``re.ASCII | re.UNICODE`` raise for str patterns).
 
     Returns:
         A list of mutated patterns. Each is a valid regex (verified via
         ``re.compile``). At most ``MAX_MUTATIONS_PER_PATTERN`` are returned.
     """
-    spans = _scan_regex(pattern)
+    spans = _scan_regex(pattern, verbose=bool(flags & re.VERBOSE))
     mutations_iter = itertools.chain(
         _iter_quantifiers(pattern, spans),
         _iter_char_classes(pattern, spans),
@@ -94,7 +106,7 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
     for m in mutations_iter:
         if m == pattern or m in seen:
             continue  # skip no-ops and duplicates
-        if _is_valid_regex(m):
+        if _is_valid_regex(m, flags):
             valid.append(m)
             seen.add(m)
         if len(valid) >= MAX_MUTATIONS_PER_PATTERN:
@@ -507,13 +519,16 @@ def _mutate_anchors(pattern: str) -> list[str]:
     return list(_iter_anchors(pattern))
 
 
-def _is_valid_regex(pattern: str) -> bool:
+def _is_valid_regex(pattern: str, flags: int = 0) -> bool:
     """Check if a pattern compiles without ambiguous-regex warnings.
 
     Python emits ``FutureWarning`` for constructs such as possible nested
     character sets.  Treating those as generated candidates would make the
     mutation suite noisy today and potentially change its meaning under a
-    future regex parser.
+    future regex parser.  Only the ``re.VERBOSE`` bit of *flags* reaches the
+    compiler: it alone decides parseability of verbose-only patterns, while
+    ``re.DEBUG`` output and ``re.LOCALE``/``re.ASCII | re.UNICODE`` errors
+    must never leak into generation.
     """
     try:
         with warnings.catch_warnings():
@@ -523,7 +538,7 @@ def _is_valid_regex(pattern: str) -> bool:
             # would otherwise become order-dependent and accept an ambiguous
             # candidate without re-parsing it. The exact supported runtime is
             # CPython 3.14.7; its uncached compiler is the deterministic seam.
-            re._compiler.compile(pattern)  # type: ignore[attr-defined]
+            re._compiler.compile(pattern, flags & re.VERBOSE)  # type: ignore[attr-defined]
     except (
         re.error,
         OverflowError,

@@ -569,7 +569,12 @@ default), v2.17.0 landed the first six advanced Phase-2 operators
 match-guard — acceptance harness 152/152, 100 %), and v2.18.0 completed
 the regex operator with the full 14-sub-mutator suite (anchors,
 quantifiers, shorthands, character classes, groups/look-around — harness
-184/188). v2.19.0 added the aggressive `all`-tier operators (arithmetic
+184/188). Regex mutation binds the pattern argument positionally or via
+`pattern=`, never mutates `(?#...)` comments, and honours statically
+resolvable `re.VERBOSE`/`re.X` flags (including `flags=` keywords and a
+global `(?x)` prefix) by locking `#` line comments; unknown flag
+expressions keep the flagless behaviour and scoped `(?x:...)` groups are
+a documented limit. v2.19.0 added the aggressive `all`-tier operators (arithmetic
 operand deletion, exception swap, general-statement and member-assignment
 removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 (pragma `block`/`start`-`end`, regex `do_not_mutate_patterns`, and
