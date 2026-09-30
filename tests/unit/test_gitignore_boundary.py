@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from mutmut_win import gitignore_boundary
 from mutmut_win.gitignore_boundary import GitignoreBoundary
@@ -214,8 +214,17 @@ class TestPatternEngineFailure:
         path and carry the traceback, otherwise the failure is invisible.
         """
 
+        class _ExplodingRegex:
+            pattern = "(?:.+/)?\\.lake(?P<ps_d>/)"
+            flags = 0
+            groupindex: ClassVar[dict[str, int]] = {"ps_d": 1}
+
+            def search(self, _probe: str) -> object:
+                raise RuntimeError("pattern engine failure")
+
         class _ExplodingPattern:
             include = True
+            regex = _ExplodingRegex()
 
             def match_file(self, _relative: str) -> object:
                 raise RuntimeError("pattern engine failure")
@@ -546,3 +555,94 @@ class TestUnknownLevelsAndBom:
         project = _make_project(tmp_path, (".gitignore", b"\xef\xbb\xbf# c\n.lake/\n"))
         boundary = GitignoreBoundary.load(project)
         assert boundary.excludes_directory(".lake") is True
+
+
+class TestDirMarkerPrecedence:
+    """M-017: directory-marker precedence must mirror Git within one level.
+
+    A negation that hits the candidate only through an ANCESTOR directory
+    marker cannot override an earlier real path match; an end-anchored own
+    marker is a path match.  Derived against ``git check-ignore`` (see the
+    integration oracle test).
+    """
+
+    def test_negated_dir_cannot_reinstate_files_under_path_match(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*.pyc\n!vendor/\n"),
+            ("vendor/x.pyc", ""),
+        )
+        boundary = GitignoreBoundary.load(project).enter("vendor")
+        assert boundary.excludes_file("x.pyc") is True
+
+    def test_whitelist_idiom_keeps_directories_but_files_stay_excluded(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*\n!*/\n"),
+            ("a/b.txt", ""),
+        )
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_directory("a") is False
+        assert boundary.enter("a").excludes_file("b.txt") is True
+
+    def test_negated_parent_dir_does_not_reinstate_subdirectories(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*\n!a/\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("a")
+        assert boundary.excludes_directory("sub") is True
+
+    def test_nested_directories_stay_reincluded_under_whitelist(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Regression guard for the rejected first design: a/sub is NOT
+        # excluded under ['*', '!*/'].
+        project = _make_project(tmp_path, (".gitignore", "*\n!*/\n"))
+        boundary = GitignoreBoundary.load(project).enter("a")
+        assert boundary.excludes_directory("sub") is False
+
+    def test_whitelist_file_negation_reinstates_nested_files(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "*\n!*/\n!x.pyc\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("a").enter("sub")
+        assert boundary.excludes_file("x.pyc") is False
+
+    def test_globstar_dir_negation_excludes_files_and_subtrees(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "a/**\n!a/\n"),
+        )
+        boundary = GitignoreBoundary.load(project).enter("a")
+        assert boundary.excludes_file("x.pyc") is True
+        assert boundary.excludes_directory("sub") is True
+
+    def test_equal_patterns_last_match_wins_for_files(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "vendor/\n!vendor/\n"),
+            ("vendor/x.pyc", ""),
+        )
+        boundary = GitignoreBoundary.load(project).enter("vendor")
+        # The directory is re-included (own end marker, equal priority, last
+        # match wins); the FILE matches no pattern itself and stays kept -
+        # exactly what git check-ignore reports.
+        assert boundary.excludes_file("x.pyc") is False
+
+    def test_root_whitelist_idiom(self, tmp_path: Path) -> None:
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "/*\n!/src/\n!*.pyc\n"),
+        )
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_directory("src") is False
+        assert boundary.enter("src").excludes_directory("sub") is False
