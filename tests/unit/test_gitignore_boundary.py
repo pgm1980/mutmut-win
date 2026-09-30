@@ -8,6 +8,7 @@ able to prune git-ignored subtrees (e.g. ``tests/test_project/.lake`` with
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -542,6 +543,63 @@ class TestForcedRootAtNestedBoundary:
         pkg = GitignoreBoundary.load(project).enter("pkg")
         assert pkg.excludes_directory("sub") is True
         assert pkg.excludes_directory("sibling") is True
+
+
+class TestTrackedIndexStageParsing:
+    """AR-03 (COR-003): gitlink records land in the directory override set.
+
+    The loader consumes ``git ls-files -z --cached --stage`` records
+    (``<mode> <object> <stage><SEP><path>``, SEP is a tab on current git and
+    a space on some versions) and must classify gitlinks (mode 160000) as
+    tracked directories without guessing directory-ness for normal files.
+    """
+
+    @staticmethod
+    def _fake_ls_files(monkeypatch: pytest.MonkeyPatch, stdout: bytes) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr=b"")
+        monkeypatch.setattr(
+            gitignore_boundary.subprocess,
+            "run",
+            lambda *_args, **_kwargs: completed,
+        )
+
+    def test_gitlink_record_lands_in_directories(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / ".git").mkdir()
+        payload = (
+            b"160000 1111111111111111111111111111111111111111 0\tvendor\x00"
+            b"100644 2222222222222222222222222222222222222222 0\tsrc/x.py\x00"
+        )
+        self._fake_ls_files(monkeypatch, payload)
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert "vendor" in index.files
+        assert "vendor" in index.directories
+        assert "src/x.py" in index.files
+        assert "src" in index.directories
+        assert "src/x.py" not in index.directories
+
+    def test_space_separated_stage_records_parse_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Some git versions emit a space separator with ``-z``."""
+        (tmp_path / ".git").mkdir()
+        payload = b"160000 1111111111111111111111111111111111111111 0 sub/deps/vendor\x00"
+        self._fake_ls_files(monkeypatch, payload)
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert {"sub", "sub/deps", "sub/deps/vendor"} <= index.directories
+
+    def test_unparseable_record_keeps_plain_path_behaviour(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A record without stage metadata degrades to the old file-path
+        treatment instead of dropping the entry."""
+        (tmp_path / ".git").mkdir()
+        self._fake_ls_files(monkeypatch, b"plain/odd\x00")
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert "plain/odd" in index.files
+        assert "plain" in index.directories
+        assert "plain/odd" not in index.directories
 
 
 class TestUnknownLevelsAndBom:

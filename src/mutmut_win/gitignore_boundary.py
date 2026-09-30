@@ -27,11 +27,14 @@ The boundary mirrors Git's layered ignore semantics for walk pruning:
 
 Tracked-index override (M-001): files present in the Git index (tracked,
 whether committed or ``git add -f``) are never excluded by ignore patterns.
-The index is loaded once per ``load()`` call via ``git ls-files -z --cached``
-and cached per (root, index mtime, index size).  Without a Git repository the
-behaviour is unchanged (pure patterns, no subprocess).  A Git failure with an
-existing ``.git`` marker logs a warning and disables pruning entirely for
-that boundary (``unknown``), ensuring tracked files are never silently lost.
+The index is loaded once per ``load()`` call via ``git ls-files -z --cached
+--stage`` and cached per (root, index mtime, index size).  Gitlink entries
+(mode 160000, i.e. submodules) count as tracked DIRECTORIES — their path
+joins the directory override set, while normal file entries never do.
+Without a Git repository the behaviour is unchanged (pure patterns, no
+subprocess).  A Git failure with an existing ``.git`` marker logs a warning
+and disables pruning entirely for that boundary (``unknown``), ensuring
+tracked files are never silently lost.
 
 Only project-local ``.gitignore`` files are honoured.
 ``.git/info/exclude`` and the global ``core.excludesFile`` are deliberate
@@ -286,9 +289,11 @@ class _TrackedIndex:
 
     ``files`` contains every tracked file path (project-root-relative,
     POSIX separators, case-folded).  ``directories`` contains every
-    ancestor-directory prefix of every tracked file.  ``unknown`` marks a
-    Git failure — the boundary then excludes nothing (fail-open) to ensure
-    tracked files are never silently pruned.
+    ancestor-directory prefix of every tracked file plus every gitlink
+    (mode 160000) path itself: a gitlink is semantically a tracked
+    directory root, so ignore rules cannot prune it (AR-03 / COR-003).
+    ``unknown`` marks a Git failure — the boundary then excludes nothing
+    (fail-open) to ensure tracked files are never silently pruned.
     """
 
     files: frozenset[str]
@@ -303,6 +308,20 @@ _TRACKED_CACHE_MAX = 16
 #: Environment keys stripped before invoking git (they can redirect the index).
 _GIT_ENV_STRIP = frozenset(
     {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"}
+)
+
+#: Index mode of a gitlink (submodule commit reference): a tracked DIRECTORY.
+_GITLINK_MODE = "160000"
+
+#: One ``git ls-files -z --cached --stage`` record:
+#: ``<mode> SP <object> SP <stage> (TAB|SP) <path>``.  Current git keeps the
+#: tab separator with ``-z``; some versions emit a space instead, so both are
+#: accepted.  DOTALL lets a path itself contain newlines (records are already
+#: NUL-split); a record that does not match degrades to the plain-path
+#: treatment below instead of being dropped.
+_STAGE_RECORD = re.compile(
+    r"(?P<mode>[0-7]{6}) [0-9a-fA-F]+ [0-3][\t ](?P<path>.+)",
+    re.DOTALL,
 )
 
 
@@ -321,15 +340,30 @@ def _find_git_marker(root: Path) -> Path | None:
     return None
 
 
+def _parse_stage_record(record: str) -> tuple[str | None, str]:
+    """Split one ``--stage`` record into ``(mode, path)``.
+
+    Returns ``(None, record)`` for records without stage metadata so the
+    caller keeps the conservative plain-path treatment.
+    """
+    match = _STAGE_RECORD.fullmatch(record)
+    if match is None:
+        return None, record
+    return match.group("mode"), match.group("path")
+
+
 def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     """Load the tracked-file set from the Git index (M-001).
 
-    Uses ``git ls-files -z --cached`` (without ``--exclude-standard``) to get
-    the full tracked set regardless of ignore rules.  Repo detection is
-    filesystem-based (``.git`` marker search) to avoid false negatives from
-    ``rev-parse`` errors like "dubious ownership".  Without a ``.git`` marker
-    the result is an empty index (pure pattern behaviour).  With a marker but
-    a Git failure the result is ``unknown=True`` (excludes nothing).
+    Uses ``git ls-files -z --cached --stage`` (without
+    ``--exclude-standard``) to get the full tracked set regardless of ignore
+    rules, including each entry's index mode: gitlinks (mode 160000) join
+    the directory override set as tracked directory roots, normal entries
+    stay files (AR-03 / COR-003).  Repo detection is filesystem-based
+    (``.git`` marker search) to avoid false negatives from ``rev-parse``
+    errors like "dubious ownership".  Without a ``.git`` marker the result
+    is an empty index (pure pattern behaviour).  With a marker but a Git
+    failure the result is ``unknown=True`` (excludes nothing).
     """
     marker = _find_git_marker(project_root)
     if marker is None:
@@ -353,7 +387,15 @@ def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     try:
         result = subprocess.run(  # noqa: S603  # git from PATH; argv list, no shell, env scrubbed
             # S607: "git" from PATH is the project contract (cli.py does the same).
-            ["git", "-C", str(project_root), "ls-files", "-z", "--cached"],  # noqa: S607  # git from PATH per project contract
+            [  # noqa: S607  # git from PATH per project contract
+                "git",
+                "-C",
+                str(project_root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--stage",
+            ],
             capture_output=True,
             timeout=30,
             check=False,
@@ -401,11 +443,17 @@ def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     for raw_path in output.split("\0"):
         if not raw_path:
             continue
-        folded = _fold(raw_path.replace("\\", "/"))
+        mode, path = _parse_stage_record(raw_path)
+        folded = _fold(path.replace("\\", "/"))
         files.add(folded)
         parts = folded.split("/")
         for i in range(1, len(parts)):
             dirs.add("/".join(parts[:i]))
+        if mode == _GITLINK_MODE:
+            # A gitlink is one tracked path that IS a directory root
+            # (submodule commit reference); only its own mode proves that,
+            # normal file entries never join the directory set (AR-03).
+            dirs.add(folded)
 
     index = _TrackedIndex(files=frozenset(files), directories=frozenset(dirs), unknown=False)
     _cache_tracked(cache_key, index)

@@ -15,6 +15,7 @@ import pytest
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.file_setup import copy_src_dir, walk_source_files
+from mutmut_win.gitignore_boundary import GitignoreBoundary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -186,3 +187,111 @@ class TestNestedExplicitRootInRealRepo:
         assert (tmp_path / "mutants" / "pkg" / "sub" / "other.py").is_file()
         # The unconfigured ignored sibling stays out of staging.
         assert not (tmp_path / "mutants" / "pkg" / "sibling").exists()
+
+
+class TestTrackedGitlinkDirectory:
+    """AR-03 (COR-003): tracked gitlink entries (mode 160000) are directories.
+
+    ``git ls-files`` reports a submodule as ONE path with mode 160000; the
+    tracked override must treat that path as a tracked directory root so the
+    ignore rule cannot prune it, without guessing directory-ness for normal
+    file entries.
+    """
+
+    def _init_with_gitlink(self, root: Path, path: str = "vendor") -> None:
+        _init_repo(root)
+        (root / ".gitignore").write_text(f"{path}/\n", encoding="utf-8")
+        vendor = root / path
+        vendor.mkdir(parents=True)
+        (vendor / "api.py").write_text("def answer(): return 42\n", encoding="utf-8")
+        _git(root, "update-index", "--add", "--cacheinfo", f"160000,{'1' * 40},{path}")
+
+    def test_gitlink_directory_is_not_excluded(self, tmp_path: Path) -> None:
+        """The gitlink itself is a tracked directory root (M-001 override)."""
+        self._init_with_gitlink(tmp_path)
+        boundary = GitignoreBoundary.load(tmp_path)
+        assert boundary.excludes_directory("vendor") is False
+
+    def test_gitlink_nested_directory_is_not_excluded(self, tmp_path: Path) -> None:
+        """A gitlink below the root covers all its ancestor components too."""
+        self._init_with_gitlink(tmp_path, path="third_party/vendor")
+        boundary = GitignoreBoundary.load(tmp_path)
+        assert boundary.excludes_directory("third_party") is False
+        assert boundary.enter("third_party").excludes_directory("vendor") is False
+
+    def test_gitlink_source_content_stays_reachable_through_configured_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._init_with_gitlink(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["vendor"], max_children=1)
+        sources = [str(s).replace("\\", "/") for s in walk_source_files(config)]
+        assert "vendor/api.py" in sources
+
+    def test_tracked_plain_file_does_not_act_as_directory_override(self, tmp_path: Path) -> None:
+        """Normal index entries keep their file identity: a tracked FILE
+        named like the ignored directory does not un-exclude the directory."""
+        _init_repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("vendor\n", encoding="utf-8")
+        (tmp_path / "vendor").write_text("i am a file\n", encoding="utf-8")
+        _git(tmp_path, "add", "-f", "vendor")
+        boundary = GitignoreBoundary.load(tmp_path)
+        assert boundary.excludes_file("vendor") is False
+        assert boundary.excludes_directory("vendor") is True
+
+    def test_full_submodule_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real ``git submodule add`` gitlink survives ignore pruning.
+
+        Git refuses the file protocol by default since 2.38, so the probe
+        allows it explicitly for the local inner repository.
+        """
+        inner = tmp_path / "inner"
+        inner.mkdir()
+        _init_repo(inner)
+        (inner / "api.py").write_text("def answer(): return 42\n", encoding="utf-8")
+        _git(inner, "add", "api.py")
+        _git(inner, "commit", "-q", "-m", "inner")
+
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        _init_repo(outer)
+        subprocess.run(  # noqa: S603  # full path via shutil.which; argv list, no shell
+            [
+                _GIT,
+                "-C",
+                str(outer),
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--quiet",
+                str(inner),
+                "vendor",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        _git(outer, "commit", "-q", "-m", "submodule")
+        # The ignore rule arrives AFTER the submodule is tracked — the M-001
+        # scenario (git itself refuses submodule-add onto an ignored path).
+        (outer / ".gitignore").write_text("vendor/\ncache/\n", encoding="utf-8")
+        stage = _git(outer, "ls-files", "--stage").stdout.decode("utf-8")
+        assert "160000" in stage
+        assert "vendor" in stage
+
+        boundary = GitignoreBoundary.load(outer)
+        # The gitlink directory is entered despite the ignore rule ...
+        assert boundary.excludes_directory("vendor") is False
+        # ... its configured source content stays reachable ...
+        monkeypatch.chdir(outer)
+        config = MutmutConfig(paths_to_mutate=["vendor"], max_children=1)
+        sources = [str(s).replace("\\", "/") for s in walk_source_files(config)]
+        assert "vendor/api.py" in sources
+        # ... and normal ignored untracked directories stay excluded.
+        cache = outer / "cache"
+        cache.mkdir()
+        (cache / "dropped.py").write_text("x = 1\n", encoding="utf-8")
+        assert boundary.excludes_directory("cache") is True
