@@ -644,3 +644,112 @@ def test_database_lock_rejects_hardlink_alias_while_original_is_held(
 
     with DatabaseRunLocks(alias_db) as replacement:
         assert replacement.acquired is True
+
+
+class TestDatabaseLockInterruptSafeRelease:
+    """M-093: every partial lock is released even under interruption."""
+
+    def _database(self, tmp_path: Path) -> Path:
+        database = tmp_path / "cache" / "mutmut-cache.db"
+        database.parent.mkdir(parents=True, exist_ok=True)
+        database.write_bytes(b"placeholder")
+        return database
+
+    def test_release_interrupt_still_releases_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        locks = DatabaseRunLocks(database).acquire()
+        assert len(locks.paths) == 2
+        identity_path = locks.paths[-1]
+        original_release = WorkspaceRunLock.release
+
+        def interrupting_release(self: WorkspaceRunLock) -> None:
+            original_release(self)
+            if self.path == identity_path:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(WorkspaceRunLock, "release", interrupting_release)
+        with pytest.raises(KeyboardInterrupt):
+            locks.release()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        with DatabaseRunLocks(database).acquire() as fresh:
+            assert len(fresh.paths) == 2
+
+    def test_realistic_interrupt_inside_release_frees_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        locks = DatabaseRunLocks(database).acquire()
+        path_lock = locks.paths[0]
+        identity_path = locks.paths[-1]
+        original_write_owner = run_lock_module._write_owner
+
+        def interrupting_write_owner(
+            path: Path,
+            owner: run_lock_module.RunLockOwner,
+            **kwargs: object,
+        ) -> None:
+            if path == identity_path:
+                raise KeyboardInterrupt
+            original_write_owner(path, owner, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(run_lock_module, "_write_owner", interrupting_write_owner)
+        with pytest.raises(KeyboardInterrupt):
+            locks.release()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        with WorkspaceRunLock(path_lock):
+            pass  # the path lock is free even though the identity stage broke
+
+    def test_construction_failure_rolls_back_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        path_lock, identity_lock = database_lock_paths_for_db(database)
+
+        class FailingWorkspaceRunLock(WorkspaceRunLock):
+            def __init__(self, path: Path) -> None:
+                if path == identity_lock:
+                    raise run_lock_module.RunLockError("construction failed")
+                super().__init__(path)
+
+        monkeypatch.setattr(run_lock_module, "WorkspaceRunLock", FailingWorkspaceRunLock)
+        with pytest.raises(run_lock_module.RunLockError):
+            DatabaseRunLocks(database).acquire()
+        monkeypatch.undo()
+
+        with WorkspaceRunLock(path_lock):
+            pass  # the already-acquired path lock was rolled back
+
+    def test_interrupt_between_acquire_and_registration_releases_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        original_acquire = WorkspaceRunLock.acquire
+
+        def interrupting_acquire(self: WorkspaceRunLock) -> None:
+            original_acquire(self)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(WorkspaceRunLock, "acquire", interrupting_acquire)
+        locks = DatabaseRunLocks(database)
+        with pytest.raises(KeyboardInterrupt):
+            locks.acquire()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        for path in database_lock_paths_for_db(database):
+            with WorkspaceRunLock(path):
+                pass
