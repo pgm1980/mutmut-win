@@ -29,6 +29,8 @@ import sys
 import warnings
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -74,12 +76,13 @@ def mutate_regex_pattern(pattern: str) -> list[str]:
         A list of mutated patterns. Each is a valid regex (verified via
         ``re.compile``). At most ``MAX_MUTATIONS_PER_PATTERN`` are returned.
     """
+    spans = _scan_regex(pattern)
     mutations_iter = itertools.chain(
-        _iter_quantifiers(pattern),
-        _iter_char_classes(pattern),
-        _iter_anchors(pattern),
-        _iter_classes(pattern),
-        _iter_groups(pattern),
+        _iter_quantifiers(pattern, spans),
+        _iter_char_classes(pattern, spans),
+        _iter_anchors(pattern, spans),
+        _iter_classes(pattern, spans),
+        _iter_groups(pattern, spans),
     )
 
     # Validate, dedupe (issue #132 / 360°-C5: two generators can emit the
@@ -127,7 +130,7 @@ def _brace_variants(brace: str) -> list[str]:
     return out
 
 
-def _iter_quantifiers(pattern: str) -> Iterator[str]:
+def _iter_quantifiers(pattern: str, spans: _RegexSpans | None = None) -> Iterator[str]:
     """Lazily yield quantifier mutations (sub-mutators #2-#6).
 
     Per quantifier: removal (#2); reluctant greedy->lazy (#6, skipping the exact
@@ -135,14 +138,19 @@ def _iter_quantifiers(pattern: str) -> Iterator[str]:
     and short->range tightenings (#5: ``?``->``{1}``, ``+``->``{2,}``); and brace
     ``{...}`` quantity ±1 (#3/#4). Invalid or duplicate candidates are dropped
     downstream by ``re.compile`` and the ``seen`` set in
-    :func:`mutate_regex_pattern`.
+    :func:`mutate_regex_pattern`.  Quantifiers inside classes or ``(?#...)``
+    comments are literals and never mutated (M-052).
     """
-    class_spans = _class_spans(pattern)
+    if spans is None:
+        spans = _scan_regex(pattern)
 
     for match in _QUANTIFIER_RE.finditer(pattern):
-        if _in_class(match.start(), class_spans):
-            # Inside ``[...]`` these glyphs are literals (or class syntax),
-            # never repetition operators.
+        if _in_class(match.start(), list(spans.class_spans)) or _in_spans(
+            match.start(),
+            spans.comment_spans,
+        ):
+            # Inside ``[...]`` or a comment these glyphs are literals (or
+            # class/comment syntax), never repetition operators.
             continue
         base, lazy = match.group(1), match.group(2)
         start, end = match.start(), match.end()
@@ -194,17 +202,21 @@ def _shorthand_positions(pattern: str) -> list[tuple[int, str]]:
     return positions
 
 
-def _iter_char_classes(pattern: str) -> Iterator[str]:
+def _iter_char_classes(pattern: str, spans: _RegexSpans | None = None) -> Iterator[str]:
     """Lazily yield shorthand character-class mutations (#11-#13).
 
     Per unescaped shorthand (``\\d`` etc.): #11 negation (``\\d`` <-> ``\\D`` via
     a case swap), #12 nullification (``\\d`` -> the literal ``d``), and #13
     to-any (``\\d`` -> ``[\\d\\D]``). #13 fires only OUTSIDE a character class,
     since ``[\\d]`` -> ``[[\\d\\D]]`` would be a (wrong) nested class. Every
-    occurrence is mutated, not just the first.
+    occurrence outside a comment is mutated, not just the first (M-052).
     """
-    spans = _class_spans(pattern)
+    if spans is None:
+        spans = _scan_regex(pattern)
+    class_spans = list(spans.class_spans)
     for idx, letter in _shorthand_positions(pattern):
+        if _in_spans(idx, spans.comment_spans):
+            continue
         negated = letter.swapcase()
         rest = pattern[idx + 2 :]
         # #11 negation: \d <-> \D
@@ -212,7 +224,7 @@ def _iter_char_classes(pattern: str) -> Iterator[str]:
         # #12 nullification: \d -> d
         yield f"{pattern[:idx]}{letter}{rest}"
         # #13 to-any: \d -> [\d\D] (outside a class only)
-        if not _in_class(idx, spans):
+        if not _in_class(idx, class_spans):
             yield f"{pattern[:idx]}[\\{letter}\\{negated}]{rest}"
 
 
@@ -244,7 +256,7 @@ def _class_members(content: str) -> list[tuple[int, int]]:
     return members
 
 
-def _iter_classes(pattern: str) -> Iterator[str]:
+def _iter_classes(pattern: str, spans: _RegexSpans | None = None) -> Iterator[str]:
     """Lazily yield character-class mutations (sub-mutators #7-#10).
 
     Per ``[...]`` span: #7 negation toggle (``[abc]`` <-> ``[^abc]``); #10 to-any
@@ -258,7 +270,9 @@ def _iter_classes(pattern: str) -> Iterator[str]:
     are derived independently from ``negated`` so the two cannot compensate for a
     mutation in one another.
     """
-    for start, end in _class_spans(pattern):
+    if spans is None:
+        spans = _scan_regex(pattern)
+    for start, end in spans.class_spans:
         inner = pattern[start + 1 : end - 1]  # everything between [ and ]
         negated = inner.startswith("^")
         body = inner[1:] if negated else inner
@@ -299,22 +313,31 @@ def _mutate_classes(pattern: str) -> list[str]:
     return list(_iter_classes(pattern))
 
 
-def _iter_groups(pattern: str) -> Iterator[str]:
+def _iter_groups(pattern: str, spans: _RegexSpans | None = None) -> Iterator[str]:
     """Lazily yield group and look-around mutations (#14 + #15).
 
     #14 look-around flip: ``(?=)`` <-> ``(?!)`` and ``(?<=)`` <-> ``(?<!)``.
     #15 group->non-capturing: a plain capturing ``(`` becomes ``(?:``. Both are
     class-aware (a ``(`` inside ``[...]`` is a literal) and escape-aware (``\\(``
     is a literal paren). A non-capturing ``(?:`` and named/other ``(?...)`` groups
-    are left alone by #15.
+    are left alone by #15.  A ``(`` inside a comment is not a group (M-052).
     """
-    spans = _class_spans(pattern)
+    if spans is None:
+        spans = _scan_regex(pattern)
+    class_spans = list(spans.class_spans)
     i, n = 0, len(pattern)
     while i < n:
         if pattern[i] == "\\":
             i += 2
             continue
-        if pattern[i] == "(" and not _in_class(i, spans):
+        if (
+            pattern[i] == "("
+            and not _in_class(i, class_spans)
+            and not _in_spans(
+                i,
+                spans.comment_spans,
+            )
+        ):
             if pattern[i : i + 3] == "(?=":
                 yield f"{pattern[:i]}(?!{pattern[i + 3 :]}"
             elif pattern[i : i + 3] == "(?!":
@@ -344,21 +367,51 @@ _ESCAPED_ANCHORS: frozenset[str] = frozenset("AZbB")
 _TOP_LEVEL_ANCHORS: frozenset[str] = frozenset("^$")
 
 
-def _class_spans(pattern: str) -> list[tuple[int, int]]:
-    """Locate every unescaped ``[...]`` character class in *pattern*.
+class _RegexSpans(BaseModel):
+    """Escape-aware structural spans of one regex pattern (M-052/M-051).
 
-    Returns ``(start, end)`` index pairs, where ``start`` is the index of the
-    opening ``[`` and ``end`` is the index just past the closing ``]``. Handles
-    escaped brackets (``\\[``, ``\\]``) and a literal ``]`` appearing as the
-    first class member (``[]...]`` / ``[^]...]``). This is the structural
-    foundation that keeps context-sensitive sub-mutators out of classes.
+    ``class_spans`` are ``[...]`` character classes; ``comment_spans`` are
+    ``(?#...)`` inline comments (and, under ``re.VERBOSE``, ``#`` line
+    comments).  Nothing inside a comment span is ever a mutation site, and a
+    ``[`` inside a comment opens no class.
     """
-    spans: list[tuple[int, int]] = []
+
+    model_config = {"frozen": True}
+
+    class_spans: tuple[tuple[int, int], ...] = ()
+    comment_spans: tuple[tuple[int, int], ...] = ()
+
+
+def _scan_regex(pattern: str, *, verbose: bool = False) -> _RegexSpans:
+    """Scan *pattern* once for class and comment spans.
+
+    Backslash pairs are tokens.  Outside a class, ``(?#`` starts an inline
+    comment that ends at the first unescaped ``)`` (inclusive) or at the end
+    of the pattern; a ``[`` inside a comment never opens a class.  With
+    ``verbose``, a ``#`` outside a class locks the rest of its line.
+    """
+    class_spans: list[tuple[int, int]] = []
+    comment_spans: list[tuple[int, int]] = []
     i, n = 0, len(pattern)
     while i < n:
         char = pattern[i]
         if char == "\\":
             i += 2
+            continue
+        if pattern.startswith("(?#", i):
+            j = i + 3
+            end = n
+            while j < n:
+                if pattern[j] == "\\":
+                    j += 2
+                    continue
+                if pattern[j] == ")":
+                    j += 1
+                    break
+                j += 1
+            end = min(j, n)
+            comment_spans.append((i, end))
+            i = end
             continue
         if char == "[":
             j = i + 1
@@ -370,36 +423,81 @@ def _class_spans(pattern: str) -> list[tuple[int, int]]:
             while j < n and pattern[j] != "]":
                 j += 2 if pattern[j] == "\\" else 1
             end = min(j + 1, n)
-            spans.append((i, end))
+            class_spans.append((i, end))
+            i = end
+            continue
+        if verbose and char == "#":
+            newline = pattern.find("\n", i)
+            end = n if newline == -1 else newline + 1
+            comment_spans.append((i, end))
             i = end
             continue
         i += 1
-    return spans
+    return _RegexSpans(
+        class_spans=tuple(class_spans),
+        comment_spans=tuple(comment_spans),
+    )
+
+
+def _class_spans(pattern: str) -> list[tuple[int, int]]:
+    """Locate every unescaped ``[...]`` character class in *pattern*.
+
+    Returns ``(start, end)`` index pairs, where ``start`` is the index of the
+    opening ``[`` and ``end`` is the index just past the closing ``]``. Handles
+    escaped brackets (``\\[``, ``\\]``) and a literal ``]`` appearing as the
+    first class member (``[]...]`` / ``[^]...]``). This is the structural
+    foundation that keeps context-sensitive sub-mutators out of classes.
+    A ``[`` inside a ``(?#...)`` comment opens no class (M-052).
+    """
+    return list(_scan_regex(pattern).class_spans)
+
+
+def _in_spans(index: int, spans: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> bool:
+    """``True`` if *index* falls within one of the *spans*."""
+    return any(start <= index < end for start, end in spans)
 
 
 def _in_class(index: int, spans: list[tuple[int, int]]) -> bool:
     """``True`` if *index* falls within one of the *spans* (a ``[...]`` class)."""
-    return any(start <= index < end for start, end in spans)
+    return _in_spans(index, spans)
 
 
-def _iter_anchors(pattern: str) -> Iterator[str]:
+def _iter_anchors(pattern: str, spans: _RegexSpans | None = None) -> Iterator[str]:
     """Lazily yield anchor removals (#1): ``^``, ``$``, ``\\A``, ``\\Z``, ``\\b``, ``\\B``.
 
     Uses the class-span tokenizer so a ``^`` inside ``[^...]`` (a class negation)
     and a ``\\b`` inside ``[\\b]`` (a backspace literal) are never mistaken for
-    anchors. Each removal is a local string edit, leaving the rest byte-exact. A
-    trailing backslash has no next char and is left alone.
+    anchors; anchors inside comments are literal text (M-052). Each removal is
+    a local string edit, leaving the rest byte-exact. A trailing backslash has
+    no next char and is left alone.
     """
-    spans = _class_spans(pattern)
+    if spans is None:
+        spans = _scan_regex(pattern)
+    class_spans = list(spans.class_spans)
     i, n = 0, len(pattern)
     while i < n:
         char = pattern[i]
         if char == "\\":
-            if i + 1 < n and pattern[i + 1] in _ESCAPED_ANCHORS and not _in_class(i, spans):
+            if (
+                i + 1 < n
+                and pattern[i + 1] in _ESCAPED_ANCHORS
+                and not _in_class(
+                    i,
+                    class_spans,
+                )
+                and not _in_spans(i, spans.comment_spans)
+            ):
                 yield pattern[:i] + pattern[i + 2 :]
             i += 2
             continue
-        if char in _TOP_LEVEL_ANCHORS and not _in_class(i, spans):
+        if (
+            char in _TOP_LEVEL_ANCHORS
+            and not _in_class(i, class_spans)
+            and not _in_spans(
+                i,
+                spans.comment_spans,
+            )
+        ):
             yield pattern[:i] + pattern[i + 1 :]
         i += 1
 

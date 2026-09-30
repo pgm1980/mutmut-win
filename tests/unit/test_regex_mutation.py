@@ -834,10 +834,10 @@ class TestLazyCandidateGeneration:
     ) -> None:
         import mutmut_win.regex_mutation as rm
 
-        def fail_eager(_pattern: str) -> list[str]:
+        def fail_eager(*_args: str) -> list[str]:
             raise AssertionError("materialized beyond cap")
 
-        def fail_lazy(_pattern: str) -> list[str]:
+        def fail_lazy(*_args: str) -> list[str]:
             raise AssertionError("materialized beyond cap")
             yield ""  # pragma: no cover
 
@@ -883,3 +883,51 @@ class TestLazyCandidateGeneration:
             actual = None
         # None == None covers "both raise"; lazy never raises when eager does not.
         assert actual == expected
+
+
+class TestInlineComments:
+    """M-052: ``(?#...)`` comment spans are never mutated."""
+
+    def test_comment_body_stays_untouched(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        results = mutate_regex_pattern(r"a+(?#\d+)")
+        assert results
+        for candidate in results:
+            assert r"(?#\d+)" in candidate
+        assert "a(?#\\d+)" in results  # quantifier removal on a+ survives
+
+    def test_class_bracket_inside_comment_opens_no_class(self) -> None:
+        from mutmut_win.regex_mutation import _class_spans
+
+        assert _class_spans("a(?#[)b]") == []
+
+    def test_escaped_paren_does_not_end_the_comment(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        pattern = "a(?#x" + chr(92) + ")b+)c"
+        results = mutate_regex_pattern(pattern)
+        comment = "(?#x" + chr(92) + ")b+)"
+        for candidate in results:
+            assert comment in candidate
+
+    def test_unterminated_comment_returns_filtered_list(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        results = mutate_regex_pattern("a+(?#b+")
+        for candidate in results:
+            assert "(?#b+" in candidate
+
+    def test_paren_inside_comment_is_not_a_group(self) -> None:
+        from mutmut_win.regex_mutation import _scan_regex
+
+        spans = _scan_regex("a(?#(b))c(d)e")
+        assert spans.comment_spans == ((1, 7),)
+        assert spans.class_spans == ()
+
+    def test_hash_comment_inside_class_is_no_verbose_comment(self) -> None:
+        from mutmut_win.regex_mutation import _scan_regex
+
+        spans = _scan_regex("a[#]b", verbose=True)
+        assert spans.comment_spans == ()
+        assert spans.class_spans == ((1, 4),)
