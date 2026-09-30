@@ -6,7 +6,7 @@ import re
 import warnings
 
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from mutmut_win.regex_mutation import (
@@ -657,3 +657,316 @@ class TestHypothesisProperties:
         """Property: never more than MAX_MUTATIONS_PER_PATTERN results."""
         results = mutate_regex_pattern(pattern)
         assert len(results) <= MAX_MUTATIONS_PER_PATTERN
+
+
+class TestCodepointBoundRanges:
+    """M-050: single-point ranges at the Unicode bounds must not crash chr()."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "[" + chr(0) + "-" + chr(0) + "]",
+            "[^" + chr(0) + "-" + chr(0) + "]",
+            "[" + chr(0x10FFFF) + "-" + chr(0x10FFFF) + "]",
+            "[^" + chr(0x10FFFF) + "-" + chr(0x10FFFF) + "]",
+            "[" + chr(0x10FFFE) + "-" + chr(0x10FFFE) + "]",
+        ],
+        ids=["lower", "lower-negated", "upper", "upper-negated", "off-by-one-probe"],
+    )
+    def test_range_at_codepoint_bounds_does_not_raise(self, pattern: str) -> None:
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        results = mutate_regex_pattern(pattern)
+        assert all(_is_valid_regex(result) for result in results)
+        if not pattern.startswith("[^"):
+            assert any(result.startswith("[^") for result in results)
+
+    def test_operator_level_with_non_raw_literal_at_upper_bound(self) -> None:
+        import libcst as cst
+
+        from mutmut_win.node_mutation import operator_regex
+
+        call = cst.parse_expression('re.compile("[\\U0010ffff-\\U0010ffff]")')
+        mutants = list(operator_regex(call))
+        for mutant in mutants:
+            assert isinstance(mutant, cst.Call)
+            pattern_arg = mutant.args[0].value
+            assert isinstance(pattern_arg, cst.SimpleString)
+            assert isinstance(pattern_arg.evaluated_value, str)
+
+
+def _reference_eager(pattern: str) -> list[str]:
+    """Frozen copy of the pre-M-100 eager pipeline (differential oracle)."""
+    import mutmut_win.regex_mutation as rm
+
+    def ref_quantifiers(p: str) -> list[str]:
+        results: list[str] = []
+        class_spans = rm._class_spans(p)
+        for match in rm._QUANTIFIER_RE.finditer(p):
+            if rm._in_class(match.start(), class_spans):
+                continue
+            base, lazy = match.group(1), match.group(2)
+            start, end = match.start(), match.end()
+            is_exact = base.startswith("{") and "," not in base
+            replacements: list[str] = [""]
+            if not lazy and not is_exact:
+                replacements.append(base + "?")
+            if base == "+":
+                replacements.append("*")
+                replacements.append("{2,}")
+            elif base == "*":
+                replacements.append("+")
+            elif base == "?":
+                replacements.append("{1}")
+            else:
+                replacements.extend(rm._brace_variants(base))
+            for repl in replacements:
+                results.append(p[:start] + repl + p[end:])  # noqa: PERF401 — frozen eager oracle
+        return results
+
+    def ref_char_classes(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        for idx, letter in rm._shorthand_positions(p):
+            negated = letter.swapcase()
+            rest = p[idx + 2 :]
+            results.append(f"{p[:idx]}\\{negated}{rest}")
+            results.append(f"{p[:idx]}{letter}{rest}")
+            if not rm._in_class(idx, spans):
+                results.append(f"{p[:idx]}[\\{letter}\\{negated}]{rest}")
+        return results
+
+    def ref_anchors(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        i, n = 0, len(p)
+        while i < n:
+            char = p[i]
+            if char == "\\":
+                if i + 1 < n and p[i + 1] in rm._ESCAPED_ANCHORS and not rm._in_class(i, spans):
+                    results.append(p[:i] + p[i + 2 :])
+                i += 2
+                continue
+            if char in rm._TOP_LEVEL_ANCHORS and not rm._in_class(i, spans):
+                results.append(p[:i] + p[i + 1 :])
+            i += 1
+        return results
+
+    def ref_classes(p: str) -> list[str]:
+        results: list[str] = []
+        for start, end in rm._class_spans(p):
+            inner = p[start + 1 : end - 1]
+            negated = inner.startswith("^")
+            body = inner[1:] if negated else inner
+            mark = "^" if negated else ""
+            before, after = p[:start], p[end:]
+            if negated:
+                results.append(f"{before}[{body}]{after}")
+            else:
+                results.append(f"{before}[^{body}]{after}")
+            results.append(f"{before}[\\w\\W]{after}")
+            if body.startswith("]"):
+                continue
+            members = rm._class_members(body)
+            if len(members) >= 2:
+                for ms, me in members:
+                    results.append(f"{before}[{mark}{body[:ms] + body[me:]}]{after}")
+            for m in rm._RANGE_RE.finditer(body):
+                lo, hi = ord(m.group(1)), ord(m.group(2))
+                for lo2, hi2 in ((lo + 1, hi), (lo, hi - 1)):
+                    if not (
+                        0 <= lo2 <= rm._MAX_UNICODE_CODEPOINT
+                        and 0 <= hi2 <= rm._MAX_UNICODE_CODEPOINT
+                    ):
+                        continue
+                    new_body = body[: m.start()] + chr(lo2) + "-" + chr(hi2) + body[m.end() :]
+                    results.append(f"{before}[{mark}{new_body}]{after}")
+        return results
+
+    def ref_groups(p: str) -> list[str]:
+        results: list[str] = []
+        spans = rm._class_spans(p)
+        i, n = 0, len(p)
+        while i < n:
+            if p[i] == "\\":
+                i += 2
+                continue
+            if p[i] == "(" and not rm._in_class(i, spans):
+                if p[i : i + 3] == "(?=":
+                    results.append(f"{p[:i]}(?!{p[i + 3 :]}")
+                elif p[i : i + 3] == "(?!":
+                    results.append(f"{p[:i]}(?={p[i + 3 :]}")
+                elif p[i : i + 4] == "(?<=":
+                    results.append(f"{p[:i]}(?<!{p[i + 4 :]}")
+                elif p[i : i + 4] == "(?<!":
+                    results.append(f"{p[:i]}(?<={p[i + 4 :]}")
+                elif i + 1 < n and p[i + 1] != "?":
+                    results.append(f"{p[: i + 1]}?:{p[i + 1 :]}")
+            i += 1
+        return results
+
+    mutations: list[str] = []
+    mutations.extend(ref_quantifiers(pattern))
+    mutations.extend(ref_char_classes(pattern))
+    mutations.extend(ref_anchors(pattern))
+    mutations.extend(ref_classes(pattern))
+    mutations.extend(ref_groups(pattern))
+
+    valid: list[str] = []
+    seen: set[str] = set()
+    for m in mutations:
+        if m == pattern or m in seen:
+            continue
+        seen.add(m)
+        if rm._is_valid_regex(m):
+            valid.append(m)
+        if len(valid) >= rm.MAX_MUTATIONS_PER_PATTERN:
+            break
+    return valid
+
+
+class TestLazyCandidateGeneration:
+    """M-100: candidates materialize lazily; the cap also bounds memory."""
+
+    def test_sub_mutators_are_not_materialized_beyond_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import mutmut_win.regex_mutation as rm
+
+        def fail_eager(*_args: str) -> list[str]:
+            raise AssertionError("materialized beyond cap")
+
+        def fail_lazy(*_args: str) -> list[str]:
+            raise AssertionError("materialized beyond cap")
+            yield ""  # pragma: no cover
+
+        monkeypatch.setattr(rm, "_mutate_char_classes", fail_eager)
+        monkeypatch.setattr(rm, "_iter_char_classes", fail_lazy, raising=False)
+        assert len(rm.mutate_regex_pattern("a?" * 50)) == 12
+
+    def test_lazy_peak_memory_is_fraction_of_eager(self) -> None:
+        import re as re_module
+        import tracemalloc
+
+        import mutmut_win.regex_mutation as rm
+
+        pattern = "a?" * 3000
+        re_module.purge()
+        tracemalloc.start()
+        eager = _reference_eager(pattern)
+        _, eager_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        re_module.purge()
+        tracemalloc.start()
+        lazy = rm.mutate_regex_pattern(pattern)
+        _, lazy_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        assert lazy == eager
+        assert lazy_peak < eager_peak / 5
+
+    @given(
+        p=st.text(alphabet="ab+*?{}[]^$\\d()-,0123", max_size=40),
+    )
+    def test_output_matches_frozen_eager_reference(self, p: str) -> None:
+        import mutmut_win.regex_mutation as rm
+
+        try:
+            expected: object = _reference_eager(p)
+        except Exception:  # the oracle may reject exotic input
+            expected = None
+        try:
+            actual: object = rm.mutate_regex_pattern(p)
+        except Exception:
+            actual = None
+        # None == None covers "both raise"; lazy never raises when eager does not.
+        assert actual == expected
+
+
+class TestInlineComments:
+    """M-052: ``(?#...)`` comment spans are never mutated."""
+
+    def test_comment_body_stays_untouched(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        results = mutate_regex_pattern(r"a+(?#\d+)")
+        assert results
+        for candidate in results:
+            assert r"(?#\d+)" in candidate
+        assert "a(?#\\d+)" in results  # quantifier removal on a+ survives
+
+    def test_class_bracket_inside_comment_opens_no_class(self) -> None:
+        from mutmut_win.regex_mutation import _class_spans
+
+        assert _class_spans("a(?#[)b]") == []
+
+    def test_escaped_paren_does_not_end_the_comment(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        pattern = "a(?#x" + chr(92) + ")b+)c"
+        results = mutate_regex_pattern(pattern)
+        comment = "(?#x" + chr(92) + ")b+)"
+        for candidate in results:
+            assert comment in candidate
+
+    def test_unterminated_comment_returns_filtered_list(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        results = mutate_regex_pattern("a+(?#b+")
+        for candidate in results:
+            assert "(?#b+" in candidate
+
+    def test_paren_inside_comment_is_not_a_group(self) -> None:
+        from mutmut_win.regex_mutation import _scan_regex
+
+        spans = _scan_regex("a(?#(b))c(d)e")
+        assert spans.comment_spans == ((1, 7),)
+        assert spans.class_spans == ()
+
+    def test_hash_comment_inside_class_is_no_verbose_comment(self) -> None:
+        from mutmut_win.regex_mutation import _scan_regex
+
+        spans = _scan_regex("a[#]b", verbose=True)
+        assert spans.comment_spans == ()
+        assert spans.class_spans == ((1, 4),)
+
+
+class TestVerboseEngineFlags:
+    """M-051: the engine accepts and honours the VERBOSE bit of flags."""
+
+    def test_verbose_comment_locked_via_flags_kwarg(self) -> None:
+        import re as re_module
+
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        pattern = "a+ # b" + chr(10)
+        results = mutate_regex_pattern(pattern, flags=re_module.VERBOSE)
+        assert results
+        for candidate in results:
+            assert "# b" + chr(10) in candidate
+            assert _is_valid_regex(candidate, re_module.VERBOSE)
+
+    @given(
+        core=st.text(alphabet="ab+*?^$", min_size=1, max_size=8),
+        comment=st.text(alphabet="ab+*?()[]^$d", max_size=10),
+    )
+    def test_verbose_mutants_keep_the_comment_suffix(self, core: str, comment: str) -> None:
+        import re as re_module
+
+        from mutmut_win.regex_mutation import _is_valid_regex, mutate_regex_pattern
+
+        def compiles_verbose(text: str) -> bool:
+            try:
+                re_module.compile(text, re_module.X)
+            except re_module.error:
+                return False
+            return True
+
+        assume(compiles_verbose(core))
+        pattern = core + " # " + comment + chr(10)
+        assume(compiles_verbose(pattern))
+        for candidate in mutate_regex_pattern(pattern, flags=re_module.X):
+            assert candidate.endswith(" # " + comment + chr(10))
+            assert _is_valid_regex(candidate, re_module.X)

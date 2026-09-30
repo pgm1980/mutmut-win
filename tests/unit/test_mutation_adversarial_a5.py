@@ -39,7 +39,11 @@ def _regex_mutant_patterns(expression_source: str) -> set[str]:
     assert isinstance(expression, cst.Call)
     patterns: set[str] = set()
     for mutation in operator_regex(expression):
-        pattern_node = mutation.args[0].value
+        from mutmut_win.node_mutation import _regex_pattern_arg_index
+
+        pattern_index = _regex_pattern_arg_index(mutation.args)
+        assert pattern_index is not None
+        pattern_node = mutation.args[pattern_index].value
         assert isinstance(pattern_node, cst.SimpleString)
         pattern = pattern_node.evaluated_value
         assert isinstance(pattern, str)
@@ -307,3 +311,103 @@ def f(value):
                 implementations[name].with_changes(name=cst.Name("candidate"))
             )
             assert mutant_rendering != original_rendering
+
+
+class TestRegexPatternArgumentBinding:
+    """M-099: the pattern argument is found positionally or as ``pattern=``."""
+
+    def test_reordered_keywords_mutate_the_pattern_not_repl(self) -> None:
+        call = cst.parse_expression("re.sub(repl='a+b', pattern='x+', string=s)")
+        mutants = list(operator_regex(call))
+        assert mutants
+        for mutant in mutants:
+            for arg in mutant.args:
+                if arg.keyword is not None and arg.keyword.value == "repl":
+                    assert isinstance(arg.value, cst.SimpleString)
+                    assert arg.value.evaluated_value == "a+b"
+        mutated_patterns = {
+            arg.value.evaluated_value
+            for mutant in mutants
+            for arg in mutant.args
+            if arg.keyword is not None and arg.keyword.value == "pattern"
+        }
+        assert mutated_patterns
+        assert all(isinstance(value, str) for value in mutated_patterns)
+
+    def test_flags_first_keyword_call_yields_mutants(self) -> None:
+        patterns = _regex_mutant_patterns("re.compile(flags=re.I, pattern='^a+$')")
+        assert patterns
+        assert "a+$" in patterns
+
+    def test_star_args_yield_no_mutants(self) -> None:
+        call = cst.parse_expression("re.compile(*parts)")
+        assert list(operator_regex(call)) == []
+
+    def test_positional_calls_keep_the_canonical_universe(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        assert _regex_mutant_patterns("re.compile('a+')") == set(mutate_regex_pattern("a+"))
+
+
+class TestVerboseFlagHandling:
+    """M-051: statically resolvable re.VERBOSE flags lock comment spans."""
+
+    def test_verbose_comment_text_is_not_mutated(self) -> None:
+        pattern = "a+ # b?" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.compile({pattern!r}, re.VERBOSE)")
+        assert patterns
+        assert "a+ # b" + chr(10) not in patterns  # comment-only change
+        for value in patterns:
+            assert "# b?" + chr(10) in value
+        assert "a # b?" + chr(10) in patterns  # real quantifier mutant survives
+
+    def test_verbose_only_pattern_regains_mutants(self) -> None:
+        pattern = "a+ # (" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.compile({pattern!r}, re.X)")
+        assert "a # (" + chr(10) in patterns
+        assert "a* # (" + chr(10) in patterns
+        import re as re_module
+
+        for value in patterns:
+            re_module.compile(value, re_module.X)
+
+    def test_flags_keyword_with_bitor(self) -> None:
+        pattern = "a+ # (" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.compile({pattern!r}, flags=re.I | re.X)")
+        assert patterns
+
+    def test_positional_flags_argument_is_honoured(self) -> None:
+        pattern = "a+ # b" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.match({pattern!r}, s, re.X)")
+        assert patterns
+        assert all("# b" + chr(10) in value for value in patterns)
+
+    def test_unknown_flag_expression_keeps_todays_behaviour(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        patterns = _regex_mutant_patterns("re.compile('a+', flags=MY_FLAGS)")
+        assert patterns == set(mutate_regex_pattern("a+"))
+
+    def test_unknown_bitor_with_verbose_member_is_verbose(self) -> None:
+        pattern = "a+ # (" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.compile({pattern!r}, re.X | MY_FLAGS)")
+        assert patterns
+
+    def test_inline_global_verbose_prefix(self) -> None:
+        pattern = "(?x)a+ # b" + chr(10)
+        patterns = _regex_mutant_patterns(f"re.compile({pattern!r})")
+        assert patterns
+        assert all("# b" + chr(10) in value for value in patterns)
+
+    def test_debug_flag_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _regex_mutant_patterns("re.compile('a+', re.DEBUG)")
+        assert capsys.readouterr().out == ""
+
+    def test_locale_and_ascii_unicode_flags_do_not_crash(self) -> None:
+        _regex_mutant_patterns("re.compile('a+', re.LOCALE)")
+        _regex_mutant_patterns("re.compile('a+', re.ASCII | re.UNICODE)")
+
+    def test_non_verbose_universe_unchanged(self) -> None:
+        from mutmut_win.regex_mutation import mutate_regex_pattern
+
+        assert _regex_mutant_patterns("re.compile('a+')") == set(mutate_regex_pattern("a+"))
