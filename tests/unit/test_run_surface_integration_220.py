@@ -1345,3 +1345,67 @@ def test_atomic_cicd_export_preserves_previous_artifact_on_write_failure(
 
     assert artifact.read_bytes() == original
     assert list(mutants_dir.glob(".mutmut-cicd-stats.json.*.tmp")) == []
+
+
+def test_cicd_export_without_staging_dir_fails_closed_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-075 (issue #160): a missing mutants/ is a domain failure, not a traceback.
+
+    An externally removed staging directory (manual cleanup, CI cache wipe)
+    passed every evidence check and died inside the atomic writer with a raw
+    ``UnsafeAtomicWriteError`` (an ``OSError``, not a ``MutmutWinError``).
+    """
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+    (tmp_path / "mutants").rmdir()
+
+    result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "mutants" in result.output
+    assert "CI/CD export failed closed" in result.output
+    assert "could not acquire a consistent state" not in result.output
+    assert not (tmp_path / "mutants").exists()
+
+
+def test_cicd_export_with_staging_as_file_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+    (tmp_path / "mutants").rmdir()
+    (tmp_path / "mutants").write_text("not a directory", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    # A file where the staging root belongs perturbs the live basis, so the
+    # drift check may fail first — either way this stays a domain failure:
+    # exit 1, a SystemExit (no raw OSError traceback), and never the outer
+    # lock-acquisition message.
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "CI/CD export failed closed" in result.output
+    assert "could not acquire a consistent state" not in result.output
+    assert (tmp_path / "mutants").is_file()
+
+
+def test_cicd_export_write_failure_is_reported_locally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write failure is reported next to the artifact, not as a lock failure."""
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+
+    with patch("mutmut_win.cli.save_cicd_stats", side_effect=OSError("simulated")):
+        result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "simulated" in result.output
+    assert "Saved CI/CD stats" not in result.output
+    assert "could not acquire a consistent state" not in result.output

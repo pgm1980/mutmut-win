@@ -1623,7 +1623,31 @@ def _export_cicd_stats_locked() -> None:
         artifact_path.unlink(missing_ok=True)
         click.echo("No completed mutation verdicts found; CI/CD export failed closed.", err=True)
         sys.exit(1)
-    cicd = save_cicd_stats(pairs, mutants_dir)
+    # M-075 (issue #160): an externally removed or replaced staging directory
+    # is a domain failure, not a traceback. mutants/ is not a basis input, so
+    # every evidence check above passed and the export used to die inside the
+    # atomic writer with a raw UnsafeAtomicWriteError (an OSError, not a
+    # MutmutWinError). Fail closed with a clear message right before the
+    # write — and never CREATE the staging directory here: the atomic writer
+    # deliberately requires an existing parent so it cannot follow a
+    # redirection.
+    if not mutants_dir.is_dir():
+        message = (
+            "Staging directory mutants/ is missing or is not a directory; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'."
+        )
+        click.echo(message, err=True)
+        sys.exit(1)
+    # Report write failures HERE (path + cause, exit 1) instead of letting a
+    # raw OSError escape — the outer MutmutWinError handler would misfile it
+    # under 'could not acquire a consistent state'. The handler stays this
+    # narrow on purpose (issue #114 principle): foreign errors from anything
+    # but this one call must not be masked.
+    try:
+        cicd = save_cicd_stats(pairs, mutants_dir)
+    except OSError as exc:
+        click.echo(f"Could not write CI/CD artifact {artifact_path}: {exc}", err=True)
+        sys.exit(1)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
     # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a
     # 71.4% score invited verifying it with the WRONG denominator — the
