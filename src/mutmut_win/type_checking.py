@@ -374,6 +374,33 @@ def _run_type_check_process(
         )
 
 
+def _decode_checker_report(checker: str | None, stdout: str, stderr: str) -> Any:
+    """Decode checker stdout into one decoded JSON report value (M-059).
+
+    mypy speaks JSONL: every non-blank stdout line is one JSON diagnostic
+    object.  A finding-free ``mypy --output=json`` run still writes exactly
+    one blank line (the success summary collapses to a bare newline in mypy
+    1.19.1), and blank lines may also appear between diagnostics, so
+    whitespace-only lines are skipped.  Fail-closed is preserved: any other
+    non-JSON line (text-mode mypy output, a ``Success: no issues found in 1
+    source file`` summary, garbage) aborts with TypeCheckCommandError instead
+    of silently filtering to zero findings.  All other checkers emit one JSON
+    document, decoded as a whole.
+
+    Raises:
+        TypeCheckCommandError: If stdout is not the checker's expected JSON
+            shape at the syntax level (see the mypy blank-line rule above).
+    """
+    try:
+        if checker == "mypy":
+            return [json.loads(line) for line in stdout.splitlines() if line.strip()]
+        return json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise TypeCheckCommandError(
+            f"type check command did not return JSON. Got: {stdout} (stderr: {stderr})"
+        ) from exc
+
+
 def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
     """Run an external type checker and return a list of errors.
 
@@ -390,7 +417,8 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
             non-finding status (anything but 0/1 — e.g. mypy 2 = fatal,
             pyright 3/4 = config or usage error), or does not return valid
             JSON output (issue #114 / A4-QX-023 — these were bare
-            ``Exception`` raises).
+            ``Exception`` raises). mypy JSONL decoding ignores whitespace-only
+            lines: a finding-free mypy run writes a single blank line.
     """
     try:
         completed_process = _run_type_check_process(
@@ -414,17 +442,9 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
 
     checker = _detect_checker(type_check_command)
 
-    try:
-        report: Any = (
-            [json.loads(line) for line in completed_process.stdout.splitlines()]
-            if checker == "mypy"
-            else json.loads(completed_process.stdout)
-        )
-    except json.JSONDecodeError as exc:
-        raise TypeCheckCommandError(
-            f"type check command did not return JSON. "
-            f"Got: {completed_process.stdout} (stderr: {completed_process.stderr})"
-        ) from exc
+    report: Any = _decode_checker_report(
+        checker, completed_process.stdout, completed_process.stderr
+    )
 
     if checker == "pyrefly":
         return parse_pyrefly_report(report)

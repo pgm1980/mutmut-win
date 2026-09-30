@@ -8,6 +8,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.exceptions import TypeCheckCommandError
 from mutmut_win.type_checking import (
@@ -61,6 +63,33 @@ _MYPY_JSON_LINE = json.dumps(
         "severity": "error",
     }
 )
+
+_MYPY_NOTE_LINE = json.dumps(
+    {
+        "file": "src\\foo.py",
+        "line": 4,
+        "column": 0,
+        "message": "note text",
+        "hint": None,
+        "code": None,
+        "severity": "note",
+    }
+)
+
+
+def _parses_as_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+#: The fail-closed property alphabet must not contain characters that
+#: ``str.splitlines`` treats as line boundaries (\x0b \x0c \x1c-\x1e \x85 are
+#: Cc, \u2028 is Zl, \u2029 is Zp) — otherwise one generated "line" secretly
+#: becomes several and the property is not about single non-JSON lines.
+_NON_JSON_LINE_ALPHABET = st.characters(exclude_categories=("Cc", "Zl", "Zp"))
 
 # --- TypeCheckingError dataclass ----------------------------------------------
 
@@ -249,9 +278,11 @@ class TestRunTypeChecker:
         assert errors == []
 
     def test_mypy_route(self) -> None:
+        # Realistic finding-free mypy stdout: exactly one blank line (the
+        # hidden success summary — mypy 1.19.1 main.py + util.format_success).
         with patch(
-            "mutmut_win.type_checking._run_type_check_process", return_value=_completed("")
-        ):  # empty = empty list
+            "mutmut_win.type_checking._run_type_check_process", return_value=_completed("\n")
+        ):
             errors = run_type_checker(["mypy", "--output=json", "."])
         assert errors == []
 
@@ -270,6 +301,117 @@ class TestRunTypeChecker:
         ):
             errors = run_type_checker(["ty", "check", "."])
         assert errors == []
+
+
+class TestMypyJsonlBlankLineTolerance:
+    """M-059: a finding-free ``mypy --output=json`` run writes exactly one
+    blank line — the old per-line ``json.loads`` aborted every such run with
+    ``TypeCheckCommandError`` and thereby killed the whole mutation run."""
+
+    def test_finding_free_run_newline_stdout_yields_no_errors(self) -> None:
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed("\n"),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+        assert errors == []
+
+    def test_blank_lines_between_json_lines_are_ignored(self) -> None:
+        stdout = _MYPY_JSON_LINE + "\n\n" + _MYPY_JSON_LINE + "\r\n"
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(stdout, returncode=1),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+        assert len(errors) == 2
+
+    def test_whitespace_only_stdout_yields_no_errors(self) -> None:
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(" \r\n\t\n"),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+        assert errors == []
+
+    def test_notes_only_run_with_exit_one_yields_no_errors(self) -> None:
+        # Pure-note runs exit 1 without a summary line (mypy main.py:154-155)
+        # — no error diagnostics, so nothing may be reported.
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed(_MYPY_NOTE_LINE + "\n", returncode=1),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+        assert errors == []
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "Success: no issues found in 1 source file\n",
+            "a.py:1: error: cannot find x\n",
+        ],
+    )
+    def test_text_mode_mypy_lines_still_fail_closed(self, stdout: str) -> None:
+        # A misconfigured text-mode mypy must abort, not silently filter to
+        # zero findings (the silent no-op filter issue #114 removed).
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout, returncode=0),
+            ),
+            pytest.raises(TypeCheckCommandError, match="did not return JSON"),
+        ):
+            run_type_checker(["mypy", "--output=json", "."])
+
+    def test_pyright_newline_stdout_still_fails_closed(self) -> None:
+        # The tolerance is mypy-JSONL-specific: pyright stdout is ONE JSON
+        # document, and a bare newline stays invalid there.
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed("\n"),
+            ),
+            pytest.raises(TypeCheckCommandError, match="did not return JSON"),
+        ):
+            run_type_checker(["pyright", "--outputjson", "."])
+
+    @given(
+        json_lines=st.lists(st.sampled_from([_MYPY_JSON_LINE, _MYPY_NOTE_LINE]), max_size=8),
+        blank_lines=st.lists(st.sampled_from(["", " ", "\t", "\r"]), max_size=8),
+    )
+    def test_interleaved_blank_lines_never_change_the_findings(
+        self, json_lines: list[str], blank_lines: list[str]
+    ) -> None:
+        lines = [
+            line
+            for json_line, blank_line in zip(json_lines, blank_lines, strict=False)
+            for line in (json_line, blank_line)
+        ]
+        lines.extend(json_lines[len(blank_lines) :])
+        lines.extend(blank_lines[len(json_lines) :])
+
+        with patch(
+            "mutmut_win.type_checking._run_type_check_process",
+            return_value=_completed("\n".join(lines), returncode=1),
+        ):
+            errors = run_type_checker(["mypy", "--output=json", "."])
+
+        assert len(errors) == json_lines.count(_MYPY_JSON_LINE)
+
+    @given(
+        garbage_line=st.text(alphabet=_NON_JSON_LINE_ALPHABET, min_size=1, max_size=30).filter(
+            lambda text: bool(text.strip()) and not _parses_as_json(text)
+        )
+    )
+    def test_any_non_json_line_still_fails_closed(self, garbage_line: str) -> None:
+        stdout = _MYPY_JSON_LINE + "\n" + garbage_line + "\n"
+        with (
+            patch(
+                "mutmut_win.type_checking._run_type_check_process",
+                return_value=_completed(stdout, returncode=1),
+            ),
+            pytest.raises(TypeCheckCommandError, match="did not return JSON"),
+        ):
+            run_type_checker(["mypy", "--output=json", "."])
 
 
 class TestCheckerDetection:
