@@ -31,6 +31,7 @@ from mutmut_win.db import (
     begin_run,
     create_db,
     deauthorize_active_run_evidence,
+    ensure_cache_parent,
     finish_run,
     invalidate_cached_reuse_for_run,
     load_current_run,
@@ -367,6 +368,13 @@ class MutationOrchestrator:
             )
 
         def run_with_database_lock() -> MutationRunResult:
+            # The colocated database lock domain (M-036) lives in the
+            # database's canonical parent directory, so that directory must
+            # exist before DatabaseRunLocks can derive and create its lock
+            # files.  Run commands materialize the cache parent here (db
+            # layer — run_lock must not import db); read commands decide
+            # their own policy at the CLI boundary.
+            ensure_cache_parent(self._db_path)
             with DatabaseRunLocks(self._db_path) as database_locks:
                 # A missing database has no filesystem identity yet.  Create
                 # its schema while the canonical-path key is held, then add
@@ -385,14 +393,43 @@ class MutationOrchestrator:
             return run_with_database_lock()
 
     def _basis_excluded_paths(self) -> tuple[Path, ...]:
-        """Return mutable database files that are state, never run inputs."""
+        """Return mutable database state files that are never run inputs.
+
+        Besides the database and its SQLite sidecars this covers the
+        colocated database lock/guard files (M-036): while a run is active
+        their guard bytes sit under an OS byte-range lock and their owner
+        records change between observations, so staging and basis
+        fingerprinting must neither read nor hash them.  Lock paths are
+        derived per call — the file-identity key exists only once the
+        database exists (after ``create_db``), while the path key is
+        deterministic before that.  A database that cannot yield a lock
+        domain at all (hardlink alias, redirected parent) is rejected by
+        ``validate_cache_path``/``DatabaseRunLocks`` at the lock boundary;
+        the read-only namespace preflight that runs first must not pre-empt
+        that authoritative error, so exclusions degrade to the database
+        files instead of failing here.
+        """
         database = self._db_path.absolute()
-        return (
+        excluded: list[Path] = [
             database,
             Path(f"{database}-journal"),
             Path(f"{database}-wal"),
             Path(f"{database}-shm"),
+        ]
+        from mutmut_win.process.run_lock import (
+            RunLockError,
+            _guard_path_for,
+            database_lock_paths_for_db,
         )
+
+        try:
+            lock_paths = database_lock_paths_for_db(self._db_path)
+        except RunLockError:
+            return tuple(excluded)
+        for lock_path in lock_paths:
+            excluded.append(lock_path)
+            excluded.append(_guard_path_for(lock_path))
+        return tuple(excluded)
 
     def _stable_run_basis_evidence(self) -> RunBasisEvidence:
         """Capture one stable execution-basis snapshot or fail closed.

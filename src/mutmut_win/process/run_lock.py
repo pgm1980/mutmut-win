@@ -24,7 +24,6 @@ import os
 import socket
 import stat as stat_module
 import sys
-import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -708,73 +707,121 @@ class WorkspaceRunLock:
         self.release()
 
 
-_DATABASE_LOCK_DIRNAME = "mutmut-win-database-locks-v1"
+_DATABASE_LOCK_FILENAME_PREFIX = ".mutmut-win-db-"
 
 
-def _database_lock_root() -> Path:
-    """Return one process-independent directory for database lock records."""
+def _validate_database_lock_parent(lexical_parent: Path) -> Path:
+    """Return the canonical physical parent of the database lock domain.
+
+    Every existing component of the *lexical* parent is inspected with
+    ``lstat`` before ``resolve`` could follow it, so a symlink/junction in
+    the database path cannot silently move the colocated lock domain (and
+    its owner metadata) into another directory.  The canonical parent must
+    exist: creating directories is the db layer's job
+    (``ensure_cache_parent``), never the lock layer's.
+    """
+    anchor = Path(lexical_parent.anchor)
+    current = anchor
+    parts = lexical_parent.parts[1:] if lexical_parent.anchor else lexical_parent.parts
+    for part in parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RunLockError(f"cannot inspect database parent directory: {current}") from exc
+        if _is_reparse_point(metadata) or stat_module.S_ISLNK(metadata.st_mode):
+            raise RunLockError(
+                f"database parent directory is a symlink, junction, or reparse point: {current}"
+            )
+        if not stat_module.S_ISDIR(metadata.st_mode):
+            raise RunLockError(f"database parent is not a directory: {current}")
     try:
-        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        canonical_parent = lexical_parent.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise RunLockError("cannot canonicalize the system temporary directory") from exc
-
-    lock_root = temp_root / _DATABASE_LOCK_DIRNAME
-    try:
-        junction_check = getattr(lock_root, "is_junction", None)
-        redirected = lock_root.is_symlink() or (callable(junction_check) and junction_check())
-        if redirected:
-            raise RunLockError(f"database run-lock directory is redirected: {lock_root}")
-        lock_root.mkdir(mode=0o700, exist_ok=True)
-        if not lock_root.is_dir() or lock_root.resolve(strict=True) != lock_root:
-            raise RunLockError(f"database run-lock directory is unsafe: {lock_root}")
-    except RunLockError:
-        raise
-    except (OSError, RuntimeError) as exc:
-        raise RunLockError(f"cannot prepare database run-lock directory: {lock_root}") from exc
-    return lock_root
+        raise RunLockError(f"cannot canonicalize database parent: {lexical_parent}") from exc
+    if not canonical_parent.is_dir():
+        raise RunLockError(f"database parent directory is not a directory: {canonical_parent}")
+    return canonical_parent
 
 
 def database_lock_paths_for_db(db_path: Path) -> tuple[Path, ...]:
     """Return path- and file-identity lock domains for one SQLite database.
 
+    Both keys are colocated in the canonical physical parent directory of
+    the database (M-036), so every process that can name and open the
+    database shares one lock domain — regardless of the process's TMP/TEMP
+    environment, user profile, or machine-wide temp redirections.  There is
+    deliberately no fallback to a temporary-directory domain.
+
     The canonical path key serializes callers that name the same database
-    before it exists.  Once a file exists, the device/inode key additionally
-    unifies hardlink aliases, including aliases reached from different
-    workspaces.  Both keys are retained: deleting and recreating a database
-    changes its inode but must not open a same-path coordination gap.
+    before it exists.  Once the file exists, the device/inode key pins the
+    observable database identity so deleting and recreating the file cannot
+    open a same-path coordination gap.  A database with more than one
+    directory entry (hardlink alias) cannot converge on a colocated
+    identity key and is rejected fail-closed as corrupt — as is a database
+    whose link count could not be observed at all, because an unobservable
+    link count is not proof of a safe single-link file.
     """
     lexical = db_path.absolute()
-    try:
-        canonical_parent = lexical.parent.resolve(strict=False)
-    except (OSError, RuntimeError) as exc:
-        raise RunLockError(f"cannot canonicalize database parent: {lexical.parent}") from exc
-    canonical_path = canonical_parent / lexical.name
-    lock_root = _database_lock_root()
+    lock_root = _validate_database_lock_parent(lexical.parent)
+    canonical_path = lock_root / lexical.name
 
     path_key = f"path:{str(canonical_path).casefold()}"
     path_digest = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
-    paths = [lock_root / f"0-path-{path_digest}.run.lock"]
+    paths = [lock_root / f"{_DATABASE_LOCK_FILENAME_PREFIX}0-path-{path_digest}.run.lock"]
 
     try:
-        database_stat = canonical_path.stat()
+        database_stat = canonical_path.lstat()
     except FileNotFoundError:
         return tuple(paths)
     except OSError as exc:
         raise RunLockError(f"cannot inspect database identity: {canonical_path}") from exc
 
+    if _is_reparse_point(database_stat) or stat_module.S_ISLNK(database_stat.st_mode):
+        raise RunLockCorruptError(
+            f"unsafe database lock identity at {canonical_path}: "
+            "database is a symlink, junction, or reparse point"
+        )
+    if not stat_module.S_ISREG(database_stat.st_mode):
+        raise RunLockCorruptError(
+            f"unsafe database lock identity at {canonical_path}: database is not a regular file"
+        )
+    if database_stat.st_nlink == 0:
+        # A zero link count means lstat could not read the metadata (the
+        # CPython fallback for an unopenable regular file, cf. M-095); the
+        # degenerate identity (0, 0) must never be hashed as a lock key, and
+        # the refusal must not claim a hardlink that was not observed.
+        raise RunLockCorruptError(
+            f"unsafe database lock identity at {canonical_path}: database link "
+            "count could not be observed (0); its metadata could not be read "
+            "reliably, so it cannot be verified as a single-link file"
+        )
+    if database_stat.st_nlink != 1:
+        raise RunLockCorruptError(
+            f"unsafe database lock identity at {canonical_path}: "
+            f"database has {database_stat.st_nlink} hard links"
+        )
+
     identity_key = f"file:{database_stat.st_dev}:{database_stat.st_ino}"
     identity_digest = hashlib.sha256(identity_key.encode("ascii")).hexdigest()
-    paths.append(lock_root / f"1-file-{identity_digest}.run.lock")
+    paths.append(lock_root / f"{_DATABASE_LOCK_FILENAME_PREFIX}1-file-{identity_digest}.run.lock")
     return tuple(paths)
 
 
 class DatabaseRunLocks:
     """Non-blocking path plus inode lock set for one SQLite database.
 
-    Locks are always acquired in the same order: canonical path first, then
-    file identity.  Acquisition is non-blocking and partial acquisition is
-    rolled back, so two hardlink aliases cannot deadlock while converging on
-    their shared identity lock.
+    Both lock keys live in the canonical physical parent directory of the
+    database (M-036), so the lock domain is shared by every process that
+    can open that directory, independent of TMP/TEMP; the parent directory
+    must already exist (``db.ensure_cache_parent`` creates it for run
+    commands).  Locks are always acquired in the same order: canonical path
+    first, then file identity.  Acquisition is non-blocking and partial
+    acquisition is rolled back.  Hardlink-aliased databases are rejected as
+    corrupt before any lock is taken instead of converging on a shared
+    identity key.
     """
 
     def __init__(self, db_path: Path) -> None:

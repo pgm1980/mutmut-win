@@ -477,12 +477,18 @@ def validate_cache_path(path: Path = DEFAULT_DB_PATH) -> None:
     _validate_database_tree(path)
 
 
-def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
-    """Safely pre-create a missing DB leaf and return its fixed identity."""
+def ensure_cache_parent(path: Path) -> Path:
+    """Validate and create the parent directory of a cache database (M-036).
+
+    The database lock domain is colocated in this directory, so callers that
+    acquire database run locks must make it exist first; the run orchestrator
+    does so before ``DatabaseRunLocks``.  Validation runs before and after
+    ``mkdir(parents=True, exist_ok=True)`` so an already redirected ancestor
+    cannot turn parent creation into an external write.  A same-user swap
+    during mkdir is part of the explicitly documented stdlib pathname race
+    in :func:`validate_cache_path`.
+    """
     absolute = _absolute_cache_path(path)
-    # Validate before mkdir so an already redirected ancestor cannot turn
-    # parent creation into an external write. A same-user swap during mkdir is
-    # part of the explicitly documented stdlib pathname race above.
     _validate_parent_components(absolute)
     try:
         absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -491,6 +497,13 @@ def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
             f"Refusing workspace state access: cannot create cache parent {absolute.parent}."
         ) from exc
     _validate_parent_components(absolute)
+    return absolute.parent
+
+
+def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
+    """Safely pre-create a missing DB leaf and return its fixed identity."""
+    absolute = _absolute_cache_path(path)
+    ensure_cache_parent(absolute)
 
     existing = _validate_database_tree(absolute)
     if existing is not None:
