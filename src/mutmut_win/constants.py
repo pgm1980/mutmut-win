@@ -104,9 +104,7 @@ SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
 #: engine's own source tree.  Third-party projects are unaffected: their
 #: staging does not contain ``mutmut_win``, so the import in the generated
 #: code resolves to the installed, unmutated package.
-GENERATION_EXCLUDED_SELF_MODULES: frozenset[str] = frozenset(
-    {"mutmut_win.hit_recording"}
-)
+GENERATION_EXCLUDED_SELF_MODULES: frozenset[str] = frozenset({"mutmut_win.hit_recording"})
 
 
 def configured_staging_relative_path(

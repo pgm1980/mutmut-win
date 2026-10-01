@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, NoReturn, TextIO
 
 import click
 
@@ -328,10 +329,125 @@ def _load_result_snapshot_or_exit(
         sys.exit(1)
 
 
-def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
-    """Changed tracked files since ``ref``, relative to the process CWD (M-021).
+def _since_commit_usage_error(json_stdout: TextIO | None, message: str) -> NoReturn:
+    """Report a ``--since-commit`` usage error and exit 2.
 
-    Runs ``git diff --name-only -z --relative <ref>``.  Without
+    Option-like, empty, range and unresolvable values are input errors of
+    the same class as the ``--min-score`` subset conflict (M-073): a clear
+    diagnosis on stderr plus the machine-readable error object with
+    ``exit_code`` 2 for ``--output json``.
+
+    Args:
+        json_stdout: JSON stdout channel (``None`` outside JSON mode).
+        message: The human-readable diagnosis naming the offending value.
+    """
+    click.echo(message, err=True)
+    _emit_json_error(json_stdout, message, 2)
+    sys.exit(2)
+
+
+#: Canonical commit object ids are the ONLY revision form mutmut-win hands
+#: to ``git diff``: 40 hex digits (SHA-1 repositories) or 64 hex digits
+#: (SHA-256 repositories).  Anything else would re-open option/pathspec
+#: interpretation in the diff argv.
+_COMMIT_OID_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _resolve_since_commit(ref: str, *, json_stdout: TextIO | None) -> str:
+    """Resolve a ``--since-commit`` value to one canonical commit oid (M-022).
+
+    The raw value used to travel into the ``git diff`` argv, where git
+    interpreted option-like values (``--output=…``) as diff options,
+    existing directories without a same-named revision as pathspecs, tree
+    objects as tree-vs-worktree diffs and range expressions (``A..B``,
+    ``A...B``) as ranges — each with exit 0, a false incremental success
+    (CLI-01).  Now the value must denote exactly ONE commit:
+
+    - empty and option-like values (leading ``-``) are rejected before any
+      git subprocess runs,
+    - range expressions are rejected explicitly; former users compute
+      ``git merge-base <base> <tip>`` and pass the resulting commit
+      (decision M-022 = A; a built-in merge-base resolution is postponed),
+    - everything else is resolved by
+      ``git rev-parse --verify --quiet --end-of-options '<ref>^{commit}'``
+      — the ``^{commit}`` peeling rejects blobs and trees — and validated
+      against :data:`_COMMIT_OID_PATTERN`.
+
+    Fail-closed: a git without ``rev-parse --end-of-options`` support
+      (older than 2.36) makes the verify call fail, which exits 2 instead
+      of forwarding anything unvalidated.
+
+    Args:
+        ref: The raw ``--since-commit`` value, one argv element.
+        json_stdout: JSON error channel for the usage-error contract.
+
+    Returns:
+        The canonical commit object id (40 or 64 hex digits).
+
+    Raises:
+        SystemExit: Exit 2 for every rejected or unresolvable value.
+    """
+    if not ref:
+        _since_commit_usage_error(
+            json_stdout,
+            "--since-commit requires a single commit reference (branch, tag, or "
+            "commit); the value is empty",
+        )
+    if ref.startswith("-"):
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit requires a single commit reference; option-like "
+            f"values are rejected: {ref!r}",
+        )
+    if ".." in ref:
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit no longer accepts range expressions: {ref!r}; "
+            f"compute 'git merge-base <base> <tip>' and pass the resulting "
+            f"commit instead",
+        )
+
+    import subprocess as sp
+
+    # The ref travels as a single argv element with --end-of-options ahead
+    # of it, so git cannot read it as an option; ^{commit} peels tags and
+    # rejects every non-commit object.  --quiet keeps git's stderr empty on
+    # failure — the diagnosis above is our own message.
+    rev_result = sp.run(  # noqa: S603 — git CLI with controlled args
+        [  # noqa: S607 — git is a well-known executable
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{ref}^{{commit}}",
+        ],
+        capture_output=True,
+        cwd=Path.cwd(),
+    )
+    if rev_result.returncode != 0:
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit {ref!r} is not a commit (git rev-parse exited "
+            f"{rev_result.returncode}); pass a single branch, tag, or commit",
+        )
+    resolved = (
+        rev_result.stdout.decode("ascii", errors="replace")
+        if isinstance(rev_result.stdout, bytes)
+        else str(rev_result.stdout)
+    ).strip()
+    if not _COMMIT_OID_PATTERN.fullmatch(resolved):
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit {ref!r} did not resolve to a canonical commit object id: {resolved!r}",
+        )
+    return resolved
+
+
+def _git_changed_names(oid: str, *, json_stdout: TextIO | None) -> list[str]:
+    """Changed tracked files since the commit ``oid``, relative to the process CWD (M-021).
+
+    Runs ``git diff --name-only -z --relative <oid> --``.  Without
     ``--relative`` git reports repo-root-relative names while the target
     filter checks them against the process CWD — a run from a repository
     subproject (monorepo) selected nothing and still exited 0 (BC-015 /
@@ -340,21 +456,26 @@ def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
     (``paths_to_mutate`` is rejected outside the project by config).
 
     Args:
-        ref: The git revision to diff against, one argv element.
+        oid: The canonical commit object id resolved by
+            :func:`_resolve_since_commit` (M-022) — the only form allowed
+            here, followed by a terminating ``--`` so nothing after it can
+            be read as an option or pathspec.
         json_stdout: JSON error channel for the returncode contract (#102).
 
     Returns:
         The changed file names, decoded from NUL-separated bytes.
 
     Raises:
-        SystemExit: Exit 2 when git itself rejects the ref (issue #102).
+        SystemExit: Exit 2 when git itself rejects the diff (issue #102).
     """
     import subprocess as sp
 
-    # git command is fully controlled — the ref travels as a single argv
-    # element and git validates it. Diff against the REF alone (no ..HEAD):
-    # committed AND working-tree changes count — the documented "check what
-    # you just changed" workflow includes uncommitted edits (issue #128
+    # git command is fully controlled — the oid is pre-validated hex
+    # (M-022) and travels as a single argv element behind '--relative',
+    # terminated by '--' (option and pathspec interpretation closed).
+    # Diff against the COMMIT alone (no ..HEAD): committed AND
+    # working-tree changes count — the documented "check what you just
+    # changed" workflow includes uncommitted edits (issue #128
     # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
     # the process default anyway; it is spelled out because --relative
     # derives the output base from it (setting it alone fixes nothing).
@@ -365,7 +486,8 @@ def _git_changed_names(ref: str, *, json_stdout: TextIO | None) -> list[str]:
             "--name-only",
             "-z",
             "--relative",
-            ref,
+            oid,
+            "--",
         ],
         capture_output=True,
         cwd=Path.cwd(),
@@ -456,8 +578,15 @@ def _is_mutation_target(
     name: str,
     tests_dir_parts: tuple[tuple[str, ...], ...],
     project_root: Path,
+    mutate_roots: tuple[tuple[str, ...], ...] = (),
 ) -> bool:
-    """Whether a changed file name is an incremental mutation target."""
+    """Whether a changed file name is an incremental mutation target.
+
+    The target set is the intersection of changed files with the configured
+    mutation roots (``paths_to_mutate``) minus the test exclusion trees —
+    the incremental universe can never exceed the full-run walk set
+    (M-023, P-08 decision A).
+    """
 
     # Deleted files and test files used to become mutation targets.
     if not name.casefold().endswith(".py") or not Path(name).exists():
@@ -467,6 +596,17 @@ def _is_mutation_target(
         # The name is anchored outside the project or not comparable: an
         # exclusion filter must fail closed — never a mutation target.
         return False
+    # Positive filter (M-023): a changed file is a target only when it lies
+    # under a configured mutation root.  A file-level entry matches exactly;
+    # a directory entry matches as a component prefix.  An empty
+    # ``mutate_roots`` (no positive filter computable) keeps the historical
+    # tests_dir-only behaviour — the caller is responsible for providing it.
+    if mutate_roots:
+        under_any_root = any(
+            parts == root or parts[: len(root)] == root for root in mutate_roots
+        )
+        if not under_any_root:
+            return False
     # Component-prefix match (issue #128 / 360°-A4): the old
     # parts[0] comparison against the FULL tests_dir string never
     # matched nested dirs like "tests/unit/" — changed TEST files
@@ -518,7 +658,12 @@ def _is_mutation_target(
     "--since-commit",
     type=str,
     default=None,
-    help="Only mutate files changed since this git commit (e.g. HEAD~3).",
+    help=(
+        "Only mutate files changed since this git commit reference "
+        "(branch, tag, or commit, e.g. HEAD~3). Range expressions are "
+        "rejected; pass the result of 'git merge-base <base> <tip>' for "
+        "range-style diffs."
+    ),
 )
 @click.option("--no-progress", is_flag=True, default=False, help="Suppress live progress output.")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug output.")
@@ -795,10 +940,14 @@ def run(
 
         # --since-commit: resolve changed .py files via git
         if since_commit is not None:
+            # M-022: ONE canonical commit oid first — the raw value never
+            # reaches git diff (option/pathspec/range/tree interpretation
+            # all closed, exit 2 on everything unresolvable).
+            canonical_oid = _resolve_since_commit(since_commit, json_stdout=json_stdout)
             # M-021: --relative makes git report project-relative names, so
             # monorepo runs from a repository subfolder select their own
             # targets instead of silently no-op'ing with exit 0.
-            changed_names = _git_changed_names(since_commit, json_stdout=json_stdout)
+            changed_names = _git_changed_names(canonical_oid, json_stdout=json_stdout)
             # M-024: both sides of the tests_dir exclusion canonicalize
             # through _project_relative_parts, so absolute entries and
             # '..'-aliases no longer fail open.
@@ -810,10 +959,27 @@ def run(
                 )
                 if parts is not None
             )
+            # M-023: the incremental target set is the intersection with
+            # the configured mutation roots — a changed file outside
+            # paths_to_mutate is never an incremental target, exactly as
+            # the full-run walk would never enumerate it.
+            mutate_roots = tuple(
+                parts
+                for parts in (
+                    _project_relative_parts(entry, project_root)
+                    for entry in config.paths_to_mutate
+                )
+                if parts is not None
+            )
             changed_py = [
                 name
                 for name in changed_names
-                if _is_mutation_target(name, tests_dir_parts, project_root)
+                if _is_mutation_target(
+                    name,
+                    tests_dir_parts,
+                    project_root,
+                    mutate_roots=mutate_roots,
+                )
             ]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."
