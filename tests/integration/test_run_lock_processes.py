@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import psutil
 import pytest
 
-from mutmut_win.process.run_lock import DatabaseRunLocks, RunLockHeldError, WorkspaceRunLock
+from mutmut_win.process.run_lock import (
+    DatabaseRunLocks,
+    RunLockHeldError,
+    WorkspaceRunLock,
+    database_lock_paths_for_db,
+)
 
 _CHILD_HOLDER = """
 import os
@@ -31,15 +36,17 @@ while True:
     time.sleep(1)
 """
 
-_DATABASE_CHILD_HOLDER = """
+_DATABASE_CHILD_HOLDER_WITH_TEMP = """
 import os
 import pathlib
 import sys
+import tempfile
 import time
 from mutmut_win.process.run_lock import DatabaseRunLocks
 
 db_path = pathlib.Path(sys.argv[1])
 ready_path = pathlib.Path(sys.argv[2])
+tempfile.tempdir = sys.argv[3]
 lock = DatabaseRunLocks(db_path).acquire()
 ready_tmp = ready_path.with_name(f".{ready_path.name}.{os.getpid()}.tmp")
 ready_tmp.write_text(str(os.getpid()), encoding="ascii")
@@ -128,23 +135,37 @@ def test_live_child_excludes_parent_then_abrupt_death_allows_safe_takeover(
 
 
 @pytest.mark.integration
-def test_live_database_holder_excludes_hardlink_alias_across_processes(
+def test_divergent_temp_roots_share_one_database_lock_domain_across_processes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """[M-036] two processes with diverging TEMP values see one lock domain.
+
+    Deliberate contract change (M-036 = A): this replaces the former
+    hardlink-alias convergence test.  The colocated lock domain lives in the
+    canonical db parent, so a child process with its own effective TEMP root
+    still excludes the parent's holder, and no lock artifacts are created
+    under either TEMP root.
+    """
     original = tmp_path / "workspace-a" / "shared.db"
-    alias = tmp_path / "workspace-b" / "shared-alias.db"
     original.parent.mkdir()
-    alias.parent.mkdir()
     original.write_bytes(b"sqlite identity placeholder")
-    try:
-        os.link(original, alias)
-    except OSError as exc:
-        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
+    child_temp = tmp_path / "child-temp"
+    parent_temp = tmp_path / "parent-temp"
+    child_temp.mkdir()
+    parent_temp.mkdir()
 
     ready_path = tmp_path / "database-ready.txt"
     project_root = Path(__file__).resolve().parents[2]
     child = subprocess.Popen(  # noqa: S603 - controlled interpreter and script
-        [sys.executable, "-c", _DATABASE_CHILD_HOLDER, str(original), str(ready_path)],
+        [
+            sys.executable,
+            "-c",
+            _DATABASE_CHILD_HOLDER_WITH_TEMP,
+            str(original),
+            str(ready_path),
+            str(child_temp),
+        ],
         cwd=project_root,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -153,8 +174,16 @@ def test_live_database_holder_excludes_hardlink_alias_across_processes(
     try:
         owner_process = psutil.Process(_wait_for_pid(ready_path, child))
 
+        monkeypatch.setattr(tempfile, "tempdir", str(parent_temp))
         with pytest.raises(RunLockHeldError):
-            DatabaseRunLocks(alias).acquire()
+            DatabaseRunLocks(original).acquire()
+
+        for lock_path in database_lock_paths_for_db(original):
+            assert lock_path.parent == original.parent
+            assert child_temp not in lock_path.parents
+            assert parent_temp not in lock_path.parents
+        assert not any(child_temp.iterdir())
+        assert not any(parent_temp.iterdir())
 
         owner_process.kill()
         owner_process.wait(timeout=10)
@@ -162,7 +191,7 @@ def test_live_database_holder_excludes_hardlink_alias_across_processes(
             child.kill()
         child.wait(timeout=10)
 
-        with DatabaseRunLocks(alias) as replacement:
+        with DatabaseRunLocks(original) as replacement:
             assert replacement.acquired is True
     finally:
         if owner_process is not None:

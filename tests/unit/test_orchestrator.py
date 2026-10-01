@@ -472,12 +472,20 @@ class TestMutationOrchestratorInit:
         tasks, source_data, fast_path_names = orch._generate_mutants()
 
         absolute = database.absolute()
-        assert captured["excluded"] == (
+        expected = (
             absolute,
             absolute.with_name(f"{absolute.name}-journal"),
             absolute.with_name(f"{absolute.name}-wal"),
             absolute.with_name(f"{absolute.name}-shm"),
         )
+        # M-036: colocated lock/guard files (path- and identity-keyed) are
+        # additionally excluded from staging and basis evidence; they start
+        # with the engine prefix inside the DB parent directory.
+        extra = captured["excluded"][len(expected) :]
+        assert captured["excluded"][: len(expected)] == expected
+        for path in extra:
+            assert path.parent == absolute.parent
+            assert path.name.startswith(".mutmut-win-db-")
         assert tasks == []
         assert source_data == {}
         assert fast_path_names == set()
