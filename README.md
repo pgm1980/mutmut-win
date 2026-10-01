@@ -554,7 +554,10 @@ backs up and atomically replaces the selected source file. Add `mutants/`,
 **`.gitignore` limits of staging:** staging walks, staging copies, and the
 combined ambient fingerprint of the run basis respect hierarchical
 project-local `.gitignore` files, so correctly ignored build trees are neither
-staged nor change the ambient basis. Explicitly configured entries are the
+staged nor change the ambient basis. Pattern case follows the repository's
+effective `core.ignorecase` (ASCII-only folding, exactly like Git's wildmatch;
+read once per run — outside a Git worktree matching stays case-sensitive).
+Explicitly configured entries are the
 deliberate exception — `paths_to_mutate`, `also_copy`, and `extra_paths`
 entries are force-included with git `add -f` semantics (an ignore file
 *inside* such an entry still governs its contents). A git-ignored

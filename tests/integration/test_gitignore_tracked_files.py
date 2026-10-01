@@ -320,12 +320,17 @@ class TestWorktreeTrackedCacheInvalidation:
 
     @staticmethod
     def _counting_git(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-        """Wrap the boundary's git invocation with a call counter."""
+        """Wrap the boundary's git invocation with a call counter.
+
+        Only ``ls-files`` invocations count: M-016 adds one documented
+        ``git config --bool core.ignorecase`` read per ``load()`` which is
+        orthogonal to the tracked-cache contract under test here."""
         real_run = gitignore_boundary.subprocess.run
         calls = [0]
 
         def counting_run(*args: object, **kwargs: object) -> object:
-            calls[0] += 1
+            if isinstance(args[0], list | tuple) and "ls-files" in args[0]:
+                calls[0] += 1
             return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(gitignore_boundary.subprocess, "run", counting_run)

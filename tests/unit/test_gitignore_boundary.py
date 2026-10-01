@@ -8,15 +8,20 @@ able to prune git-ignored subtrees (e.g. ``tests/test_project/.lake`` with
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from pathspec import GitIgnoreSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 from mutmut_win import gitignore_boundary
 from mutmut_win.gitignore_boundary import GitignoreBoundary
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _make_project(tmp_path: Path, *files: tuple[str, str | bytes]) -> Path:
@@ -799,3 +804,364 @@ class TestDirMarkerPrecedence:
         boundary = GitignoreBoundary.load(project)
         assert boundary.excludes_directory("src") is False
         assert boundary.enter("src").excludes_directory("sub") is False
+
+
+# ---------------------------------------------------------------------------
+# Effective core.ignorecase drives ASCII case folding (M-016, issue #173)
+# ---------------------------------------------------------------------------
+
+
+class TestCoreIgnorecaseFolding:
+    """M-016 = B: only an effective ``core.ignorecase=true`` folds, ASCII-only.
+
+    Git folds ignore-pattern case ASCII-only (wildmatch ``tolower`` on
+    ASCII); a Unicode-wide ``(?i)`` would additionally fold e.g. 'A-umlaut'
+    against 'a-umlaut' and exclude trees Git still tracks.
+    """
+
+    @staticmethod
+    def _load(
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        ignore_case: bool,
+    ) -> GitignoreBoundary:
+        monkeypatch.setattr(gitignore_boundary, "_load_ignore_case", lambda _root: ignore_case)
+        return GitignoreBoundary.load(project)
+
+    def test_true_folds_ascii_directory_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "Out/\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.excludes_directory("out") is True
+
+    def test_true_folds_ascii_file_pattern(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "*.LOG\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.excludes_file("debug.log") is True
+
+    def test_true_folds_negation_back_to_life(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counter-direction: without folding, ``!Wichtig.log`` misses
+        ``wichtig.log`` and the earlier ``*.log`` exclusion wrongly stays."""
+        project = _make_project(tmp_path, (".gitignore", "*.log\n!Wichtig.log\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.excludes_file("wichtig.log") is False
+        assert boundary.excludes_file("other.log") is True
+
+    def test_true_does_not_fold_non_ascii(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "\u00c4/\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.excludes_directory("\u00e4") is False
+        assert boundary.excludes_directory("\u00c4") is True
+
+    def test_true_folds_nested_levels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path, ("src/.gitignore", "Out/\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.enter("src").excludes_directory("out") is True
+
+    def test_true_keeps_directory_marker_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-017 under folding: the folded negation still hits the candidate
+        only through an ancestor marker and cannot override the path match."""
+        project = _make_project(tmp_path, (".gitignore", "*.pyc\n!VENDOR/\n"))
+        boundary = self._load(project, monkeypatch, True)
+        assert boundary.enter("vendor").excludes_file("x.pyc") is True
+
+    def test_false_stays_case_sensitive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "Out/\n"))
+        boundary = self._load(project, monkeypatch, False)
+        assert boundary.excludes_directory("out") is False
+        assert boundary.excludes_directory("Out") is True
+
+    def test_without_git_marker_no_subprocess_and_no_folding(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "Out/\n"))
+
+        def _forbid_run(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("load() must not spawn git without a .git marker")
+
+        monkeypatch.setattr(gitignore_boundary.subprocess, "run", _forbid_run)
+        boundary = GitignoreBoundary.load(project)
+        assert boundary.excludes_directory("out") is False
+        assert boundary.excludes_directory("Out") is True
+
+    def test_ignore_case_is_read_once_per_load(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One config read per boundary load, never one per ignore file."""
+        project = _make_project(
+            tmp_path,
+            (".gitignore", "Out/\n"),
+            ("src/.gitignore", "Bin/\n"),
+            ("src/deep/.gitignore", "Obj/\n"),
+        )
+        calls: list[Path] = []
+
+        def _counting_load(root: Path) -> bool:
+            calls.append(root)
+            return True
+
+        monkeypatch.setattr(gitignore_boundary, "_load_ignore_case", _counting_load)
+        boundary = GitignoreBoundary.load(project)
+        deep = boundary.enter("src").enter("deep")
+        assert deep.excludes_directory("obj") is True
+        assert deep.excludes_directory("bin") is True
+        assert deep.excludes_directory("out") is True
+        assert len(calls) == 1
+
+
+class TestCoreIgnorecaseConfigReader:
+    """``git config --bool core.ignorecase`` semantics (M-016).
+
+    Unset (rc 1) is Git's documented default ``false``; every unexpected
+    failure aborts with a diagnosis instead of silently deciding towards
+    the stronger-exclusion fold.
+    """
+
+    @staticmethod
+    def _fake_git(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        rc: int = 0,
+        stdout: bytes = b"",
+    ) -> None:
+        def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            if "config" in args:
+                return subprocess.CompletedProcess(args, rc, stdout=stdout, stderr=b"")
+            # git ls-files (tracked index): empty index, success.
+            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(gitignore_boundary.subprocess, "run", fake_run)
+
+    @staticmethod
+    def _repo_with_out_rule(tmp_path: Path) -> Path:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitignore").write_text("Out/\n", encoding="utf-8")
+        return tmp_path
+
+    def test_true_folds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project = self._repo_with_out_rule(tmp_path)
+        self._fake_git(monkeypatch, rc=0, stdout=b"true\n")
+        assert gitignore_boundary._load_ignore_case(project) is True
+        assert GitignoreBoundary.load(project).excludes_directory("out") is True
+
+    def test_false_does_not_fold(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project = self._repo_with_out_rule(tmp_path)
+        self._fake_git(monkeypatch, rc=0, stdout=b"false\n")
+        assert gitignore_boundary._load_ignore_case(project) is False
+        assert GitignoreBoundary.load(project).excludes_directory("out") is False
+
+    def test_unset_means_git_default_false(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = self._repo_with_out_rule(tmp_path)
+        self._fake_git(monkeypatch, rc=1, stdout=b"")
+        assert gitignore_boundary._load_ignore_case(project) is False
+        assert GitignoreBoundary.load(project).excludes_directory("out") is False
+
+    def test_invalid_value_aborts_with_diagnosis(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A successful query with an uninterpretable value has no safe
+        default — abort with a diagnosis (unreachable via real git, which
+        validates ``--bool`` itself; this pins the loud path)."""
+        project = self._repo_with_out_rule(tmp_path)
+        self._fake_git(monkeypatch, rc=0, stdout=b"banana\n")
+        with pytest.raises(RuntimeError, match=r"core\.ignorecase"):
+            gitignore_boundary._load_ignore_case(project)
+
+    def test_unexpected_return_code_degrades_to_case_sensitive(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A broken repository (e.g. an unresolvable ``gitdir:`` pointer,
+        AR-04) must stay fail-open: warn and keep the weaker, case-sensitive
+        verdict instead of guessing towards the stronger-exclusion fold."""
+        project = self._repo_with_out_rule(tmp_path)
+        self._fake_git(monkeypatch, rc=128, stdout=b"")
+        with caplog.at_level(logging.WARNING, logger="mutmut_win.gitignore_boundary"):
+            assert gitignore_boundary._load_ignore_case(project) is False
+        assert any("core.ignorecase" in record.getMessage() for record in caplog.records)
+        assert GitignoreBoundary.load(project).excludes_directory("out") is False
+
+    def test_missing_git_binary_degrades_to_case_sensitive(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        project = self._repo_with_out_rule(tmp_path)
+
+        def _no_git(*_args: object, **_kwargs: object) -> object:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(gitignore_boundary.subprocess, "run", _no_git)
+        with caplog.at_level(logging.WARNING, logger="mutmut_win.gitignore_boundary"):
+            assert gitignore_boundary._load_ignore_case(project) is False
+        assert any("core.ignorecase" in record.getMessage() for record in caplog.records)
+
+    def test_without_marker_returns_false_without_git(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (tmp_path / ".gitignore").write_text("Out/\n", encoding="utf-8")
+
+        def _forbid_run(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("no config query without a .git marker")
+
+        monkeypatch.setattr(gitignore_boundary.subprocess, "run", _forbid_run)
+        assert gitignore_boundary._load_ignore_case(tmp_path) is False
+
+
+class TestTrackedOverrideFoldConsistency:
+    """M-016 consistency pin: the tracked override (M-001) stays
+    Unicode-casefolded regardless of the boundary's ASCII pattern folding.
+
+    The override only ever PREVENTS exclusion, so folding it wider than
+    Git's ASCII fold keeps the failure direction on the "cost, not wrong
+    results" side the module promises.
+    """
+
+    @staticmethod
+    def _load_with_tracked(
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        ignore_case: bool,
+        tracked: set[str],
+    ) -> GitignoreBoundary:
+        monkeypatch.setattr(gitignore_boundary, "_load_ignore_case", lambda _root: ignore_case)
+        original_load = gitignore_boundary._load_tracked_index
+        gitignore_boundary._load_tracked_index = lambda _root: _tracked_index(tracked)
+        try:
+            return GitignoreBoundary.load(project)
+        finally:
+            gitignore_boundary._load_tracked_index = original_load
+
+    def test_case_differing_ascii_tracked_spelling_protects(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "*.pyc\n"))
+        boundary = self._load_with_tracked(
+            project, monkeypatch, ignore_case=True, tracked={"OUT/x.pyc"}
+        )
+        assert boundary.enter("out").excludes_file("x.pyc") is False
+
+    def test_tracked_override_folds_even_when_ignorecase_false(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _make_project(tmp_path, (".gitignore", "*.pyc\n"))
+        boundary = self._load_with_tracked(
+            project, monkeypatch, ignore_case=False, tracked={"OUT/x.pyc"}
+        )
+        assert boundary.enter("out").excludes_file("x.pyc") is False
+
+    def test_tracked_override_stays_wider_than_ascii_fold(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deliberate conservative divergence: a tracked
+        'A-umlaut-rger.log' protects 'a-umlaut-rger.log' even though Git's
+        ASCII-only fold treats them as different paths (Git would ignore
+        the latter) — the override may only ever prevent exclusion."""
+        project = _make_project(tmp_path, (".gitignore", "*.log\n"))
+        boundary = self._load_with_tracked(
+            project, monkeypatch, ignore_case=True, tracked={"\u00c4rger.log"}
+        )
+        assert boundary.excludes_file("\u00e4rger.log") is False
+
+
+class TestPathspecPrivateApiGuard:
+    """M-016 guard: the folding hooks into pathspec's private gitignore API.
+
+    The ``>=1.1.1,<1.2`` dependency bound keeps this surface stable; these
+    pins make an upgrade that moves it fail loudly instead of silently
+    degrading marker precedence or folding.
+    """
+
+    def test_private_module_path_is_pinned(self) -> None:
+        assert GitIgnoreSpecPattern.__module__ == "pathspec.patterns.gitignore.spec"
+        # The boundary must build on exactly the pinned class.
+        assert gitignore_boundary.GitIgnoreSpecPattern is GitIgnoreSpecPattern
+
+    def test_pattern_to_regex_is_a_classmethod(self) -> None:
+        assert callable(GitIgnoreSpecPattern.pattern_to_regex)
+        regex, include = GitIgnoreSpecPattern.pattern_to_regex("Out/")
+        assert include is True
+        assert regex is not None
+
+    def test_dir_marker_group_name_is_ps_d(self) -> None:
+        spec = GitIgnoreSpec.from_lines(["a/"])
+        first = next(iter(spec.patterns))
+        regex = getattr(first, "regex", None)
+        assert regex is not None
+        assert "ps_d" in regex.groupindex
+
+    def test_folding_factory_prefixes_ascii_inline_flags_and_keeps_marker(self) -> None:
+        regex, include = gitignore_boundary._AsciiFoldedGitIgnorePattern.pattern_to_regex("Out/")
+        assert include is True
+        assert regex is not None
+        assert regex.startswith("(?ai)")
+        compiled = re.compile(regex)
+        assert compiled.flags & re.IGNORECASE
+        assert compiled.flags & re.ASCII
+        assert "ps_d" in compiled.groupindex
+        assert compiled.search("out/")
+
+    def test_folding_factory_passes_null_patterns_through(self) -> None:
+        regex, include = gitignore_boundary._AsciiFoldedGitIgnorePattern.pattern_to_regex("# c")
+        assert regex is None
+        assert include is None
+
+
+_FOLD_PATTERNS = ("*", "*.pyc", "Out/", "out/**", "!keep.txt", "*.LOG", "!OUT/", "vendor/")
+_FOLD_NAMES = ("a.txt", "OUT", "out", "keep.txt", "x.PYC", "Sub", "sub", "vendor")
+
+
+class TestFoldingSwapcaseProperty:
+    """ASCII-only folding means ASCII candidates must be swapcase-invariant."""
+
+    @given(pattern=st.sampled_from(_FOLD_PATTERNS), name=st.sampled_from(_FOLD_NAMES))
+    @settings(deadline=None, max_examples=100)
+    def test_ascii_swapcase_invariance_under_folding(self, pattern: str, name: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="m016-hypothesis-") as raw:
+            project = Path(raw)
+            (project / ".gitignore").write_text(f"{pattern}\n", encoding="utf-8")
+            original = gitignore_boundary._load_ignore_case
+            gitignore_boundary._load_ignore_case = lambda _root: True
+            try:
+                boundary = GitignoreBoundary.load(project)
+                assert boundary.excludes_file(name) == boundary.excludes_file(name.swapcase())
+                assert boundary.excludes_directory(name) == boundary.excludes_directory(
+                    name.swapcase()
+                )
+            finally:
+                gitignore_boundary._load_ignore_case = original
