@@ -131,60 +131,90 @@ def _assign_type_checker_to_job(job_handle: int, pid: int) -> bool:
     return True
 
 
-def _snapshot_process_tree(pid: int, root_create_time: float | None = None) -> list[psutil.Process]:
-    """Best-effort snapshot of *pid* and descendants, even after root exit.
+def _capture_root_create_time(process: subprocess.Popen[bytes]) -> float | None:
+    """Capture the checker root's create_time at safe creation time (M-009/AR-01).
 
-    When *root_create_time* is provided (M-009), the PPID fallback walk is
-    identity-verified: an edge parent→child is only accepted if the child's
-    create_time >= the parent's, preventing stale PPID edges from PID
-    recycling.  Without it (root already dead and no captured time), the
-    unverified walk is preserved for the documented dead-root fallback.
+    Called immediately after the launch, while the still-open Popen handle
+    reserves the PID from recycling.  The captured value is the ONLY root
+    identity the later cleanup trusts: querying psutil at teardown time
+    cannot distinguish a dead root from a recycled PID.  Popen test doubles
+    carry no kernel identity at all — their synthetic pid must never reach
+    psutil — so they capture nothing (None) and the cleanup stays sweep-less
+    (fail-closed).  Returns None on any observation failure for the same
+    reason: without a verified identity there is no verified membership.
     """
+    if not isinstance(process, _REAL_POPEN_TYPE):
+        return None
+    try:
+        create_time: float = psutil.Process(process.pid).create_time()
+        return create_time
+    # The bare PEP 758 form breaks the pinned Semgrep 1.175 parser (M-004 contract)
+    except (psutil.Error, OSError, ValueError):  # fmt: skip
+        return None
+
+
+def _snapshot_process_tree(pid: int, root_create_time: float | None = None) -> list[psutil.Process]:
+    """Best-effort identity-verified snapshot of *pid* and its descendants.
+
+    Identity rule (M-009 / AR-01) — one rule for every platform and every
+    snapshot path: members are only returned when *root_create_time*, the
+    identity captured at safe creation time, is provided.  With it, the
+    observable root object is only included if its own create_time still
+    matches the captured value (an observable mismatch means the psutil
+    object is not this checker — object identity is not provenance), and
+    every parent→child edge is accepted only if the child's create_time is
+    >= its verified parent's, via :func:`mutmut_win.process.worker._iter_descendants`.
+    Without a captured identity (None) the snapshot returns nothing at all:
+    there is no unverified PPID walk on Windows or anywhere else, because
+    psutil's per-Process identity checks only protect against reuse of a
+    child PID — they cannot prove that a PPID edge belongs to this root
+    instance (C-001 / SEC-001).
+    """
+    if root_create_time is None:
+        return []
     members: list[psutil.Process] = []
     seen: set[int] = set()
-    root_time: float | None = root_create_time
     try:
         root = psutil.Process(pid)
-        members.append(root)
-        seen.add(root.pid)
-        if root_time is None:
-            with contextlib.suppress(psutil.AccessDenied, psutil.NoSuchProcess):
-                root_time = root.create_time()
-        for child in root.children(recursive=True):
-            if child.pid not in seen:
-                members.append(child)
-                seen.add(child.pid)
+        if root.create_time() == root_create_time:
+            members.append(root)
+            seen.add(root.pid)
     except (
         psutil.AccessDenied,
         psutil.NoSuchProcess,
     ):
+        # Root already exited (normal after process.wait) or unreadable: the
+        # verified orphan walk below still covers its surviving descendants.
         pass
 
-    # On Windows, an orphan keeps the exited parent's PID as its PPID.  A
-    # Process(pid).children() lookup therefore loses exactly the descendants
-    # we need to reap after a successful root exit.  Build a PPID graph from
-    # a system snapshot so the dead-root fallback remains effective.
     from mutmut_win.process.worker import _iter_descendants
 
-    for child in _iter_descendants(pid, root_time):
+    for child in _iter_descendants(pid, root_create_time):
         if child.pid not in seen:
             members.append(child)
             seen.add(child.pid)
     return members
 
 
-def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: int | None) -> None:
+def _terminate_type_checker_tree(
+    process: subprocess.Popen[bytes],
+    job_handle: int | None,
+    root_create_time: float | None = None,
+) -> None:
     """Kill a timed-out checker and its descendants without pipe-dependent waits.
 
     Windows Job Objects are the primary boundary. POSIX additionally gets a
     dedicated process group via ``start_new_session=True``; the psutil snapshot
     is belt-and-suspenders cleanup for already-contained processes.
 
-    Identity verification (M-009): the root's create_time is captured
-    BEFORE any kill action so the PPID fallback walk in the snapshot
-    filters stale edges from PID recycling.  Without a readable time the
-    fallback still runs (preserving the documented dead-root cleanup)
-    but only with psutil's own identity checks.
+    Identity rule (M-009 / AR-01): the caller passes *root_create_time*, the
+    identity captured by :func:`_capture_root_create_time` while the launch
+    handle still reserved the PID.  This function never queries psutil for
+    the root identity at teardown time — a dead or unreadable root would
+    leave no identity, and an unverified PPID walk could attribute and kill
+    a foreign orphan (C-001 / SEC-001).  Without a captured identity no PPID
+    sweep runs at all (fail-closed); the Job Object, the POSIX process group
+    and the direct-child kill remain the authoritative cleanup paths.
     """
     cleanup_errors: list[tuple[str, BaseException]] = []
 
@@ -194,18 +224,21 @@ def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: i
         except BaseException as exc:
             cleanup_errors.append((label, exc))
 
-    # Capture the root's create_time before any kill action (M-009).
-    root_create_time: float | None = None
-    with contextlib.suppress(Exception):
-        root_create_time = psutil.Process(process.pid).create_time()
-
-    try:
-        processes = _snapshot_process_tree(process.pid, root_create_time)
-    except BaseException as exc:
-        # A failed diagnostic snapshot must never prevent the authoritative
-        # Job/process-group and direct-child kill stages.
-        processes = []
-        cleanup_errors.append(("snapshot process tree", exc))
+    processes: list[psutil.Process] = []
+    if root_create_time is None:
+        logger.debug(
+            "type-checker cleanup for PID %s without captured root identity; "
+            "PPID sweep skipped (fail-closed)",
+            process.pid,
+        )
+    else:
+        try:
+            processes = _snapshot_process_tree(process.pid, root_create_time)
+        except BaseException as exc:
+            # A failed diagnostic snapshot must never prevent the authoritative
+            # Job/process-group and direct-child kill stages.
+            processes = []
+            cleanup_errors.append(("snapshot process tree", exc))
 
     if job_handle is not None:
         attempt("close type-checker Job Object", lambda: _close_type_checker_job(job_handle))
@@ -218,8 +251,10 @@ def _terminate_type_checker_tree(process: subprocess.Popen[bytes], job_handle: i
         attempt("kill type-checker process group", kill_process_group)
 
     # Kill the root first so it cannot create more children while the captured
-    # descendants are being terminated.  psutil Process objects retain PID /
-    # creation-time identity, limiting PID-reuse hazards during this short path.
+    # descendants are being terminated.  Every member of the snapshot is
+    # identity-verified (captured root create_time + verified PPID edges);
+    # psutil Process objects retain PID / creation-time identity, limiting
+    # PID-reuse hazards during this short path.
     for member in processes:
         attempt(f"kill captured PID {member.pid}", member.kill)
     if processes:
@@ -265,9 +300,21 @@ def _run_type_check_process(
     The Windows Job Object handle is created as the first statement of the
     protected launch region, after every fallible setup step, so no setup
     failure can leak the kill-on-close handle (M-128).
+
+    Launch contract (M-144 / AR-05): on Windows with the import-time
+    ``subprocess.Popen`` intact, the checker is created atomically inside
+    its Job Object (``AtomicJobPopen``).  The non-atomic compatibility
+    branch serves only Popen test doubles; a ``subprocess.Popen`` replaced
+    after import is fail-closed refused — a replacing subclass before any
+    launch, a real instance returned by a function wrapper immediately
+    after the launch and before the PID-based assign/resume path — via
+    ``ProcessContainmentError``, with writer and Job handle cleaned up by
+    the existing except path.
     """
     from mutmut_win.process.worker import (
         _contained_creationflags,
+        _refuse_real_process_from_replaced_popen,
+        _refuse_replaced_popen_subclass,
         _resume_after_containment,
         configure_ephemeral_pytest_environment,
     )
@@ -328,7 +375,16 @@ def _run_type_check_process(
                     **popen_kwargs,
                 )
             else:
+                # M-144 (AR-05): this compatibility branch exists only for
+                # Popen test doubles.  A Popen replaced after import is
+                # refused BEFORE any launch (a subclass could start a real,
+                # uncontained process) and a real instance returned by a
+                # function wrapper is refused right after the launch and
+                # before the PID-based assign/resume path; the except path
+                # below closes writer and Job handle exactly once.
+                _refuse_replaced_popen_subclass(_REAL_POPEN_TYPE)
                 process = subprocess.Popen(type_check_command, **popen_kwargs)  # noqa: S603
+                _refuse_real_process_from_replaced_popen(process, _REAL_POPEN_TYPE)
             stdout_capture.close_writer()
             stderr_capture.close_writer()
         except BaseException as exc:
@@ -348,6 +404,13 @@ def _run_type_check_process(
                 ) from exc
             raise
 
+        # M-009 / AR-01: capture the root identity right after the safe
+        # launch, while the open Popen handle still reserves the PID from
+        # recycling, and carry it into every cleanup call.  Test doubles
+        # capture nothing (None); without a captured identity the cleanup
+        # refuses to sweep PPID edges at all (fail-closed).
+        root_create_time = _capture_root_create_time(process)
+
         if not atomic_windows_launch:
             if job_handle is not None and not _assign_type_checker_to_job(job_handle, process.pid):
                 _close_type_checker_job(job_handle)
@@ -365,15 +428,15 @@ def _run_type_check_process(
             except BaseException:
                 # Timeout is the normal producer, but Ctrl-C/SystemExit and
                 # unexpected wait failures must obey the same no-orphan rule.
-                _terminate_type_checker_tree(process, job_handle)
+                _terminate_type_checker_tree(process, job_handle, root_create_time=root_create_time)
                 tree_cleanup_done = True
                 raise
         finally:
             if not tree_cleanup_done:
                 # A successful checker can leave background children behind.
-                # Job Objects cover Windows; the POSIX process group and
-                # dead-root PPID sweep cover the non-Windows path.
-                _terminate_type_checker_tree(process, job_handle)
+                # Job Objects cover Windows; the POSIX process group and the
+                # identity-verified dead-root PPID sweep cover the rest.
+                _terminate_type_checker_tree(process, job_handle, root_create_time=root_create_time)
 
         stdout_capture.close()
         stderr_capture.close()

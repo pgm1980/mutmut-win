@@ -427,8 +427,12 @@ class TestWorkerMain:
         assert task_q.get() == second
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
-    def test_real_task_resume_failure_is_fatal_and_stops_worker(self) -> None:
-        """A kernel resume failure must not degrade into an ordinary exit 35."""
+    def test_real_instance_from_replaced_popen_is_fatal_and_stops_worker(self) -> None:
+        """M-144 (TQ-006): the fatal path exercises the real refusal guard.
+
+        A replaced Popen yielding an instance that passes the real-type
+        check is refused BEFORE job creation and reported as a fatal
+        containment failure — the guards are no longer patched away."""
         task_q: _SimpleQueue = _SimpleQueue()
         event_q: _SimpleQueue = _SimpleQueue()
         task_q.put(_simple_task())
@@ -438,20 +442,8 @@ class TestWorkerMain:
         with (
             patch("mutmut_win.process.worker.subprocess.Popen", return_value=fake_proc),
             patch("mutmut_win.process.worker._REAL_POPEN_TYPE", object),
-            patch(
-                "mutmut_win.process.worker._refuse_replaced_popen_subclass",
-                lambda _t: None,
-            ),
-            patch(
-                "mutmut_win.process.worker._refuse_real_process_from_replaced_popen",
-                lambda _p, _t: None,
-            ),
-            patch("mutmut_win.process.worker._create_task_job", return_value=77),
-            patch(
-                "mutmut_win.process.worker._resume_suspended_process",
-                side_effect=OSError("resume denied"),
-            ),
-            patch("mutmut_win.process.job_object.close_job") as close_job,
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.worker._create_task_job") as create_job,
         ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
@@ -459,8 +451,9 @@ class TestWorkerMain:
         assert completed.exit_code == 35
         assert completed.fatal is True
         assert "ProcessContainmentError" in (completed.last_output or "")
-        assert "resume" in (completed.last_output or "").lower()
-        close_job.assert_called_once_with(77)
+        assert "replaced after import" in (completed.last_output or "")
+        kill_tree.assert_called_once_with(fake_proc)
+        create_job.assert_not_called()
         # Fatal containment failure stops before consuming the sentinel.
         assert task_q.get() is None
 
@@ -905,6 +898,43 @@ def test_preferred_killer():
         assert len(captured) == 1
         # Should not include any test path args beyond the base pytest flags
         assert "tests/test_foo.py" not in captured[0]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
+class TestResumeAfterContainment:
+    """M-144 (T3b): resume failures close the Job exactly once and fail closed."""
+
+    def _real_type_double(self) -> MagicMock:
+        """A double that passes the real-type gate of _resume_after_containment."""
+        double = MagicMock(spec=worker_module.subprocess.Popen)
+        double.pid = 12345
+        double.wait.return_value = 0
+        return double
+
+    def test_resume_failure_closes_job_and_raises(self) -> None:
+        proc = self._real_type_double()
+
+        with (
+            patch(
+                "mutmut_win.process.worker._resume_suspended_process",
+                side_effect=OSError("resume denied"),
+            ),
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+            pytest.raises(ProcessContainmentError, match="resume"),
+        ):
+            worker_module._resume_after_containment(proc, 77)
+
+        # Closing the kill-on-close Job atomically terminates the child —
+        # exactly once, and the caller sees the containment failure.
+        close_job.assert_called_once_with(77)
+
+    def test_missing_job_object_kills_child_and_refuses(self) -> None:
+        proc = self._real_type_double()
+
+        with pytest.raises(ProcessContainmentError, match="Job Object"):
+            worker_module._resume_after_containment(proc, None)
+
+        proc.kill.assert_called_once_with()
 
 
 class TestMutantEnvVar:
