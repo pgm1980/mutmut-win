@@ -1123,15 +1123,27 @@ def test_explicit_empty_selection_is_usage_failure_with_valid_json() -> None:
 
 
 def test_since_commit_noop_succeeds_and_keeps_json_machine_readable() -> None:
-    completed = subprocess.CompletedProcess(
+    # M-022: rev-parse resolves the ref first; the diff then reports
+    # nothing changed — a valid no-op with machine-readable JSON.
+    rev_parse = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout="7" * 40 + "\n",
+        stderr="",
+    )
+    diff = subprocess.CompletedProcess(
         args=["git", "diff", "--name-only", "HEAD"],
         returncode=0,
         stdout="",
         stderr="",
     )
+
+    def dispatch(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return rev_parse if argv[:2] == ["git", "rev-parse"] else diff
+
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig(paths_to_mutate=[])),
-        patch("subprocess.run", return_value=completed),
+        patch("subprocess.run", side_effect=dispatch),
     ):
         result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD", "--output", "json"])
 
@@ -1143,15 +1155,25 @@ def test_since_commit_noop_succeeds_and_keeps_json_machine_readable() -> None:
 
 
 def test_since_commit_uses_effective_custom_tests_dir_before_filtering() -> None:
-    completed = subprocess.CompletedProcess(
+    rev_parse = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout="7" * 40 + "\n",
+        stderr="",
+    )
+    diff = subprocess.CompletedProcess(
         args=["git", "diff", "--name-only", "HEAD"],
         returncode=0,
         stdout="custom_tests/test_changed.py\n",
         stderr="",
     )
+
+    def dispatch(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return rev_parse if argv[:2] == ["git", "rev-parse"] else diff
+
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig(paths_to_mutate=[])),
-        patch("subprocess.run", return_value=completed),
+        patch("subprocess.run", side_effect=dispatch),
         patch("mutmut_win.cli.MutationOrchestrator") as orchestrator,
     ):
         result = CliRunner().invoke(

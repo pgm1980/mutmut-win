@@ -1,10 +1,19 @@
-"""Target selection for ``--since-commit`` (AP-16 / M-021, M-024).
+"""Target selection for ``--since-commit`` (AP-16 / M-021, M-022, M-024).
 
 M-021 (BC-015 / CLI-02): ``git diff`` ran without ``--relative``, so git
 emitted repo-root-relative names while the target filter checked
 ``Path(name).exists()`` against the process CWD.  A run started inside a
 repository subproject (monorepo) therefore selected NOTHING and still
 exited 0 — a silent no-op instead of the requested incremental run.
+
+M-022 (CLI-01): the raw ``--since-commit`` value traveled into the
+``git diff`` argv, where git interpreted option-like values
+(``--output=…``) as diff options, existing directories as pathspecs, tree
+objects as tree-vs-worktree diffs and range expressions as ranges — each
+with exit 0, a false incremental success.  The value is now resolved to
+ONE canonical commit oid via ``git rev-parse --verify --end-of-options
+<ref>^{commit}`` and only that oid travels to ``git diff`` followed by a
+terminating ``--``; everything unresolvable is a usage error (exit 2).
 
 M-024 (CLI-03): the tests_dir exclusion compared raw ``Path.parts``, so
 absolute entries and ``..``-aliases never matched and changed test files
@@ -13,12 +22,15 @@ became mutation targets.  Both sides now canonicalize through
 
 The unit tests use a recording ``subprocess.run`` dispatcher that encodes
 git's path semantics: with ``--relative`` in argv the diff reports
-CWD-relative names, without it repo-root-relative names.  Real-git
+CWD-relative names, without it repo-root-relative names; a
+``git rev-parse`` call answers with the configured oid.  Real-git
 coverage lives in ``tests/integration/test_since_commit_git_subproject.py``.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 from typing import TYPE_CHECKING, Any
@@ -26,7 +38,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
@@ -37,8 +49,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-class GitDiffRecorder:
-    """``subprocess.run`` double encoding git's ``--relative`` semantics.
+class GitRecorder:
+    """``subprocess.run`` double encoding git's rev-parse/diff semantics.
 
     Git without ``--relative`` (and without ``diff.relative``) reports
     repo-root-relative paths; with ``--relative`` it reports paths relative
@@ -46,6 +58,9 @@ class GitDiffRecorder:
     The dispatcher returns different payloads for the two forms so a
     missing ``--relative`` cannot accidentally pass.
 
+    A ``git rev-parse`` call (M-022) answers with the configured ``oid``
+    (plus newline, like real rev-parse) unless ``rev_parse_stdout``
+    overrides it; ``rev_parse_returncode`` drives the rejection path.
     ``text_stdout`` switches the double to the text-mode seam (third-party
     subprocess doubles may return ``str``); ``stderr`` can be ``bytes`` or
     ``str``.  Every call's argv AND kwargs are recorded so the exact
@@ -55,6 +70,10 @@ class GitDiffRecorder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.kwargs: list[dict[str, Any]] = []
+        self.oid = "5" * 40
+        self.rev_parse_stdout: str | None = None
+        self.rev_parse_returncode = 0
+        self.rev_parse_stderr: bytes | str = b""
         self.relative_stdout = b""
         self.root_relative_stdout = b""
         self.text_stdout: str | None = None
@@ -66,23 +85,37 @@ class GitDiffRecorder:
     ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
         self.kwargs.append(dict(kwargs))
-        if argv[:2] != ["git", "diff"]:
-            raise AssertionError(
-                f"unexpected subprocess argv while expecting a git diff call: {argv!r}"
+        if argv[:2] == ["git", "rev-parse"]:
+            stdout: bytes | str
+            stdout = self.rev_parse_stdout if self.rev_parse_stdout is not None else f"{self.oid}\n"
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=self.rev_parse_returncode,
+                stdout=stdout,
+                stderr=self.rev_parse_stderr,
             )
+        if argv[:2] != ["git", "diff"]:
+            raise AssertionError(f"unexpected subprocess argv while expecting a git call: {argv!r}")
         if self.text_stdout is not None:
-            stdout: bytes | str = self.text_stdout
+            diff_stdout: bytes | str = self.text_stdout
         else:
-            stdout = self.relative_stdout if "--relative" in argv else self.root_relative_stdout
+            diff_stdout = (
+                self.relative_stdout if "--relative" in argv else self.root_relative_stdout
+            )
         return subprocess.CompletedProcess(
-            args=argv, returncode=self.returncode, stdout=stdout, stderr=self.stderr
+            args=argv, returncode=self.returncode, stdout=diff_stdout, stderr=self.stderr
         )
+
+    @property
+    def diff_calls(self) -> list[list[str]]:
+        """The recorded argv lists of ``git diff`` invocations only."""
+        return [argv for argv in self.calls if argv[:2] == ["git", "diff"]]
 
 
 @pytest.fixture
-def git_diff(monkeypatch: pytest.MonkeyPatch) -> GitDiffRecorder:
-    """Replace ``subprocess.run`` with the recording git-diff dispatcher."""
-    recorder = GitDiffRecorder()
+def git_cmds(monkeypatch: pytest.MonkeyPatch) -> GitRecorder:
+    """Replace ``subprocess.run`` with the recording git dispatcher."""
+    recorder = GitRecorder()
     monkeypatch.setattr(subprocess, "run", recorder)
     return recorder
 
@@ -99,19 +132,21 @@ def _capturing_orchestrator(captured: dict[str, Any]) -> Callable[..., MagicMock
     return _fake
 
 
-def _invoke_since_commit_run(captured: dict[str, Any], *extra_args: str) -> Any:
-    """Invoke ``run --since-commit`` with the heavy collaborators mocked."""
+def _invoke_since_commit_run(
+    captured: dict[str, Any], *extra_args: str, ref: str = "HEAD~1"
+) -> Any:
+    """Invoke ``run --since-commit REF`` with the heavy collaborators mocked."""
     with (
         patch("mutmut_win.cli.MutationOrchestrator", side_effect=_capturing_orchestrator(captured)),
         patch("mutmut_win.cli.PytestRunner"),
         patch("mutmut_win.cli.SpawnPoolExecutor"),
     ):
-        return CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1", *extra_args])
+        return CliRunner().invoke(cli, ["run", "--since-commit", ref, *extra_args])
 
 
 class TestSubprojectRuns:
     def test_subproject_run_selects_project_relative_targets(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # M-021: the project lives in <repo>/proj; git reports repo-root
         # names ("proj/src/mod.py") without --relative.  The old filter
@@ -125,28 +160,39 @@ class TestSubprojectRuns:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0"
-        git_diff.root_relative_stdout = b"proj/src/mod.py\0"
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = b"proj/src/mod.py\0"
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
 
         assert result.exit_code == 0, result.output
         assert captured["paths"] == ["src/mod.py"]
-        # #128 guard, new form: exactly one revision (the ref itself), no
-        # range operator — committed AND uncommitted changes count.
-        assert git_diff.calls[0] == [
+        # M-022: exactly one revision element — the CANONICAL OID from
+        # rev-parse, never the raw user value — and a terminating "--" so
+        # nothing after it can be read as an option or pathspec.  #128
+        # guard: no '..' range element anywhere.
+        assert git_cmds.calls[0] == [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            "HEAD~1^{commit}",
+        ]
+        assert git_cmds.calls[1] == [
             "git",
             "diff",
             "--name-only",
             "-z",
             "--relative",
-            "HEAD~1",
+            git_cmds.oid,
+            "--",
         ]
-        assert not any(".." in arg for arg in git_diff.calls[0][1:])
+        assert not any(".." in arg for arg in git_cmds.calls[1][1:])
 
     def test_toplevel_project_run_still_selects_targets(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # Counter-check: project root == git top level.  --relative must be
         # a no-op there — the fix may not regress the common layout.
@@ -158,8 +204,8 @@ class TestSubprojectRuns:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0"
-        git_diff.root_relative_stdout = b"src/mod.py\0"
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = b"src/mod.py\0"
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -168,13 +214,16 @@ class TestSubprojectRuns:
         assert captured["paths"] == ["src/mod.py"]
 
     def test_invalid_ref_still_fails_with_exit_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # The #102 returncode contract must survive the --relative rebuild.
+        # M-022: an unresolvable ref fails at the rev-parse stage — the
+        # message names the ref instead of git's (silenced) stderr.
         monkeypatch.chdir(tmp_path)
-        git_diff.returncode = 128
-        git_diff.relative_stdout = b""
-        git_diff.root_relative_stdout = b""
+        git_cmds.rev_parse_returncode = 128
+        git_cmds.rev_parse_stderr = b""
+        git_cmds.relative_stdout = b""
+        git_cmds.root_relative_stdout = b""
 
         captured: dict[str, Any] = {}
         with (
@@ -188,7 +237,9 @@ class TestSubprojectRuns:
             result = CliRunner().invoke(cli, ["run", "--since-commit", "not-a-ref"])
 
         assert result.exit_code == 2
-        assert "git diff failed" in result.output
+        assert "not-a-ref" in result.output
+        assert "is not a commit" in result.output
+        assert git_cmds.diff_calls == []
         assert "paths" not in captured
 
 
@@ -196,7 +247,7 @@ class TestGitInvocationContract:
     """The exact ``subprocess.run`` call is part of the #102/#128 contract."""
 
     def test_captures_output_and_pins_the_relative_base_to_the_cwd(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = tmp_path / "repo" / "proj"
         (project / "src").mkdir(parents=True)
@@ -206,16 +257,20 @@ class TestGitInvocationContract:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0"
-        git_diff.root_relative_stdout = b"proj/src/mod.py\0"
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = b"proj/src/mod.py\0"
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
 
         assert result.exit_code == 0, result.output
         # capture_output feeds the #102 returncode check and the name
-        # decoding; cwd is the base git resolves --relative against.
-        assert git_diff.kwargs == [{"capture_output": True, "cwd": project}]
+        # decoding; cwd is the base git resolves --relative against.  M-022:
+        # BOTH git invocations (rev-parse and diff) share the contract.
+        assert git_cmds.kwargs == [
+            {"capture_output": True, "cwd": project},
+            {"capture_output": True, "cwd": project},
+        ]
 
 
 class TestTargetFilterContract:
@@ -238,12 +293,12 @@ class TestTargetFilterContract:
         return project
 
     def test_deleted_non_py_and_test_files_are_not_targets(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = self._make_project(tmp_path)
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0src/deleted.py\0README.md\0tests/test_mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0src/deleted.py\0README.md\0tests/test_mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -252,7 +307,7 @@ class TestTargetFilterContract:
         assert captured["paths"] == ["src/mod.py"]
 
     def test_existing_name_outside_the_project_is_never_a_target(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # Fail-closed: a changed name that canonicalizes outside the
         # project root is excluded, never mutated.
@@ -267,8 +322,8 @@ class TestTargetFilterContract:
         outside.mkdir()
         (outside / "mod.py").write_text("x = 1\n", encoding="utf-8")
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"../esc/mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"../esc/mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -279,7 +334,12 @@ class TestTargetFilterContract:
 
 
 class TestInvalidRefContract:
-    """The #102 failure path: exit 2, decoded stderr, clean JSON channel."""
+    """The #102 failure path at the diff stage: exit 2, decoded stderr, clean JSON channel.
+
+    M-022 moved unresolvable refs to the rev-parse stage (see
+    ``TestSubprojectRuns``); these pins keep the returncode contract for a
+    ``git diff`` that itself fails after a successfully resolved oid.
+    """
 
     @staticmethod
     def _make_project(tmp_path: Path) -> Path:
@@ -293,16 +353,16 @@ class TestInvalidRefContract:
         return project
 
     def test_message_embeds_the_replacement_decoded_stderr(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # Non-empty stderr with an invalid UTF-8 byte: the decode must use
         # errors="replace" (U+FFFD) and the exact message format is contract.
         project = self._make_project(tmp_path)
         monkeypatch.chdir(project)
-        git_diff.returncode = 128
-        git_diff.stderr = b"fatal: bad revision \xff\n"
-        git_diff.relative_stdout = b""
-        git_diff.root_relative_stdout = b""
+        git_cmds.returncode = 128
+        git_cmds.stderr = b"fatal: bad revision \xff\n"
+        git_cmds.relative_stdout = b""
+        git_cmds.root_relative_stdout = b""
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -317,14 +377,14 @@ class TestInvalidRefContract:
         assert "paths" not in captured
 
     def test_text_stderr_seam_is_passed_through_undecoded(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = self._make_project(tmp_path)
         monkeypatch.chdir(project)
-        git_diff.returncode = 128
-        git_diff.stderr = "fatal: bad revision\n"
-        git_diff.relative_stdout = b""
-        git_diff.root_relative_stdout = b""
+        git_cmds.returncode = 128
+        git_cmds.stderr = "fatal: bad revision\n"
+        git_cmds.relative_stdout = b""
+        git_cmds.root_relative_stdout = b""
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -333,14 +393,14 @@ class TestInvalidRefContract:
         assert "git diff failed (exit 128): fatal: bad revision" in result.output
 
     def test_json_channel_stays_pure_and_reports_exit_code_2(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = self._make_project(tmp_path)
         monkeypatch.chdir(project)
-        git_diff.returncode = 128
-        git_diff.stderr = b"fatal: bad revision\n"
-        git_diff.relative_stdout = b""
-        git_diff.root_relative_stdout = b""
+        git_cmds.returncode = 128
+        git_cmds.stderr = b"fatal: bad revision\n"
+        git_cmds.relative_stdout = b""
+        git_cmds.root_relative_stdout = b""
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured, "--output", "json")
@@ -352,6 +412,193 @@ class TestInvalidRefContract:
         assert payload["exit_code"] == 2
         assert "git diff failed (exit 128)" in payload["error"]
         assert "git diff failed" in result.stderr
+
+
+class TestResolveSinceCommitRejections:
+    """M-022 (CLI-01): option-like, empty and range values never reach git diff.
+
+    The raw value used to travel into the ``git diff`` argv where git
+    interpreted it as an option (``--output=…``), a pathspec (existing
+    directory) or a range — each with exit 0, a false success.  Rejections
+    are usage errors: exit 2 with a clear diagnosis, no diff invocation.
+    """
+
+    @staticmethod
+    def _make_project(tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    def test_option_like_ref_is_rejected_before_any_git_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
+    ) -> None:
+        # '--output=evil.txt' as the option VALUE: click hands it to the
+        # callback, and git used to read it as its own --output option.
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, ref="--output=evil.txt")
+
+        assert result.exit_code == 2
+        assert "--output=evil.txt" in result.output
+        assert "option-like" in result.output
+        # Fail fast: not even rev-parse runs, no file can be written.
+        assert git_cmds.calls == []
+        assert not (project / "evil.txt").exists()
+        assert "paths" not in captured
+
+    def test_empty_ref_is_rejected_before_any_git_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, ref="")
+
+        assert result.exit_code == 2
+        assert "empty" in result.output
+        assert git_cmds.calls == []
+        assert "paths" not in captured
+
+    @pytest.mark.parametrize("ref", ["HEAD~1..HEAD", "main...feature", "v1..v2", "A...B"])
+    def test_range_refs_are_rejected_with_merge_base_hint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+        ref: str,
+    ) -> None:
+        # Undocumented range syntax used to work because the raw value
+        # reached git diff.  M-022 = A ends that explicitly and points
+        # former range users at the documented merge-base workflow.
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, ref=ref)
+
+        assert result.exit_code == 2
+        assert ref in result.output
+        assert "merge-base" in result.output
+        assert git_cmds.calls == []
+        assert "paths" not in captured
+
+    def test_unresolvable_ref_exits_2_with_the_ref_in_the_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
+    ) -> None:
+        # rev-parse runs with --quiet: stderr is EMPTY on failure, so the
+        # diagnosis must name the ref and the exit code itself (no git
+        # stderr passthrough available on this path).
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.rev_parse_returncode = 128
+        git_cmds.rev_parse_stderr = b""
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, ref="no-such-branch")
+
+        assert result.exit_code == 2
+        assert "no-such-branch" in result.output
+        assert "is not a commit" in result.output
+        assert "128" in result.output
+        # rev-parse ran (one call), the diff never did.
+        assert len(git_cmds.calls) == 1
+        assert git_cmds.diff_calls == []
+        assert "paths" not in captured
+
+    @pytest.mark.parametrize("stdout", ["main", "abc123", "", "HEAD~1"])
+    def test_non_canonical_rev_parse_stdout_is_rejected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+        stdout: str,
+    ) -> None:
+        # Defensive: rev-parse answered rc 0 but NOT with a canonical oid
+        # (40/64 hex).  Anything else would re-open the injection surface
+        # in the diff argv — reject instead of forwarding.
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.rev_parse_stdout = stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 2
+        assert "did not resolve to a canonical" in result.output
+        assert git_cmds.diff_calls == []
+        assert "paths" not in captured
+
+
+class TestResolveSinceCommitAcceptance:
+    """M-022: branch/tag/commit values resolve to one canonical oid."""
+
+    @staticmethod
+    def _make_project(tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    @pytest.mark.parametrize("ref", ["feature", "v1.2.3", "HEAD~1", "1234567890"])
+    def test_valid_refs_resolve_and_diff_against_the_canonical_oid_only(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+        ref: str,
+    ) -> None:
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = b"proj/src/mod.py\0"
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured, ref=ref)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+        assert git_cmds.calls[0] == [
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{ref}^{{commit}}",
+        ]
+        # The raw ref NEVER reaches git diff — only the canonical oid,
+        # terminated by "--" (option and pathspec interpretation closed).
+        assert git_cmds.diff_calls == [
+            ["git", "diff", "--name-only", "-z", "--relative", git_cmds.oid, "--"]
+        ]
+
+    def test_sha256_length_object_id_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
+    ) -> None:
+        # SHA-256 repositories report 64 hex digits — still a canonical oid.
+        project = self._make_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.oid = "f" * 64
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+        assert git_cmds.diff_calls[0][5] == "f" * 64
 
 
 class TestStdoutSeams:
@@ -372,11 +619,11 @@ class TestStdoutSeams:
         return project
 
     def test_text_stdout_with_nul_separator_keeps_spaced_names(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = self._make_project(tmp_path)
         monkeypatch.chdir(project)
-        git_diff.text_stdout = "src/mod.py\0src/my mod.py\0"
+        git_cmds.text_stdout = "src/mod.py\0src/my mod.py\0"
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -385,7 +632,7 @@ class TestStdoutSeams:
         assert captured["paths"] == ["src/mod.py", "src/my mod.py"]
 
     def test_text_stdout_with_newline_separator_splits_and_filters(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         project = tmp_path / "proj"
         (project / "src").mkdir(parents=True)
@@ -395,7 +642,7 @@ class TestStdoutSeams:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.text_stdout = "src/mod.py\nsrc/deleted.py\n"
+        git_cmds.text_stdout = "src/mod.py\nsrc/deleted.py\n"
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -404,7 +651,7 @@ class TestStdoutSeams:
         assert captured["paths"] == ["src/mod.py"]
 
     def test_undecodable_name_is_surrogate_escaped_not_fatal(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # git -z preserves arbitrary path bytes; an invalid UTF-8 name must
         # decode via surrogateescape and then simply fail the existence
@@ -417,8 +664,8 @@ class TestStdoutSeams:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0src/bad\xff.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0src/bad\xff.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured)
@@ -469,7 +716,7 @@ class TestTestsDirCanonicalization:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        git_diff: GitDiffRecorder,
+        git_cmds: GitRecorder,
         entry_kind: str,
     ) -> None:
         project = tmp_path / "proj"
@@ -488,8 +735,8 @@ class TestTestsDirCanonicalization:
             "upper": str(project / "src" / "tests").upper(),
         }
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0src/tests/test_mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0src/tests/test_mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured, "--tests-dir", entries[entry_kind])
@@ -498,7 +745,7 @@ class TestTestsDirCanonicalization:
         assert captured["paths"] == ["src/mod.py"]
 
     def test_leading_separator_entry_still_excludes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # Backwards compatibility: '/tests/' (and the backslash variant)
         # worked like 'tests' before because leading separators were
@@ -514,8 +761,8 @@ class TestTestsDirCanonicalization:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured, "--tests-dir", "\\tests\\")
@@ -524,7 +771,7 @@ class TestTestsDirCanonicalization:
         assert captured["paths"] == ["src/mod.py"]
 
     def test_drive_anchored_entry_stays_ineffective(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # 'C:tests' is relative to the DRIVE's current directory — it never
         # matched anything before and is documented as not comparable (None)
@@ -540,8 +787,8 @@ class TestTestsDirCanonicalization:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0tests/test_mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
         drive = project.drive
         assert drive, "tmp_path lives on a Windows drive"
 
@@ -552,7 +799,7 @@ class TestTestsDirCanonicalization:
         assert captured["paths"] == ["src/mod.py", "tests/test_mod.py"]
 
     def test_project_root_entry_excludes_everything(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_diff: GitDiffRecorder
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
     ) -> None:
         # tests_dir '.' IS the project root: Path('.').parts == () made the
         # prefix comparison exclude EVERYTHING before — a documented
@@ -565,8 +812,8 @@ class TestTestsDirCanonicalization:
             encoding="utf-8",
         )
         monkeypatch.chdir(project)
-        git_diff.relative_stdout = b"src/mod.py\0"
-        git_diff.root_relative_stdout = git_diff.relative_stdout
+        git_cmds.relative_stdout = b"src/mod.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
 
         captured: dict[str, Any] = {}
         result = _invoke_since_commit_run(captured, "--tests-dir", ".")
@@ -670,3 +917,31 @@ def test_alias_spellings_of_one_entry_share_the_canonical_parts(
 
     assert _project_relative_parts(entry, root) == _project_relative_parts(canonical, root)
     assert _project_relative_parts(canonical, root) == ("src", "tests")
+
+
+@given(
+    value=st.text(
+        alphabet=st.characters(exclude_categories=("Cs",), exclude_characters="\x00"),
+        max_size=16,
+    ).map(lambda s: "-" + s)
+)
+@settings(max_examples=50)
+def test_every_dash_prefixed_value_is_a_usage_error_without_a_git_call(value: str) -> None:
+    """M-022 property: no option-like --since-commit value reaches git.
+
+    Whatever follows the leading dash (including digits, spaces, unicode,
+    or more dashes), the value is rejected as a usage error BEFORE any
+    subprocess runs — git never gets to interpret it as an option.
+    """
+    from mutmut_win.cli import _resolve_since_commit
+
+    recorder = GitRecorder()
+    with (
+        patch("subprocess.run", recorder),
+        contextlib.redirect_stderr(io.StringIO()),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        _resolve_since_commit(value, json_stdout=None)
+
+    assert excinfo.value.code == 2
+    assert recorder.calls == []

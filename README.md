@@ -186,7 +186,7 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 |---|---|
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
-| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) - committed **and** uncommitted tracked changes; paths are evaluated relative to the project directory, so monorepo subprojects are supported; untracked files need a full run |
+| `--since-commit REF` | Mutate only files changed since a git ref — a single branch, tag, or commit (e.g. `HEAD~1`); committed **and** uncommitted tracked changes; paths are evaluated relative to the project directory, so monorepo subprojects are supported; untracked files need a full run. The ref is resolved via `git rev-parse --verify --end-of-options <ref>^{commit}` (needs git ≥ 2.36; older git fails closed with exit 2) and only the canonical commit id reaches `git diff`; option-like values, pathspecs, blobs, trees, and range expressions (`A..B`, `A...B`) are rejected with exit 2 |
 | `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets and with `--dry-run` (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
@@ -464,6 +464,17 @@ verdicts from the former colliding representation are not reused.
 ```bash
 mutmut-win run --since-commit HEAD~1
 mutmut-win results
+```
+
+`--since-commit` takes a **single** commit reference (branch, tag, or
+commit). Range expressions are rejected with exit 2 — they were never
+documented and let git reinterpret the value (option injection, pathspec,
+tree-vs-worktree diffs). For the former range-style "everything since the
+branches diverged" diff, compute the merge base yourself and pass the
+resulting commit:
+
+```bash
+mutmut-win run --since-commit "$(git merge-base origin/main HEAD)"
 ```
 
 **Targeted** — one module, fresh staging:
