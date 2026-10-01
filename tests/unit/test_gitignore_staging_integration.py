@@ -22,6 +22,7 @@ from mutmut_win.file_setup import (
     copy_also_copy_files,
     copy_src_dir,
     validate_staging_namespace,
+    walk_source_files,
 )
 from mutmut_win.gitignore_boundary import GitignoreBoundary
 from mutmut_win.stats import build_run_basis_evidence
@@ -253,6 +254,108 @@ class TestIgnoredMutationRoot:
         copy_src_dir(MutmutConfig(paths_to_mutate=["src", "build/gen"]))
         assert (project / "mutants" / "build" / "gen" / "g.py").is_file()
         assert not (project / "mutants" / "build" / "other").exists()
+
+    def test_nested_gitignore_forced_root_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AR-02 (COR-002): a root excluded by a NESTED ignore file stages.
+
+        ``pkg/.gitignore`` rules load only during the descent; the forced
+        boundary must still reset there, so the explicit root's sources and
+        resources reach ``mutants/`` while unconfigured ignored siblings stay
+        out.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".gitignore").write_text("nothing/\n", encoding="utf-8")
+        (project / "src").mkdir()
+        (project / "src" / "app.py").write_text("X = 1\n", encoding="utf-8")
+        nested = project / "pkg" / "sub"
+        nested.mkdir(parents=True)
+        (project / "pkg" / ".gitignore").write_text("sub/\nsibling/\n", encoding="utf-8")
+        (nested / "mod.py").write_text("Y = 2\n", encoding="utf-8")
+        (nested / "data.json").write_text('{"value": 1}\n', encoding="utf-8")
+        (project / "pkg" / "sibling").mkdir()
+        (project / "pkg" / "sibling" / "keep.txt").write_text("no\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        copy_src_dir(MutmutConfig(paths_to_mutate=["src", "pkg/sub"]))
+        assert (project / "mutants" / "pkg" / "sub" / "mod.py").is_file()
+        assert (project / "mutants" / "pkg" / "sub" / "data.json").is_file()
+        assert not (project / "mutants" / "pkg" / "sibling").exists()
+
+    def test_nested_gitignore_forced_root_is_planned_by_the_namespace_preflight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".gitignore").write_text("nothing/\n", encoding="utf-8")
+        (project / "src").mkdir()
+        (project / "src" / "app.py").write_text("X = 1\n", encoding="utf-8")
+        nested = project / "pkg" / "sub"
+        nested.mkdir(parents=True)
+        (project / "pkg" / ".gitignore").write_text("sub/\n", encoding="utf-8")
+        (nested / "mod.py").write_text("Y = 2\n", encoding="utf-8")
+        (nested / "data.json").write_text('{"value": 1}\n', encoding="utf-8")
+        monkeypatch.chdir(project)
+        config = MutmutConfig(paths_to_mutate=["src", "pkg/sub"])
+        planned = {
+            str(source)
+            for source, _target in _iter_automatic_staging_inputs(
+                frozenset(), forced_roots=self._forced_roots(project, config)
+            )
+        }
+        assert any("pkg" in name and "data.json" in name for name in planned)
+        validate_staging_namespace(config)
+
+    def test_mixed_walk_surface_includes_nested_explicit_root_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AR-02 (C-003): a missing explicit target must not pass silently.
+
+        With ``pkg/.gitignore='generated/'`` and both ``src`` and
+        ``pkg/generated`` configured, the discovery walk must deliver BOTH
+        surfaces; accepting only ``src`` would treat the lost explicit root
+        as a complete run.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "control.py").write_text("X = 1\n", encoding="utf-8")
+        generated = project / "pkg" / "generated"
+        generated.mkdir(parents=True)
+        (project / "pkg" / ".gitignore").write_text("generated/\n", encoding="utf-8")
+        (generated / "required.py").write_text("def req(): return 7\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        sources = {
+            str(source).replace("\\", "/")
+            for source in walk_source_files(
+                MutmutConfig(paths_to_mutate=["src", "pkg/generated"], max_children=1)
+            )
+        }
+        assert "src/control.py" in sources
+        assert "pkg/generated/required.py" in sources
+
+    def test_nested_forced_root_bytes_bind_the_run_basis(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The basis walk (stats.py) force-includes the nested root too."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "app.py").write_text("X = 1\n", encoding="utf-8")
+        generated = project / "pkg" / "generated"
+        generated.mkdir(parents=True)
+        (project / "pkg" / ".gitignore").write_text("generated/\n", encoding="utf-8")
+        (generated / "data.json").write_text('{"value": 1}\n', encoding="utf-8")
+        monkeypatch.chdir(project)
+        config = MutmutConfig(
+            paths_to_mutate=["src/app.py", "pkg/generated"],
+            tests_dir=["tests/"],
+        )
+        before = build_run_basis_evidence(config, project)
+        (generated / "data.json").write_text('{"value": 2}\n', encoding="utf-8")
+        after = build_run_basis_evidence(config, project)
+        assert before.digest != after.digest
 
     def test_ignored_single_file_entry_is_staged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
