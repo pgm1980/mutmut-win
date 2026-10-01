@@ -8,6 +8,7 @@ able to prune git-ignored subtrees (e.g. ``tests/test_project/.lake`` with
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -447,6 +448,158 @@ class TestTrackedIndexOverride:
             assert deep.excludes_file("other.pyc") is True
         finally:
             gitignore_boundary._load_tracked_index = original_load
+
+
+class TestForcedRootAtNestedBoundary:
+    """AR-02 (COR-002/C-003): the forced-root reset must be decided at the
+    boundary the descent actually reached, not at the walk root.
+
+    ``pkg/.gitignore`` rules load only while descending; a ``descend_forced``
+    branch decision taken on the root boundary never sees them, so the
+    explicit root was pinned as an excluded subtree instead of being reset.
+    """
+
+    def test_nested_gitignore_exclusion_triggers_forced_reset(self, tmp_path: Path) -> None:
+        """An explicit root excluded by a nested ignore file is force-reset."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n"),
+            ("pkg/sub/api.py", "def answer(): return 42\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+
+    def test_forced_root_below_nested_ignore_keeps_its_own_deeper_rules(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Only rules AT or BELOW the forced entry restart governance."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n"),
+            ("pkg/sub/.gitignore", "tmp/\n*.log\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+        assert boundary.excludes_directory("tmp") is True
+        assert boundary.excludes_file("drop.log") is True
+
+    def test_deeply_nested_forced_root_through_two_ignored_levels(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The reset also covers rules pinned by an excluded ancestor chain."""
+        project = _make_project(
+            tmp_path,
+            ("a/.gitignore", "b/\n"),
+            ("a/b/c/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("a", "b", "c")
+        assert boundary.excludes_file("api.py") is False
+
+    def test_forced_reset_discards_ancestral_negation_like_git_add_f(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """``git add -f`` force-adds the whole entry; ancestral negations
+        below an excluded directory cannot re-govern it after the reset."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\n!sub/keep.py\n"),
+            ("pkg/sub/keep.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("keep.py") is False
+
+    def test_visible_entry_below_nested_ignore_still_descends_normally(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An entry NOT excluded by the nested rules keeps normal descent, so
+        file patterns from intermediate ignore files still prune inside it."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "*.log\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+        )
+        boundary = GitignoreBoundary.load(project).descend_forced("pkg", "sub")
+        assert boundary.excludes_file("api.py") is False
+        assert boundary.excludes_file("drop.log") is True
+
+    def test_unconfigured_nested_ignored_sibling_stays_excluded(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The forced reset applies to the configured entry only: a sibling
+        excluded by the same nested ignore file stays pruned for walks that
+        descend normally."""
+        project = _make_project(
+            tmp_path,
+            ("pkg/.gitignore", "sub/\nsibling/\n"),
+            ("pkg/sub/api.py", "x = 1\n"),
+            ("pkg/sibling/keep.txt", "keep\n"),
+        )
+        pkg = GitignoreBoundary.load(project).enter("pkg")
+        assert pkg.excludes_directory("sub") is True
+        assert pkg.excludes_directory("sibling") is True
+
+
+class TestTrackedIndexStageParsing:
+    """AR-03 (COR-003): gitlink records land in the directory override set.
+
+    The loader consumes ``git ls-files -z --cached --stage`` records
+    (``<mode> <object> <stage><SEP><path>``, SEP is a tab on current git and
+    a space on some versions) and must classify gitlinks (mode 160000) as
+    tracked directories without guessing directory-ness for normal files.
+    """
+
+    @staticmethod
+    def _fake_ls_files(monkeypatch: pytest.MonkeyPatch, stdout: bytes) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr=b"")
+        monkeypatch.setattr(
+            gitignore_boundary.subprocess,
+            "run",
+            lambda *_args, **_kwargs: completed,
+        )
+
+    def test_gitlink_record_lands_in_directories(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / ".git").mkdir()
+        payload = (
+            b"160000 1111111111111111111111111111111111111111 0\tvendor\x00"
+            b"100644 2222222222222222222222222222222222222222 0\tsrc/x.py\x00"
+        )
+        self._fake_ls_files(monkeypatch, payload)
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert "vendor" in index.files
+        assert "vendor" in index.directories
+        assert "src/x.py" in index.files
+        assert "src" in index.directories
+        assert "src/x.py" not in index.directories
+
+    def test_space_separated_stage_records_parse_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Some git versions emit a space separator with ``-z``."""
+        (tmp_path / ".git").mkdir()
+        payload = b"160000 1111111111111111111111111111111111111111 0 sub/deps/vendor\x00"
+        self._fake_ls_files(monkeypatch, payload)
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert {"sub", "sub/deps", "sub/deps/vendor"} <= index.directories
+
+    def test_unparseable_record_keeps_plain_path_behaviour(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A record without stage metadata degrades to the old file-path
+        treatment instead of dropping the entry."""
+        (tmp_path / ".git").mkdir()
+        self._fake_ls_files(monkeypatch, b"plain/odd\x00")
+        index = gitignore_boundary._load_tracked_index(tmp_path)
+        assert "plain/odd" in index.files
+        assert "plain" in index.directories
+        assert "plain/odd" not in index.directories
 
 
 class TestUnknownLevelsAndBom:

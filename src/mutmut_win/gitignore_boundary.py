@@ -27,11 +27,14 @@ The boundary mirrors Git's layered ignore semantics for walk pruning:
 
 Tracked-index override (M-001): files present in the Git index (tracked,
 whether committed or ``git add -f``) are never excluded by ignore patterns.
-The index is loaded once per ``load()`` call via ``git ls-files -z --cached``
-and cached per (root, index mtime, index size).  Without a Git repository the
-behaviour is unchanged (pure patterns, no subprocess).  A Git failure with an
-existing ``.git`` marker logs a warning and disables pruning entirely for
-that boundary (``unknown``), ensuring tracked files are never silently lost.
+The index is loaded once per ``load()`` call via ``git ls-files -z --cached
+--stage`` and cached per (root, index mtime, index size).  Gitlink entries
+(mode 160000, i.e. submodules) count as tracked DIRECTORIES — their path
+joins the directory override set, while normal file entries never do.
+Without a Git repository the behaviour is unchanged (pure patterns, no
+subprocess).  A Git failure with an existing ``.git`` marker logs a warning
+and disables pruning entirely for that boundary (``unknown``), ensuring
+tracked files are never silently lost.
 
 Only project-local ``.gitignore`` files are honoured.
 ``.git/info/exclude`` and the global ``core.excludesFile`` are deliberate
@@ -46,12 +49,10 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from pathspec import GitIgnoreSpec
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -286,9 +287,11 @@ class _TrackedIndex:
 
     ``files`` contains every tracked file path (project-root-relative,
     POSIX separators, case-folded).  ``directories`` contains every
-    ancestor-directory prefix of every tracked file.  ``unknown`` marks a
-    Git failure — the boundary then excludes nothing (fail-open) to ensure
-    tracked files are never silently pruned.
+    ancestor-directory prefix of every tracked file plus every gitlink
+    (mode 160000) path itself: a gitlink is semantically a tracked
+    directory root, so ignore rules cannot prune it (AR-03 / COR-003).
+    ``unknown`` marks a Git failure — the boundary then excludes nothing
+    (fail-open) to ensure tracked files are never silently pruned.
     """
 
     files: frozenset[str]
@@ -303,6 +306,20 @@ _TRACKED_CACHE_MAX = 16
 #: Environment keys stripped before invoking git (they can redirect the index).
 _GIT_ENV_STRIP = frozenset(
     {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"}
+)
+
+#: Index mode of a gitlink (submodule commit reference): a tracked DIRECTORY.
+_GITLINK_MODE = "160000"
+
+#: One ``git ls-files -z --cached --stage`` record:
+#: ``<mode> SP <object> SP <stage> (TAB|SP) <path>``.  Current git keeps the
+#: tab separator with ``-z``; some versions emit a space instead, so both are
+#: accepted.  DOTALL lets a path itself contain newlines (records are already
+#: NUL-split); a record that does not match degrades to the plain-path
+#: treatment below instead of being dropped.
+_STAGE_RECORD = re.compile(
+    r"(?P<mode>[0-7]{6}) [0-9a-fA-F]+ [0-3][\t ](?P<path>.+)",
+    re.DOTALL,
 )
 
 
@@ -321,39 +338,98 @@ def _find_git_marker(root: Path) -> Path | None:
     return None
 
 
+def _parse_stage_record(record: str) -> tuple[str | None, str]:
+    """Split one ``--stage`` record into ``(mode, path)``.
+
+    Returns ``(None, record)`` for records without stage metadata so the
+    caller keeps the conservative plain-path treatment.
+    """
+    match = _STAGE_RECORD.fullmatch(record)
+    if match is None:
+        return None, record
+    return match.group("mode"), match.group("path")
+
+
+def _resolve_gitdir_index(marker: Path) -> Path | None:
+    """Resolve the index path behind a ``.git`` FILE (AR-04 / COR-004).
+
+    Linked worktrees and submodules carry a ``.git`` file whose single
+    ``gitdir: <path>`` line points at their private git directory; the
+    per-worktree index lives directly in that git directory.  Relative
+    pointers resolve against the directory holding the ``.git`` file.
+    Returns ``None`` whenever the pointer cannot be resolved reliably —
+    callers must then forgo cache reuse instead of pinning a timeless key.
+    """
+    try:
+        text = marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):  # fmt: skip
+        return None
+    prefix = "gitdir:"
+    if not text.startswith(prefix):
+        return None
+    gitdir = text[len(prefix) :].strip()
+    if not gitdir:
+        return None
+    pointer = Path(gitdir)
+    if not pointer.is_absolute():
+        pointer = marker.parent / pointer
+    try:
+        return pointer.resolve() / "index"
+    except OSError:  # pragma: no cover - resolve() on Windows defers OS errors
+        return None
+
+
 def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     """Load the tracked-file set from the Git index (M-001).
 
-    Uses ``git ls-files -z --cached`` (without ``--exclude-standard``) to get
-    the full tracked set regardless of ignore rules.  Repo detection is
-    filesystem-based (``.git`` marker search) to avoid false negatives from
-    ``rev-parse`` errors like "dubious ownership".  Without a ``.git`` marker
-    the result is an empty index (pure pattern behaviour).  With a marker but
-    a Git failure the result is ``unknown=True`` (excludes nothing).
+    Uses ``git ls-files -z --cached --stage`` (without
+    ``--exclude-standard``) to get the full tracked set regardless of ignore
+    rules, including each entry's index mode: gitlinks (mode 160000) join
+    the directory override set as tracked directory roots, normal entries
+    stay files (AR-03 / COR-003).  Repo detection is filesystem-based
+    (``.git`` marker search) to avoid false negatives from ``rev-parse``
+    errors like "dubious ownership".  Without a ``.git`` marker the result
+    is an empty index (pure pattern behaviour).  With a marker but a Git
+    failure the result is ``unknown=True`` (excludes nothing).
     """
     marker = _find_git_marker(project_root)
     if marker is None:
         return _TrackedIndex(files=frozenset(), directories=frozenset(), unknown=False)
 
-    # Cache key from the index file's identity when available.
-    cache_key: tuple[str, int, int] = (str(project_root), 0, 0)
-    index_path = marker.parent / ".git" / "index" if marker.is_dir() else None
+    # Cache key from the index file's identity when available.  A ``.git``
+    # FILE (linked worktree / submodule) contributes no index path by
+    # itself: resolve the actual worktree index from its ``gitdir:`` pointer
+    # so cache reuse is bound to THAT index's identity (AR-04 / COR-004).
+    # Without a trustworthy index identity there is no cache reuse at all —
+    # a timeless ``(root, 0, 0)`` key would freeze the first observation for
+    # the rest of the process (SEC-002).
+    index_path = marker / "index" if marker.is_dir() else _resolve_gitdir_index(marker)
+    cache_key: tuple[str, int, int] | None = None
     if index_path is not None and index_path.exists():
         try:
             stat = index_path.stat()
             cache_key = (str(project_root), stat.st_mtime_ns, stat.st_size)
-        except OSError:
-            pass
-    cached = _TRACKED_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+        except OSError:  # pragma: no cover - stat raced with index removal
+            cache_key = None
+    if cache_key is not None:
+        cached = _TRACKED_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
     env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
         result = subprocess.run(  # noqa: S603  # git from PATH; argv list, no shell, env scrubbed
             # S607: "git" from PATH is the project contract (cli.py does the same).
-            ["git", "-C", str(project_root), "ls-files", "-z", "--cached"],  # noqa: S607  # git from PATH per project contract
+            [  # noqa: S607  # git from PATH per project contract
+                "git",
+                "-C",
+                str(project_root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--stage",
+            ],
             capture_output=True,
             timeout=30,
             check=False,
@@ -401,19 +477,32 @@ def _load_tracked_index(project_root: Path) -> _TrackedIndex:
     for raw_path in output.split("\0"):
         if not raw_path:
             continue
-        folded = _fold(raw_path.replace("\\", "/"))
+        mode, path = _parse_stage_record(raw_path)
+        folded = _fold(path.replace("\\", "/"))
         files.add(folded)
         parts = folded.split("/")
         for i in range(1, len(parts)):
             dirs.add("/".join(parts[:i]))
+        if mode == _GITLINK_MODE:
+            # A gitlink is one tracked path that IS a directory root
+            # (submodule commit reference); only its own mode proves that,
+            # normal file entries never join the directory set (AR-03).
+            dirs.add(folded)
 
     index = _TrackedIndex(files=frozenset(files), directories=frozenset(dirs), unknown=False)
     _cache_tracked(cache_key, index)
     return index
 
 
-def _cache_tracked(key: tuple[str, int, int], index: _TrackedIndex) -> None:
-    """Store the index in the process-local cache (bounded)."""
+def _cache_tracked(key: tuple[str, int, int] | None, index: _TrackedIndex) -> None:
+    """Store the index in the process-local cache (bounded).
+
+    ``key is None`` means no trustworthy index identity exists (e.g. an
+    unresolvable ``.git`` file pointer); caching then would pin this
+    observation forever, so the call is a no-op (AR-04).
+    """
+    if key is None:
+        return
     if len(_TRACKED_CACHE) >= _TRACKED_CACHE_MAX:
         _TRACKED_CACHE.clear()
     _TRACKED_CACHE[key] = index
@@ -511,16 +600,20 @@ class GitignoreBoundary:
         it stay pruned — that is the MBR-2026-09-14-01 case: ``tests/`` is
         configured, ``tests/test_project/.lake`` is not.
 
-        The branch decision uses the PURE pattern verdict (without the
-        tracked override): a tracked-ignored configured entry keeps the
-        reset branch so untracked siblings retain their ``git add -f``
-        inclusion semantics (M-001 counter-review correction).
+        The branch decision evaluates the PURE pattern verdict at the
+        boundary the descent actually reached: intermediate ``.gitignore``
+        files load only while descending, so a rule from ``pkg/.gitignore``
+        deciding the fate of ``pkg/sub`` is invisible at the walk root
+        (AR-02 / COR-002).  The tracked override stays out of the decision:
+        a tracked-ignored configured entry keeps the reset branch so
+        untracked siblings retain their ``git add -f`` inclusion semantics
+        (M-001 counter-review correction).
         """
         relative = [part for part in parts if part not in {"", "."}]
         if not relative:
             return self
         parent = self.descend(*relative[:-1])
-        if self._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
+        if parent._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
             directory = self._directory.joinpath(*relative)
             prefix = "/".join(part for part in (self._prefix, *relative) if part)
             level = _load_ignore_level(directory, prefix)
