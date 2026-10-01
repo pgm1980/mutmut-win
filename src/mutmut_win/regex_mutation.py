@@ -155,9 +155,10 @@ def _iter_quantifiers(pattern: str, spans: _RegexSpans | None = None) -> Iterato
     """
     if spans is None:
         spans = _scan_regex(pattern)
+    class_spans = list(spans.class_spans)
 
     for match in _QUANTIFIER_RE.finditer(pattern):
-        if _in_class(match.start(), list(spans.class_spans)) or _in_spans(
+        if _in_class(match.start(), class_spans) or _in_spans(
             match.start(),
             spans.comment_spans,
         ):
@@ -465,8 +466,24 @@ def _class_spans(pattern: str) -> list[tuple[int, int]]:
 
 
 def _in_spans(index: int, spans: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> bool:
-    """``True`` if *index* falls within one of the *spans*."""
-    return any(start <= index < end for start, end in spans)
+    """``True`` if *index* falls within one of the *spans*.
+
+    Spans are sorted and non-overlapping (they are produced by a single
+    left-to-right scan).  Binary search on the start offsets bounds the
+    membership check at O(log n) per lookup instead of the linear walk
+    that made class-rich patterns pay O(n²) comparisons before the
+    candidate cap could fire (AR-11 / M-100).
+    """
+    if not spans:
+        return False
+    lo, hi = 0, len(spans)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if spans[mid][0] <= index:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo > 0 and index < spans[lo - 1][1]
 
 
 def _in_class(index: int, spans: list[tuple[int, int]]) -> bool:
