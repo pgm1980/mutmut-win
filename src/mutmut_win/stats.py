@@ -589,18 +589,22 @@ def _import_root_boundary(
         return None
 
     # Any active interpreter prefix genuinely inside the project (e.g. a
-    # venv named "env") is also a runtime tree.
+    # venv named "env") is also a runtime tree.  Only a prefix that is
+    # STRICTLY INSIDE the project may lift the boundary (AR-10 / PERF-002):
+    # prefixes equal to, above, or outside the project describe an ordinary
+    # project import tree (e.g. a project located below an interpreter
+    # prefix), whose ignored artifacts must keep pruning instead of
+    # becoming new fingerprint drift.
     for prefix_attr in ("prefix", "exec_prefix", "base_prefix"):
         prefix_value = getattr(sys, prefix_attr, None)
         if not prefix_value:
             continue
         try:
             prefix_path = Path(prefix_value).resolve(strict=False)
-        except (OSError, ValueError):  # fmt: skip
-            continue
-        if prefix_path == project_root:
-            continue
-        try:
+            if prefix_path == project_root:
+                continue
+            if not prefix_path.is_relative_to(project_root):
+                continue
             if resolved.is_relative_to(prefix_path):
                 return None
         except (OSError, ValueError):  # fmt: skip
