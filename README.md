@@ -456,12 +456,15 @@ functions and top-level-class methods. The two kinds of nesting differ:
   mutated and contributes no mutants rather than appearing as `survived`.
 - **Decorated functions and classes** are excluded wholesale, together with
   everything they contain (a method decorated solely with `@staticmethod` is
-  the documented exception). For classes this is a technical constraint of
-  the trampoline, not a stylistic choice: each mutated method's private
-  `_orig` copy and mutants are placed inside the class body while their
-  lookup names are only bound after the class statement, so a class
-  decorator touching members during class creation would meet half-built
-  trampolines.
+  the documented exception). For classes this is a conservative contract,
+  not a current technical necessity: since M-039 the trampoline bindings
+  are placed *inside* the class body (pre-bound during class creation), so
+  the historical half-built-trampoline argument no longer applies to the
+  generated code itself. The exclusion stays because a class decorator can
+  still observe and mutate member behavior before, during, and after class
+  creation in ways the trampoline dispatch cannot fully isolate; lifting
+  the lock requires an explicit behavioral decision (per decision
+  zurückgestellt).
 
 Repeated same-named top-level functions or class methods remain distinct.
 The first occurrence keeps its historical mutant name; occurrence 2 and later
