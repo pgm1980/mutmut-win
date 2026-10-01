@@ -541,15 +541,31 @@ backs up and atomically replaces the selected source file. Add `mutants/`,
 `.mutmut-cache/` and `.mutmut-win-*.run.lock*` to `.gitignore`.
 
 **`.gitignore` limits of staging:** staging walks, staging copies, and the
-execution-basis fingerprint respect hierarchical project-local `.gitignore`
-files, so correctly ignored build trees are neither staged nor hashed.
-Explicitly configured entries are the deliberate exception — `paths_to_mutate`,
-`also_copy`, and `extra_paths` entries are force-included with git `add -f`
-semantics (an ignore file *inside* such an entry still governs its contents).
-A git-ignored `paths_to_mutate` root is therefore fully staged, non-`.py`
-resources included, exactly matching the mutation surface; its bytes are also
-bound into the run-basis evidence. Dotenv files stay out of staging even when
+combined ambient fingerprint of the run basis respect hierarchical
+project-local `.gitignore` files, so correctly ignored build trees are neither
+staged nor change the ambient basis. Explicitly configured entries are the
+deliberate exception — `paths_to_mutate`, `also_copy`, and `extra_paths`
+entries are force-included with git `add -f` semantics (an ignore file
+*inside* such an entry still governs its contents). A git-ignored
+`paths_to_mutate` root is therefore fully staged, non-`.py` resources
+included, exactly matching the mutation surface; its bytes are also bound
+into the run-basis evidence. Dotenv files stay out of staging even when
 ignored, but their bytes keep binding the basis.
+
+Basis hashing separates that staging selection from the terminal *core*
+digest. The core binds the bytes of every effective project import root — the
+project root or its package source, reached through `sys.path` or an editable
+install — deliberately **without** gitignore pruning (decided M-061/B: import
+roots that remain importable by the executed tests stay bound; only `src` and
+`source` roots are removed from the child's `sys.path`, so a flat-layout
+project root or an editable install stays importable in place). A git-ignored
+build tree inside such a flat-layout or editable import root therefore still
+hashes into the core digest: changing it counts as project (core) drift and
+invalidates verdict reuse instead of being silently ignored, while pure
+ambient churn never changes the core digest. Runtime environment trees are
+never pruned in either digest: a project-internal `.venv`, `venv`, `.tox`,
+`.nox`, or any active interpreter prefix strictly inside the project executes
+in place and is fully bound, including unclaimed modules and `.pth` files.
 
 ## Development
 
