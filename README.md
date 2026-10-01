@@ -577,6 +577,15 @@ ambient churn never changes the core digest. Runtime environment trees are
 never pruned in either digest: a project-internal `.venv`, `venv`, `.tox`,
 `.nox`, or any active interpreter prefix strictly inside the project executes
 in place and is fully bound, including unclaimed modules and `.pth` files.
+The boundary is permitted only in the opposite direction: `src`/`source`
+package roots — which the child no longer imports because the runner removes
+them from its `sys.path` and executes the staged copy instead — keep gitignore
+pruning in the ambient fingerprint, so an ignored artifact inside such an
+isolated source tree changes neither the ambient digest nor verdict reuse.
+That pruning is a stability property of the ambient digest, not a completeness
+proof: bytes that stay importable in the child are covered by the core digest
+alone, and only the core digest decides whether drift is terminal project
+drift.
 
 ## Development
 
