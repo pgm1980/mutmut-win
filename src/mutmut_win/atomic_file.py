@@ -60,6 +60,21 @@ class AtomicPreconditionError(UnsafeAtomicWriteError):
     """
 
 
+class AtomicBackupPromotionError(UnsafeAtomicWriteError):
+    """The displaced original could not be promoted to the backup path.
+
+    Raised by :func:`atomic_replace_if_unchanged` AFTER a successful
+    compare-and-swap publication, when the displaced original — rebound to
+    the leaf identity captured before the displacement — could not be moved
+    onto the requested backup path (AR-06 / C-002: a plain rename onto the
+    pre-written backup fails under Windows, and suppressing that failure
+    used to strand the only recovery copy under an unreported randomly
+    named sibling).  Nothing is lost: the displaced file stays exactly
+    where the message names it, so callers must surface the location
+    instead of reporting a clean backup success.
+    """
+
+
 class AtomicPathLengthError(OSError):
     """A Windows path-length limit blocked the private atomic-write sibling.
 
@@ -969,8 +984,15 @@ def atomic_replace_if_unchanged(
     5. Rename the temp into place (``os.rename`` — a ``FileExistsError``
        means a foreign writer recreated the path; their file stays).
     6. Post-publication identity check.
-    7. Promote the displaced file to *backup_path* (or keep it if no
-       backup path is given — it is NEVER deleted).
+    7. Promote the displaced file to *backup_path* — rebound to the leaf
+       identity captured before the displacement and moved with an atomic
+       replace, because the backup side usually already exists (callers
+       like apply pre-write it; a plain rename onto an existing file fails
+       under Windows).  A writer that still holds the displaced inode open
+       through ``FILE_SHARE_DELETE`` keeps its bytes: they travel with the
+       promoted inode into the named backup (AR-06 / C-002).  Without a
+       backup path the displaced file stays at the displacement path — it
+       is NEVER deleted.
 
     Returns:
         ``True`` on success, ``False`` if the current bytes already equal
@@ -982,7 +1004,12 @@ def atomic_replace_if_unchanged(
             overwritten; foreign content stays at *path* or under a
             displacement path named in the error.
         UnsafeAtomicWriteError: The parent contains unsafe indirection.
-        AtomicPublicationRaceError: Post-publication identity mismatch.
+        AtomicPublicationRaceError: Post-publication identity mismatch;
+            the original stays under a displacement path named in the error.
+        AtomicBackupPromotionError: The publication succeeded but the
+            displaced original could not be promoted onto *backup_path*;
+            the original is preserved at the displacement path named in
+            the error message (never silently stranded).
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
@@ -1048,13 +1075,23 @@ def atomic_replace_if_unchanged(
 
     if _identity(displaced_stat) != target_identity or displaced_content != expected:
         # The file changed between identity capture and displacement —
-        # restore it and fail closed.
-        with contextlib.suppress(OSError):
+        # restore it and fail closed.  The message must reflect the ACTUAL
+        # recovery outcome: a failed restoration keeps the bytes under the
+        # displacement path and says so (AR-06 / C-002).
+        try:
             displaced_path.rename(path)
+        except OSError as restore_exc:
+            _cleanup_owned_temp(temp_path, temp_identity)
+            msg = (
+                f"compare-and-swap target changed between check and displacement: {path}; "
+                f"restoration failed ({restore_exc}); "
+                f"the changed content is preserved at {displaced_path}"
+            )
+            raise AtomicPreconditionError(msg) from restore_exc
         _cleanup_owned_temp(temp_path, temp_identity)
         msg = (
             f"compare-and-swap target changed between check and displacement: {path}; "
-            f"displaced content preserved at {displaced_path}"
+            f"the changed content was restored to {path}"
         )
         raise AtomicPreconditionError(msg)
 
@@ -1081,21 +1118,54 @@ def atomic_replace_if_unchanged(
         )
         raise AtomicPreconditionError(msg) from exc
 
-    # Step 6: post-publication identity check.
+    # Step 6: post-publication identity check.  The displaced original is
+    # still un-promoted here, so every publication failure names the exact
+    # recovery location (AR-06 / C-002).
     try:
         published_stat = path.lstat()
     except OSError as exc:
-        msg = f"cannot verify published file {path}: {exc}"
+        msg = (
+            f"cannot verify published file {path}: {exc}; "
+            f"the original is preserved at {displaced_path}"
+        )
         raise AtomicPublicationRaceError(msg) from exc
     if _identity(published_stat) != temp_identity:
-        msg = f"published file identity mismatch at {path}"
+        msg = (
+            f"published file identity mismatch at {path}; "
+            f"the original is preserved at {displaced_path}"
+        )
         raise AtomicPublicationRaceError(msg)
 
-    # Step 7: promote the displaced file to backup (never delete it).
+    # Step 7 (AR-06 / C-002): promote the displaced original into the KNOWN
+    # backup path, rebound to the leaf identity captured before the
+    # displacement.  The backup side usually already exists (apply pre-writes
+    # it), so promotion is an atomic replace — the suppressed plain rename
+    # used to strand the displaced inode under an unreported random sibling
+    # name while the stale backup survived.  A FILE_SHARE_DELETE writer that
+    # still holds the inode keeps its bytes: they travel with the promoted
+    # inode into the named backup.  A promotion failure NEVER deletes the
+    # displaced file; it fails loudly with the surviving location instead.
     if backup_path is not None:
-        with contextlib.suppress(OSError):
-            displaced_path.rename(backup_path)
-    # If no backup path, the displaced file stays at displaced_path.
+        backup_path = Path(backup_path)
+        try:
+            displaced_now = displaced_path.lstat()
+            if _identity(displaced_now) != target_identity:
+                raise UnsafeAtomicWriteError(
+                    f"displaced original was replaced before backup promotion: {displaced_path}"
+                )
+            _checked_parent(displaced_path, parent_identity)
+            displaced_path.replace(backup_path)
+            promoted = backup_path.lstat()
+            if _identity(promoted) != target_identity:
+                raise UnsafeAtomicWriteError(
+                    f"backup promotion lost the displaced original identity: {backup_path}"
+                )
+        except OSError as exc:
+            msg = (
+                f"the replaced original could not be promoted to the backup "
+                f"{backup_path} ({exc}); the original is preserved at {displaced_path}"
+            )
+            raise AtomicBackupPromotionError(msg) from exc
 
     _fsync_parent(path, parent_identity)
     return True
