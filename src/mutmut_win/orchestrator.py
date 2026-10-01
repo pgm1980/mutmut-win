@@ -1742,7 +1742,14 @@ def _print_timeout_model(
     clean_wall_seconds: float,
     total_test_time: float,
 ) -> None:
-    """Describe the budgets already assigned to the tasks being dispatched."""
+    """Describe the budgets already assigned to the tasks being dispatched.
+
+    M-102: tasks that HAVE timing data still receive the full-suite fallback
+    budget when the test mapping is not authoritative (the production normal
+    case — see :func:`_apply_timeouts`).  For such a run exactly ONE
+    diagnosis line explains why the per-test budgets stayed inactive; the
+    budgets themselves are never changed here.
+    """
     if not tasks:
         return
 
@@ -1770,6 +1777,20 @@ def _print_timeout_model(
             f"Timeout model: {fallback} task(s) use the fallback: "
             f"max({_FALLBACK_TIMEOUT:.1f}s, clean run {clean_wall_seconds:.1f}s "
             f"x {multiplier})."
+        )
+    # M-102: count the tasks the fallback actually surprises — timing data
+    # present, but the non-authoritative mapping keeps the per-test budget
+    # inactive.  Tasks WITHOUT a selection have nothing timing-based to
+    # explain, so they are not counted.  Exactly one line per affected run.
+    non_authoritative_with_timing = sum(
+        bool(task.tests and not task.test_selection_is_authoritative and task.estimated_time > 0)
+        for task in tasks
+    )
+    if non_authoritative_with_timing:
+        print(
+            f"Timeout model: {non_authoritative_with_timing} task(s) with timing data "
+            "use the fallback budget because the test mapping is not authoritative; "
+            "each such task runs the full suite."
         )
 
 
