@@ -19,13 +19,16 @@ from typing import TYPE_CHECKING, cast
 import libcst as cst
 
 from mutmut_win.atomic_file import (
+    AtomicBackupPromotionError,
     AtomicPreconditionError,
+    AtomicPublicationRaceError,
     atomic_replace_if_unchanged,
     atomic_write_bytes,
 )
 from mutmut_win.exceptions import (
     AmbiguousMutantNameError,
     MutationParseError,
+    MutmutWinError,
     StaleStagingError,
 )
 from mutmut_win.file_setup import (
@@ -638,11 +641,15 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     Safety (issue #75): the lookup is scope-exact (the mutant's class name is
     honoured, A4-UI-001), reads/writes are byte-exact so the original line
     endings survive (A4-UI-002), the previous content is backed up next to
-    the source as ``<name>.mutmut-orig.bak`` (overwritten on repeated apply),
-    the write uses a compare-and-swap publication that refuses to overwrite
-    a source that changed since the staleness check (M-005), and the call
-    refuses to run when the source bytes do not match the SHA-256 recorded
-    when the mutants were generated (A4-UI-003).
+    the source as ``<name>.mutmut-orig.bak`` (overwritten on repeated apply,
+    but only after the stage-1 re-read has passed — an abort writes nothing
+    at all, AR-06/C-002), the write uses a compare-and-swap publication that
+    refuses to overwrite a source that changed since the staleness check
+    (M-005), promotes the displaced original into that backup by verified
+    leaf identity, and the call refuses to run when the source bytes do not
+    match the SHA-256 recorded when the mutants were generated (A4-UI-003).
+    Every CAS/publication error names the exact recovery location (source
+    path, displacement path or backup path) in its message.
 
     Args:
         mutant_name: Fully qualified mutant identifier.
@@ -661,6 +668,9 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             (compare-and-swap; nothing is overwritten — re-run
             ``mutmut-win run`` first; was a raw ``RuntimeError`` traceback
             until issue #123 / CLI-003).
+        MutmutWinError: If the mutant was applied but the displaced original
+            could not be promoted to the backup; the message names the
+            surviving location of the original (AR-06/C-002).
     """
     mutant_name, data = resolve_mutant(mutant_name, config)
     path = data.path
@@ -700,6 +710,18 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     # libcst.deep_replace is typed to return CSTNode; we know the result is Module.
     new_module = cast("cst.Module", orig_module.deep_replace(original_function, mutant_function))
 
+    # Stage 1 (M-005, AR-06/C-002): re-read the source BEFORE the backup
+    # write.  An abort here has written nothing at all — a pre-existing
+    # backup from an earlier session survives untouched, and no message
+    # ever has to claim an untouched backup side it did not keep.
+    current_bytes = source_path.read_bytes()
+    if current_bytes != source_bytes:
+        msg = (
+            f"source {source_path} changed while applying mutant {mutant_name}; "
+            "nothing was written — re-run 'mutmut-win run' first"
+        )
+        raise StaleStagingError(msg)
+
     backup_path = source_path.with_name(source_path.name + ".mutmut-orig.bak")
     atomic_write_bytes(backup_path, source_bytes, mode=source_mode)
     try:
@@ -708,18 +730,11 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
         msg = f"applied mutant cannot be represented in source encoding {source_encoding}: {exc}"
         raise MutationParseError(msg) from exc
 
-    # Stage 1 (M-005): re-read the source immediately before the CAS write
-    # to shrink the race window.  Any deviation aborts without writing.
-    current_bytes = source_path.read_bytes()
-    if current_bytes != source_bytes:
-        msg = (
-            f"source {source_path} changed while applying mutant {mutant_name}; "
-            "nothing was overwritten — re-run 'mutmut-win run' first"
-        )
-        raise StaleStagingError(msg)
-
     # Stage 2 (M-005): compare-and-swap publication — the source is only
-    # replaced if it still holds the bytes we verified above.
+    # replaced if it still holds the bytes we verified above.  Every
+    # CAS/publication error carries the exact recovery location through to
+    # the CLI (AR-06 / C-002): the original survives at the source path or
+    # under the displacement/backup path named in the error.
     try:
         atomic_replace_if_unchanged(
             source_path,
@@ -731,6 +746,22 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     except AtomicPreconditionError as exc:
         msg = (
             f"source {source_path} changed while applying mutant {mutant_name}; "
-            "nothing was overwritten — re-run 'mutmut-win run' first"
+            "the source was not overwritten — re-run 'mutmut-win run' first; "
+            f"recovery details: {exc}"
         )
         raise StaleStagingError(msg) from exc
+    except AtomicPublicationRaceError as exc:
+        msg = (
+            f"source {source_path} could not be verified after applying mutant {mutant_name} "
+            f"(the source was replaced but its publication could not be confirmed); "
+            f"recovery details: {exc}"
+        )
+        raise StaleStagingError(msg) from exc
+    except AtomicBackupPromotionError as exc:
+        # The mutant IS applied at this point; the recovery contract failed,
+        # so apply must not report a clean backup side.  Fail closed and
+        # visibly with the surviving location.
+        raise MutmutWinError(
+            f"mutant {mutant_name} was applied to {source_path}, but the original "
+            f"could not be moved to the backup; {exc}"
+        ) from exc
