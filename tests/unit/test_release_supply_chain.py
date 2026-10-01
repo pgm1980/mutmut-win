@@ -2183,10 +2183,26 @@ def test_dependency_export_body_is_path_independent_and_pinned(tmp_path: Path) -
     assert bodies[0] == bodies[1] == bodies[2]
     # Pinned dependency universe. v2.21.3 (MBR-2026-09-14-01): the pin moves
     # with the deliberate addition of the pathspec runtime dependency
-    # (>=1.1.1,<2; hierarchical .gitignore walk pruning).
+    # (>=1.1.1,<1.2 — tightened from <2 by M-016 because the gitignore
+    # boundary binds pathspec's private gitignore API; hierarchical
+    # .gitignore walk pruning).  The export body pins exact versions, so
+    # the tightened constraint does not change this hash.
     assert hashlib.sha256(bodies[0]).hexdigest() == (
         "ac6f3bde717885b420da8a146c72400613f5c7af4bfa5200f5984b2c1d65c07e"
     )
+
+
+def test_pathspec_is_pinned_below_1_2_for_private_gitignore_api() -> None:
+    """M-016: the gitignore boundary binds pathspec's private gitignore
+    surface (the ``ps_d`` marker group, ``pattern_to_regex``, the
+    ``pathspec.patterns.gitignore.spec`` module path).  The ``<1.2`` upper
+    bound keeps upgrades that could silently move that surface deliberate;
+    the unit guard in ``test_gitignore_boundary.py`` fails loudly on it."""
+    pyproject = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "pathspec>=1.1.1,<1.2" in pyproject["project"]["dependencies"]
+    lock = tomllib.loads((_PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    entry = next(package for package in lock["package"] if package["name"] == "pathspec")
+    assert entry["version"].startswith("1.1.")
 
 
 def test_python_metadata_matches_exact_windows_runtime_support() -> None:

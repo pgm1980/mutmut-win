@@ -39,6 +39,18 @@ tracked files are never silently lost.
 Only project-local ``.gitignore`` files are honoured.
 ``.git/info/exclude`` and the global ``core.excludesFile`` are deliberate
 non-goals: neither belongs to the cloned project bytes a mutation run stages.
+
+Case semantics (M-016): pattern matching follows the *effective*
+``core.ignorecase`` of the surrounding Git repository, read once per
+``load()`` via ``git config --bool core.ignorecase``.  ``true`` compiles
+every level's patterns with Git's ASCII-only case folding (wildmatch
+``tolower`` on ASCII — never Python's Unicode-wide ``(?i)``); ``false``,
+an unset key (Git's documented default) and directories outside any Git
+worktree keep the case-sensitive verdicts.  A git invocation that cannot
+produce a verdict (missing binary, timeout, unusable repository) degrades
+to the case-sensitive default with a warning — the weaker exclusion
+decision, mirroring the tracked-index fail-open philosophy; only a
+successful query with an uninterpretable value aborts with a diagnosis.
 """
 
 from __future__ import annotations
@@ -50,9 +62,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, AnyStr
 
 from pathspec import GitIgnoreSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +111,48 @@ class _CompiledIgnorePattern:
 _dir_marker_guard_done: bool = False
 
 
+class _AsciiFoldedGitIgnorePattern(GitIgnoreSpecPattern):
+    """Gitignore pattern compiled with Git's ASCII-only case folding (M-016).
+
+    Git folds ignore-pattern case only when ``core.ignorecase`` is
+    effective, and even then ASCII-only (wildmatch ``tolower`` on ASCII).
+    Python's Unicode-wide ``(?i)`` would additionally fold e.g.
+    ``Ä``/``ä`` or U+017F/``s`` and exclude files Git still tracks, hence
+    the ``(?ai)`` inline form.  The prefix keeps pathspec's ``ps_d``
+    directory-marker group intact and lands in ``regex.flags`` as
+    ``re.ASCII | re.IGNORECASE`` so the end-anchored M-017 copy can carry
+    the fold via the ``flags`` argument.
+    """
+
+    @classmethod
+    def pattern_to_regex(cls, pattern: AnyStr) -> tuple[AnyStr | None, bool | None]:
+        regex, include = super().pattern_to_regex(pattern)
+        if not isinstance(regex, str):
+            # Comment-only/blank patterns carry no rule either way (and the
+            # boundary never compiles bytes patterns at all).
+            return regex, include
+        return f"(?ai){regex}", include
+
+
+#: Leading global inline-flag group, e.g. the ASCII fold's ``(?ai)`` (M-016).
+_INLINE_GLOBAL_FLAGS = re.compile(r"\(\?[aiLmsux]+\)")
+
+
+def _anchored_copy(regex: re.Pattern[str]) -> re.Pattern[str]:
+    """Return *regex* end-anchored for the directory-marker probe (M-017).
+
+    A leading global inline-flag group — the ASCII fold's ``(?ai)`` —
+    cannot travel into the embedded position: Python 3.14 rejects global
+    flags that are not at the very start of an expression.  The group is
+    stripped from the source and the flags move into the ``flags``
+    argument, where ``regex.flags`` already carries their bits (``(?ai)``
+    yields ``re.ASCII | re.IGNORECASE`` without ``re.UNICODE``).
+    """
+    match = _INLINE_GLOBAL_FLAGS.match(regex.pattern)
+    source = regex.pattern[match.end() :] if match is not None else regex.pattern
+    return re.compile(f"(?:{source})\\Z", regex.flags)
+
+
 def _verify_dir_marker_support() -> None:
     """Fail loudly when pathspec stops exposing the directory marker.
 
@@ -130,7 +185,7 @@ def _compile_ignore_patterns(spec: Any) -> tuple[_CompiledIgnorePattern, ...]:
             continue  # comment-only pattern carries no rule either way
         try:
             regex = pattern.regex
-            anchored = re.compile(f"(?:{regex.pattern})\\Z", regex.flags)
+            anchored = _anchored_copy(regex)
         except Exception:
             logger.debug(
                 "gitignore pattern compilation failed for %r",
@@ -234,7 +289,12 @@ class _IgnoreLevel:
     rules_unknown: bool = False
 
 
-def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
+def _load_ignore_level(
+    directory: Path,
+    base: str,
+    *,
+    ignore_case: bool = False,
+) -> _IgnoreLevel | None:
     """Load one directory's ``.gitignore`` or fail closed to "no opinion".
 
     A missing file is the normal case and returns ``None`` (no level).
@@ -246,13 +306,16 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
     hash (an unreadable file lowers ``complete`` there); a compiled-but-
     invalid file only widens the walk, which is cost, not wrong results.
     UTF-8 files may start with a BOM, which Git skips (``utf-8-sig``).
+    ``ignore_case`` selects the ASCII-folding pattern factory (M-016); the
+    boundary reads the effective ``core.ignorecase`` once and threads the
+    result through every level it loads.
     """
     ignore_file = directory / ".gitignore"
     try:
         text = ignore_file.read_bytes().decode("utf-8-sig")
     except FileNotFoundError:
         return None
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, UnicodeDecodeError) as exc:  # fmt: skip
         logger.warning(
             "Ignoring unreadable .gitignore at %s (%s); it excludes nothing "
             "and suspends inherited rules in its subtree",
@@ -266,7 +329,10 @@ def _load_ignore_level(directory: Path, base: str) -> _IgnoreLevel | None:
         return None
     _verify_dir_marker_support()
     try:
-        spec = GitIgnoreSpec.from_lines(lines)
+        if ignore_case:
+            spec = GitIgnoreSpec.from_lines(lines, pattern_factory=_AsciiFoldedGitIgnorePattern)
+        else:
+            spec = GitIgnoreSpec.from_lines(lines)
     except ValueError as exc:
         # pathspec raises GitIgnorePatternError (a ValueError subclass) for
         # invalid pattern lines — a lone "!" or a trailing backslash, for
@@ -324,8 +390,80 @@ _STAGE_RECORD = re.compile(
 
 
 def _fold(path: str) -> str:
-    """Case-fold a POSIX path for Windows-insensitive comparison."""
+    """Case-fold a POSIX path for Windows-insensitive comparison.
+
+    Deliberately wider than the ASCII-only pattern fold of M-016: the
+    tracked override may only ever PREVENT exclusion, so Unicode-wide
+    case folding keeps that failure direction on the cost side.
+    """
     return path.casefold()
+
+
+def _load_ignore_case(project_root: Path) -> bool:
+    """Read the effective ``core.ignorecase`` once per boundary load (M-016).
+
+    ``git -C <root> config --bool core.ignorecase`` resolves system, global
+    and local configuration.  An unset key (return code 1) is Git's
+    documented default ``false``.  Without a ``.git`` marker the documented
+    case-sensitive behaviour of this module stays — no subprocess at all.
+    A query that cannot produce a verdict (missing git binary, timeout,
+    unusable repository such as a broken ``gitdir:`` pointer) warns and
+    degrades to ``false``: folding is the STRONGER exclusion decision, so
+    the failure direction must stay on the weaker side, exactly like the
+    tracked index's fail-open philosophy (AR-04).  Only a successful query
+    with an uninterpretable value aborts with a diagnosis — there is no
+    safe default for a world that answers ``--bool`` with anything else.
+    """
+    if _find_git_marker(project_root) is None:
+        return False
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        result = subprocess.run(  # noqa: S603  # git from PATH; argv list, no shell, env scrubbed
+            # S607: "git" from PATH is the project contract (cli.py does the same).
+            [  # noqa: S607  # git from PATH per project contract
+                "git",
+                "-C",
+                str(project_root),
+                "config",
+                "--bool",
+                "core.ignorecase",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=False,
+            env=env,
+            creationflags=creationflags,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:  # fmt: skip
+        logger.warning(
+            "Cannot determine core.ignorecase for %s (%s); keeping "
+            "case-sensitive gitignore matching for this boundary",
+            project_root,
+            type(exc).__name__,
+        )
+        return False
+    if result.returncode == 1:
+        return False  # unset: Git's documented default is false
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "git config --bool core.ignorecase failed for %s (rc=%d, %s); "
+            "keeping case-sensitive gitignore matching for this boundary",
+            project_root,
+            result.returncode,
+            stderr[:200],
+        )
+        return False
+    value = result.stdout.decode("utf-8", errors="replace").strip()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise RuntimeError(
+        f"Unexpected core.ignorecase value {value!r} for {project_root}; "
+        f"refusing to guess gitignore case folding"
+    )
 
 
 def _find_git_marker(root: Path) -> Path | None:
@@ -529,6 +667,7 @@ class GitignoreBoundary:
 
     __slots__ = (
         "_directory",
+        "_ignore_case",
         "_levels",
         "_prefix",
         "_root",
@@ -544,6 +683,8 @@ class GitignoreBoundary:
         levels: tuple[_IgnoreLevel, ...],
         subtree_excluded: bool = False,
         tracked: _TrackedIndex | None = None,
+        *,
+        ignore_case: bool = False,
     ) -> None:
         self._root = root
         self._directory = directory
@@ -551,14 +692,29 @@ class GitignoreBoundary:
         self._levels = levels
         self._subtree_excluded = subtree_excluded
         self._tracked = tracked
+        self._ignore_case = ignore_case
 
     @classmethod
     def load(cls, project_root: Path) -> GitignoreBoundary:
-        """Create the walk-root boundary, honouring the root ``.gitignore``."""
-        root_level = _load_ignore_level(project_root, "")
+        """Create the walk-root boundary, honouring the root ``.gitignore``.
+
+        The effective ``core.ignorecase`` is read once here (M-016) and
+        carried into every level this boundary loads: ``true`` compiles the
+        patterns with Git's ASCII-only case folding, ``false`` — or no Git
+        worktree at all — keeps case-sensitive verdicts.
+        """
+        ignore_case = _load_ignore_case(project_root)
+        root_level = _load_ignore_level(project_root, "", ignore_case=ignore_case)
         levels = (root_level,) if root_level is not None else ()
         tracked = _load_tracked_index(project_root)
-        return cls(project_root, project_root, "", levels, tracked=tracked)
+        return cls(
+            project_root,
+            project_root,
+            "",
+            levels,
+            tracked=tracked,
+            ignore_case=ignore_case,
+        )
 
     def enter(self, name: str) -> GitignoreBoundary:
         """Return the boundary for one child directory.
@@ -569,7 +725,7 @@ class GitignoreBoundary:
         """
         directory = self._directory / name
         prefix = _candidate(self._prefix, name)
-        level = _load_ignore_level(directory, prefix)
+        level = _load_ignore_level(directory, prefix, ignore_case=self._ignore_case)
         levels = (*self._levels, level) if level is not None else self._levels
         return GitignoreBoundary(
             self._root,
@@ -578,6 +734,7 @@ class GitignoreBoundary:
             levels,
             subtree_excluded=self._subtree_excluded or self.excludes_directory(name),
             tracked=self._tracked,
+            ignore_case=self._ignore_case,
         )
 
     def descend(self, *parts: str) -> GitignoreBoundary:
@@ -616,9 +773,16 @@ class GitignoreBoundary:
         if parent._pure_pattern_excludes(_candidate(parent._prefix, relative[-1]), directory=True):
             directory = self._directory.joinpath(*relative)
             prefix = "/".join(part for part in (self._prefix, *relative) if part)
-            level = _load_ignore_level(directory, prefix)
+            level = _load_ignore_level(directory, prefix, ignore_case=self._ignore_case)
             levels = (level,) if level is not None else ()
-            return GitignoreBoundary(self._root, directory, prefix, levels, tracked=self._tracked)
+            return GitignoreBoundary(
+                self._root,
+                directory,
+                prefix,
+                levels,
+                tracked=self._tracked,
+                ignore_case=self._ignore_case,
+            )
         return parent.enter(relative[-1])
 
     def excludes_directory(self, name: str) -> bool:
