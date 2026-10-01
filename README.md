@@ -457,6 +457,16 @@ use a reversible `ǁ<ordinal>` suffix before `__mutmut_…` (for example
 `pkg.x_fǁ2__mutmut_1`). This is intentionally identity-affecting: cached
 verdicts from the former colliding representation are not reused.
 
+Function or class identifiers that are not NFKC-normal are always hex-encoded
+into an ASCII `xq_…` (top-level) or `xqǁ<class>ǁ<function>…` (method) mutant
+name — context-independently, even without a second definition. CPython's
+tokenizer binds the NFKC form of every identifier, so `K` and fullwidth `Ｋ`
+(U+FF2B) are the same compiled name; the legacy private names would collapse
+and one definition would silently overwrite the other's trampoline bindings.
+This is identity-affecting as well: cached verdicts of such functions from
+earlier runs are explicitly orphaned and are never silently remapped onto the
+new IDs.
+
 ## Typical workflows
 
 **Local, incremental** — check what you just changed:
@@ -710,7 +720,13 @@ fixes the generator verdict: a `yield` inside a lambda body no longer turns
 the surrounding function into a generator (the wrapper returned a generator
 object instead of the value, and async functions with such lambdas were
 wrongly excluded wholesale), while `yield` in a lambda default still counts
-because defaults are evaluated in the enclosing scope. Details:
+because defaults are evaluated in the enclosing scope. The same wave makes
+mutant identity NFKC-safe (M-041): every function or class identifier that is
+not NFKC-normal now receives a deterministic ASCII `xq_` hex mutant name —
+CPython's tokenizer binds NFKC forms, so `K` and fullwidth `Ｋ` used to
+collapse onto the same private trampoline bindings and corrupt clean runs —
+and cached verdicts of such functions are explicitly invalidated as orphans
+rather than silently remapped to the new IDs. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.
