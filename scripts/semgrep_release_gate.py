@@ -140,7 +140,7 @@ _KILL_PROC_FILE_SHA: Final = "aff81671be553a2da9ef0a006baec1bdc8b01133601d3834da
 _ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
 _CLASS_BODY_FILE_SHA: Final = "cfa26e6a173f08327891116c1604256d92bcef7ea17ce1534e31f8c725c51dc5"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
-    "874635fc0f8b82ef1d8ba4cac975e4bffc7f7712ad7f37d4191c21a7cd40637b"
+    "70a0c10cf3a01b69598f0221beb7e47c45c80d5fed4159ab6ecb4fcc24c28a03"
 )
 _MODELS_FILE_SHA: Final = "cfcd968a3ee16aedadfe1b1a61a95b5418c62537b7c4a02db99cf9ee5915a43a"
 _MUTANT_DIFF_FILE_SHA: Final = "97f3f30ecd1893a5518b045154020e0791d4b430ebfa3a30b0906cd41417d5df"
@@ -283,9 +283,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_duplicate_definitions_220.py",
         _EXEC_RULE,
-        193,
+        211,
         5,
-        193,
+        211,
         83,
         "1dccd9aaa511115af8daeb45c3e8fd2fb3efbb8a13ae2d532846bc4c69de89a4",
         _DUPLICATE_DEFINITIONS_FILE_SHA,
@@ -301,7 +301,7 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
             "06bcfb77f28dc11c6fe59297f6856a66300b0b1ad39bd1d0709030d79bf8e1af",
             _DUPLICATE_DEFINITIONS_FILE_SHA,
         )
-        for line in (277, 304, 314, 332)
+        for line in (295, 322, 332, 350, 471, 561)
     ),
     FindingSignature(
         "tests/unit/test_models.py",
@@ -332,6 +332,16 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         53,
         "b9531179ddec5d36108a0b76b13811e43929d7302780880bdd417e44ff25a989",
         _MODELS_FILE_SHA,
+    ),
+    FindingSignature(
+        "src/mutmut_win/file_setup.py",
+        _IMPORT_RULE,
+        2654,
+        22,
+        2654,
+        58,
+        "d9d54c69ac7a744f05cf0b035cebb2c6c3f6adffb21898d0845c6898b82ced8f",
+        "8262f1e4985fe33699bc7e7898b940af5f9a7f0bd51d30116ac8ba866a8222aa",
     ),
     FindingSignature(
         "tests/unit/test_models.py",
