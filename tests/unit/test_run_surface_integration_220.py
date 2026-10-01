@@ -452,9 +452,7 @@ def test_held_database_locks_stay_out_of_staging_and_basis_evidence(
 
         copy_src_dir(config, excluded_paths=excluded)
 
-    staged = [
-        entry for entry in (project / "mutants").rglob("*") if ".run.lock" in entry.name
-    ]
+    staged = [entry for entry in (project / "mutants").rglob("*") if ".run.lock" in entry.name]
     assert staged == []
 
 
