@@ -954,6 +954,17 @@ def _hash_project_import_core(
     executable input when the project root (or that child) is on ``sys.path``;
     such bytes are project drift, not ambient interpreter drift.  Runtime
     trees such as ``.venv`` and ``.mutmut-cache`` remain excluded recursively.
+
+    Decided M-061/B: this walk deliberately passes NO gitignore boundary even
+    though the combined ambient walks prune ignored subtrees.  The executed
+    child removes only ``src``/``source`` roots from ``sys.path``
+    (``SOURCE_ROOT_NAMES``), so import roots such as a flat-layout project
+    root stay importable in place — dropping their ignored-but-readable bytes
+    from the terminal core would reclassify real project drift as ambient.
+    The asymmetry is fail-closed by design; a symmetric boundary (variant A)
+    was rejected, and an isolated source root that only the parent imports is
+    still bound whole, conservatively.  Pinned by
+    ``tests/unit/test_core_boundary_decision.py``.
     """
 
     complete = True
@@ -1250,7 +1261,15 @@ def _installed_distribution_basis(
     core_hasher: Any | None = None,
     core_seen: set[Path] | None = None,
 ) -> _DependencyBasis:
-    """Hash installed distribution bytes; mark any incomplete basis unsafe."""
+    """Hash installed distribution bytes; mark any incomplete basis unsafe.
+
+    With ``core_hasher`` the same pass also feeds the terminal project core:
+    project-contained distribution files and editable source trees are bound
+    WITHOUT a gitignore boundary (decided M-061/B) — an editable install
+    stays importable in place by the executed child, so its ignored bytes
+    remain core drift, while the combined ambient digest prunes them through
+    its boundaries.
+    """
 
     excluded = excluded or set()
     core_seen = core_seen if core_seen is not None else set()
@@ -1399,6 +1418,12 @@ def _installed_distribution_basis(
                 ignore_boundary=editable_boundary,
             ):
                 reuse_safe = False
+            # Decided M-061/B: the editable core walk deliberately passes no
+            # ignore boundary, unlike the combined walk above.  An editable
+            # install stays importable in place by the executed tests, so
+            # ignored-but-readable bytes inside it stay terminally bound as
+            # project (core) drift; only the combined ambient digest prunes
+            # them via ``editable_boundary``.
             if (
                 core_hasher is not None
                 and _project_core_relative_path(editable_path, project_root) is not None
