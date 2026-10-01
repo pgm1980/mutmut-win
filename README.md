@@ -206,6 +206,18 @@ are persisted, the score gate is skipped). `130` covers every Ctrl-C during
 exists yet (`--output json`), a JSON error object with `exit_code: 130` is
 emitted on stdout instead.
 
+**Degraded mutation surface:** when individual source files cannot be fully
+mutated (unparsable syntax, engine-safety skips), the run reports them in
+the `degraded_files` list and the JSON result. The run itself ends
+diagnostically successfully (exit 0 without `--min-score`), but the
+`--min-score` gate and CI/CD export are disabled because the mutation
+surface is incomplete: a score over a partially mutated universe cannot
+authorize a project-level quality claim. Verdicts of the unaffected files
+remain valid and reusable — the degradation is file-scoped, not a
+wholesale invalidation. Explicit user exclusions (`do_not_mutate_patterns`,
+`do_not_mutate`) are *not* degradations: they are deliberate surface
+reductions that never disable the gate.
+
 ### Execution-basis diagnostics
 
 Inputs that are transiently locked or unreadable (antivirus scanners, indexers,
@@ -548,8 +560,15 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
 
 Normal mutation runs never modify original sources; execution happens in the
 `mutants/` staging directory. The explicit `apply` command is the exception: it
-backs up and atomically replaces the selected source file. Add `mutants/`,
-`.mutmut-cache/` and `.mutmut-win-*.run.lock*` to `.gitignore`.
+uses an audited compare-and-swap protocol — the selected source file is
+displaced to a recovery sibling, the replacement is written to a private
+temporary sibling and validated (identity, bytes, parent), then promoted onto
+the target name. This two-rename sequence is *not* a single atomic visibility
+switch: a concurrent reader between the two renames observes a briefly absent
+original path. The displaced original is preserved under a deterministic
+recovery name (or the known backup path) and its location is reported on any
+failure. Add `mutants/`, `.mutmut-cache/` and `.mutmut-win-*.run.lock*` to
+`.gitignore`.
 
 **`.gitignore` limits of staging:** staging walks, staging copies, and the
 combined ambient fingerprint of the run basis respect hierarchical
