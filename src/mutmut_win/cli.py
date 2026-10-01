@@ -602,9 +602,7 @@ def _is_mutation_target(
     # ``mutate_roots`` (no positive filter computable) keeps the historical
     # tests_dir-only behaviour — the caller is responsible for providing it.
     if mutate_roots:
-        under_any_root = any(
-            parts == root or parts[: len(root)] == root for root in mutate_roots
-        )
+        under_any_root = any(parts == root or parts[: len(root)] == root for root in mutate_roots)
         if not under_any_root:
             return False
     # Component-prefix match (issue #128 / 360°-A4): the old
@@ -966,8 +964,7 @@ def run(
             mutate_roots = tuple(
                 parts
                 for parts in (
-                    _project_relative_parts(entry, project_root)
-                    for entry in config.paths_to_mutate
+                    _project_relative_parts(entry, project_root) for entry in config.paths_to_mutate
                 )
                 if parts is not None
             )
