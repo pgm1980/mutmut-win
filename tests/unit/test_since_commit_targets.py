@@ -33,7 +33,7 @@ import contextlib
 import io
 import json
 import subprocess
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -796,7 +796,9 @@ class TestTestsDirCanonicalization:
         result = _invoke_since_commit_run(captured, "--tests-dir", f"{drive}tests")
 
         assert result.exit_code == 0, result.output
-        assert captured["paths"] == ["src/mod.py", "tests/test_mod.py"]
+        # M-023: tests/test_mod.py is no longer an incremental target —
+        # the positive filter intersects with paths_to_mutate=["src/"].
+        assert captured["paths"] == ["src/mod.py"]
 
     def test_project_root_entry_excludes_everything(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_cmds: GitRecorder
@@ -945,3 +947,193 @@ def test_every_dash_prefixed_value_is_a_usage_error_without_a_git_call(value: st
 
     assert excinfo.value.code == 2
     assert recorder.calls == []
+
+
+class TestIncrementalTargetIntersection:
+    """M-023: incremental targets are the intersection with paths_to_mutate."""
+
+    def _make_intersection_project(self, tmp_path: Path) -> Path:
+        project = tmp_path / "proj"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "scripts").mkdir(parents=True)
+        (project / "scripts" / "tool.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "setup.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "tests").mkdir(parents=True)
+        (project / "tests" / "test_mod.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        return project
+
+    def test_files_outside_paths_to_mutate_are_not_targets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+    ) -> None:
+        """scripts/ and setup.py are never incremental targets (M-023)."""
+        project = self._make_intersection_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0scripts/tool.py\0setup.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert captured["paths"] == ["src/mod.py"]
+
+    def test_paths_to_mutate_cli_intersects_instead_of_replacing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+    ) -> None:
+        """--paths-to-mutate + --since-commit is an intersection, not a replacement."""
+        from unittest.mock import patch
+
+        project = self._make_intersection_project(tmp_path)
+        (project / "src" / "other.py").write_text("y = 2\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0src/other.py\0scripts/tool.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+
+        def _capture_orchestrator(config: Any, *_a: object, **_k: object) -> Any:
+            captured["paths"] = list(config.paths_to_mutate)
+
+            class _R:
+                total_mutants = 0
+                killed = 0
+                survived = 0
+                timeout = 0
+                suspicious = 0
+                skipped = 0
+                no_tests = 0
+                caught_by_type_check = 0
+                unchecked = 0
+                killed_by_infinite_loop = 0
+                duration_seconds = 0.0
+                was_interrupted = False
+                run_aborted = False
+                degraded_files: ClassVar[list[str]] = []
+
+                def compute_score(self, *_args: object, **_kwargs: object) -> float:
+                    return 0.0
+
+            class _Orch:
+                def __init__(self) -> None:
+                    pass
+
+                def run(self) -> _R:
+                    return _R()
+
+                def dry_run(self) -> _R:
+                    return _R()
+
+            return _Orch()
+
+        with (
+            patch("mutmut_win.cli.MutationOrchestrator", side_effect=_capture_orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+        ):
+            from mutmut_win.cli import cli as cli_entry
+
+            result = CliRunner().invoke(
+                cli_entry,
+                [
+                    "run",
+                    "--since-commit",
+                    "HEAD~1",
+                    "--paths-to-mutate",
+                    "src/mod.py",
+                    "--dry-run",
+                ],
+            )
+        # --dry-run avoids the explicit-selection exit-2 guard; the
+        # captured config proves that the override narrowed to the
+        # intersection rather than replacing it.
+        assert result.exit_code == 0, result.output
+        # Only src/mod.py is both changed AND under the --paths-to-mutate
+        # intersection; src/other.py is changed but outside the CLI root,
+        # scripts/tool.py is outside both.
+        assert captured.get("paths") == ["src/mod.py"]
+
+    def test_multiple_source_roots_all_intersect(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+    ) -> None:
+        """Multiple configured source roots each contribute their changed files."""
+        project = self._make_intersection_project(tmp_path)
+        (project / "lib").mkdir(parents=True)
+        (project / "lib" / "helper.py").write_text("z = 3\n", encoding="utf-8")
+        # Reconfigure with two roots
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["src/", "lib/"]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0lib/helper.py\0scripts/tool.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert sorted(captured["paths"]) == ["lib/helper.py", "src/mod.py"]
+
+    def test_dot_root_entry_permits_everything(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+    ) -> None:
+        """paths_to_mutate = ['.'] makes the positive filter a no-op (the
+        empty tuple from _project_relative_parts matches every prefix)."""
+        project = self._make_intersection_project(tmp_path)
+        (project / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate = ["."]\ntests_dir = ["tests/"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0scripts/tool.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        assert sorted(captured["paths"]) == ["scripts/tool.py", "src/mod.py"]
+
+    def test_incremental_set_is_subset_of_full_run_walk(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        git_cmds: GitRecorder,
+    ) -> None:
+        """Abnahme: the incremental target set is a subset of the actual
+        full-run walk selection (not just manual path expectations)."""
+        from mutmut_win.config import MutmutConfig
+        from mutmut_win.file_setup import walk_source_files
+
+        project = self._make_intersection_project(tmp_path)
+        monkeypatch.chdir(project)
+        git_cmds.relative_stdout = b"src/mod.py\0scripts/tool.py\0"
+        git_cmds.root_relative_stdout = git_cmds.relative_stdout
+
+        captured: dict[str, Any] = {}
+        result = _invoke_since_commit_run(captured)
+
+        assert result.exit_code == 0, result.output
+        config = MutmutConfig(paths_to_mutate=["src/"])
+        full_run_files = {str(p).replace("\\", "/") for p in walk_source_files(config)}
+        for target in captured["paths"]:
+            assert target in full_run_files, (
+                f"incremental target {target} is not in the full-run walk set"
+            )

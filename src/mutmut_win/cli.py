@@ -578,8 +578,15 @@ def _is_mutation_target(
     name: str,
     tests_dir_parts: tuple[tuple[str, ...], ...],
     project_root: Path,
+    mutate_roots: tuple[tuple[str, ...], ...] = (),
 ) -> bool:
-    """Whether a changed file name is an incremental mutation target."""
+    """Whether a changed file name is an incremental mutation target.
+
+    The target set is the intersection of changed files with the configured
+    mutation roots (``paths_to_mutate``) minus the test exclusion trees —
+    the incremental universe can never exceed the full-run walk set
+    (M-023, P-08 decision A).
+    """
 
     # Deleted files and test files used to become mutation targets.
     if not name.casefold().endswith(".py") or not Path(name).exists():
@@ -589,6 +596,17 @@ def _is_mutation_target(
         # The name is anchored outside the project or not comparable: an
         # exclusion filter must fail closed — never a mutation target.
         return False
+    # Positive filter (M-023): a changed file is a target only when it lies
+    # under a configured mutation root.  A file-level entry matches exactly;
+    # a directory entry matches as a component prefix.  An empty
+    # ``mutate_roots`` (no positive filter computable) keeps the historical
+    # tests_dir-only behaviour — the caller is responsible for providing it.
+    if mutate_roots:
+        under_any_root = any(
+            parts == root or parts[: len(root)] == root for root in mutate_roots
+        )
+        if not under_any_root:
+            return False
     # Component-prefix match (issue #128 / 360°-A4): the old
     # parts[0] comparison against the FULL tests_dir string never
     # matched nested dirs like "tests/unit/" — changed TEST files
@@ -941,10 +959,27 @@ def run(
                 )
                 if parts is not None
             )
+            # M-023: the incremental target set is the intersection with
+            # the configured mutation roots — a changed file outside
+            # paths_to_mutate is never an incremental target, exactly as
+            # the full-run walk would never enumerate it.
+            mutate_roots = tuple(
+                parts
+                for parts in (
+                    _project_relative_parts(entry, project_root)
+                    for entry in config.paths_to_mutate
+                )
+                if parts is not None
+            )
             changed_py = [
                 name
                 for name in changed_names
-                if _is_mutation_target(name, tests_dir_parts, project_root)
+                if _is_mutation_target(
+                    name,
+                    tests_dir_parts,
+                    project_root,
+                    mutate_roots=mutate_roots,
+                )
             ]
             if not changed_py:
                 message = "No mutation-target .py files changed since the given commit."
