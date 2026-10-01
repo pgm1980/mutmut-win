@@ -490,6 +490,14 @@ def _probe_regular_file_bytes(
     ``UNVERIFIABLE``, the best available observation error (re-raised by
     the verify-only mode once the retry budget is exhausted).
 
+    Every OBSERVATION failure joins the ``UNVERIFIABLE`` class with its
+    real cause — the open, the path/handle ``lstat`` views, the
+    handle-metadata views (``os.fstat`` before and after the read) and the
+    payload read itself (AR-08 / COR-006: a winerror-33 read used to
+    escape the function and skip the retry ladder).  Structural safety
+    verdicts (form/link checks) stay ``MISMATCH`` and a proven parent
+    change still raises.
+
     Form is judged on the PATH view before identity: Windows lacks a
     functional ``O_NOFOLLOW`` for ``os.open``, so a symlink leaf opens its
     referent and only the directory entry proves the shape.  Handle-view
@@ -510,7 +518,13 @@ def _probe_regular_file_bytes(
         return _ProbeResult.UNVERIFIABLE, exc
 
     try:
-        before = os.fstat(fd)
+        try:
+            before = os.fstat(fd)
+        except OSError as exc:
+            # Handle-metadata observation failure (AR-08 / COR-006): the
+            # probe can neither prove nor disprove a match — retry through
+            # the ladder with the real cause.
+            return _ProbeResult.UNVERIFIABLE, exc
         try:
             leaf_before = path.lstat()
         except FileNotFoundError:
@@ -540,11 +554,19 @@ def _probe_regular_file_bytes(
 
         received = bytearray()
         while len(received) <= len(payload):
-            chunk = os.read(fd, min(64 * 1024, len(payload) + 1 - len(received)))
+            try:
+                chunk = os.read(fd, min(64 * 1024, len(payload) + 1 - len(received)))
+            except OSError as exc:
+                # A read observation failure (e.g. winerror 33) is not a
+                # content verdict: re-probe with the real cause (AR-08).
+                return _ProbeResult.UNVERIFIABLE, exc
             if not chunk:
                 break
             received.extend(chunk)
-        after = os.fstat(fd)
+        try:
+            after = os.fstat(fd)
+        except OSError as exc:
+            return _ProbeResult.UNVERIFIABLE, exc
         try:
             leaf_after = path.lstat()
         except OSError as exc:

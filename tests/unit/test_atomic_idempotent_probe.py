@@ -483,3 +483,177 @@ def test_up_to_probe_ladder_transient_open_failures_are_absorbed(failures: int) 
 
         after = target.stat()
         assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
+# ---------------------------------------------------------------------------
+# AR-08 / COR-006: read and fstat OBSERVATION errors join the retry ladder.
+# Open/lstat failures were already UNVERIFIABLE; the handle-metadata reads
+# (os.fstat before/after) and the payload read (os.read) escaped the probe
+# directly, so a byte-identical frozen leaf lost its no-republish protection.
+# ---------------------------------------------------------------------------
+
+
+def _flaky_os_read(failures: int | None) -> Callable[..., bytes]:
+    """Build an ``os.read`` replacement failing *failures* times (None: all)."""
+    real_read = os.read
+    state = {"count": 0}
+
+    def flaky_read(fd: int, count: int) -> bytes:
+        if failures is None or state["count"] < failures:
+            state["count"] += 1
+            exc = OSError("simulated transient read fault")
+            exc.winerror = 33
+            raise exc
+        return real_read(fd, count)
+
+    return flaky_read
+
+
+def _flaky_os_fstat(call_index: int) -> Callable[..., os.stat_result]:
+    """Build an ``os.fstat`` replacement failing exactly call *call_index*."""
+    real_fstat = os.fstat
+    state = {"calls": 0}
+
+    def flaky_fstat(fd: int) -> os.stat_result:
+        state["calls"] += 1
+        if state["calls"] == call_index:
+            raise OSError(5, "simulated transient handle metadata fault")
+        return real_fstat(fd)
+
+    return flaky_fstat
+
+
+def test_transient_read_failure_does_not_republish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "mutants" / "_mutmut_phase_guard.py"
+    payload = b"# frozen staging sentinel\n"
+    _publish_sentinel(target, payload)
+    before = target.stat()
+
+    monkeypatch.setattr(os, "read", _flaky_os_read(failures=1))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    ensure_atomic_bytes(target, payload)
+    monkeypatch.undo()
+
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    assert after.st_mtime_ns == before.st_mtime_ns
+
+
+def test_transient_before_fstat_failure_does_not_republish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "mutants" / "_mutmut_phase_guard.py"
+    payload = b"# frozen staging sentinel\n"
+    _publish_sentinel(target, payload)
+    before = target.stat()
+
+    # The first fstat in the flow is the probe's handle view before reading.
+    monkeypatch.setattr(os, "fstat", _flaky_os_fstat(call_index=1))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    ensure_atomic_bytes(target, payload)
+    monkeypatch.undo()
+
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
+def test_transient_after_fstat_failure_does_not_republish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "mutants" / "_mutmut_phase_guard.py"
+    payload = b"# frozen staging sentinel\n"
+    _publish_sentinel(target, payload)
+    before = target.stat()
+
+    # before-view fstat succeeds, after-read fstat fails once.
+    monkeypatch.setattr(os, "fstat", _flaky_os_fstat(call_index=2))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    ensure_atomic_bytes(target, payload)
+    monkeypatch.undo()
+
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
+def test_persistent_read_failure_exhausts_probe_ladder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permanent read faults exhaust the ladder, then fail closed strictly."""
+    target = tmp_path / "mutants" / "_mutmut_phase_guard.py"
+    payload = b"# frozen staging sentinel\n"
+    _publish_sentinel(target, payload)
+    before = target.stat()
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(os, "read", _flaky_os_read(failures=None))
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    from mutmut_win.atomic_file import _regular_file_matches_bytes
+
+    assert _regular_file_matches_bytes(target, payload) is False
+    assert sleeps == list(_IDEMPOTENT_PROBE_RETRY_DELAYS)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(os, "read", _flaky_os_read(failures=None))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    # Strict (verify-only) mode keeps the REAL observation error.
+    with pytest.raises(OSError, match="simulated transient read fault"):
+        ensure_atomic_bytes(target, payload, replace_unverifiable=False)
+    monkeypatch.undo()
+
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
+def test_probe_read_failures_release_all_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every probe descriptor is closed exactly once despite read faults."""
+    target = tmp_path / "mutants" / "_mutmut_phase_guard.py"
+    payload = b"# frozen staging sentinel\n"
+    _publish_sentinel(target, payload)
+
+    real_open = os.open
+    real_close = os.close
+    open_fds: set[int] = set()
+    opens = 0
+    closes = 0
+
+    def tracking_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal opens
+        fd = real_open(path, flags, *args, **kwargs)
+        opens += 1
+        if Path(path) == target and not flags & os.O_CREAT:
+            open_fds.add(fd)
+        return fd
+
+    def tracking_close(fd: int) -> None:
+        nonlocal closes
+        closes += 1
+        real_close(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "close", tracking_close)
+    monkeypatch.setattr(os, "read", _flaky_os_read(failures=None))
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(OSError, match="simulated transient read fault"):
+        ensure_atomic_bytes(target, payload, replace_unverifiable=False)
+    monkeypatch.undo()
+
+    # Every descriptor opened during the exhausted probe was released again
+    # (fd numbers are recycled under Windows, so the balance is counted
+    # globally; the flow opens nothing but the probe's read handles).
+    assert open_fds, "the probe must have opened the target for reading"
+    assert opens == closes, f"descriptor leak: {opens} opens vs {closes} closes"
