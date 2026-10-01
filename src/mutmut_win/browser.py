@@ -6,10 +6,11 @@ Ported from mutmut 3.5.0 ResultBrowser, adapted to use mutmut_win's DB layer.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from threading import Thread
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -53,6 +54,18 @@ _KILL_STATUSES: frozenset[str] = frozenset(
 _STATUS_COLUMNS: list[tuple[str, Any]] = [("path", "Path")] + [
     (status, Text(emoji, justify="right")) for status, emoji in _EMOJI_BY_STATUS.items()
 ]
+
+#: Maximum command-line length accepted for a package ``__init__`` retest.
+#: ``CreateProcessW`` caps ``lpCommandLine`` at 32,767 UTF-16 code units
+#: *including* the terminating NUL, and the explicit mutant-name list of a
+#: large ``__init__`` file travels on exactly that one command line:
+#: :func:`subprocess.list2cmdline` reproduces the quoting that
+#: ``AtomicJobPopen`` (M-057) then hands to ``CreateProcessW``.  The
+#: ~750-character reserve below the hard kernel limit keeps
+#: environment-specific ``sys.executable`` paths and future launcher
+#: changes safely inside it; an oversized retest is refused rather than
+#: started only to die at process creation (M-058).
+_RETEST_COMMAND_LINE_LIMIT: Final[int] = 32_000
 
 
 def _describe_mutant(
@@ -627,11 +640,94 @@ class ResultBrowser(App[None]):
             self._run_subprocess_command("run", [pattern])
 
     def action_retest_module(self) -> None:
-        """Retest all mutants in the selected mutant's module."""
+        """Retest all mutants in the selected mutant's module — exactly that module.
+
+        The module boundary comes from the loaded metadata mapping
+        (``_path_by_name``), never from a guess off the mutant name: for a
+        mutant from a package ``__init__.py`` the name's dotted prefix
+        names the PACKAGE (``get_mutant_name`` deliberately drops
+        ``__init__``), so the historical ``<prefix>.*`` glob selected every
+        mutant of every submodule — fnmatch ``*`` crosses dots, which in a
+        one-package ``src/`` layout effectively retested the whole project
+        (M-058 / BC-065).
+
+        Fail-closed (decided M-058 = A): a name without a metadata mapping
+        (DB-only, unmapped, or stale) is refused with a warning instead of
+        guessed at — without the mapping it is undecidable whether the
+        name comes from a package ``__init__``.  No metadata is healed on
+        read (M-026).
+
+        Package ``__init__`` files pass the exact, sorted mutant-name list
+        of that one file — deliberately including names outside the
+        current run plan (snapshot mode: a whole-module retest wants every
+        mutant of the file, and the browser's mapping may only cover the
+        plan).  The price: mutants generated after the browser loaded its
+        data are not covered until the metadata is rebuilt.  Normal
+        modules keep the short ``<module>.*`` glob, which also catches
+        newly generated mutants.
+
+        The explicit list must fit on a single Windows command line (see
+        ``_RETEST_COMMAND_LINE_LIMIT``); an empty list would make ``run``
+        fall back to a FULL run, so it is refused as well.
+        """
         mutant_name = self._get_selected_mutant_name()
-        if mutant_name:
-            pattern = mutant_name.rpartition(".")[0] + ".*"
-            self._run_subprocess_command("run", [pattern])
+        if not mutant_name:
+            return
+
+        file_path = self._path_by_name.get(mutant_name)
+        if file_path is None or file_path not in self._source_data:
+            self.notify(
+                f"Retest module refused for {mutant_name}: no metadata maps this "
+                "mutant name to a source file (unmapped or stale name), so the "
+                "module boundary cannot be established. Retest the single mutant "
+                "or re-run generation to rebuild the mapping.",
+                title="Retest module",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if Path(file_path).name.casefold() == "__init__.py":
+            sfd, _counts = self._source_data[file_path]
+            names = sorted(sfd.exit_code_by_key)
+            if not names:
+                # `run` without name arguments means ALL mutants — an empty
+                # list must never degrade into a full project retest.
+                self.notify(
+                    f"Retest module refused for {file_path}: the metadata lists "
+                    "no mutants for this file; refusing instead of starting a "
+                    "full run.",
+                    title="Retest module",
+                    severity="warning",
+                    markup=False,
+                )
+                return
+            command_line = subprocess.list2cmdline(
+                [sys.executable, "-m", "mutmut_win", "run", *names]
+            )
+            if len(command_line) > _RETEST_COMMAND_LINE_LIMIT:
+                self.notify(
+                    f"Retest module refused for {file_path}: the explicit list of "
+                    f"{len(names)} mutant names needs {len(command_line)} command-line "
+                    f"characters, beyond the Windows limit of "
+                    f"{_RETEST_COMMAND_LINE_LIMIT}. Start it manually with a subset: "
+                    "mutmut-win run <mutant names>",
+                    title="Retest module",
+                    severity="warning",
+                    markup=False,
+                )
+                return
+            self.notify(
+                f"Retesting package __init__ {file_path}: {len(names)} mutants "
+                "of this file only (no submodules)",
+                markup=False,
+            )
+            self._run_subprocess_command("run", names)
+            return
+
+        pattern = mutant_name.rpartition(".")[0] + ".*"
+        self.notify(f"Retesting module {file_path} ({pattern})", markup=False)
+        self._run_subprocess_command("run", [pattern])
 
     def action_apply_mutant(self) -> None:
         """Apply the currently selected mutant to the source file on disk."""

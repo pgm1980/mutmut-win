@@ -23,6 +23,7 @@ Step 2 — narrowed argument subtree skip:
 from __future__ import annotations
 
 import libcst as cst
+
 from mutmut_win.mutation import create_mutations
 
 #: callee spellings the probe accepts (each case source has exactly one call)

@@ -162,6 +162,20 @@ terminates the whole child process tree. When no Job Object can be
 established the action is refused outright — there is no uncontained
 fallback.
 
+The browser's `m` (retest module) action derives the module boundary from
+the loaded metadata mapping, not from the mutant name: for a mutant from
+a package `__init__.py` the name is qualified by the *package*
+(`__init__` is dropped from mutant names), so a name-derived glob would
+retest every submodule of the package — in a one-package `src/` layout
+effectively the whole project. `m` therefore retests package-`__init__`
+modules via the exact, sorted mutant-name list of that one file (names
+outside the current run plan included), and keeps the short `module.*`
+glob for ordinary modules. Without a metadata mapping for the selected
+mutant (DB-only, unmapped, or stale names) the action is refused with a
+warning instead of guessing a scope — and an `__init__` name list that
+would exceed the Windows command-line length limit is refused with a
+pointer to a manual `mutmut-win run <mutant names>` subset.
+
 `run` persists a new run attempt before staging or generation starts and
 finalizes its exact mutant plan only after successful generation. `results`,
 `browse`, and `export-cicd-stats` use that current run snapshot as their
