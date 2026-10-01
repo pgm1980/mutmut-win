@@ -42,6 +42,15 @@ NEVER_MUTATE_FUNCTION_NAMES = {
     "__class_getitem__",
 }
 NEVER_MUTATE_FUNCTION_CALLS = {"len", "isinstance"}
+#: Qualified names of builtin calls whose CALL node and function expression
+#: are never mutated (M-042 / BC-085).  Resolved via ``QualifiedNameProvider``
+#: (source BUILTIN or IMPORT) — never by spelling: a local shadow
+#: ``def len(x): ...`` is an ordinary user function and mutates normally,
+#: while the qualified ``builtins.len(...)`` attribute call IS protected.
+#: ``NEVER_MUTATE_FUNCTION_CALLS`` above is kept as the legacy spelling view
+#: of this set (public module-level name; binding resolution replaced its use
+#: in the visitor).
+NEVER_MUTATE_QUALIFIED_CALLS = frozenset({"builtins.len", "builtins.isinstance"})
 
 
 def _is_static_only(function: cst.FunctionDef) -> bool:
@@ -276,6 +285,18 @@ class MutationVisitor(cst.CSTVisitor):
         if isinstance(node, cst.Call) and self._is_typing_cast_call(node) and node.args:
             node.args[0].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
 
+        # A genuine len()/isinstance() builtin call (M-042 / BC-085): the call
+        # node itself and the function expression are never mutated — on_visit
+        # returns before _create_mutations for the call, and the callee subtree
+        # plus (for isinstance under an unambiguous positional binding) the
+        # type argument are collected into _skip_subtree_ids.  The ARGUMENT
+        # LOGIC stays ordinary mutable code and is visited below.  With any
+        # star argument the positional binding is unclear, so all argument
+        # subtrees keep the conservative pre-M-042 whole-argument skip.
+        if isinstance(node, cst.Call) and self._is_never_mutate_builtin_call(node):
+            self._protect_never_mutate_builtin_call(node)
+            return True
+
         # Pattern-local syntax gate (M-048): record for every node inside a
         # case PATTERN which pattern it belongs to, so _create_mutations can
         # probe candidates against the pattern sub-grammar. Guards are plain
@@ -407,6 +428,62 @@ class MutationVisitor(cst.CSTVisitor):
             for qualified_name in qualified_names
         )
 
+    def _is_never_mutate_builtin_call(self, node: cst.Call) -> bool:
+        """True only when the callee genuinely binds to a protected builtin.
+
+        A spelling-only ``len(...)``/``isinstance(...)`` comparison both
+        over- and under-protects (M-042 / BC-085): a locally shadowed name
+        (``def len(x): ...``, a parameter named ``len``) is an ordinary user
+        function yet was silenced wholesale, while the qualified attribute
+        call ``builtins.len(...)`` and genuine import aliases
+        (``from builtins import len as L``) were not protected at all.
+        QualifiedNameProvider resolves the callee's actual binding: only the
+        real builtin (``QualifiedNameSource.BUILTIN``) or a genuine
+        ``from builtins import ...`` (``QualifiedNameSource.IMPORT``) counts.
+        """
+        return bool(self._resolved_never_mutate_names(node))
+
+    def _resolved_never_mutate_names(self, node: cst.Call) -> set[str]:
+        """Resolve which protected builtins the callee of *node* binds to.
+
+        Args:
+            node: The call whose callee expression is resolved.
+
+        Returns:
+            The subset of ``NEVER_MUTATE_QUALIFIED_CALLS`` that the callee
+            genuinely binds to (empty for shadowed/local definitions).
+        """
+        return {
+            qualified_name.name
+            for qualified_name in self.get_metadata(QualifiedNameProvider, node.func, set())
+            if qualified_name.name in NEVER_MUTATE_QUALIFIED_CALLS
+            and qualified_name.source in (QualifiedNameSource.BUILTIN, QualifiedNameSource.IMPORT)
+        }
+
+    def _protect_never_mutate_builtin_call(self, node: cst.Call) -> None:
+        """Record the no-mutate subtrees of a genuine protected builtin call.
+
+        The call node itself receives no mutations because ``on_visit``
+        returns before ``_create_mutations`` for it.  The callee expression
+        subtree is protected verbatim.  For ``isinstance`` the type expression
+        is protected only under an unambiguous positional binding: at least
+        two arguments, the second positional (``keyword is None``) and not a
+        star target.  With ANY star argument (``isinstance(*pair)``,
+        ``len(*parts)``) positional binding is unclear, so every argument
+        subtree keeps the conservative whole-argument skip.
+        """
+        node.func.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+        if any(arg.star != "" for arg in node.args):
+            for arg in node.args:
+                arg.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+            return
+        if (
+            "builtins.isinstance" in self._resolved_never_mutate_names(node)
+            and len(node.args) >= 2
+            and node.args[1].keyword is None
+        ):
+            node.args[1].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+
     def _should_mutate_node(self, node: cst.CSTNode) -> bool:
         # currently, the position metadata does not always exist
         # (see https://github.com/Instagram/LibCST/issues/1322)
@@ -423,15 +500,18 @@ class MutationVisitor(cst.CSTVisitor):
         return True
 
     def _skip_node_and_children(self, node: cst.CSTNode) -> bool:
-        is_never_mutate_call = (
-            isinstance(node, cst.Call)
-            and isinstance(node.func, cst.Name)
-            and node.func.value in NEVER_MUTATE_FUNCTION_CALLS
-        )
+        # NOTE (M-042 / BC-085): len()/isinstance() calls are NO LONGER
+        # skipped here.  Spelling-only recognition silenced locally shadowed
+        # user functions, missed the qualified ``builtins.len(...)`` call and
+        # discarded the entire argument subtree.  Genuine builtin calls are
+        # now resolved in on_visit via _is_never_mutate_builtin_call, which
+        # protects only the call node, the callee expression and (for
+        # isinstance) the unambiguous positional type argument — the argument
+        # logic itself stays mutable.
         is_never_mutate_func = (
             isinstance(node, cst.FunctionDef) and node.name.value in NEVER_MUTATE_FUNCTION_NAMES
         )
-        if is_never_mutate_call or is_never_mutate_func:
+        if is_never_mutate_func:
             return True
 
         # Python has no ``async yield from``.  A hand-written async-generator
