@@ -891,7 +891,7 @@ requires-dist = [
     { name = "libcst", specifier = ">=1.8.5" },
     { name = "msgpack", marker = "extra == 'dev'", specifier = ">=1.2.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
-    { name = "pathspec", specifier = ">=1.1.1,<2" },
+    { name = "pathspec", specifier = ">=1.1.1,<1.2" },
     { name = "pip", marker = "extra == 'dev'", specifier = ">=26.2" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
     { name = "psutil", specifier = ">=5.9" },
