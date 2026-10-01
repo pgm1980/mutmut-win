@@ -702,6 +702,11 @@ def combine_mutations_to_source(
     :return: Mutated code and list of mutation names"""
     source_names = _source_name_values(module)
     trampoline_name = _fresh_module_name("_mutmut_trampoline", source_names)
+    # M-041: the compiler NFKC-normalizes every identifier before binding it,
+    # so the trampoline-namespace collision check must compare normalized
+    # forms.  Precompute the normalized view once per module rather than once
+    # per function.
+    nfkc_source_names = {unicodedata.normalize("NFKC", name) for name in source_names}
 
     # copy start of the module (in particular __future__ imports)
     result: list[MODULE_STATEMENT] = get_statements_until_func_or_class(module.body)
@@ -744,6 +749,7 @@ def combine_mutations_to_source(
                     class_name=None,
                     trampoline_name=trampoline_name,
                     source_names=source_names,
+                    nfkc_source_names=nfkc_source_names,
                     definition_ordinal=definition_ordinal,
                 )
             except ValueError as exc:
@@ -789,6 +795,7 @@ def combine_mutations_to_source(
                             class_name=cls.name.value,
                             trampoline_name=trampoline_name,
                             source_names=source_names,
+                            nfkc_source_names=nfkc_source_names,
                             definition_ordinal=definition_ordinal,
                         )
                     except ValueError as exc:
@@ -821,6 +828,7 @@ def function_trampoline_arrangement(
     *,
     trampoline_name: str = "_mutmut_trampoline",
     source_names: set[str] | None = None,
+    nfkc_source_names: set[str] | None = None,
     definition_ordinal: int = 1,
 ) -> tuple[Sequence[MODULE_STATEMENT], Sequence[MODULE_STATEMENT], Sequence[str]]:
     """Create mutated functions and a trampoline that switches between versions.
@@ -833,6 +841,14 @@ def function_trampoline_arrangement(
     creation-time bindings (:func:`_class_creation_bindings`, M-039): a
     ``global`` statement plus module-global assignments that make the
     wrapper's names resolvable while the class itself is still being built.
+
+    The trampoline-namespace collision check compares NFKC-normalized
+    identifiers (M-041): CPython's tokenizer binds the NFKC form of every
+    identifier, so a source identifier written with the fullwidth variant
+    U+FF2B instead of ``K`` collides with the private namespace of a
+    function ``K`` although the raw strings do not share a prefix.  Pass
+    *nfkc_source_names* to reuse a per-module precomputed normalized view;
+    when omitted it is derived from *source_names*.
 
     :return: A tuple of (nodes for the original scope, module-level lookup
         nodes, mutant names)"""
@@ -858,13 +874,18 @@ def function_trampoline_arrangement(
         )
         + "__mutmut"
     )
+    if nfkc_source_names is None and source_names is not None:
+        nfkc_source_names = {
+            unicodedata.normalize("NFKC", source_name) for source_name in source_names
+        }
+    normalized_mangled_prefix = unicodedata.normalize("NFKC", mangled_name) + "_"
     collisions = (
         sorted(
             source_name
-            for source_name in source_names
-            if source_name.startswith(f"{mangled_name}_")
+            for source_name in nfkc_source_names
+            if source_name.startswith(normalized_mangled_prefix)
         )
-        if source_names is not None
+        if nfkc_source_names is not None
         else []
     )
     if collisions:
