@@ -1,36 +1,42 @@
 ---
-current_sprint: "42"
-sprint_goal: "v2.21.4: released"
-branch: "main"
-started_at: "2026-09-18"
-phase: "released"
-candidate_commit: "4319744ccb51b55d900aa24c49c6b2fd864911e2"
-candidate_tree: "aa9bdf1135cf622e67da42f740b50713d1a44b94"
-integrated_commit: "4d7f950679e3f78d906b3b068e01a0ee5dcb5a4b"
-integrated_tree: "aa9bdf1135cf622e67da42f740b50713d1a44b94"
-release_tag: "v2.21.4"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "45"
+sprint_goal: "v2.21.5: in progress"
+branch: "fix/v2.21.5-remediation-r2"
+started_at: "2026-09-28"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State - Gitignore-Respekt, Startup-Observability, Run-Robustheit
+# Sprint State - Sanierung v2.21.4 (Review-Roadmap R0-R4)
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v2.21.4 -->
-<!-- RELEASE_BRANCH: `main` -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v2.21.5 -->
+<!-- RELEASE_BRANCH: `fix/v2.21.5-remediation-r2` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 
 <!-- ARCHIVE_START -->
+
+## Archiv: Sprint 42 — v2.21.4
+
+Vorangegangener Release-Sprint: Kandidat `4319744` (Tree `aa9bdf11`), integriert
+als `4d7f950` mit identischem Tree, annotierter Tag `v2.21.4`. Dokumentiert in
+`_docs/sprint backlogs/sprint_42_backlog.md`.
 
 ## Archiv: Sprint 39 — v2.21.1
 
@@ -39,8 +45,8 @@ Der vorherige abgeschlossene Sprint ist in
 `bug_reporting/ANALYSE_MUTMUTWIN221.md` und
 `bug_reporting/BUGFIXUNG_ROADMAP.md` dokumentiert. Sein Kandidat
 `e48fda5e7cf0f633f4180b72e891db502605fa30` wurde als
-`e91d338f9457b9d6526463fb0f835fab5d82736e` mit identischem Tree
-`b5fce8e29500b33a677094aaa17b3674f1e86bd1` integriert. Das bestehende
+`e91d338f945b9d6526463fb0f835fab2d0b82736e` mit identischem Tree
+`b5fce8e29500b337677094aaa17b3674f1e86bd1` integriert. Das bestehende
 annotierte Tag `v2.21.1` bleibt unverändert. Die offenen Flags dieses neuen
 Sprints sind keine Rücknahme dieser historischen Befunde oder Gates.
 
@@ -95,7 +101,7 @@ als by-design dokumentieren.
 - `_BrokenPool.map` ist LAZY (Generator, raise bei Iteration) wie echtes
   `ProcessPoolExecutor.map` -> pinnt das `list(...)` im try als load-bearing
   (Mutant 85: list()-drop laesst die Exception sonst aus dem try entkommen).
-- exakte Diagnose-Message-Assertion (`str(exc) == _EXPECTED_MSG`) statt blossem
+- exakte Diagnose-Message-Assertion (`str(exc) == _EXPECTED_MSG`) statt blosem
   `match=`-Substring -> killt jede msg-Segment-Mutation + msg=None + raise->pass.
 
 ### Reusable lesson (neu)

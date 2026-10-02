@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import copy
 import hashlib
 import importlib.machinery
 import itertools
@@ -25,15 +26,17 @@ import stat
 import sys
 import time
 import tokenize
+import tomllib
 import warnings
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Literal
 
 import libcst as cst
 
-from mutmut_win.atomic_file import atomic_copy_file, atomic_write_bytes
+from mutmut_win.atomic_file import AtomicPathLengthError, atomic_copy_file, atomic_write_bytes
 from mutmut_win.constants import (
+    GENERATION_EXCLUDED_SELF_MODULES,
     SOURCE_ROOT_NAMES,
     WORKSPACE_EXCLUDED_DIR_NAMES,
     WORKSPACE_RECURSIVE_EXCLUDED_DIR_NAMES,
@@ -41,6 +44,7 @@ from mutmut_win.constants import (
     configured_staging_relative_path,
 )
 from mutmut_win.exceptions import (
+    MutationSurfaceDegradedWarning,
     StagingNamespaceCollisionError,
     StaleStagingError,
     UnsafeStagingError,
@@ -136,6 +140,195 @@ def _walk_boundary_map(
 ) -> dict[Path, GitignoreBoundary | None]:
     """Seed the per-directory boundary map for one os.walk invocation."""
     return {walk_root: boundary}
+
+
+def _forced_mutation_roots(
+    config: MutmutConfig,
+    project_boundary: GitignoreBoundary,
+    project_root: Path,
+) -> list[tuple[Path, GitignoreBoundary | None]]:
+    """Return mutation roots the regular mirror walk would prune (M-032).
+
+    ``paths_to_mutate`` entries are force-included by the mutation search
+    (``git add -f`` semantics via :func:`_configured_entry_boundary`), while
+    the automatic mirror resolves the project tree with normal ``descend()``
+    rules and prunes ignored subtrees — so explicitly configured, git-ignored
+    mutation roots were mutated but never staged.  This helper derives exactly
+    those roots the normal walk would prune, together with the forced boundary
+    governing their contents, so preflight and copy phase walk the same
+    surface as the mutation search (Q-14).
+
+    Args:
+        config: Active ``MutmutConfig`` instance.
+        project_boundary: Boundary loaded at *project_root*.
+        project_root: Resolved project root.
+
+    Returns:
+        Sorted ``(root, boundary)`` pairs; *root* is the canonical
+        project-relative walk path of one forced entry.
+    """
+    forced: list[tuple[tuple[str, ...], Path, GitignoreBoundary | None]] = []
+    for raw in config.paths_to_mutate:
+        entry = Path(raw)
+        try:
+            relative = entry.resolve(strict=False).relative_to(project_root)
+        except (OSError, ValueError):  # fmt: skip
+            continue
+        if str(relative) in {".", ""} or not entry.exists():
+            continue
+        parts = relative.parts
+        if _is_staging_skip_dir(parts[-1], at_workspace_root=len(parts) == 1):
+            # Only gitignore-based pruning is forced here (M-032 scope); a
+            # root the staging filter skips for workspace reasons (venv,
+            # caches, …) is not resurrected by being configured.
+            continue
+        folded = tuple(part.casefold() for part in parts)
+        if any(folded[: len(other)] == other for other, _root, _boundary in forced):
+            # A descendant of an already forced root shares its walk.
+            continue
+        parent_boundary = project_boundary.descend(*parts[:-1])
+        pruned_by_regular_walk = (
+            parent_boundary.excludes_directory(parts[-1])
+            if entry.is_dir()
+            else parent_boundary.excludes_file(parts[-1])
+        )
+        if not pruned_by_regular_walk:
+            continue
+        forced.append(
+            (
+                folded,
+                Path(*parts),
+                _configured_entry_boundary(project_boundary, project_root, entry),
+            )
+        )
+    forced.sort(key=lambda item: item[0])
+    return [(root, boundary) for _key, root, boundary in forced]
+
+
+def _iter_mirror_walk_entries(
+    *,
+    excluded_resolved: frozenset[Path],
+    warn_on_skip: bool,
+    forced_roots: Sequence[tuple[Path, GitignoreBoundary | None]] = (),
+) -> Iterator[tuple[bool, Path, Path]]:
+    """Yield ``(is_directory, source, relative_target)`` mirror walk entries.
+
+    Q-14: the namespace preflight (:func:`_iter_automatic_staging_inputs`) and
+    the copy phase (:func:`copy_src_dir`) share this single walk source, so
+    both model exactly the same surface.  The walked roots are the standard
+    ``SOURCE_ROOT_NAMES`` plus the project root plus the forced mutation
+    roots of M-032 (git-ignored ``paths_to_mutate`` entries entered with
+    ``git add -f`` boundaries).  Directory entries are yielded parents-first;
+    ``relative_target`` equals the project-relative source path.
+
+    Args:
+        excluded_resolved: Resolved caller-owned paths never staged.
+        warn_on_skip: Emit :class:`RuntimeWarning` for pruned links and
+            unprovable containment (the copy phase does, the read-only
+            preflight stays silent).
+        forced_roots: ``(root, boundary)`` pairs from
+            :func:`_forced_mutation_roots`.
+    """
+    project_root = Path.cwd().resolve()
+    project_boundary = GitignoreBoundary.load(project_root)
+
+    def skipped(candidate: Path, detail: str) -> None:
+        if warn_on_skip:
+            _warn_skipped_source_link(candidate, detail)
+
+    walk_roots: list[tuple[Path, GitignoreBoundary | None, bool]] = [
+        (Path(name), project_boundary.descend(name), False) for name in SOURCE_ROOT_NAMES
+    ]
+    walk_roots.append((Path(), project_boundary, True))
+    walk_roots.extend((root, boundary, False) for root, boundary in forced_roots)
+    for source_root, root_boundary, is_dot_root in walk_roots:
+        if not source_root.exists():
+            continue
+        if not source_root.is_dir():
+            # A forced single-file mutation root (M-032) is staged as one
+            # target without a boundary check, exactly like walk_all_files
+            # treats configured file entries.
+            try:
+                if _is_link_or_reparse(source_root):
+                    skipped(source_root, "file links are not copied into executable staging")
+                    continue
+                resolved = source_root.resolve(strict=True)
+                resolved.relative_to(project_root)
+            except (OSError, ValueError) as exc:
+                skipped(source_root, f"cannot prove project containment ({exc})")
+                continue
+            if resolved in excluded_resolved:
+                continue
+            yield False, source_root, source_root
+            continue
+        boundaries = _walk_boundary_map(source_root, root_boundary)
+        for root_str, dirs, files in os.walk(source_root):
+            source_directory = Path(root_str)
+            boundary = boundaries.get(source_directory)
+            try:
+                if _is_link_or_reparse(source_directory):
+                    skipped(
+                        source_directory,
+                        "directory links are not copied into executable staging",
+                    )
+                    dirs[:] = []
+                    continue
+                source_directory.resolve(strict=True).relative_to(project_root)
+            except (OSError, ValueError) as exc:
+                skipped(source_directory, f"cannot prove project containment ({exc})")
+                dirs[:] = []
+                continue
+            # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
+            # git-ignored subtrees (MBR-2026-09-14-01).
+            safe_dirs: list[str] = []
+            at_workspace_root = source_directory.resolve() == project_root
+            for directory in dirs:
+                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
+                    continue
+                if boundary is not None and boundary.excludes_directory(directory):
+                    continue
+                candidate = source_directory / directory
+                try:
+                    if _is_link_or_reparse(candidate):
+                        skipped(
+                            candidate,
+                            "directory links are not copied into executable staging",
+                        )
+                        continue
+                    candidate.resolve().relative_to(project_root)
+                except (OSError, ValueError) as exc:
+                    skipped(candidate, f"cannot prove project containment ({exc})")
+                    continue
+                safe_dirs.append(directory)
+                if boundary is not None:
+                    boundaries[candidate] = boundary.enter(directory)
+            dirs[:] = safe_dirs
+            if is_dot_root and at_workspace_root:
+                # The explicit roots above already mirrored src/source —
+                # walking them again from "." doubled the largest trees
+                # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
+                # is not covered by the explicit roots and must stay.
+                source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
+                dirs[:] = [name for name in dirs if name.casefold() not in source_root_names]
+            yield True, source_directory, source_directory
+            for name in files:
+                if _skip_automatic_root_file(name):
+                    continue
+                if boundary is not None and boundary.excludes_file(name):
+                    continue
+                source = source_directory / name
+                try:
+                    if _is_link_or_reparse(source):
+                        skipped(source, "file links are not copied into executable staging")
+                        continue
+                    resolved = source.resolve(strict=True)
+                    resolved.relative_to(project_root)
+                except (OSError, ValueError) as exc:
+                    skipped(source, f"cannot prove project containment ({exc})")
+                    continue
+                if resolved in excluded_resolved:
+                    continue
+                yield False, source, source
 
 
 def _is_staging_skip_dir(name: str, *, at_workspace_root: bool) -> bool:
@@ -261,6 +454,82 @@ def purge_staging_runtime_artifacts() -> None:
             _unlink_staging_file(candidate)
 
 
+def _staging_leaf_is_readonly(path: Path) -> bool:
+    """Whether *path* currently carries the DOS read-only attribute (M-020).
+
+    The attribute check prefers ``st_file_attributes`` (Windows truth); the
+    ``S_IWRITE`` mode bit is the portable fallback. An uninspectable leaf
+    reports ``False`` so callers treat the failure as a plain retryable
+    ``OSError`` instead of guessing an attribute.
+    """
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    readonly_flag = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0)
+    if readonly_flag and metadata.st_file_attributes & readonly_flag:
+        return True
+    return not metadata.st_mode & stat.S_IWRITE
+
+
+def remove_staging_root() -> None:
+    """Delete the whole ``mutants/`` staging root, read-only leaves included (M-020).
+
+    ``--force`` cleanup used to call ``shutil.rmtree(..., ignore_errors=True)``,
+    which replaces any ``onexc`` hook with a no-op: staging publishes the
+    mirrored source mode, so a read-only source leaf kept its DOS read-only
+    attribute in ``mutants/``, survived every retry, and the run refused with
+    the misleading "files in use?" diagnosis. This entry point removes the
+    validated root WITHOUT ``ignore_errors`` through the established
+    read-only-aware hook, so the first unrecoverable error aborts the walk
+    (each caller retry restarts the tree) and surfaces as ``OSError`` or
+    :class:`~mutmut_win.exceptions.UnsafeStagingError`.
+
+    Safety boundaries of the ``onexc`` dispatch:
+
+    - Errors raised AT the root itself are re-raised unchanged: the root's
+      attributes are never changed (it may simply be another process's CWD
+      or a genuinely locked directory), and the CLI retry loop owns that
+      diagnosis. The comparison is lexical — normcase/abspath of the exact
+      object handed to ``rmtree`` — because CPython passes that original
+      object for root-level operations while children arrive as joined
+      strings.
+    - A ``PermissionError`` on a child is only treated as a read-only
+      removal when the leaf really carries the read-only attribute. A
+      locked-but-writable leaf (sharing violation, byte-range lock —
+      including a locked hardlink) keeps its plain ``PermissionError`` so
+      the caller keeps the retry/"files in use?" semantics instead of a
+      misleading hardlink refusal.
+    - Everything else delegates to :func:`_retry_readonly_removal`, whose
+      identity tripwire, hardlink refusal, and mode restoration apply.
+
+    Raises:
+        UnsafeStagingError: When the root is redirected, or a leaf cannot be
+            proven solely owned (hardlinks, reparse points, identity change).
+        OSError: When removal fails for non-attribute reasons (locks,
+            sharing violations, unreadable entries); ``FileNotFoundError``
+            propagates for callers that treat an already-gone root as done.
+    """
+    root = _validated_mutants_root()
+    # Lexical comparison is deliberate: resolve() would follow junctions and
+    # subst drives and no longer match the exact object handed to rmtree.
+    lexical_root = os.path.normcase(os.path.abspath(root))  # noqa: PTH100
+
+    def _remove_or_clear_attribute(
+        operation: Callable[[str], object],
+        raw_path: str,
+        error: BaseException,
+    ) -> None:
+        normalized = os.path.normcase(os.path.abspath(raw_path))  # noqa: PTH100
+        if normalized == lexical_root:
+            raise error
+        if isinstance(error, PermissionError) and not _staging_leaf_is_readonly(Path(raw_path)):
+            raise error
+        _retry_readonly_removal(operation, raw_path, error)
+
+    shutil.rmtree(root, onexc=_remove_or_clear_attribute)
+
+
 def _validated_staging_destination(destination: Path, mutants_root: Path) -> Path:
     """Return a contained lexical staging path with no redirected component."""
     lexical = destination.absolute()
@@ -304,6 +573,101 @@ def _validated_staging_destination(destination: Path, mutants_root: Path) -> Pat
             f"Unsafe staging destination {destination}: path escapes {mutants_root}"
         ) from exc
     return lexical
+
+
+def _remove_staging_entry(lexical: Path, metadata: os.stat_result) -> None:
+    """Remove one contained staging entry regardless of kind (Q-13).
+
+    Directories go through ``rmtree`` with the read-only-aware ``onexc``
+    hook, regular files through the owned-unlink helper.  A bounded retry
+    with the same backoff as :func:`_copy_with_retry` absorbs transient
+    Windows locks (Defender, Search Indexer) before the caller converts the
+    failure into a domain error.
+    """
+    for attempt in range(5):
+        try:
+            if stat.S_ISDIR(metadata.st_mode):
+                shutil.rmtree(lexical, onexc=_retry_readonly_removal)
+            elif stat.S_ISREG(metadata.st_mode):
+                _unlink_staging_file(lexical)
+            else:
+                raise UnsafeStagingError(
+                    f"Unsafe staging entry {lexical}: not a regular file or directory"
+                )
+            return
+        except UnsafeStagingError:
+            raise
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (2**attempt))
+
+
+def _reconcile_staging_kind(
+    target: Path,
+    *,
+    want_directory: bool,
+    mutants_root: Path,
+) -> None:
+    """Reconcile a staging target's kind before materializing it (Q-13).
+
+    A mirror target whose live counterpart switched between file and
+    directory used to abort the run with a raw ``FileExistsError`` (``mkdir``
+    over a staged file) or ``PermissionError`` (``os.replace`` onto a staged
+    directory) long before the deletion pass could react (M-030).  Before
+    every materialization the staged entry's kind is checked against what
+    this run is about to create; a conflicting entry is removed after
+    revalidated containment.  Links/reparse points and entries that cannot
+    be removed safely become :class:`UnsafeStagingError` — a single-line
+    domain error instead of a traceback.
+
+    The staging root itself is never reconciled away (requesting it as a
+    file is refused), and persistent staging state files at the root are
+    explicitly excluded.
+
+    Args:
+        target: Staging path about to be materialized.
+        want_directory: Whether the upcoming materialization is a directory.
+        mutants_root: Canonical staging root for containment revalidation.
+    """
+    lexical = _validated_staging_destination(target, mutants_root)
+    if lexical == mutants_root:
+        if want_directory:
+            # The engine-owned staging root already exists as a directory;
+            # materializing it again is a no-op.
+            return
+        raise UnsafeStagingError(f"Refusing to replace the staging root {mutants_root} with a file")
+    if (
+        lexical.parent == mutants_root
+        and lexical.name.casefold() in _PERSISTENT_STAGING_STATE_FILES
+    ):
+        raise UnsafeStagingError(f"Refusing to replace persistent staging state file {lexical}")
+    try:
+        metadata = lexical.lstat()
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
+        return  # absent, or under a vanished parent: nothing to reconcile
+    except OSError as exc:
+        raise UnsafeStagingError(f"Cannot inspect staging target {lexical}: {exc}") from exc
+    if _is_link_or_reparse(lexical):
+        raise UnsafeStagingError(
+            f"Staging type conflict at {lexical}: link/reparse point is never replaced"
+        )
+    staged_is_directory = stat.S_ISDIR(metadata.st_mode)
+    if want_directory:
+        if staged_is_directory:
+            return
+    elif stat.S_ISREG(metadata.st_mode):
+        return
+    staged_kind = "directory" if staged_is_directory else "file"
+    wanted_kind = "directory" if want_directory else "file"
+    try:
+        _remove_staging_entry(lexical, metadata)
+    except OSError as exc:
+        raise UnsafeStagingError(
+            f"Staging type conflict at {lexical}: expected {wanted_kind}, "
+            f"found {staged_kind}; cannot remove the staged {staged_kind} ({exc})"
+        ) from exc
+    print(f"     replaced staged {staged_kind} after type change: {lexical}")
 
 
 def _staging_identity(metadata: os.stat_result) -> tuple[int, int]:
@@ -522,85 +886,34 @@ def _staging_key(path: Path) -> tuple[str, ...]:
 
 def _iter_automatic_staging_inputs(
     excluded_resolved: frozenset[Path],
+    *,
+    forced_roots: Sequence[tuple[Path, GitignoreBoundary | None]] = (),
 ) -> Iterator[tuple[Path, Path]]:
-    """Yield file/directory ownership planned for the automatic root mirror."""
+    """Yield file/directory ownership planned for the automatic root mirror.
 
-    project_root = Path.cwd().resolve()
-    project_boundary = GitignoreBoundary.load(project_root)
-    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
-        source_root = Path(source_root_name)
-        if not source_root.is_dir():
-            continue
-        walk_boundary = (
-            project_boundary
-            if source_root_name == "."
-            else project_boundary.descend(source_root_name)
-        )
-        boundaries = _walk_boundary_map(source_root, walk_boundary)
-        for root_str, dirs, files in os.walk(source_root):
-            source_directory = Path(root_str)
-            try:
-                if _is_link_or_reparse(source_directory):
-                    dirs[:] = []
-                    continue
-                source_directory.resolve(strict=True).relative_to(project_root)
-            except (OSError, ValueError):  # fmt: skip
-                dirs[:] = []
-                continue
-            boundary = boundaries.get(source_directory)
-            safe_dirs: list[str] = []
-            at_workspace_root = Path(root_str).resolve() == project_root
-            for directory in dirs:
-                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
-                    continue
-                if boundary is not None and boundary.excludes_directory(directory):
-                    continue
-                candidate = Path(root_str) / directory
-                try:
-                    if _is_link_or_reparse(candidate):
-                        continue
-                    candidate.resolve().relative_to(project_root)
-                except (
-                    OSError,
-                    ValueError,
-                ):  # fmt: skip
-                    continue
-                safe_dirs.append(directory)
-                if boundary is not None:
-                    boundaries[candidate] = boundary.enter(directory)
-            dirs[:] = safe_dirs
-            if source_root_name == "." and Path(root_str).resolve() == project_root:
-                source_roots = {name.casefold() for name in SOURCE_ROOT_NAMES}
-                dirs[:] = [name for name in dirs if name.casefold() not in source_roots]
+    The walk itself comes from :func:`_iter_mirror_walk_entries` (Q-14), the
+    single walk source shared with :func:`copy_src_dir`.  *forced_roots*
+    (M-032) adds the git-ignored mutation roots the regular walk would prune,
+    so the namespace preflight models exactly the surface the copy phase
+    stages — mutation search and mirror no longer disagree about explicitly
+    configured entries.
+    """
 
-            target_directory = Path(root_str)
-            if _staging_key(target_directory):
+    for is_directory, source, relative_target in _iter_mirror_walk_entries(
+        excluded_resolved=excluded_resolved,
+        warn_on_skip=False,
+        forced_roots=forced_roots,
+    ):
+        if is_directory:
+            if _staging_key(relative_target):
                 # ``mutants/`` itself is the engine-owned staging root, not a
                 # project input that conflicts with every configured mirror
                 # nested below it.  Descendant directories remain explicit
                 # ownership entries so empty namespace packages participate
                 # in collision preflight.
-                yield source_directory, target_directory
-
-            for name in files:
-                if _skip_automatic_root_file(name):
-                    continue
-                if boundary is not None and boundary.excludes_file(name):
-                    continue
-                source = Path(root_str) / name
-                try:
-                    if _is_link_or_reparse(source):
-                        continue
-                    resolved = source.resolve(strict=True)
-                    resolved.relative_to(project_root)
-                except (
-                    OSError,
-                    ValueError,
-                ):  # fmt: skip
-                    continue
-                if resolved in excluded_resolved:
-                    continue
-                yield source, Path(root_str) / name
+                yield source, relative_target
+            continue
+        yield source, relative_target
 
 
 def _iter_configured_staging_inputs(
@@ -703,18 +1016,78 @@ def _helper_owner_for_target(
     return None
 
 
+_LiveInputRelation = Literal[
+    "same",
+    "different",
+    "left_missing",
+    "right_missing",
+    "both_missing",
+]
+
+
+def _live_input_is_gone(path: Path) -> bool:
+    """Return whether *path* is provably absent (fail-closed otherwise).
+
+    Existence is decided per ``lstat`` with separate exception branches: a
+    missing path component (``FileNotFoundError``/``NotADirectoryError``) is
+    "gone", while any other :class:`OSError` propagates so the caller keeps
+    treating the identity as unprovable instead of fail-open guessing (an
+    ``os.path.lexists`` probe can report ``False`` on permission errors).
+    """
+    try:
+        path.lstat()
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
+        return True
+    return False
+
+
+def _live_input_relation(left: Path, right: Path) -> _LiveInputRelation:
+    """Classify whether two planned live inputs denote the same object.
+
+    ``samefile``/``resolve`` identity is only meaningful while both entries
+    exist; a deleted file made the historical boolean helper answer "different"
+    for what is really "not determinable" and turned vanished inputs into
+    false namespace collisions (M-033).  The relation therefore distinguishes:
+
+    * ``same``/``different`` — both exist and the identity was decided;
+    * ``left_missing``/``right_missing``/``both_missing`` — the vanished
+      side(s) stage nothing anymore, so they cannot collide;
+    * ``different`` — also the fail-closed verdict when an :class:`OSError`
+      other than absence prevents proving the identity (e.g. a
+      :class:`PermissionError`).
+    """
+    try:
+        return "same" if left.samefile(right) else "different"
+    except (FileNotFoundError, NotADirectoryError):  # fmt: skip
+        try:
+            left_gone = _live_input_is_gone(left)
+            right_gone = _live_input_is_gone(right)
+        except OSError:
+            # Absence is not provable either — stay fail-closed.
+            return "different"
+        if left_gone and right_gone:
+            return "both_missing"
+        if left_gone:
+            return "left_missing"
+        if right_gone:
+            return "right_missing"
+        # Both entries (re)appeared after samefile failed: a race decided to
+        # resolve both paths again before falling back to the lexical match.
+    except OSError:
+        return "different"
+    try:
+        if os.path.normcase(str(left.resolve(strict=True))) == os.path.normcase(
+            str(right.resolve(strict=True))
+        ):
+            return "same"
+    except OSError:
+        return "different"
+    return "different"
+
+
 def _same_live_input(left: Path, right: Path) -> bool:
     """Return whether two planned sources identify the same live object."""
-
-    try:
-        return left.samefile(right)
-    except OSError:
-        try:
-            return os.path.normcase(str(left.resolve(strict=True))) == os.path.normcase(
-                str(right.resolve(strict=True))
-            )
-        except OSError:
-            return False
+    return _live_input_relation(left, right) == "same"
 
 
 def _same_planned_input(left: Path, right: Path) -> bool:
@@ -836,9 +1209,7 @@ def validate_staging_namespace(
     exact_owners = {
         _staging_key(Path(name)): owner for name, owner in _FIXED_STAGING_ARTIFACT_OWNERS.items()
     }
-    for source in walk_source_files(config):
-        if config.should_ignore_for_mutation(source):
-            continue
+    for source in _selected_mutation_sources(config):
         metadata_target = Path(f"{source}.meta")
         exact_owners[_staging_key(metadata_target)] = f"mutation metadata for {source}"
 
@@ -857,21 +1228,41 @@ def validate_staging_namespace(
             import_roots.append(extra_path)
 
     collisions: set[tuple[str, str, str]] = set()
-    automatic_inputs = list(_iter_automatic_staging_inputs(frozen_exclusions))
+    forced_roots = _forced_mutation_roots(
+        config,
+        GitignoreBoundary.load(project_root),
+        project_root,
+    )
+    automatic_inputs = list(
+        _iter_automatic_staging_inputs(frozen_exclusions, forced_roots=forced_roots)
+    )
     configured_inputs = list(_iter_configured_staging_inputs(config, frozen_exclusions))
     planned_inputs = itertools.chain(automatic_inputs, configured_inputs)
     target_owners: dict[tuple[str, ...], tuple[Path, str]] = {}
     for source, target in planned_inputs:
         target_key = _staging_key(target)
         previous = target_owners.get(target_key)
-        if previous is not None and not _same_live_input(previous[0], source):
-            collisions.add(
-                (
-                    str(target),
-                    str(source),
-                    f"another live staging input {previous[1]}",
+        if previous is not None:
+            relation = _live_input_relation(previous[0], source)
+            if relation in {"right_missing", "both_missing"}:
+                # M-033: the entry vanished after the planned inputs were
+                # frozen — nothing will be staged from it, so it neither
+                # collides nor owns the target, and no reserved-name check
+                # applies.  copy_src_dir repeats this validation at the copy
+                # boundary, where the walk no longer sees the file at all.
+                continue
+            if relation != "different":
+                # Identical, or the previous owner itself vanished and the
+                # current source takes over the target.
+                target_owners[target_key] = (source, str(source))
+            else:
+                collisions.add(
+                    (
+                        str(target),
+                        str(source),
+                        f"another live staging input {previous[1]}",
+                    )
                 )
-            )
         else:
             target_owners[target_key] = (source, str(source))
         owner = exact_owners.get(_staging_key(target))
@@ -896,9 +1287,15 @@ def validate_staging_namespace(
                     configured_target,
                     automatic_target,
                 )
-                if expected_source is None or not _same_live_input(
+                # M-033: a vanished automatic input stages nothing and cannot
+                # collide — regardless of the configured side (the trigger's
+                # expected_source denotes the very same deleted file).  A
+                # vanished configured-side descendant with a still-live
+                # automatic source stays a collision: the configured mirror's
+                # deletion pass would erase that automatic copy.
+                if expected_source is None or _live_input_relation(
                     expected_source, automatic_source
-                ):
+                ) in {"different", "left_missing"}:
                     collisions.add(
                         (
                             str(configured_target),
@@ -1032,45 +1429,46 @@ def _copy_with_retry(
     src: Path,
     dst: Path,
     *,
-    is_tree: bool = False,
     max_attempts: int = 5,
-    **kwargs: object,
 ) -> None:
-    """Copy a file or directory tree with retry logic for Windows file locks.
+    """Copy a single file atomically with retry logic for Windows file locks.
 
     On Windows, recently written files can be temporarily locked by Defender,
-    the Search Indexer, or NTFS journaling.  This wrapper retries with
-    exponential backoff (0.1 s, 0.2 s, 0.4 s, 0.8 s) before giving up.
+    the Search Indexer, or NTFS journaling.  This wrapper performs exactly
+    ``max_attempts`` atomic copies via ``atomic_copy_file``, separated by
+    exponential backoff pauses of 0.1 s, 0.2 s, 0.4 s and 0.8 s for the
+    default of five attempts; the last attempt's ``OSError`` propagates.
+    Failures that are not ``OSError`` subclasses (e.g. ``UnsafeStagingError``)
+    are never retried.
 
     Args:
         src: Source path.
         dst: Destination path.
-        is_tree: If True, use ``shutil.copytree`` instead of ``shutil.copy2``.
-        max_attempts: Maximum number of attempts before raising.
-        **kwargs: Additional keyword arguments forwarded to the copy function.
+        max_attempts: Total number of copy attempts, at least 1.  The
+            historic unconditional bonus attempt is gone, so a budget of
+            zero could never publish anything and is rejected instead.
     """
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
 
-    def copy_once() -> None:
-        if is_tree:
-            shutil.copytree(src, dst, **kwargs)  # type: ignore[arg-type]
-            return
-
-        # The destination is published through the still-private atomic
-        # sibling.  Never close and reopen its random pathname: a directory
-        # watcher could otherwise replace it with an external hardlink.
-        atomic_copy_file(src, dst)
-
-    publish_guard = contextlib.nullcontext() if is_tree else _temporarily_writable_staging_leaf(dst)
-    with publish_guard:
-        for attempt in range(max_attempts):
+    with _temporarily_writable_staging_leaf(dst):
+        for attempt in range(1, max_attempts + 1):
             try:
-                copy_once()
+                # The destination is published through the still-private
+                # atomic sibling.  Never close and reopen its random
+                # pathname: a directory watcher could otherwise replace it
+                # with an external hardlink.
+                atomic_copy_file(src, dst)
                 return
+            except AtomicPathLengthError:
+                # A deterministic name-length rejection never clears on
+                # retry; fail immediately instead of burning the backoff
+                # ladder (M-010).
+                raise
             except OSError:
-                if attempt < max_attempts - 1:
-                    time.sleep(0.1 * (2**attempt))
-        # Final attempt — let the exception propagate if it still fails.
-        copy_once()
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(0.1 * 2 ** (attempt - 1))
 
 
 def _atomic_write_text(
@@ -1164,6 +1562,14 @@ def copy_src_dir(
     authority for both plain and generator-owned files (see
     :func:`_mirror_is_stale`).
 
+    Git-ignored ``paths_to_mutate`` roots are walked with ``git add -f``
+    boundaries (:func:`_forced_mutation_roots`, M-032) so mutation targets
+    keep their whole tree — non-.py resources included — in executable
+    staging.  The walk itself comes from :func:`_iter_mirror_walk_entries`
+    (Q-14), the single source shared with the namespace preflight.
+    Type changes (file <-> directory) of a mirrored path are reconciled
+    before every materialization (:func:`_reconcile_staging_kind`, Q-13).
+
     Args:
         config: Active ``MutmutConfig`` instance.
         excluded_paths: Exact project files owned by the caller that must not
@@ -1173,9 +1579,19 @@ def copy_src_dir(
     """
     validate_staging_namespace(config, excluded_paths=excluded_paths)
     expected_targets: set[Path] = set()
-    synced_roots: list[Path] = []
+    # Track every automatic mirror root, including the project-root grab-bag
+    # and the forced mutation roots (M-032).  The deletion pass is deliberately
+    # limited to Python modules and their metadata, so generated non-source
+    # artifacts remain distinguishable while deleted root-level imports cannot
+    # haunt the next clean run; the project root subsumes the explicit
+    # src/source mirrors.
+    synced_roots: list[Path] = [Path()]
+    # Retain policy (M-002): generator output survives only for files the
+    # current run still (re)generates AND only outside the coverage mode.
+    retained_generation_keys = _generation_target_keys(config)
     project_root = Path.cwd().resolve()
     project_boundary = GitignoreBoundary.load(project_root)
+    forced_roots = _forced_mutation_roots(config, project_boundary, project_root)
     mutants_root = _validated_mutants_root()
     Path("mutants").mkdir(exist_ok=True)
     excluded_resolved: set[Path] = set()
@@ -1187,129 +1603,41 @@ def copy_src_dir(
             # be encountered by the file walk below either.
             continue
 
-    for source_root_name in [*SOURCE_ROOT_NAMES, "."]:
-        source_root = Path(source_root_name)
-        if not source_root.exists() or not source_root.is_dir():
-            continue
-        # Track every automatic mirror root, including the project-root
-        # grab-bag.  The deletion pass is deliberately limited to Python
-        # modules and their metadata, so generated non-source artifacts remain
-        # distinguishable while deleted root-level imports cannot haunt the
-        # next clean run.
-        synced_roots.append(source_root)
-        walk_boundary = (
-            project_boundary
-            if source_root_name == "."
-            else project_boundary.descend(source_root_name)
-        )
-        boundaries = _walk_boundary_map(source_root, walk_boundary)
-
-        for root_str, dirs, files in os.walk(source_root):
-            source_directory = Path(root_str)
-            boundary = boundaries.get(source_directory)
-            try:
-                if _is_link_or_reparse(source_directory):
-                    _warn_skipped_source_link(
-                        source_directory,
-                        "directory links are not copied into executable staging",
-                    )
-                    dirs[:] = []
-                    continue
-                source_directory.resolve(strict=True).relative_to(project_root)
-            except (OSError, ValueError) as exc:
-                _warn_skipped_source_link(
-                    source_directory,
-                    f"cannot prove project containment ({exc})",
-                )
-                dirs[:] = []
-                continue
-            # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
-            # git-ignored subtrees (MBR-2026-09-14-01).
-            safe_dirs: list[str] = []
-            at_workspace_root = Path(root_str).resolve() == project_root
-            for directory in dirs:
-                if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
-                    continue
-                if boundary is not None and boundary.excludes_directory(directory):
-                    continue
-                candidate = Path(root_str) / directory
-                try:
-                    if _is_link_or_reparse(candidate):
-                        _warn_skipped_source_link(
-                            candidate,
-                            "directory links are not copied into executable staging",
-                        )
-                        continue
-                    candidate.resolve().relative_to(project_root)
-                except (OSError, ValueError) as exc:
-                    _warn_skipped_source_link(
-                        candidate, f"cannot prove project containment ({exc})"
-                    )
-                    continue
-                safe_dirs.append(directory)
-                if boundary is not None:
-                    boundaries[candidate] = boundary.enter(directory)
-            dirs[:] = safe_dirs
-            if source_root_name == "." and root_str == ".":
-                # The explicit roots above already mirrored src/source —
-                # walking them again from "." doubled the largest trees
-                # (issue #129 / 360°-C4). Top level only: a NESTED foo/src
-                # is not covered by the explicit roots and must stay.
-                source_root_names = {name.casefold() for name in SOURCE_ROOT_NAMES}
-                dirs[:] = [d for d in dirs if d.casefold() not in source_root_names]
-
+    for is_directory, source, relative_target in _iter_mirror_walk_entries(
+        excluded_resolved=frozenset(excluded_resolved),
+        warn_on_skip=True,
+        forced_roots=forced_roots,
+    ):
+        if is_directory:
             # Directory entries are import-visible under PEP 420 even when
             # they contain no files.  Materialize every validated live
             # directory so a clean first run has the same namespace-package
             # topology as the project; excluded/link roots were pruned above.
-            target_directory = Path("mutants") / root_str
-            _validated_staging_destination(target_directory, mutants_root)
+            # Type changes are reconciled before materialization (Q-13).
+            target_directory = Path("mutants") / relative_target
+            _reconcile_staging_kind(
+                target_directory, want_directory=True, mutants_root=mutants_root
+            )
             target_directory.mkdir(exist_ok=True, parents=True)
+            continue
 
-            for name in files:
-                if _skip_automatic_root_file(name):
-                    continue
-                if boundary is not None and boundary.excludes_file(name):
-                    continue
-                source_path = Path(root_str) / name
-                try:
-                    if _is_link_or_reparse(source_path):
-                        _warn_skipped_source_link(
-                            source_path,
-                            "file links are not copied into executable staging",
-                        )
-                        continue
-                    resolved_source = source_path.resolve(strict=True)
-                    resolved_source.relative_to(project_root)
-                except (OSError, ValueError) as exc:
-                    # Automatic staging must never dereference an external or
-                    # broken file symlink into the executable mirror.
-                    _warn_skipped_source_link(
-                        source_path,
-                        f"cannot prove project containment ({exc})",
-                    )
-                    continue
-                if resolved_source in excluded_resolved:
-                    continue
-                target_path = Path("mutants") / root_str / name
-                _validated_staging_destination(target_path, mutants_root)
-                expected_targets.add(target_path)
+        target_path = Path("mutants") / relative_target
+        _reconcile_staging_kind(target_path, want_directory=False, mutants_root=mutants_root)
+        expected_targets.add(target_path)
 
-                if target_path.exists():
-                    if source_path.is_file() and _mirror_is_stale(source_path, target_path):
-                        meta_path = Path(str(target_path) + ".meta")
-                        owned_meta = read_owned_source_metadata(meta_path) is not None
-                        _copy_with_retry(source_path, target_path)
-                        print(f"     updated: {source_path} (source changed since last run)")
-                        # Invalidate only a proven mutation sidecar.  A project
-                        # fixture named like ``runtime.meta`` is an independent
-                        # expected target and must survive companion updates.
-                        if owned_meta and meta_path.exists():
-                            _unlink_staging_file(meta_path)
-                    continue
+        if target_path.exists():
+            if source.is_file():
+                retain = _staging_key(source) in retained_generation_keys
+                if _mirror_is_stale(source, target_path, retain_generated=retain):
+                    removed_sidecar = _refresh_staged_mirror(source, target_path)
+                    if removed_sidecar:
+                        print(f"     restored unmutated: {source} (not retained for this run)")
+                    else:
+                        print(f"     updated: {source} (source changed since last run)")
+            continue
 
-                target_path.parent.mkdir(exist_ok=True, parents=True)
-                _copy_with_retry(source_path, target_path)
+        target_path.parent.mkdir(exist_ok=True, parents=True)
+        _copy_with_retry(source, target_path)
 
     _sync_deleted_sources(
         expected_targets,
@@ -1325,7 +1653,72 @@ def copy_src_dir(
                 candidate.unlink()
 
 
-def _mirror_is_stale(source: Path, target: Path) -> bool:
+def _selected_mutation_sources(config: MutmutConfig) -> Iterator[Path]:
+    """Yield the mutation targets of the run with orchestrator parity.
+
+    Applies the same ``walk_source_files`` + ``resolve()`` deduplication +
+    ``should_ignore_for_mutation(str(path))`` filter that
+    ``MutationOrchestrator._generate_mutants`` uses, so reservation, retain
+    policy, and generation share one selection.
+    """
+    seen: set[Path] = set()
+    for source in walk_source_files(config):
+        resolved = source.resolve()
+        if resolved in seen or config.should_ignore_for_mutation(str(source)):
+            continue
+        seen.add(resolved)
+        yield source
+
+
+def _generation_target_keys(config: MutmutConfig) -> frozenset[tuple[str, ...]]:
+    """Return the staging keys of files the current run will (re)generate.
+
+    With ``mutate_only_covered_lines`` the set is empty: the coverage phase
+    requires unmutated bytes for every target, so no generator output is
+    retained in that mode.
+    """
+    if config.mutate_only_covered_lines:
+        return frozenset()
+    return frozenset(_staging_key(source) for source in _selected_mutation_sources(config))
+
+
+def _retain_generation_sidecar(staged: Path, *, companion_is_current: bool) -> bool:
+    """Return True if *staged* is a proven-own sidecar kept for result reuse.
+
+    A staged ``.meta`` file survives a deletion pass only when it carries
+    the engine's own metadata format (user fixtures in other shapes stay
+    untouched by this helper's verdict) and its companion file is still an
+    expected, current input — the same rule the automatic-mirror pass has
+    applied since issue #129, now shared by configured mirrors.
+    """
+    if not staged.name.casefold().endswith(".meta"):
+        return False
+    if not companion_is_current:
+        return False
+    return read_owned_source_metadata(staged) is not None
+
+
+def _refresh_staged_mirror(source: Path, target: Path) -> bool:
+    """Copy *source* over the staged *target*, invalidating an own sidecar.
+
+    Returns:
+        True if a proven-own generation sidecar next to *target* was removed.
+
+    A staged ``<name>.meta`` is only treated as a generator sidecar when no
+    live ``<source>.meta`` fixture exists — that fixture's staged copy is an
+    independent mirror target, not engine metadata.
+    """
+    meta_path = target.with_name(target.name + ".meta")
+    live_meta = source.with_name(source.name + ".meta")
+    owned_sidecar = read_owned_source_metadata(meta_path) is not None and not live_meta.exists()
+    _copy_with_retry(source, target)
+    if owned_sidecar and meta_path.exists():
+        _unlink_staging_file(meta_path)
+        return True
+    return False
+
+
+def _mirror_is_stale(source: Path, target: Path, *, retain_generated: bool = True) -> bool:
     """Return True if the staged mirror *target* must be refreshed.
 
     Two regimes (issue #129 / 360°-B6a):
@@ -1335,6 +1728,12 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
       than the source by construction) and the ``.meta`` source fingerprint
       is the staleness truth there. The mirror refreshes only when the live
       source SHA-256 differs; legacy metadata without a hash is invalidated.
+
+      With ``retain_generated=False`` (the retain policy of M-002) generator
+      output is never kept: the target is stale regardless of the hash, so
+      the caller restores the unmutated bytes for phases that require them
+      (coverage collection, deselected targets).
+
     * Plain mirror copies (no ``.meta``) were created by ``copy2`` and
       therefore normally carry the SOURCE's stat data. Any stat inequality
       refreshes immediately, while stat equality is still verified by hash.
@@ -1347,6 +1746,8 @@ def _mirror_is_stale(source: Path, target: Path) -> bool:
     meta_path = target.with_name(target.name + ".meta")
     owned_metadata = read_owned_source_metadata(meta_path)
     if owned_metadata is not None:
+        if not retain_generated:
+            return True
         recorded = owned_metadata["source_hash"]
         return not isinstance(recorded, str) or recorded != _content_hash(source)
     if (
@@ -1395,6 +1796,7 @@ def _sync_tree(
     *,
     excluded_resolved: frozenset[Path] = frozenset(),
     ignore_boundary: GitignoreBoundary | None = None,
+    retained_generation_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
@@ -1409,10 +1811,23 @@ def _sync_tree(
       root itself is guard 4's job in :func:`copy_also_copy_files`);
     * git-ignored subtrees are neither copied nor retained
       (MBR-2026-09-14-01): the deletion pass treats an ignored live source
-      like an absent one so pre-fix staged leftovers are purged.
+      like an absent one so pre-fix staged leftovers are purged;
+    * generation sidecars next to a current, expected companion survive the
+      deletion pass (M-031), and refreshing a mirror target invalidates a
+      proven-own sidecar so no stale fingerprint outlives its bytes;
+    * ``retained_generation_keys`` (staging keys relative to ``mutants/``)
+      apply the M-002 retain policy: files the run still generates keep
+      their trampolined output, everything else is restored unmutated;
+    * type changes (file <-> directory) of a mirrored path are reconciled
+      before every materialization (:func:`_reconcile_staging_kind`, Q-13):
+      a conflicting staged entry is removed instead of aborting the run, and
+      the deletion pass judges staged files type-aware.
     """
     mutants_root = _validated_mutants_root()
+    _reconcile_staging_kind(destination_root, want_directory=True, mutants_root=mutants_root)
     _validated_staging_destination(destination_root, mutants_root)
+    destination_rel = destination_root.resolve().relative_to(mutants_root.resolve())
+    destination_key = _staging_key(destination_rel)
     source_boundaries: dict[Path, GitignoreBoundary | None] = {source_root: ignore_boundary}
     for root_str, dirs, files in os.walk(source_root):
         walk_directory = Path(root_str)
@@ -1431,6 +1846,12 @@ def _sync_tree(
         dirs[:] = safe_dirs
         rel_root = Path(root_str).relative_to(source_root)
         destination_directory = destination_root / rel_root
+        # Q-13: reconcile BEFORE the mkdir condition — a live folder that the
+        # boundary fully prunes skips the mkdir, and an old same-named staged
+        # file would otherwise survive the deletion pass type-blind.
+        _reconcile_staging_kind(
+            destination_directory, want_directory=True, mutants_root=mutants_root
+        )
         retained_files: list[str] = []
         for name in files:
             if boundary is not None and boundary.excludes_file(name):
@@ -1455,8 +1876,16 @@ def _sync_tree(
         for name in retained_files:
             src_file = Path(root_str) / name
             dst_file = destination_root / rel_root / name
+            _reconcile_staging_kind(dst_file, want_directory=False, mutants_root=mutants_root)
             _validated_staging_destination(dst_file, mutants_root)
-            if dst_file.exists() and not _mirror_is_stale(src_file, dst_file):
+            if dst_file.exists():
+                retain = (
+                    *destination_key,
+                    *_staging_key(rel_root / name),
+                ) in retained_generation_keys
+                if not _mirror_is_stale(src_file, dst_file, retain_generated=retain):
+                    continue
+                _refresh_staged_mirror(src_file, dst_file)
                 continue
             dst_file.parent.mkdir(parents=True, exist_ok=True)
             _copy_with_retry(src_file, dst_file)
@@ -1467,6 +1896,25 @@ def _sync_tree(
     # Boundary state is tracked by destination-relative path: the staged tree
     # mirrors the source structure, so staged rel_root == source rel_root.
     staged_boundaries: dict[Path, GitignoreBoundary | None] = {Path(): ignore_boundary}
+
+    def live_is_current(
+        live_path: Path,
+        live_name: str,
+        live_boundary: GitignoreBoundary | None,
+    ) -> bool:
+        try:
+            return (
+                # Type-aware (M-030): a staged FILE whose live counterpart
+                # became a directory is not current — the copy pass above
+                # reconciled the target, and a pruned live folder must not
+                # keep an old same-named staged file alive either.
+                live_path.is_file()
+                and live_path.resolve(strict=True) not in excluded_resolved
+                and not (live_boundary is not None and live_boundary.excludes_file(live_name))
+            )
+        except OSError:
+            return False
+
     for root_str, dirs, files in os.walk(destination_root):
         staged_root = Path(root_str)
         rel_root = staged_root.relative_to(destination_root)
@@ -1483,20 +1931,29 @@ def _sync_tree(
             staged_boundaries[rel_root / directory] = child_boundary
             cleanup_candidates.append((staged_directory, directory_excluded))
         dirs[:] = staged_safe_dirs
+
         for name in files:
-            source_file = source_root / rel_root / name
-            try:
-                source_is_current = (
-                    source_file.exists()
-                    and source_file.resolve(strict=True) not in excluded_resolved
-                    and not (boundary is not None and boundary.excludes_file(name))
-                )
-            except OSError:
-                source_is_current = False
+            source_is_current = live_is_current(source_root / rel_root / name, name, boundary)
             if source_is_current:
                 continue
             stale_path = Path(root_str) / name
             _validated_staging_destination(stale_path, mutants_root)
+            if name.casefold().endswith(".meta"):
+                # M-031: a proven-own generation sidecar survives next to a
+                # current, expected companion (the rule the automatic mirror
+                # has always applied) so fast-path reuse keeps working in
+                # configured mirrors.
+                companion_name = name[: -len(".meta")]
+                companion_is_current = (
+                    live_is_current(
+                        source_root / rel_root / companion_name, companion_name, boundary
+                    )
+                    and stale_path.with_name(companion_name).exists()
+                )
+                if _retain_generation_sidecar(
+                    stale_path, companion_is_current=companion_is_current
+                ):
+                    continue
             _unlink_staging_file(stale_path)
 
     # Keep the configured mirror root itself stable, but do not retain nested
@@ -1638,9 +2095,8 @@ def _sync_deleted_sources(
                     continue
                 if name.casefold().endswith(".meta"):
                     companion = Path(str(staged)[: -len(".meta")]).absolute()
-                    if (
-                        companion in expected_absolute
-                        and read_owned_source_metadata(staged) is not None
+                    if _retain_generation_sidecar(
+                        staged, companion_is_current=companion in expected_absolute
                     ):
                         continue
                 _unlink_staging_file(staged)
@@ -1701,7 +2157,9 @@ def copy_also_copy_files(
     :func:`_sync_tree` (issue #129 / 360°-B6b+C2: ``copytree`` re-copied
     everything on every run and never deleted — removed test files kept
     running inside the staging forever). Cache/venv/tooling directories are
-    skipped via the shared ``_STAGING_SKIP_DIRS`` walk filter.
+    skipped via the shared ``_STAGING_SKIP_DIRS`` walk filter.  Type changes
+    (file <-> directory) at a configured target are reconciled before every
+    materialization (:func:`_reconcile_staging_kind`, Q-13).
 
     Args:
         config: Active ``MutmutConfig`` instance.
@@ -1712,6 +2170,7 @@ def copy_also_copy_files(
     # Their distinguishing trait — being added to the worker's PYTHONPATH — is
     # implemented in process/worker.py rather than here.
     paths_to_copy: list[str] = [*config.also_copy, *config.extra_paths]
+    retained_generation_keys = _generation_target_keys(config)
     excluded_resolved: set[Path] = set()
     for excluded in excluded_paths:
         try:
@@ -1770,22 +2229,32 @@ def copy_also_copy_files(
             # Remove the exact, revalidated destination instead of silently
             # accepting a haunted staging tree.
             try:
-                destination_mode = destination.lstat().st_mode
+                destination_metadata = destination.lstat()
             except FileNotFoundError:
                 continue
-            if stat.S_ISDIR(destination_mode):
-                shutil.rmtree(destination, onexc=_retry_readonly_removal)
-            else:
-                _unlink_staging_file(destination)
+            _remove_staging_entry(destination, destination_metadata)
             print("     removed stale configured mirror", destination)
             continue
         print("     also copying", path_str)
         if path.is_file():
+            # Q-13: type changes are reconciled before materialization — a
+            # stale staged directory at a file target is removed here.
+            _reconcile_staging_kind(destination, want_directory=False, mutants_root=mutants_root)
             _validated_staging_destination(destination, mutants_root)
-            if not destination.exists() or _mirror_is_stale(path, destination):
+            if destination.exists():
+                retain = (
+                    _staging_key(destination.resolve().relative_to(mutants_root.resolve()))
+                    in retained_generation_keys
+                )
+                if _mirror_is_stale(path, destination, retain_generated=retain):
+                    _refresh_staged_mirror(path, destination)
+            elif _mirror_is_stale(path, destination):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _copy_with_retry(path, destination)
         else:
+            # Q-13: the mirror root itself is reconciled (a previously staged
+            # file at the root target is removed) before the tree sync.
+            _reconcile_staging_kind(destination, want_directory=True, mutants_root=mutants_root)
             _sync_tree(
                 path,
                 destination,
@@ -1795,6 +2264,7 @@ def copy_also_copy_files(
                     project_root,
                     path,
                 ),
+                retained_generation_keys=retained_generation_keys,
             )
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries
@@ -1870,6 +2340,68 @@ def config_fingerprint_matches(
     return False
 
 
+#: M-035: uv-sources table headers, anchored to real TOML header lines
+#: (``re.MULTILINE``; optional indentation and trailing comment).  The body
+#: runs to the next header-like line or EOF.  ``Path.read_text`` uses
+#: universal newlines, so no ``\r`` handling is needed.
+_UV_SOURCES_TABLE_RE = re.compile(
+    r"^[ \t]*\[tool\.uv\.sources(?:\.[^\]\n]+)?\][ \t]*(?:#[^\n]*)?\n"
+    r"(?:(?!^[ \t]*\[)[^\n]*\n?)*",
+    re.MULTILINE,
+)
+
+#: M-035: an empty ``[tool.uv]`` header (body collapsed after the sources
+#: removal above) directly followed by the next header or EOF.
+_EMPTY_TOOL_UV_TABLE_RE = re.compile(
+    r"^[ \t]*\[tool\.uv\][ \t]*(?:#[^\n]*)?\n(?=^[ \t]*\[|\Z)",
+    re.MULTILINE,
+)
+
+
+def _without_uv_sources(document: dict[str, object]) -> dict[str, object]:
+    """Return a deep copy of a parsed TOML document without uv sources.
+
+    ``tool.uv.sources`` is removed; ``tool.uv`` and ``tool`` parents that
+    become empty are removed with it.  Applied symmetrically to the original
+    and the cleaned document, this is the semantic equality oracle for
+    :func:`_sanitise_mutants_pyproject`.
+    """
+    cleaned = copy.deepcopy(document)
+    tool = cleaned.get("tool")
+    if not isinstance(tool, dict):
+        return cleaned
+    uv = tool.get("uv")
+    if isinstance(uv, dict):
+        uv.pop("sources", None)
+        if not uv:
+            del tool["uv"]
+    if not tool:
+        cleaned.pop("tool", None)
+    return cleaned
+
+
+def _remove_uv_table_candidates(content: str, expected_document: dict[str, object]) -> str:
+    """Remove anchored uv table headers one candidate at a time.
+
+    Matches are processed right-to-left so the spans of earlier matches
+    stay valid as text shrinks.  A removal is kept only when the remaining
+    text still parses and is semantically the original document minus
+    ``tool.uv.sources`` — a table pattern inside a TOML string fails that
+    proof (broken parse or changed string value) and is left in place.
+    """
+    cleaned = content
+    for pattern in (_UV_SOURCES_TABLE_RE, _EMPTY_TOOL_UV_TABLE_RE):
+        for match in reversed(list(pattern.finditer(cleaned))):
+            candidate = cleaned[: match.start()] + cleaned[match.end() :]
+            try:
+                candidate_document = tomllib.loads(candidate, parse_float=str)
+            except tomllib.TOMLDecodeError:
+                continue
+            if _without_uv_sources(candidate_document) == expected_document:
+                cleaned = candidate
+    return cleaned
+
+
 def _sanitise_mutants_pyproject() -> None:
     """Remove uv source tables from the copied pyproject.toml in mutants/.
 
@@ -1884,6 +2416,17 @@ def _sanitise_mutants_pyproject() -> None:
     kept the "Distribution not found at: file:///..." error alive). The
     inline dotted-key form (``sources.pkg = {...}`` inside ``[tool.uv]``)
     is NOT covered — that would need parse-and-rewrite, not a regex.
+
+    M-035 makes the removal TOML-safe: both patterns are anchored to real
+    header lines (line start, optional indentation, optional trailing
+    comment), and every single removal must pass a semantic proof — the
+    remaining text parses and equals the original document minus
+    ``tool.uv.sources``.  Both parses use ``parse_float=str`` so documents
+    containing ``nan`` compare equal to themselves.  When the original does
+    not parse, or no candidate passes the proof, nothing is written: the
+    staged copy stays byte-identical to the user's file (so pytest reports
+    the user's real error, not a sanitiser artefact) and a
+    ``RuntimeWarning`` is emitted for the rejected-removal case.
     """
     pyproject_path = Path("mutants") / "pyproject.toml"
     mutants_root = _validated_mutants_root()
@@ -1896,33 +2439,38 @@ def _sanitise_mutants_pyproject() -> None:
     except OSError:
         return
 
-    # Remove [tool.uv.sources] / [tool.uv.sources.<pkg>] sections — each
-    # header plus everything until the next section header or EOF (the
-    # final line may lack a trailing newline).
-    import re
+    try:
+        expected_document = _without_uv_sources(tomllib.loads(content, parse_float=str))
+    except tomllib.TOMLDecodeError:
+        # The user's own file is broken; leave the staged copy byte-identical
+        # so the pytest config boundary reports the genuine syntax error.
+        return
 
-    cleaned = re.sub(
-        r"\[tool\.uv\.sources(?:\.[^\]]+)?\]\s*\n(?:(?!\[)[^\n]*\n?)*",
-        "",
-        content,
-    )
+    if not (_UV_SOURCES_TABLE_RE.search(content) or _EMPTY_TOOL_UV_TABLE_RE.search(content)):
+        return
 
-    # Also remove [tool.uv] if it only contained sources (now empty)
-    cleaned = re.sub(
-        r"\[tool\.uv\]\s*\n(?=\[|\Z)",
-        "",
-        cleaned,
-    )
+    cleaned = _remove_uv_table_candidates(content, expected_document)
+    try:
+        final_document: dict[str, object] | None = tomllib.loads(cleaned, parse_float=str)
+    except tomllib.TOMLDecodeError:
+        final_document = None
+    if cleaned == content or final_document != expected_document:
+        warnings.warn(
+            "mutants/pyproject.toml: [tool.uv.sources] could not be removed without "
+            "changing other TOML content; staged copy left unchanged",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
 
-    if cleaned != content:
-        for attempt in range(5):
-            try:
-                _atomic_write_text(pyproject_path, cleaned)
-                break
-            except OSError:
-                if attempt < 4:
-                    time.sleep(0.1 * (2**attempt))
-                # Last attempt failed — continue silently, sanitisation is best-effort
+    for attempt in range(5):
+        try:
+            _atomic_write_text(pyproject_path, cleaned)
+            break
+        except OSError:
+            if attempt < 4:
+                time.sleep(0.1 * (2**attempt))
+            # Last attempt failed — continue silently, sanitisation is best-effort
 
 
 # ---------------------------------------------------------------------------
@@ -1989,8 +2537,11 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
     case-insensitive identity. The result MUST equal
     ``orig.__module__ + '.' + mangled_name``: the trampoline's prefix check
     and the stats mapping both depend on that identity — a root that is
-    importable but not stripped turns every one of its mutants into
-    ``no tests``.
+    importable but not stripped makes every mutant name unmatchable (the
+    trampoline silently runs the original, so mutants survive). The
+    orchestrator's name-consistency gate
+    (``_verify_runtime_mutant_names``, M-053) fails such a run closed
+    before dispatch instead of reporting silent survivors.
 
     For example::
 
@@ -2001,7 +2552,9 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
 
     Known limitation (documented in the README): a project whose tests
     import a root PACKAGE literally named ``src``/``source`` (``import
-    src.foo``) is not supported — the layout convention wins.
+    src.foo``) is not supported — the layout convention wins, and the
+    name-consistency gate fails such a run closed before dispatch (M-053)
+    instead of letting every mutant survive silently.
 
     Args:
         relative_source_path: Path to the source file, relative to the project
@@ -2013,6 +2566,13 @@ def get_mutant_name(relative_source_path: Path, mutant_method_name: str) -> str:
         Fully qualified mutant identifier string.
     """
     stem = str(relative_source_path)[: -len(relative_source_path.suffix)]
+    if ".." in relative_source_path.parts:
+        msg = (
+            f"mutating path {relative_source_path} must be canonical and "
+            "project-relative — '..' components produce mutant names that can "
+            "never match the trampoline prefix or the stats mapping (M-034)"
+        )
+        raise ValueError(msg)
     module_components = stem.replace(os.sep, ".").replace("/", ".").split(".")
     for root in SOURCE_ROOT_NAMES:
         root_matches = module_components and module_components[0] == root
@@ -2074,6 +2634,32 @@ class _FastPathMissError(Exception):
     """Internal sentinel: the .meta source fingerprint does not match."""
 
 
+def _is_generation_excluded_self_module(filename: Path) -> bool:
+    """Return whether *filename* is an engine self-instrumentation module.
+
+    The excluded modules (see
+    :data:`mutmut_win.constants.GENERATION_EXCLUDED_SELF_MODULES`) are part
+    of the runtime instrumentation the generated wrappers depend on; staging
+    a trampolined copy of them is structurally unsound, not merely risky.
+    The comparison resolves both sides, so a project-local file that merely
+    shares a basename stays mutable.
+    """
+
+    try:
+        resolved = filename.resolve()
+    except OSError:  # pragma: no cover - resolve of a read file rarely fails
+        return False
+    for module_name in GENERATION_EXCLUDED_SELF_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # pragma: no cover - engine modules always import
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None and Path(module_file).resolve() == resolved:
+            return True
+    return False
+
+
 def create_mutants_for_file(
     filename: Path,
     output_path: Path,
@@ -2107,6 +2693,17 @@ def create_mutants_for_file(
         names came from the unchanged-staging fast path.
     """
     collected_warnings: list[warnings.WarningMessage] = []
+
+    if ".." in filename.parts:
+        # Engine invariant (M-034): the config validator canonicalises
+        # '..'-aliases, but this guard also protects callers that bypass it.
+        # It must fire before any staging write — get_mutant_name runs only
+        # after the generated module is on disk.
+        msg = (
+            f"Refusing to mutate through a non-canonical '..'-alias ({filename}) — "
+            "paths_to_mutate entries must be canonical project-relative paths."
+        )
+        raise ValueError(msg)
 
     if output_path.resolve() == filename.resolve():
         msg = (
@@ -2151,6 +2748,32 @@ def create_mutants_for_file(
         separators=(",", ":"),
     )
     generation_fingerprint = hashlib.sha256(generation_payload.encode("utf-8")).hexdigest()
+
+    # Self-instrumentation exclusion (#192): the stats recorder must never be
+    # trampolined.  Under ``MUTANT_UNDER_TEST=stats`` every generated wrapper
+    # calls ``record_trampoline_hit``; a trampolined recorder calls itself for
+    # every recorded hit and recurses without bound, which breaks the stats
+    # phase for every gate that mutates the engine's own source tree.  The
+    # file still stages byte-identically so imports keep resolving.
+    if _is_generation_excluded_self_module(filename):
+        generated_hash = _atomic_write_generated_python(
+            output_path,
+            source,
+            source_encoding=source_encoding,
+        )
+        excluded_meta = SourceFileMutationData(path=str(meta_relative_path))
+        excluded_meta.exit_code_by_key = {}
+        try:
+            stat = filename.stat()
+            excluded_meta.source_mtime = stat.st_mtime
+            excluded_meta.source_size = stat.st_size
+        except OSError:
+            pass
+        excluded_meta.source_hash = source_hash
+        excluded_meta.generation_fingerprint = generation_fingerprint
+        excluded_meta.generated_hash = generated_hash
+        excluded_meta.save_generation_metadata()
+        return [], collected_warnings, False
 
     try:
         if allow_fast_path and output_path.exists():
@@ -2215,9 +2838,17 @@ def create_mutants_for_file(
         # limitation and stays importable in staging. Engine invariants such
         # as ValueError must propagate to the orchestration transaction;
         # swallowing them would silently publish a partial mutant universe.
+        if isinstance(exc, cst.ParserSyntaxError):
+            reason = "unsupported_source_syntax"
+            text = f"Unsupported syntax in {filename} ({exc!s}), skipping"
+        else:
+            # CSTValidationError can arise both while parsing and while the
+            # engine builds nodes; attribute it neutrally (M-003).
+            reason = "cst_validation_error"
+            text = f"LibCST rejected the syntax tree for {filename} ({exc!s}), skipping"
         w = warnings.WarningMessage(
-            message=SyntaxWarning(f"Unsupported syntax in {filename} ({exc!s}), skipping"),
-            category=SyntaxWarning,
+            message=MutationSurfaceDegradedWarning(reason, text),
+            category=MutationSurfaceDegradedWarning,
             filename=str(filename),
             lineno=0,
         )
@@ -2235,12 +2866,13 @@ def create_mutants_for_file(
         except (IndentationError, SyntaxError) as exc:
             lineno = getattr(exc, "lineno", "?")
             w = warnings.WarningMessage(
-                message=SyntaxWarning(
+                message=MutationSurfaceDegradedWarning(
+                    "generated_code_invalid",
                     f"Generated mutants for {filename} do not compile "
                     f"(line {lineno}: {exc.msg}) — copying the file unmutated. "
-                    "Please report this as a mutmut-win bug."
+                    "Please report this as a mutmut-win bug.",
                 ),
-                category=SyntaxWarning,
+                category=MutationSurfaceDegradedWarning,
                 filename=str(filename),
                 lineno=0,
             )

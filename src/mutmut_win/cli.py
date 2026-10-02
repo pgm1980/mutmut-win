@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, NoReturn, TextIO
 
 import click
 
@@ -31,6 +32,7 @@ from mutmut_win.db import (
 from mutmut_win.exceptions import (
     MutmutWinError,
     StagingNamespaceCollisionError,
+    UnsafeStagingError,
     UnsafeWorkspaceStateError,
 )
 from mutmut_win.mutant_diff import apply_mutant, render_function_diff_bytes, resolve_mutant
@@ -55,8 +57,10 @@ from mutmut_win.test_mapping import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from mutmut_win.db import MutationRunState
-    from mutmut_win.models import MutationResult
+    from mutmut_win.models import GenerationDegradation, MutationResult, MutationRunResult
 
 
 @click.group()
@@ -77,6 +81,31 @@ def _warn_treat_timeout_as_kill_deprecated() -> None:
         "infinite-loop detection (since v2.5.0). The flag stays functional "
         "in 2.x and will be removed in a future major release.",
         err=True,
+    )
+
+
+def _timeout_as_kill_score_line(result: MutationRunResult) -> str:
+    """One named stderr line for the deprecated timeout-as-kill score (M-025).
+
+    ``--treat-timeout-as-kill`` changes the ``--min-score`` gate but not the
+    reported score: the JSON ``score`` field and the text summary always stay
+    raw (CI contract). This line is the single place that names the effective
+    (timeouts-counted-as-kills) score next to the raw score, so a passing gate
+    is no longer silent about the value it actually judged.
+
+    Args:
+        result: The finished (non-interrupted, non-aborted, non-dry) run
+            result with at least one testable mutant.
+
+    Returns:
+        The ready-to-echo line, e.g. ``Score with timeouts counted as
+        kills (deprecated --treat-timeout-as-kill): 100.0% (raw score 50.0%)``.
+    """
+    effective = result.compute_score(treat_timeout_as_kill=True)
+    raw = result.compute_score(treat_timeout_as_kill=False)
+    return (
+        "Score with timeouts counted as kills (deprecated "
+        f"--treat-timeout-as-kill): {effective:.1f}% (raw score {raw:.1f}%)"
     )
 
 
@@ -138,6 +167,18 @@ _FORCE_CLEANUP_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
 def _remove_force_cleanup_root(path: Path) -> bool:
     """Remove one ``--force`` root, retrying through transient filter locks.
 
+    The ``mutants/`` staging root goes through
+    :func:`mutmut_win.file_setup.remove_staging_root` so DOS read-only
+    staging leaves (the mirror preserves the source mode) are cleared
+    through the established ``onexc`` hook instead of surviving
+    ``rmtree(ignore_errors=True)`` forever (M-020). Without that hook the
+    tree stayed after every retry and the refusal below blamed "files in
+    use?" for what was a read-only attribute. An unsafe leaf (hardlinks,
+    reparse points, identity changes) raises ``UnsafeStagingError``
+    immediately; every other ``OSError`` (including sharing violations on
+    writable leaves) keeps the retry semantics below. ``.mutmut-cache``
+    stays with the plain best-effort removal.
+
     Returns ``True`` when the root is gone.  The refusal after every retry
     fails deliberately: partial deletions must never run as a clean slate
     (issue #101 / A3-FD-009), and a persistent lock is indistinguishable
@@ -145,10 +186,25 @@ def _remove_force_cleanup_root(path: Path) -> bool:
     """
     import shutil
 
+    from mutmut_win.file_setup import remove_staging_root
+
     for delay in (0.0, *_FORCE_CLEANUP_RETRY_DELAYS):
         if delay:
             time.sleep(delay)
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            if path.name == "mutants":
+                remove_staging_root()
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+        except FileNotFoundError:
+            pass
+        except UnsafeStagingError:
+            raise
+        except OSError:
+            # Transient filter/AV locks keep the retry semantics; without
+            # ignore_errors the walk aborted at the first failure, so each
+            # retry restarts the tree from the root.
+            continue
         if not path.exists():
             return True
     return False
@@ -186,9 +242,15 @@ def _stable_live_basis(config: MutmutConfig, path: Path) -> str:
     first = build_run_basis_evidence(config, excluded_paths=excluded_paths)
     second = build_run_basis_evidence(config, excluded_paths=excluded_paths)
     if first != second:
+        if first.complete and second.complete:
+            raise MutmutWinError(
+                "source, test, configuration, dependency, or environment inputs changed "
+                "while CI/CD evidence was being validated"
+            )
         raise MutmutWinError(
-            "source, test, configuration, dependency, or environment inputs changed "
-            "while CI/CD evidence was being validated"
+            "the execution basis could not be completely observed while CI/CD "
+            "evidence was being validated (transiently locked or unreadable "
+            "inputs); rerun with --basis-diagnostics"
         )
     if not first.complete:
         raise MutmutWinError(
@@ -267,6 +329,289 @@ def _load_result_snapshot_or_exit(
         sys.exit(1)
 
 
+def _since_commit_usage_error(json_stdout: TextIO | None, message: str) -> NoReturn:
+    """Report a ``--since-commit`` usage error and exit 2.
+
+    Option-like, empty, range and unresolvable values are input errors of
+    the same class as the ``--min-score`` subset conflict (M-073): a clear
+    diagnosis on stderr plus the machine-readable error object with
+    ``exit_code`` 2 for ``--output json``.
+
+    Args:
+        json_stdout: JSON stdout channel (``None`` outside JSON mode).
+        message: The human-readable diagnosis naming the offending value.
+    """
+    click.echo(message, err=True)
+    _emit_json_error(json_stdout, message, 2)
+    sys.exit(2)
+
+
+#: Canonical commit object ids are the ONLY revision form mutmut-win hands
+#: to ``git diff``: 40 hex digits (SHA-1 repositories) or 64 hex digits
+#: (SHA-256 repositories).  Anything else would re-open option/pathspec
+#: interpretation in the diff argv.
+_COMMIT_OID_PATTERN = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _resolve_since_commit(ref: str, *, json_stdout: TextIO | None) -> str:
+    """Resolve a ``--since-commit`` value to one canonical commit oid (M-022).
+
+    The raw value used to travel into the ``git diff`` argv, where git
+    interpreted option-like values (``--output=…``) as diff options,
+    existing directories without a same-named revision as pathspecs, tree
+    objects as tree-vs-worktree diffs and range expressions (``A..B``,
+    ``A...B``) as ranges — each with exit 0, a false incremental success
+    (CLI-01).  Now the value must denote exactly ONE commit:
+
+    - empty and option-like values (leading ``-``) are rejected before any
+      git subprocess runs,
+    - range expressions are rejected explicitly; former users compute
+      ``git merge-base <base> <tip>`` and pass the resulting commit
+      (decision M-022 = A; a built-in merge-base resolution is postponed),
+    - everything else is resolved by
+      ``git rev-parse --verify --quiet --end-of-options '<ref>^{commit}'``
+      — the ``^{commit}`` peeling rejects blobs and trees — and validated
+      against :data:`_COMMIT_OID_PATTERN`.
+
+    Fail-closed: a git without ``rev-parse --end-of-options`` support
+      (older than 2.36) makes the verify call fail, which exits 2 instead
+      of forwarding anything unvalidated.
+
+    Args:
+        ref: The raw ``--since-commit`` value, one argv element.
+        json_stdout: JSON error channel for the usage-error contract.
+
+    Returns:
+        The canonical commit object id (40 or 64 hex digits).
+
+    Raises:
+        SystemExit: Exit 2 for every rejected or unresolvable value.
+    """
+    if not ref:
+        _since_commit_usage_error(
+            json_stdout,
+            "--since-commit requires a single commit reference (branch, tag, or "
+            "commit); the value is empty",
+        )
+    if ref.startswith("-"):
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit requires a single commit reference; option-like "
+            f"values are rejected: {ref!r}",
+        )
+    if ".." in ref:
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit no longer accepts range expressions: {ref!r}; "
+            f"compute 'git merge-base <base> <tip>' and pass the resulting "
+            f"commit instead",
+        )
+
+    import subprocess as sp
+
+    # The ref travels as a single argv element with --end-of-options ahead
+    # of it, so git cannot read it as an option; ^{commit} peels tags and
+    # rejects every non-commit object.  --quiet keeps git's stderr empty on
+    # failure — the diagnosis above is our own message.
+    rev_result = sp.run(  # noqa: S603 — git CLI with controlled args
+        [  # noqa: S607 — git is a well-known executable
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{ref}^{{commit}}",
+        ],
+        capture_output=True,
+        cwd=Path.cwd(),
+    )
+    if rev_result.returncode != 0:
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit {ref!r} is not a commit (git rev-parse exited "
+            f"{rev_result.returncode}); pass a single branch, tag, or commit",
+        )
+    resolved = (
+        rev_result.stdout.decode("ascii", errors="replace")
+        if isinstance(rev_result.stdout, bytes)
+        else str(rev_result.stdout)
+    ).strip()
+    if not _COMMIT_OID_PATTERN.fullmatch(resolved):
+        _since_commit_usage_error(
+            json_stdout,
+            f"--since-commit {ref!r} did not resolve to a canonical commit object id: {resolved!r}",
+        )
+    return resolved
+
+
+def _git_changed_names(oid: str, *, json_stdout: TextIO | None) -> list[str]:
+    """Changed tracked files since the commit ``oid``, relative to the process CWD (M-021).
+
+    Runs ``git diff --name-only -z --relative <oid> --``.  Without
+    ``--relative`` git reports repo-root-relative names while the target
+    filter checks them against the process CWD — a run from a repository
+    subproject (monorepo) selected nothing and still exited 0 (BC-015 /
+    CLI-02).  ``--relative`` makes git report CWD-relative names AND limits
+    the diff to the CWD subtree, which is exactly the project scope
+    (``paths_to_mutate`` is rejected outside the project by config).
+
+    Args:
+        oid: The canonical commit object id resolved by
+            :func:`_resolve_since_commit` (M-022) — the only form allowed
+            here, followed by a terminating ``--`` so nothing after it can
+            be read as an option or pathspec.
+        json_stdout: JSON error channel for the returncode contract (#102).
+
+    Returns:
+        The changed file names, decoded from NUL-separated bytes.
+
+    Raises:
+        SystemExit: Exit 2 when git itself rejects the diff (issue #102).
+    """
+    import subprocess as sp
+
+    # git command is fully controlled — the oid is pre-validated hex
+    # (M-022) and travels as a single argv element behind '--relative',
+    # terminated by '--' (option and pathspec interpretation closed).
+    # Diff against the COMMIT alone (no ..HEAD): committed AND
+    # working-tree changes count — the documented "check what you just
+    # changed" workflow includes uncommitted edits (issue #128
+    # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
+    # the process default anyway; it is spelled out because --relative
+    # derives the output base from it (setting it alone fixes nothing).
+    git_result = sp.run(  # noqa: S603 — git CLI with controlled args
+        [  # noqa: S607 — git is a well-known executable
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            oid,
+            "--",
+        ],
+        capture_output=True,
+        cwd=Path.cwd(),
+    )
+    # Issue #102 / A3-CM-006: the returncode was never checked — an
+    # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
+    if git_result.returncode != 0:
+        stderr = (
+            git_result.stderr.decode("utf-8", errors="replace")
+            if isinstance(git_result.stderr, bytes)
+            else git_result.stderr
+        )
+        message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
+        click.echo(message, err=True)
+        _emit_json_error(json_stdout, message, 2)
+        sys.exit(2)
+
+    if isinstance(git_result.stdout, bytes):
+        return [
+            raw.decode("utf-8", errors="surrogateescape")
+            for raw in git_result.stdout.split(b"\0")
+            if raw
+        ]
+    # Test doubles and third-party subprocess seams may still
+    # return text. Production uses bytes so ``-z`` can preserve
+    # every pathname without Git's C-style quoting.
+    separator = "\0" if "\0" in git_result.stdout else "\n"
+    return [name for name in git_result.stdout.split(separator) if name]
+
+
+def _project_relative_parts(path_text: str, project_root: Path) -> tuple[str, ...] | None:
+    """Canonical project-relative parts of a path or pytest node id (M-024).
+
+    Absolute entries and ``..``-aliases used to bypass the incremental
+    tests_dir exclusion because the comparison used raw ``Path.parts``:
+    an absolute entry kept its drive anchor and ``tests/../tests`` kept
+    its ``..`` component, so neither ever prefix-matched a changed name
+    and changed test files became mutation targets (CLI-03).
+
+    Both sides of the exclusion comparison go through this helper:
+
+    - a pytest node-id suffix (``::``) is split off,
+    - drive-anchored relative forms (``C:tests``) are not comparable to a
+      project root and yield ``None`` (they were already ineffective),
+    - root-without-drive forms (``/tests``) stay lexically project-relative
+      (the previous code stripped leading separators — same meaning),
+    - everything else is joined onto ``project_root``, normpath-collapsed
+      and mapped through ``relative_to`` (case-insensitive on Windows),
+      with a ``resolve(strict=False)`` fallback for alias spellings
+      (8.3 short names, junctions, subst drives).
+
+    Args:
+        path_text: A configured tests_dir entry or a changed git name.
+        project_root: The project directory (the process CWD).
+
+    Returns:
+        Normcased parts relative to ``project_root``; an empty tuple when
+        the entry IS the project root (``'.'`` — the historic
+        exclude-everything semantics); ``None`` when the entry is anchored
+        outside the project or not comparable at all.
+    """
+    text = path_text.split("::", 1)[0]
+    parsed = Path(text)
+    if parsed.drive and not parsed.root:
+        # 'C:tests' is relative to the drive's current directory, not to
+        # the project — not comparable (and never effective before).
+        return None
+    if parsed.root and not parsed.drive:
+        # '/tests' historically behaved like 'tests' because leading
+        # separators were stripped; keep that lexical meaning instead of
+        # failing the exclusion filter open.
+        text = text.lstrip("/\\")
+    root = Path(os.path.normpath(project_root))
+    candidate = Path(os.path.normpath(root / text))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        # Alias spellings the lexical pass cannot see (8.3 short names,
+        # junctions, subst drives) resolve through the filesystem.
+        try:
+            relative = candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+        except ValueError:
+            return None
+    return tuple(os.path.normcase(part) for part in relative.parts)
+
+
+def _is_mutation_target(
+    name: str,
+    tests_dir_parts: tuple[tuple[str, ...], ...],
+    project_root: Path,
+    mutate_roots: tuple[tuple[str, ...], ...] = (),
+) -> bool:
+    """Whether a changed file name is an incremental mutation target.
+
+    The target set is the intersection of changed files with the configured
+    mutation roots (``paths_to_mutate``) minus the test exclusion trees —
+    the incremental universe can never exceed the full-run walk set
+    (M-023, P-08 decision A).
+    """
+
+    # Deleted files and test files used to become mutation targets.
+    if not name.casefold().endswith(".py") or not Path(name).exists():
+        return False
+    parts = _project_relative_parts(name, project_root)
+    if parts is None:
+        # The name is anchored outside the project or not comparable: an
+        # exclusion filter must fail closed — never a mutation target.
+        return False
+    # Positive filter (M-023): a changed file is a target only when it lies
+    # under a configured mutation root.  A file-level entry matches exactly;
+    # a directory entry matches as a component prefix.  An empty
+    # ``mutate_roots`` (no positive filter computable) keeps the historical
+    # tests_dir-only behaviour — the caller is responsible for providing it.
+    if mutate_roots:
+        under_any_root = any(parts == root or parts[: len(root)] == root for root in mutate_roots)
+        if not under_any_root:
+            return False
+    # Component-prefix match (issue #128 / 360°-A4): the old
+    # parts[0] comparison against the FULL tests_dir string never
+    # matched nested dirs like "tests/unit/" — changed TEST files
+    # became mutation targets.
+    return all(parts[: len(td)] != td for td in tests_dir_parts)
+
+
 @cli.command()
 @click.option("--max-children", type=int, default=None, help="Number of worker processes.")
 @click.option(
@@ -277,9 +622,10 @@ def _load_result_snapshot_or_exit(
 )
 @click.option(
     "--tests-dir",
+    "tests_dir",
     type=str,
-    default=None,
-    help="Test directory (overrides pyproject.toml).",
+    multiple=True,
+    help="Test directory (overrides pyproject.toml). Repeatable.",
 )
 @click.option(
     "--profile",
@@ -310,7 +656,12 @@ def _load_result_snapshot_or_exit(
     "--since-commit",
     type=str,
     default=None,
-    help="Only mutate files changed since this git commit (e.g. HEAD~3).",
+    help=(
+        "Only mutate files changed since this git commit reference "
+        "(branch, tag, or commit, e.g. HEAD~3). Range expressions are "
+        "rejected; pass the result of 'git merge-base <base> <tip>' for "
+        "range-style diffs."
+    ),
 )
 @click.option("--no-progress", is_flag=True, default=False, help="Suppress live progress output.")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug output.")
@@ -358,7 +709,8 @@ def _load_result_snapshot_or_exit(
     help=(
         "(DEPRECATED — superseded by infinite-loop detection; removal in a "
         "future major release.) Count TIMEOUT mutants toward the kill bucket "
-        "for --min-score and score reporting. Workaround for Bug #71 "
+        "for the --min-score gate and one dedicated stderr line; the reported "
+        "JSON score and text summary stay raw. Workaround for Bug #71 "
         "(Hypothesis tests turn infinite-loop mutations into TIMEOUT)."
     ),
 )
@@ -398,7 +750,7 @@ def _load_result_snapshot_or_exit(
 def run(
     max_children: int | None,
     paths_to_mutate: tuple[str, ...],
-    tests_dir: str | None,
+    tests_dir: tuple[str, ...],
     profile: str | None,
     min_score: float | None,
     output: str,
@@ -439,51 +791,334 @@ def run(
         if output == "json":
             prose_stack.enter_context(contextlib.redirect_stdout(sys.stderr))
 
-        if basis_diagnostics is not None:
-            from mutmut_win.basis_diagnostics import diagnostics_session
+        try:
+            # AR-24 / M-076: every Ctrl-C during run — including the early
+            # preparation phases (config load, git since-commit resolution,
+            # --force cleanup, lock acquisition, config re-validation) —
+            # honors the documented exit-130 contract.  The handler sits at
+            # the outermost run scope so SystemExit from validation guards
+            # (exit 1/2) passes through untouched; only KeyboardInterrupt
+            # is translated.
+            if basis_diagnostics is not None:
+                from mutmut_win.basis_diagnostics import diagnostics_session
 
-            try:
-                prose_stack.enter_context(diagnostics_session(basis_diagnostics))
-            except (OSError, ValueError) as exc:
-                raise click.BadParameter(str(exc), param_hint="--basis-diagnostics") from exc
+                try:
+                    prose_stack.enter_context(diagnostics_session(basis_diagnostics))
+                except (OSError, ValueError) as exc:
+                    raise click.BadParameter(str(exc), param_hint="--basis-diagnostics") from exc
 
-        # A linked cache can resolve the canonical DB lock into its external
-        # target, while linked staging can redirect generation writes. Reject
-        # both fixed roots before deriving/acquiring the lock for every real
-        # run (not just destructive --force). A dry-run is read-only.
-        if not dry_run or force:
-            action = "--force cleanup" if force else "workspace state access"
-            try:
-                _require_safe_workspace_roots(
-                    "mutants",
-                    ".mutmut-cache",
-                    action=action,
+            # A linked cache can resolve the canonical DB lock into its external
+            # target, while linked staging can redirect generation writes. Reject
+            # both fixed roots before deriving/acquiring the lock for every real
+            # run (not just destructive --force). A dry-run is read-only.
+            if not dry_run or force:
+                action = "--force cleanup" if force else "workspace state access"
+                try:
+                    _require_safe_workspace_roots(
+                        "mutants",
+                        ".mutmut-cache",
+                        action=action,
+                    )
+                except UnsafeWorkspaceStateError as exc:
+                    message = str(exc)
+                    click.echo(message, err=True)
+                    _emit_json_error(json_stdout, message, 1)
+                    sys.exit(1)
+
+            # Serialize every state-changing run before ``--force`` can remove
+            # shared staging/cache state. The OS guard survives crashes; owner
+            # metadata carries PID/start-time diagnostics and is never guessed
+            # stale. A read-only dry-run needs no lock unless --force itself was
+            # explicitly requested.
+            workspace_lock: WorkspaceRunLock | None = None
+            if not dry_run or force:
+                try:
+                    # Validate the database file and SQLite sidecars before
+                    # canonicalising the lock path.  Otherwise a file-level link
+                    # could redirect the lock and its owner metadata outside the
+                    # workspace before the database layer gets a chance to refuse
+                    # the unsafe cache.
+                    validate_cache_path(DEFAULT_DB_PATH)
+                    workspace_lock = prose_stack.enter_context(
+                        WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH))
+                    )
+                except MutmutWinError as exc:
+                    if debug:
+                        import traceback
+
+                        click.echo(traceback.format_exc(), err=True)
+                    message = f"Error: {exc}"
+                    click.echo(message, err=True)
+                    _emit_json_error(json_stdout, message, 1)
+                    sys.exit(1)
+
+                # Close the validate/acquire race before any cache or staging
+                # access. The concrete writers retain their own destination
+                # checks as a final boundary.
+                try:
+                    _require_safe_workspace_roots("mutants", ".mutmut-cache")
+                    validate_cache_path(DEFAULT_DB_PATH)
+                except UnsafeWorkspaceStateError as exc:
+                    message = str(exc)
+                    click.echo(message, err=True)
+                    _emit_json_error(json_stdout, message, 1)
+                    sys.exit(1)
+
+            # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
+            # escape as a 47-line traceback with exit 1 while CLI flags with the
+            # SAME rules exited 2 — one config-error contract for every command.
+            config = _load_config_or_exit(json_stdout)
+
+            # A score gate is release/CI authority over the complete configured
+            # mutant universe. Name, path and --since-commit selections are
+            # intentionally subset runs; judging their denominator could turn a
+            # one-mutant retest into a false 100% project score. Reject the
+            # incompatible request before any expensive generation or git diff.
+            subset_selection_requested = bool(
+                mutant_names or since_commit is not None or paths_to_mutate
+            )
+            if min_score is not None and subset_selection_requested:
+                message = (
+                    "--min-score requires a full unfiltered run; mutant names, "
+                    "--paths-to-mutate, and --since-commit cannot authorize a project score"
                 )
-            except UnsafeWorkspaceStateError as exc:
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
+
+            # M-073 / issue #160: a dry-run preview executes no tests, so its
+            # result can never carry a complete execution basis — the gate would
+            # fail AFTER the preview with the misleading runtime diagnosis
+            # "Execution basis incomplete" (exit 1). Reject the incompatible
+            # request upfront as the same class of usage conflict as the subset
+            # selection above, before any generation or --force deletion runs.
+            if min_score is not None and dry_run:
+                message = (
+                    "--min-score cannot be combined with --dry-run: "
+                    "a preview executes no tests and cannot authorize a score"
+                )
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
+
+            # --- Apply CLI overrides to config ---
+            overrides: dict[str, object] = {}
+            if max_children is not None:
+                overrides["max_children"] = max_children
+            if paths_to_mutate:
+                overrides["paths_to_mutate"] = list(paths_to_mutate)
+            if tests_dir:
+                # ``multiple=True`` accumulates every ``--tests-dir`` occurrence:
+                # click's historical last-wins silently dropped all earlier test
+                # files, so combined gates lost every kill carried only by the
+                # dropped files (issue #192).
+                overrides["tests_dir"] = list(tests_dir)
+            if profile is not None:
+                overrides["mutation_profile"] = profile
+            if timeout_multiplier is not None:
+                overrides["timeout_multiplier"] = timeout_multiplier
+            if debug:
+                overrides["debug"] = True
+            if do_not_mutate:
+                overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
+            if extra_paths_to_copy:
+                overrides["extra_paths"] = list(extra_paths_to_copy)
+            if no_infinite_loop_detection:
+                overrides["infinite_loop_detection"] = False
+            if infinite_loop_cpu_threshold is not None:
+                overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
+
+            # Validate every ordinary override before --since-commit interprets
+            # changed paths.  In particular, the effective --tests-dir must be the
+            # exclusion boundary below; consulting the pre-override config let a
+            # changed custom_tests/*.py file become a mutation target.
+            if overrides:
+                from pydantic import ValidationError
+
+                try:
+                    config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
+                except ValidationError as exc:
+                    message = f"Invalid option value:\n{exc}"
+                    click.echo(message, err=True)
+                    _emit_json_error(json_stdout, message, 2)
+                    sys.exit(2)
+                overrides = {}
+
+            # --since-commit: resolve changed .py files via git
+            if since_commit is not None:
+                # M-022: ONE canonical commit oid first — the raw value never
+                # reaches git diff (option/pathspec/range/tree interpretation
+                # all closed, exit 2 on everything unresolvable).
+                canonical_oid = _resolve_since_commit(since_commit, json_stdout=json_stdout)
+                # M-021: --relative makes git report project-relative names, so
+                # monorepo runs from a repository subfolder select their own
+                # targets instead of silently no-op'ing with exit 0.
+                changed_names = _git_changed_names(canonical_oid, json_stdout=json_stdout)
+                # M-024: both sides of the tests_dir exclusion canonicalize
+                # through _project_relative_parts, so absolute entries and
+                # '..'-aliases no longer fail open.
+                project_root = Path.cwd()
+                tests_dir_parts = tuple(
+                    parts
+                    for parts in (
+                        _project_relative_parts(entry, project_root) for entry in config.tests_dir
+                    )
+                    if parts is not None
+                )
+                # M-023: the incremental target set is the intersection with
+                # the configured mutation roots — a changed file outside
+                # paths_to_mutate is never an incremental target, exactly as
+                # the full-run walk would never enumerate it.
+                mutate_roots = tuple(
+                    parts
+                    for parts in (
+                        _project_relative_parts(entry, project_root)
+                        for entry in config.paths_to_mutate
+                    )
+                    if parts is not None
+                )
+                changed_py = [
+                    name
+                    for name in changed_names
+                    if _is_mutation_target(
+                        name,
+                        tests_dir_parts,
+                        project_root,
+                        mutate_roots=mutate_roots,
+                    )
+                ]
+                if not changed_py:
+                    message = "No mutation-target .py files changed since the given commit."
+                    # A valid diff with no changed production target is an
+                    # incremental no-op, not malformed input.  This distinction
+                    # matters in CI: an invalid ref above still exits 2, while a
+                    # docs/tests-only change can end successfully without
+                    # fabricating mutation evidence (MW221-043).
+                    if json_stdout is not None:
+                        from mutmut_win.models import MutationRunResult
+
+                        click.echo(MutationRunResult().model_dump_json(indent=2), file=json_stdout)
+                    else:
+                        click.echo(message)
+                    return
+                overrides["paths_to_mutate"] = changed_py
+
+            if overrides:
+                # Issue #102 / A3-CM-004: model_copy(update=...) bypasses ALL pydantic
+                # constraints — '--max-children 0' was an accepted hang. Re-validate
+                # the merged config so the field constraints apply to CLI input too.
+                from pydantic import ValidationError
+
+                try:
+                    config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
+                except ValidationError as exc:
+                    message = f"Invalid option value:\n{exc}"
+                    click.echo(message, err=True)
+                    _emit_json_error(json_stdout, message, 2)
+                    sys.exit(2)
+
+            # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
+            # yield "No mutants generated." with exit 0 — a false CI success. A
+            # missing path is a configuration error per the documented contract.
+            missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
+            if missing_paths:
+                plural = "ies do" if len(missing_paths) > 1 else "y does"
+                message = f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}"
+                click.echo(message, err=True)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
+
+            # Build and validate the exact staging-input plan before --force can
+            # delete prior evidence and before an executor or database is created.
+            # A project file that would be overwritten by mutmut-win-owned
+            # metadata/plugins is a configuration error, not a cleanable cache.
+            from mutmut_win.file_setup import validate_staging_namespace
+
+            try:
+                validate_staging_namespace(config)
+            except StagingNamespaceCollisionError as exc:
                 message = str(exc)
                 click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 1)
-                sys.exit(1)
+                _emit_json_error(json_stdout, message, 2)
+                sys.exit(2)
 
-        # Serialize every state-changing run before ``--force`` can remove
-        # shared staging/cache state. The OS guard survives crashes; owner
-        # metadata carries PID/start-time diagnostics and is never guessed
-        # stale. A read-only dry-run needs no lock unless --force itself was
-        # explicitly requested.
-        workspace_lock: WorkspaceRunLock | None = None
-        if not dry_run or force:
+            # --force: clean slate — only after the effective configuration and
+            # read-only namespace plan have been proven safe. The workspace lock
+            # acquired above continues to serialize both removals.
+            if force:
+                for dirname in ("mutants", ".mutmut-cache"):
+                    p = Path(dirname)
+                    if p.exists():
+                        refusal = _force_cleanup_refusal(dirname)
+                        if refusal is not None:
+                            click.echo(refusal, err=True)
+                            _emit_json_error(json_stdout, refusal, 1)
+                            sys.exit(1)
+                        try:
+                            removed = _remove_force_cleanup_root(p)
+                        except UnsafeStagingError as exc:
+                            # M-020: an unsafe leaf (hardlinked read-only file,
+                            # reparse point, identity change) is refused with its
+                            # own diagnosis instead of a raw traceback — and,
+                            # for a locked hardlink, instead of the misleading
+                            # "files in use?" refusal below.
+                            message = f"Refusing --force cleanup of {dirname}/: {exc}"
+                            click.echo(message, err=True)
+                            _emit_json_error(json_stdout, message, 1)
+                            sys.exit(1)
+                        if not removed:
+                            # Issue #101 / A3-FD-009: rmtree(ignore_errors=True)
+                            # plus an unconditional success message sold a
+                            # PARTIAL deletion (files locked by another process)
+                            # as a clean slate. Retries already absorbed the
+                            # transient antivirus/indexer races; whatever still
+                            # blocks removal now is treated as a live lock.
+                            message = (
+                                f"Could not fully remove {dirname}/ (files in use?); "
+                                "refusing to run with stale state."
+                            )
+                            click.echo(message, err=True)
+                            _emit_json_error(json_stdout, message, 1)
+                            sys.exit(1)
+                        click.echo(f"Removed {dirname}/")
+
+            # Only a FULL run may purge stale DB rows (issue #96): subset runs know
+            # just a slice of the valid mutant set and must never delete history.
+            # A --paths-to-mutate override narrows the staging to that slice, so it
+            # counts as a subset run too (issue #120 / RUN-002 — the purge used to
+            # delete every result outside the given paths).
+            is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
             try:
-                # Validate the database file and SQLite sidecars before
-                # canonicalising the lock path.  Otherwise a file-level link
-                # could redirect the lock and its owner metadata outside the
-                # workspace before the database layer gets a chance to refuse
-                # the unsafe cache.
-                validate_cache_path(DEFAULT_DB_PATH)
-                workspace_lock = prose_stack.enter_context(
-                    WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH))
+                runner = PytestRunner(config)
+                # A dry-run is a source-only preview: constructing the Windows
+                # executor here would create a Job Object even though no worker
+                # can be used.  Keep the existing injection point for real runs,
+                # but let MutationOrchestrator retain its lazy default for the
+                # preview path.
+                executor = (
+                    None
+                    if dry_run
+                    else SpawnPoolExecutor(max_workers=config.max_children, config=config)
                 )
+                orchestrator = MutationOrchestrator(
+                    config,
+                    runner=runner,
+                    executor=executor,
+                    mutant_names=mutant_names if mutant_names else None,
+                    no_progress=no_progress,
+                    purge_stale_results=is_full_run,
+                    is_full_run=is_full_run,
+                    rerun_all=rerun_all,
+                    workspace_lock=workspace_lock,
+                )
+                result = orchestrator.dry_run() if dry_run else orchestrator.run()
             except MutmutWinError as exc:
-                if debug:
+                # Issue #102 / A4-UI-005: --debug was a dead flag while this except
+                # swallowed tracebacks exactly where debug should help.
+                # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
+                # rendering — a foreign exception is a mutmut-win bug and propagates
+                # with its full traceback instead of masquerading as a clean error.
+                if debug or config.debug:
                     import traceback
 
                     click.echo(traceback.format_exc(), err=True)
@@ -491,265 +1126,21 @@ def run(
                 click.echo(message, err=True)
                 _emit_json_error(json_stdout, message, 1)
                 sys.exit(1)
-
-            # Close the validate/acquire race before any cache or staging
-            # access. The concrete writers retain their own destination
-            # checks as a final boundary.
-            try:
-                _require_safe_workspace_roots("mutants", ".mutmut-cache")
-                validate_cache_path(DEFAULT_DB_PATH)
-            except UnsafeWorkspaceStateError as exc:
-                message = str(exc)
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 1)
-                sys.exit(1)
-
-        # Issue #120 / CFG-001 (external QA): a broken [tool.mutmut] used to
-        # escape as a 47-line traceback with exit 1 while CLI flags with the
-        # SAME rules exited 2 — one config-error contract for every command.
-        config = _load_config_or_exit(json_stdout)
-
-        # A score gate is release/CI authority over the complete configured
-        # mutant universe. Name, path and --since-commit selections are
-        # intentionally subset runs; judging their denominator could turn a
-        # one-mutant retest into a false 100% project score. Reject the
-        # incompatible request before any expensive generation or git diff.
-        subset_selection_requested = bool(
-            mutant_names or since_commit is not None or paths_to_mutate
-        )
-        if min_score is not None and subset_selection_requested:
-            message = (
-                "--min-score requires a full unfiltered run; mutant names, "
-                "--paths-to-mutate, and --since-commit cannot authorize a project score"
-            )
+        except KeyboardInterrupt as exc:
+            # AR-24 / M-076: every Ctrl-C during run — including the early
+            # preparation phases (config load, git since-commit resolution,
+            # --force cleanup, lock acquisition, config re-validation) —
+            # honors the documented exit-130 contract.  The orchestrator
+            # has already marked an existing DB run as 'interrupted' before
+            # re-raising.  Notes attached by the orchestrator (e.g. a
+            # failed cached-verdict revocation) are surfaced instead of
+            # swallowed.
+            for note in getattr(exc, "__notes__", ()):
+                click.echo(f"Note: {note}", err=True)
+            message = "Run interrupted before completion (Ctrl-C); no score was produced."
             click.echo(message, err=True)
-            _emit_json_error(json_stdout, message, 2)
-            sys.exit(2)
-
-        # --- Apply CLI overrides to config ---
-        overrides: dict[str, object] = {}
-        if max_children is not None:
-            overrides["max_children"] = max_children
-        if paths_to_mutate:
-            overrides["paths_to_mutate"] = list(paths_to_mutate)
-        if tests_dir is not None:
-            overrides["tests_dir"] = [tests_dir]
-        if profile is not None:
-            overrides["mutation_profile"] = profile
-        if timeout_multiplier is not None:
-            overrides["timeout_multiplier"] = timeout_multiplier
-        if debug:
-            overrides["debug"] = True
-        if do_not_mutate:
-            overrides["do_not_mutate"] = list(config.do_not_mutate) + list(do_not_mutate)
-        if extra_paths_to_copy:
-            overrides["extra_paths"] = list(extra_paths_to_copy)
-        if no_infinite_loop_detection:
-            overrides["infinite_loop_detection"] = False
-        if infinite_loop_cpu_threshold is not None:
-            overrides["infinite_loop_cpu_threshold"] = infinite_loop_cpu_threshold
-
-        # Validate every ordinary override before --since-commit interprets
-        # changed paths.  In particular, the effective --tests-dir must be the
-        # exclusion boundary below; consulting the pre-override config let a
-        # changed custom_tests/*.py file become a mutation target.
-        if overrides:
-            from pydantic import ValidationError
-
-            try:
-                config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
-            except ValidationError as exc:
-                message = f"Invalid option value:\n{exc}"
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
-            overrides = {}
-
-        # --since-commit: resolve changed .py files via git
-        if since_commit is not None:
-            import subprocess as sp
-
-            # git command is fully controlled — commit hash is validated by git itself.
-            # Diff against the REF alone (no ..HEAD): committed AND
-            # working-tree changes count — the documented "check what you
-            # just changed" workflow includes uncommitted edits (issue #128
-            # / 360°-A4). Untracked files stay invisible to git diff.
-            git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-                ["git", "diff", "--name-only", "-z", since_commit],  # noqa: S607 — git is a well-known executable
-                capture_output=True,
-            )
-            # Issue #102 / A3-CM-006: the returncode was never checked — an
-            # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
-            if git_result.returncode != 0:
-                stderr = (
-                    git_result.stderr.decode("utf-8", errors="replace")
-                    if isinstance(git_result.stderr, bytes)
-                    else git_result.stderr
-                )
-                message = f"git diff failed (exit {git_result.returncode}): {stderr.strip()}"
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
-
-            def _comparison_parts(path_text: str) -> tuple[str, ...]:
-                return tuple(os.path.normcase(part) for part in Path(path_text).parts)
-
-            tests_dir_parts = tuple(
-                _comparison_parts(target.split("::", 1)[0].strip("/").strip("\\"))
-                for target in config.tests_dir
-            )
-
-            def _is_mutation_target(name: str) -> bool:
-                # Deleted files and test files used to become mutation targets.
-                if not name.casefold().endswith(".py") or not Path(name).exists():
-                    return False
-                parts = _comparison_parts(name)
-                # Component-prefix match (issue #128 / 360°-A4): the old
-                # parts[0] comparison against the FULL tests_dir string never
-                # matched nested dirs like "tests/unit/" — changed TEST files
-                # became mutation targets.
-                return all(parts[: len(td)] != td for td in tests_dir_parts)
-
-            if isinstance(git_result.stdout, bytes):
-                changed_names = [
-                    raw.decode("utf-8", errors="surrogateescape")
-                    for raw in git_result.stdout.split(b"\0")
-                    if raw
-                ]
-            else:
-                # Test doubles and third-party subprocess seams may still
-                # return text. Production uses bytes so ``-z`` can preserve
-                # every pathname without Git's C-style quoting.
-                separator = "\0" if "\0" in git_result.stdout else "\n"
-                changed_names = [name for name in git_result.stdout.split(separator) if name]
-            changed_py = [name for name in changed_names if _is_mutation_target(name)]
-            if not changed_py:
-                message = "No mutation-target .py files changed since the given commit."
-                # A valid diff with no changed production target is an
-                # incremental no-op, not malformed input.  This distinction
-                # matters in CI: an invalid ref above still exits 2, while a
-                # docs/tests-only change can end successfully without
-                # fabricating mutation evidence (MW221-043).
-                if json_stdout is not None:
-                    from mutmut_win.models import MutationRunResult
-
-                    click.echo(MutationRunResult().model_dump_json(indent=2), file=json_stdout)
-                else:
-                    click.echo(message)
-                return
-            overrides["paths_to_mutate"] = changed_py
-
-        if overrides:
-            # Issue #102 / A3-CM-004: model_copy(update=...) bypasses ALL pydantic
-            # constraints — '--max-children 0' was an accepted hang. Re-validate
-            # the merged config so the field constraints apply to CLI input too.
-            from pydantic import ValidationError
-
-            try:
-                config = MutmutConfig.model_validate({**config.model_dump(), **overrides})
-            except ValidationError as exc:
-                message = f"Invalid option value:\n{exc}"
-                click.echo(message, err=True)
-                _emit_json_error(json_stdout, message, 2)
-                sys.exit(2)
-
-        # Issue #120 / CLI-002 (external QA): a typo'd mutation root used to
-        # yield "No mutants generated." with exit 0 — a false CI success. A
-        # missing path is a configuration error per the documented contract.
-        missing_paths = [p for p in config.paths_to_mutate if not Path(p).exists()]
-        if missing_paths:
-            plural = "ies do" if len(missing_paths) > 1 else "y does"
-            message = f"paths_to_mutate entr{plural} not exist: {', '.join(missing_paths)}"
-            click.echo(message, err=True)
-            _emit_json_error(json_stdout, message, 2)
-            sys.exit(2)
-
-        # Build and validate the exact staging-input plan before --force can
-        # delete prior evidence and before an executor or database is created.
-        # A project file that would be overwritten by mutmut-win-owned
-        # metadata/plugins is a configuration error, not a cleanable cache.
-        from mutmut_win.file_setup import validate_staging_namespace
-
-        try:
-            validate_staging_namespace(config)
-        except StagingNamespaceCollisionError as exc:
-            message = str(exc)
-            click.echo(message, err=True)
-            _emit_json_error(json_stdout, message, 2)
-            sys.exit(2)
-
-        # --force: clean slate — only after the effective configuration and
-        # read-only namespace plan have been proven safe. The workspace lock
-        # acquired above continues to serialize both removals.
-        if force:
-            for dirname in ("mutants", ".mutmut-cache"):
-                p = Path(dirname)
-                if p.exists():
-                    refusal = _force_cleanup_refusal(dirname)
-                    if refusal is not None:
-                        click.echo(refusal, err=True)
-                        _emit_json_error(json_stdout, refusal, 1)
-                        sys.exit(1)
-                    if not _remove_force_cleanup_root(p):
-                        # Issue #101 / A3-FD-009: rmtree(ignore_errors=True)
-                        # plus an unconditional success message sold a
-                        # PARTIAL deletion (files locked by another process)
-                        # as a clean slate. Retries already absorbed the
-                        # transient antivirus/indexer races; whatever still
-                        # blocks removal now is treated as a live lock.
-                        message = (
-                            f"Could not fully remove {dirname}/ (files in use?); "
-                            "refusing to run with stale state."
-                        )
-                        click.echo(message, err=True)
-                        _emit_json_error(json_stdout, message, 1)
-                        sys.exit(1)
-                    click.echo(f"Removed {dirname}/")
-
-        # Only a FULL run may purge stale DB rows (issue #96): subset runs know
-        # just a slice of the valid mutant set and must never delete history.
-        # A --paths-to-mutate override narrows the staging to that slice, so it
-        # counts as a subset run too (issue #120 / RUN-002 — the purge used to
-        # delete every result outside the given paths).
-        is_full_run = not mutant_names and since_commit is None and not paths_to_mutate
-        try:
-            runner = PytestRunner(config)
-            # A dry-run is a source-only preview: constructing the Windows
-            # executor here would create a Job Object even though no worker
-            # can be used.  Keep the existing injection point for real runs,
-            # but let MutationOrchestrator retain its lazy default for the
-            # preview path.
-            executor = (
-                None
-                if dry_run
-                else SpawnPoolExecutor(max_workers=config.max_children, config=config)
-            )
-            orchestrator = MutationOrchestrator(
-                config,
-                runner=runner,
-                executor=executor,
-                mutant_names=mutant_names if mutant_names else None,
-                no_progress=no_progress,
-                purge_stale_results=is_full_run,
-                is_full_run=is_full_run,
-                rerun_all=rerun_all,
-                workspace_lock=workspace_lock,
-            )
-            result = orchestrator.dry_run() if dry_run else orchestrator.run()
-        except MutmutWinError as exc:
-            # Issue #102 / A4-UI-005: --debug was a dead flag while this except
-            # swallowed tracebacks exactly where debug should help.
-            # Issue #114 / A4-QX-006: only DOMAIN errors get the one-line
-            # rendering — a foreign exception is a mutmut-win bug and propagates
-            # with its full traceback instead of masquerading as a clean error.
-            if debug or config.debug:
-                import traceback
-
-                click.echo(traceback.format_exc(), err=True)
-            message = f"Error: {exc}"
-            click.echo(message, err=True)
-            _emit_json_error(json_stdout, message, 1)
-            sys.exit(1)
+            _emit_json_error(json_stdout, message, 130)
+            sys.exit(130)
 
     # --- Output ---
     if output == "json":
@@ -789,14 +1180,34 @@ def run(
     # mutation suite passed.  Explicit filters are usage/domain errors; a full
     # empty generation is a runtime failure.  JSON was already emitted above.
     if not dry_run and result.total_mutants == 0:
+        surface_report = _mutation_surface_report(result.degraded_files)
+        if surface_report is not None:
+            click.echo(surface_report, err=True)
         if explicit_selection:
             click.echo("No mutants matched the explicit run selection.", err=True)
             sys.exit(2)
         click.echo("No testable mutants were generated; mutation run failed closed.", err=True)
         sys.exit(1)
 
+    # --- Deprecated timeout-as-kill score honesty (M-025) ---
+    # The flag changes the gate, not the reported score: the JSON ``score``
+    # field and the text summary stay raw (CI contract, additive only). One
+    # named stderr line names the effective score the gate judges next to
+    # the raw score, whether or not --min-score was given. Interrupted,
+    # aborted and empty runs have exited above; the line is still confined
+    # to real runs with at least one testable mutant — a preview or an
+    # all-skipped run has no score to adjust.
+    testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
+    if treat_timeout_as_kill and not dry_run and testable > 0:
+        click.echo(_timeout_as_kill_score_line(result), err=True)
+
     # --- Score gate ---
     if min_score is not None:
+        surface_report = _mutation_surface_report(result.degraded_files)
+        if surface_report is not None:
+            click.echo(surface_report, err=True)
+            click.echo("Score gate failed closed.", err=True)
+            sys.exit(1)
         if not result.execution_basis_complete:
             click.echo(
                 "Execution basis incomplete — score gate failed closed; not all "
@@ -804,7 +1215,6 @@ def run(
                 err=True,
             )
             sys.exit(1)
-        testable = result.total_mutants - result.skipped - result.no_tests - result.unchecked
         if testable <= 0:
             # Issue #97 / A3-OS-026: fail-closed is right, but 'score 0.0%
             # below threshold' blamed a score that never existed.
@@ -865,8 +1275,8 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
         if current_run.evidence_invalidated:
             click.echo(
                 "Evidence invalidated: yes; release-ready: no. "
-                "The recorded execution basis is no longer authoritative; "
-                "re-run 'mutmut-win run'.",
+                "The recorded execution basis is no longer authoritative or "
+                "the mutation surface was incomplete; re-run 'mutmut-win run'.",
                 err=True,
             )
         elif current_run.status == "completed":
@@ -1022,6 +1432,16 @@ def show(mutant_name: str) -> None:
     that matches exactly ONE mutant — the same matching rule as `run`;
     an ambiguous pattern fails and lists the candidates.
     """
+    # M-026: show is a READER — it must never resolve names through a
+    # redirected mutants/ root (a Junction could otherwise point the
+    # metadata walk — and its healing — at files outside the workspace).
+    # Same fail-closed root contract as run/apply/export, no lock needed.
+    try:
+        _require_safe_workspace_roots("mutants", action="show")
+    except UnsafeWorkspaceStateError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
     mutants_dir = Path("mutants")
     if not mutants_dir.is_dir():
         click.echo("No mutants directory found. Run 'mutmut-win run' first.", err=True)
@@ -1070,6 +1490,12 @@ def apply(mutant_name: str) -> None:
     try:
         _require_safe_workspace_roots("mutants", ".mutmut-cache")
         validate_cache_path(DEFAULT_DB_PATH)
+        # M-036: the lock domain lives in the canonical DB parent — create
+        # and validate it before acquiring the colocated locks (the
+        # orchestrator's run path uses db.ensure_cache_parent likewise).
+        from mutmut_win.db import ensure_cache_parent
+
+        ensure_cache_parent(DEFAULT_DB_PATH)
         with (
             WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH)),
             DatabaseRunLocks(DEFAULT_DB_PATH),
@@ -1100,11 +1526,17 @@ def apply(mutant_name: str) -> None:
                     f"{artifact_path}: {exc}; source was not changed"
                 ) from exc
             apply_mutant(resolved_name, config)
+            # M-074: the receipt names the mutant that was actually
+            # written; with a glob input the resolved identity would
+            # otherwise be missing from every operator/CI log. Emitted
+            # inside the try so `resolved_name` is always bound here.
+            if resolved_name != mutant_name:
+                click.echo(f"Applied mutant '{resolved_name}' (matched '{mutant_name}').")
+            else:
+                click.echo(f"Applied mutant '{resolved_name}'.")
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
-
-    click.echo(f"Applied mutant '{mutant_name}'.")
 
 
 @cli.command()
@@ -1233,6 +1665,11 @@ def export_cicd_stats_cmd() -> None:
     try:
         _require_safe_workspace_roots("mutants", ".mutmut-cache")
         validate_cache_path(DEFAULT_DB_PATH)
+        # M-036: the lock domain lives in the canonical DB parent — create
+        # and validate it before acquiring the colocated locks.
+        from mutmut_win.db import ensure_cache_parent
+
+        ensure_cache_parent(DEFAULT_DB_PATH)
         with (
             WorkspaceRunLock(run_lock_path_for_db(DEFAULT_DB_PATH)),
             DatabaseRunLocks(DEFAULT_DB_PATH),
@@ -1243,6 +1680,23 @@ def export_cicd_stats_cmd() -> None:
     except MutmutWinError as exc:
         click.echo(f"CI/CD export could not acquire a consistent state: {exc}", err=True)
         sys.exit(1)
+
+
+def _mutation_surface_report(degraded: Sequence[GenerationDegradation]) -> str | None:
+    """Return the mutation-surface report, or ``None`` for a complete surface.
+
+    Private module-level function so the CLI gate logic stays attributable in
+    a targeted mutation gate (Q-35, M-003).
+    """
+    if not degraded:
+        return None
+    lines = [f"Mutation surface incomplete — {len(degraded)} file(s) could not be mutated:"]
+    lines.extend(f"  - {d.path} ({d.reason})" for d in degraded)
+    lines.append(
+        "Exclude them via do_not_mutate to accept the reduced surface; if a "
+        "file is valid Python source, please report it as a mutmut-win bug."
+    )
+    return "\n".join(lines)
 
 
 def _export_cicd_stats_locked() -> None:
@@ -1285,8 +1739,9 @@ def _export_cicd_stats_locked() -> None:
         artifact_path.unlink(missing_ok=True)
         click.echo(
             "Latest mutation run evidence was invalidated because its recorded "
-            "execution basis is no longer authoritative; "
-            "re-run 'mutmut-win run' before CI/CD export.",
+            "execution basis is no longer authoritative or its mutation surface "
+            "was incomplete; re-run 'mutmut-win run' (excluding unmutatable files "
+            "via do_not_mutate if a run reported them) before CI/CD export.",
             err=True,
         )
         sys.exit(1)
@@ -1354,7 +1809,31 @@ def _export_cicd_stats_locked() -> None:
         artifact_path.unlink(missing_ok=True)
         click.echo("No completed mutation verdicts found; CI/CD export failed closed.", err=True)
         sys.exit(1)
-    cicd = save_cicd_stats(pairs, mutants_dir)
+    # M-075 (issue #160): an externally removed or replaced staging directory
+    # is a domain failure, not a traceback. mutants/ is not a basis input, so
+    # every evidence check above passed and the export used to die inside the
+    # atomic writer with a raw UnsafeAtomicWriteError (an OSError, not a
+    # MutmutWinError). Fail closed with a clear message right before the
+    # write — and never CREATE the staging directory here: the atomic writer
+    # deliberately requires an existing parent so it cannot follow a
+    # redirection.
+    if not mutants_dir.is_dir():
+        message = (
+            "Staging directory mutants/ is missing or is not a directory; "
+            "CI/CD export failed closed. Re-run 'mutmut-win run'."
+        )
+        click.echo(message, err=True)
+        sys.exit(1)
+    # Report write failures HERE (path + cause, exit 1) instead of letting a
+    # raw OSError escape — the outer MutmutWinError handler would misfile it
+    # under 'could not acquire a consistent state'. The handler stays this
+    # narrow on purpose (issue #114 principle): foreign errors from anything
+    # but this one call must not be masked.
+    try:
+        cicd = save_cicd_stats(pairs, mutants_dir)
+    except OSError as exc:
+        click.echo(f"Could not write CI/CD artifact {artifact_path}: {exc}", err=True)
+        sys.exit(1)
     click.echo(f"Saved CI/CD stats to {mutants_dir / 'mutmut-cicd-stats.json'}")
     # Issue #122 / external QA SCO-001: "(40 killed / 78 total)" next to a
     # 71.4% score invited verifying it with the WRONG denominator — the

@@ -766,6 +766,7 @@ def test_worker_exit_zero_without_execution_proof_is_suspicious(staged_project: 
     assert len(completed) == 1
     assert completed[0]["exit_code"] == 35
     assert "without executing a test call" in str(completed[0]["last_output"])
+    assert "execution proof could not be published" in str(completed[0]["last_output"])
     assert staged_project.exists()
 
 
@@ -1122,15 +1123,27 @@ def test_explicit_empty_selection_is_usage_failure_with_valid_json() -> None:
 
 
 def test_since_commit_noop_succeeds_and_keeps_json_machine_readable() -> None:
-    completed = subprocess.CompletedProcess(
+    # M-022: rev-parse resolves the ref first; the diff then reports
+    # nothing changed — a valid no-op with machine-readable JSON.
+    rev_parse = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout="7" * 40 + "\n",
+        stderr="",
+    )
+    diff = subprocess.CompletedProcess(
         args=["git", "diff", "--name-only", "HEAD"],
         returncode=0,
         stdout="",
         stderr="",
     )
+
+    def dispatch(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return rev_parse if argv[:2] == ["git", "rev-parse"] else diff
+
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig(paths_to_mutate=[])),
-        patch("subprocess.run", return_value=completed),
+        patch("subprocess.run", side_effect=dispatch),
     ):
         result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD", "--output", "json"])
 
@@ -1142,15 +1155,25 @@ def test_since_commit_noop_succeeds_and_keeps_json_machine_readable() -> None:
 
 
 def test_since_commit_uses_effective_custom_tests_dir_before_filtering() -> None:
-    completed = subprocess.CompletedProcess(
+    rev_parse = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout="7" * 40 + "\n",
+        stderr="",
+    )
+    diff = subprocess.CompletedProcess(
         args=["git", "diff", "--name-only", "HEAD"],
         returncode=0,
         stdout="custom_tests/test_changed.py\n",
         stderr="",
     )
+
+    def dispatch(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return rev_parse if argv[:2] == ["git", "rev-parse"] else diff
+
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig(paths_to_mutate=[])),
-        patch("subprocess.run", return_value=completed),
+        patch("subprocess.run", side_effect=dispatch),
         patch("mutmut_win.cli.MutationOrchestrator") as orchestrator,
     ):
         result = CliRunner().invoke(
@@ -1284,3 +1307,192 @@ def test_distribution_configuration_is_curated_and_licensed() -> None:
     assert "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in license_text
     assert "Copyright (c) 2001-2024 Python Software Foundation; All Rights Reserved" in license_text
     assert "atomic STARTUPINFOEX Job-list assignment" in license_text
+
+
+# ---------------------------------------------------------------------------
+# Proof publication failure handling inside the worker (M-008/M-142, #143)
+# ---------------------------------------------------------------------------
+
+
+def test_worker_publication_failure_line_reaches_last_output(
+    staged_project: Path,
+) -> None:
+    """T8: the plugin's diagnostic line survives into the event's tail."""
+    task_queue = _Queue({"mutant_name": "pkg.x_f__mutmut_1"}, None)
+    event_queue = _Queue()
+    proc = MagicMock()
+    proc.pid = 99999
+    proc.wait.return_value = 0
+
+    def fake_popen(_cmd, **kwargs):
+        import os as _os
+
+        stdout = kwargs.get("stdout")
+        if isinstance(stdout, int):
+            _os.write(
+                stdout,
+                b"mutmut-win: execution proof publication failed: OSError: injected\n",
+            )
+        # No proof marker is written: publication failed in the (fake) child.
+        return proc
+
+    with (
+        patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen),
+        patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        patch("mutmut_win.process.worker._maybe_start_loop_monitor", return_value=None),
+    ):
+        worker_main(
+            task_queue,  # type: ignore[arg-type]
+            event_queue,  # type: ignore[arg-type]
+            _worker_config(staged_project, infinite_loop_detection=False),
+        )
+
+    completed = [
+        event for event in event_queue._items if isinstance(event, dict) and "exit_code" in event
+    ]
+    assert len(completed) == 1
+    assert completed[0]["exit_code"] == 35
+    output = str(completed[0]["last_output"])
+    assert "without executing a test call" in output
+    assert "execution proof could not be published" in output
+    assert "mutmut-win: execution proof publication failed: OSError: injected" in output
+
+
+def test_worker_cleanup_survives_invalid_utf8_proof_marker(
+    staged_project: Path,
+) -> None:
+    """M-142: a corrupted marker never skips the task cleanup."""
+    task_queue = _Queue({"mutant_name": "pkg.x_f__mutmut_1"}, None)
+    event_queue = _Queue()
+    proc = MagicMock()
+    proc.pid = 99999
+    proc.wait.return_value = 0
+
+    def fake_popen(_cmd, **kwargs):
+        from pathlib import Path as _Path
+
+        marker = kwargs["env"]["MUTMUT_PYTEST_PHASE_SENTINEL_PATH"]
+        _Path(marker).write_bytes(b"\xff\xfe")
+        return proc
+
+    monitor = MagicMock()
+    with (
+        patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen),
+        patch("mutmut_win.process.worker._create_task_job", return_value=42),
+        patch("mutmut_win.process.worker._maybe_start_loop_monitor", return_value=monitor),
+        patch("mutmut_win.process.job_object.close_job") as close_job,
+    ):
+        worker_main(
+            task_queue,  # type: ignore[arg-type]
+            event_queue,  # type: ignore[arg-type]
+            _worker_config(staged_project, infinite_loop_detection=False),
+        )
+
+    close_job.assert_called_once_with(42)
+    monitor.shutdown.assert_called_once()
+    completed = [
+        event for event in event_queue._items if isinstance(event, dict) and "exit_code" in event
+    ]
+    assert len(completed) == 1
+    assert completed[0]["exit_code"] == 35
+    output = str(completed[0]["last_output"])
+    assert "without executing a test call" in output
+    assert "Worker recovery (Bug #12)" not in output
+
+
+def test_real_clean_phase_reports_publication_failure_with_tail(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T10+T13: an os.replace patch in the suite fails the proof publication.
+
+    Before M-008 the escaping hook exception became a pytest INTERNALERROR
+    (exit 3) and the clean phase returned that raw exit code. Now the phase
+    raises an OrchestratorError whose message carries the explanatory text
+    plus the captured tail, and the plugin's prefixed stderr line — repeated
+    by pytest_unconfigure after 60 filler lines — stays inside that tail.
+    """
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_publication_failure.py").write_text(
+        "import errno\n"
+        "import os\n"
+        "import pytest\n"
+        "\n"
+        "\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def _break_publication(monkeypatch):\n"
+        "    def _raise_eio(*_args, **_kwargs):\n"
+        "        raise OSError(errno.EIO, 'injected publication failure')\n"
+        "\n"
+        "    monkeypatch.setattr(os, 'replace', _raise_eio)\n"
+        "\n"
+        "\n"
+        "def test_publication_still_runs():\n"
+        "    for index in range(60):\n"
+        "        print(f'filler line {index}')\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(
+        MutmutConfig(tests_dir=["test_publication_failure.py"], clean_run_timeout=60)
+    )
+
+    with pytest.raises(OrchestratorError) as excinfo:
+        runner.run_clean_test()
+
+    message = str(excinfo.value)
+    assert "without executing a pytest test call" in message
+    assert "mutmut-win: execution proof publication failed" in message
+    assert "OSError" in message
+    assert "injected publication failure" in message
+    assert "INTERNALERROR" not in message
+
+
+# ---------------------------------------------------------------------------
+# Expected xfails count as executed test calls (M-143, issue #143)
+# ---------------------------------------------------------------------------
+
+
+def test_real_clean_phase_accepts_xfailed_test_call(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An expected xfail whose body ran satisfies the proof requirement."""
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_guard_xfail.py").write_text(
+        "import pytest\n"
+        "\n"
+        "\n"
+        "@pytest.mark.xfail(strict=False, reason='expected')\n"
+        "def test_guard_xfail():\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(MutmutConfig(tests_dir=["test_guard_xfail.py"], clean_run_timeout=30))
+
+    assert runner.run_clean_test() == 0
+
+
+def test_real_clean_phase_rejects_dynamic_xfail_run_false(
+    staged_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run=False marker added during setup never counts as a test call."""
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    (staged_project / "test_guard_notrun.py").write_text(
+        "import pytest\n"
+        "\n"
+        "\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def _mark_run_false(request):\n"
+        "    request.node.add_marker(pytest.mark.xfail(run=False, reason='dyn'))\n"
+        "\n"
+        "\n"
+        "def test_guard_notrun():\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+    runner = PytestRunner(MutmutConfig(tests_dir=["test_guard_notrun.py"], clean_run_timeout=30))
+
+    with pytest.raises(OrchestratorError, match="without executing a pytest test call"):
+        runner.run_clean_test()

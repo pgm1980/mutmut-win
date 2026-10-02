@@ -58,7 +58,7 @@ tests_dir = ["tests/"]
 [tool.mutmut]
 # ... wie oben, zusätzlich:
 do_not_mutate = ["**/migrations/*"]   # generierter/ausgenommener Code
-type_check_command = ["mypy", "src/"] # Type-Checker als kostenloser Kill-Filter:
+type_check_command = ["mypy", "--output=json", "src/"] # Type-Checker als kostenloser Kill-Filter:
                                       # Mutanten, die mypy ablehnt, gelten als
                                       # gefangen — ohne einen einzigen Testlauf
 ```

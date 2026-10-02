@@ -11,11 +11,13 @@ clean slate).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import shutil
 import stat
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -23,17 +25,15 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import UnsafeStagingError
+from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
+    validate_staging_namespace,
 )
 from mutmut_win.models import SourceFileMutationData
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -1015,6 +1015,558 @@ class TestWave3StagingHygiene:
         assert _mirror_is_stale(src, tgt) is True
 
 
+class TestForcedRootRetainPolicy:
+    """AP-10 / M-032: the M-002 retain policy governs forced roots too.
+
+    A git-ignored mutation root configured via ``paths_to_mutate`` must keep
+    its generator output and own ``.meta`` sidecar across ``copy_src_dir``
+    (including the ``_sync_deleted_sources`` pass) while it remains a selected
+    mutation target outside coverage mode.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".gitignore").write_text("generated/\n", encoding="utf-8")
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        generated = project / "generated"
+        generated.mkdir()
+        (generated / "gmod.py").write_text("def g(a):\n    return a - 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def test_generated_output_and_sidecar_survive_copy_src_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        copy_src_dir(cfg)
+
+        assert staged.read_text(encoding="utf-8") == _GENERATED_BYTES
+        assert staged.with_name(staged.name + ".meta").exists()
+
+    def test_coverage_mode_restores_original_in_forced_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        coverage_cfg = MutmutConfig(
+            paths_to_mutate=["src", "generated"],
+            max_children=1,
+            mutate_only_covered_lines=True,
+        )
+        copy_src_dir(coverage_cfg)
+
+        live_bytes = (project / "generated" / "gmod.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_deleted_forced_root_source_is_cleaned_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src", "generated"], max_children=1)
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "generated" / "gmod.py"
+
+        (project / "generated" / "gmod.py").unlink()
+        copy_src_dir(cfg)
+
+        assert not staged.exists()
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_revert_a_b_a_in_forced_configured_mirror_restores_live_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The AP-02 A→B→A revert contract, repeated in the ignored root."""
+        project = self._project(tmp_path, monkeypatch)
+        source = project / "generated" / "gmod.py"
+        cfg = MutmutConfig(also_copy=["generated"], max_children=1)
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = _simulate_generated_target(project, "generated/gmod.py")
+
+        source.write_text("B = 2\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        source.write_text("A = 1\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert staged.read_bytes() == source.read_bytes()
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+
+class TestVanishedLiveInputs:
+    """M-033: vanished project inputs are not namespace collisions.
+
+    ``_same_live_input`` collapsed "identity not determinable" into
+    "different live sources", so a file deleted between the input freeze and
+    the comparison produced a false ``StagingNamespaceCollisionError`` with a
+    factually wrong remedy.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        tests = project / "tests"
+        tests.mkdir()
+        (tests / "test_keep.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        (tests / "test_gone.py").write_text("def test_b(): pass\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def _freeze_then_delete(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        project: Path,
+        victims: tuple[str, ...] = ("tests/test_gone.py",),
+    ) -> list[str]:
+        """Freeze the automatic inputs, then delete *victims* before compare.
+
+        Returns the victims that were part of the frozen plan, so a test can
+        prove the vanished file was actually enumerated.
+        """
+        import mutmut_win.file_setup as file_setup
+
+        original = file_setup._iter_automatic_staging_inputs
+        frozen_victims: list[str] = []
+
+        def freeze_and_vanish(excluded_resolved: frozenset[Path], **kwargs: object):
+            frozen = list(original(excluded_resolved, **kwargs))
+            for victim in victims:
+                if any(source == Path(victim) for source, _target in frozen):
+                    frozen_victims.append(victim)
+                (project / victim).unlink()
+            return iter(frozen)
+
+        monkeypatch.setattr(file_setup, "_iter_automatic_staging_inputs", freeze_and_vanish)
+        return frozen_victims
+
+    def test_vanished_automatic_input_under_configured_root_is_not_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        frozen_victims = self._freeze_then_delete(monkeypatch, project)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        validate_staging_namespace(config)  # must not raise
+        # The trigger's shape is proven: the vanished file WAS planned, and
+        # expected_source (absolute, mapped from the configured also_copy
+        # root) and automatic_source (relative) denote the SAME deleted file
+        # — both sides of the comparison are gone.
+        assert "tests/test_gone.py" in frozen_victims
+        assert not (project / "tests" / "test_gone.py").exists()
+
+    def test_vanished_planned_input_pair_is_not_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Loop 1: a file planned by two mirrors vanishes after the freeze."""
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        original_automatic = file_setup._iter_automatic_staging_inputs
+        original_configured = file_setup._iter_configured_staging_inputs
+
+        def freeze_automatic(excluded_resolved: frozenset[Path], **kwargs: object):
+            return iter(list(original_automatic(excluded_resolved, **kwargs)))
+
+        def freeze_configured(config: MutmutConfig, excluded_resolved: frozenset[Path]):
+            frozen = list(original_configured(config, excluded_resolved))
+            (project / "tests" / "test_gone.py").unlink()
+            return iter(frozen)
+
+        monkeypatch.setattr(file_setup, "_iter_automatic_staging_inputs", freeze_automatic)
+        monkeypatch.setattr(file_setup, "_iter_configured_staging_inputs", freeze_configured)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/", "tests/test_gone.py"])
+        validate_staging_namespace(config)  # must not raise
+
+    def test_permission_error_stays_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fail-closed: an unprovable identity must not pass as vanished."""
+        project = self._project(tmp_path, monkeypatch)
+        self._freeze_then_delete(monkeypatch, project)
+        real_samefile = Path.samefile
+
+        def refusing_samefile(self: Path, other: str | Path) -> bool:
+            if "test_gone" in str(self) or "test_gone" in str(other):
+                raise PermissionError("identity not provable")
+            return real_samefile(self, other)
+
+        monkeypatch.setattr(Path, "samefile", refusing_samefile)
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["tests/"])
+        with pytest.raises(StagingNamespaceCollisionError):
+            validate_staging_namespace(config)
+
+    def test_configured_side_missing_automatic_existing_stays_a_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vanished configured source with a live automatic mirror erases
+        that mirror's staging in the configured sync — that stays a collision."""
+        project = self._project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "data.bin").write_bytes(b"DATA")
+        shared = tmp_path / "shared" / "fixtures"
+        shared.mkdir(parents=True)
+        (shared / "data.bin").write_bytes(b"SHARED")
+        self._freeze_then_delete(monkeypatch, project, victims=())
+        (shared / "data.bin").unlink()  # the configured side is now missing
+        config = MutmutConfig(paths_to_mutate=["src"], also_copy=["../shared/fixtures"])
+        with pytest.raises(StagingNamespaceCollisionError):
+            validate_staging_namespace(config)
+
+    def test_live_input_relation_states(self, tmp_path: Path) -> None:
+        """Direct contract of _live_input_relation (M-033)."""
+        import mutmut_win.file_setup as file_setup
+
+        left = tmp_path / "left.bin"
+        right = tmp_path / "right.bin"
+        left.write_bytes(b"L")
+        right.write_bytes(b"R")
+        assert file_setup._live_input_relation(left, right) == "different"
+        assert file_setup._live_input_relation(left, left) == "same"
+        hardlink = tmp_path / "hardlink.bin"
+        os.link(left, hardlink)
+        assert file_setup._live_input_relation(left, hardlink) == "same"
+
+        gone_left = tmp_path / "gone-left.bin"
+        gone_right = tmp_path / "gone-right.bin"
+        assert file_setup._live_input_relation(gone_left, right) == "left_missing"
+        assert file_setup._live_input_relation(left, gone_right) == "right_missing"
+        assert file_setup._live_input_relation(gone_left, gone_right) == "both_missing"
+
+        # Thin wrapper equivalence for the unchanged call sites.
+        assert file_setup._same_live_input(left, left) is True
+        assert file_setup._same_live_input(left, right) is False
+
+    @given(
+        left_exists=st.booleans(),
+        right_exists=st.booleans(),
+        same_object=st.sampled_from(["same-path", "hardlink", "different"]),
+    )
+    @settings(
+        max_examples=25,
+        deadline=None,
+        # tmp_path is function-scoped on purpose: every example recreates the
+        # same short paths (see the cleanup below).
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_live_input_relation_property(
+        self, tmp_path: Path, left_exists: bool, right_exists: bool, same_object: str
+    ) -> None:
+        """Existence and identity fully determine the relation verdict."""
+        import mutmut_win.file_setup as file_setup
+
+        # Clean slate: hypothesis reuses the function-scoped tmp_path and a
+        # previous example may have left a (hard-linked) right.bin behind.
+        for residue in ("left.bin", "right.bin"):
+            with contextlib.suppress(FileNotFoundError):
+                (tmp_path / residue).unlink()
+        left = tmp_path / "left.bin"
+        left.write_bytes(b"L")
+        right: Path = left
+        if same_object == "hardlink":
+            right = tmp_path / "right.bin"
+            os.link(left, right)
+        elif same_object == "different":
+            right = tmp_path / "right.bin"
+            right.write_bytes(b"R")
+        same_path = right is left
+        if same_path and left_exists != right_exists:
+            # One physical path cannot vanish on only one side.
+            left_exists = right_exists = left_exists and right_exists
+        if not left_exists:
+            left.unlink()
+        if not right_exists and not same_path:
+            right.unlink()
+
+        relation = file_setup._live_input_relation(left, right)
+
+        if left_exists and right_exists:
+            assert relation == ("same" if same_object != "different" else "different")
+        elif left_exists:
+            assert relation == "right_missing"
+        elif right_exists:
+            assert relation == "left_missing"
+        else:
+            assert relation == "both_missing"
+
+
+class TestStagingTypeSwitch:
+    """M-030 / Q-13: file<->directory switches are reconciled, not fatal.
+
+    A live path that switched kind between runs used to abort with a raw
+    ``FileExistsError`` (``mkdir`` over a staged file) or ``PermissionError``
+    (``os.replace`` onto a staged directory) long before the deletion pass
+    could clean up.
+    """
+
+    def _project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "src" / "mod.py").write_text("def f(a):\n    return a + 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        return project
+
+    def test_file_to_directory_switch_in_automatic_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "thing").is_file()
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        copy_src_dir(cfg)  # pre-fix: FileExistsError from mkdir
+
+        assert (project / "mutants" / "thing" / "data.txt").is_file()
+
+    def test_directory_to_file_switch_in_automatic_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        monkeypatch.setattr(file_setup.time, "sleep", lambda _seconds: None)
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "thing").is_dir()
+
+        shutil.rmtree(thing)
+        thing.write_text("x", encoding="utf-8")
+        copy_src_dir(cfg)  # pre-fix: OSError after the replace retries
+
+        staged = project / "mutants" / "thing"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "x"
+
+    def test_nested_type_switch_roundtrip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File 'a' becomes directory 'a/b/' and back (ergänzung (b))."""
+        project = self._project(tmp_path, monkeypatch)
+        live = project / "a"
+        live.write_text("F", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "a").is_file()
+
+        live.unlink()
+        (live / "b").mkdir(parents=True)
+        (live / "b" / "c.txt").write_text("C", encoding="utf-8")
+        copy_src_dir(cfg)
+        assert (project / "mutants" / "a" / "b" / "c.txt").is_file()
+
+        shutil.rmtree(live)
+        live.write_text("F2", encoding="utf-8")
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "a"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "F2"
+        assert not (project / "mutants" / "a" / "b").exists()
+
+    def test_type_switch_inside_configured_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_sync_tree path without any preceding automatic copy (ergänzung (f))."""
+        project = self._project(tmp_path, monkeypatch)
+        sub = project / "fixtures" / "sub"
+        sub.parent.mkdir()
+        sub.write_text("as-file", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "sub").is_file()
+
+        sub.unlink()
+        sub.mkdir()
+        (sub / "nested.txt").write_text("n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert (project / "mutants" / "fixtures" / "sub" / "nested.txt").is_file()
+
+    def test_type_switch_on_configured_file_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        entry = project / "fixtures" / "cfg"
+        entry.parent.mkdir()
+        entry.write_text("v1", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures/cfg"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "cfg").is_file()
+
+        entry.unlink()
+        entry.mkdir()
+        (entry / "nested.txt").write_text("n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures" / "cfg" / "nested.txt").is_file()
+
+        shutil.rmtree(entry)
+        entry.write_text("v2", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        staged = project / "mutants" / "fixtures" / "cfg"
+        assert staged.is_file()
+        assert staged.read_text(encoding="utf-8") == "v2"
+
+    def test_configured_tree_root_that_was_a_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Directory branch of copy_also_copy_files over a staged file (erg. (g))."""
+        project = self._project(tmp_path, monkeypatch)
+        fixtures = project / "fixtures"
+        fixtures.write_text("was-a-file", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"], also_copy=["fixtures"])
+        copy_also_copy_files(cfg)
+        assert (project / "mutants" / "fixtures").is_file()
+
+        fixtures.unlink()
+        fixtures.mkdir()
+        (fixtures / "data.txt").write_text("d", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert (project / "mutants" / "fixtures" / "data.txt").is_file()
+
+    def test_read_only_staged_file_is_replaced_on_switch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "thing"
+        staged.chmod(0o444)
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        copy_src_dir(cfg)
+
+        assert (project / "mutants" / "thing" / "data.txt").is_file()
+
+    def test_junction_staged_entry_with_wrong_kind_is_unsafe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import _winapi
+
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        thing = project / "thing"
+        thing.write_text("x", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(cfg)
+        staged = project / "mutants" / "thing"
+        staged.unlink()
+        junction_target = tmp_path / "junction-target"
+        junction_target.mkdir()
+        try:
+            _winapi.CreateJunction(str(junction_target), str(staged))
+        except (AttributeError, OSError, NotImplementedError):  # fmt: skip
+            # Junction creation unavailable in this environment: simulate the
+            # reparse verdict the destination guard would produce.
+            real_check = file_setup._is_link_or_reparse
+
+            def junction_verdict(path: Path) -> bool:
+                return path == staged or real_check(path)
+
+            monkeypatch.setattr(file_setup, "_is_link_or_reparse", junction_verdict)
+
+        thing.unlink()
+        thing.mkdir()
+        (thing / "data.txt").write_text("d", encoding="utf-8")
+        with pytest.raises(UnsafeStagingError):
+            copy_src_dir(cfg)
+
+    def test_reconcile_guards_root_and_persistent_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mutmut_win.file_setup as file_setup
+
+        project = self._project(tmp_path, monkeypatch)
+        mutants_root = project / "mutants"
+        mutants_root.mkdir()
+        fingerprint = mutants_root / ".mutmut-config-fingerprint"
+        fingerprint.write_text("fp", encoding="utf-8")
+
+        # The staging root itself stays effect-less for directories ...
+        file_setup._reconcile_staging_kind(
+            mutants_root, want_directory=True, mutants_root=mutants_root
+        )
+        assert mutants_root.is_dir()
+        # ... but is never replaced by a file, and persistent state files at
+        # the root are explicitly excluded from reconciliation.
+        with pytest.raises(UnsafeStagingError):
+            file_setup._reconcile_staging_kind(
+                mutants_root, want_directory=False, mutants_root=mutants_root
+            )
+        with pytest.raises(UnsafeStagingError):
+            file_setup._reconcile_staging_kind(
+                fingerprint, want_directory=False, mutants_root=mutants_root
+            )
+        assert fingerprint.read_text(encoding="utf-8") == "fp"
+
+    @given(
+        states=st.lists(
+            st.sampled_from(["file", "dir", "absent"]),
+            min_size=2,
+            max_size=4,
+        )
+    )
+    @settings(max_examples=15, deadline=None)
+    def test_type_state_sequence_property(self, states: list[str]) -> None:
+        """After every copy_src_dir the staged kind mirrors the live kind and
+        no raw OSError escapes the copy phase."""
+        import contextlib
+        import tempfile
+
+        live_root = Path(tempfile.mkdtemp(prefix="mutmut-kind-prop-"))
+        try:
+            (live_root / "src").mkdir()
+            (live_root / "src" / "mod.py").write_text("X = 1\n", encoding="utf-8")
+            cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+            live = live_root / "thing"
+            staged = live_root / "mutants" / "thing"
+            with contextlib.chdir(live_root):
+                for state in states:
+                    if live.is_dir():
+                        shutil.rmtree(live)
+                    elif live.exists() or live.is_symlink():
+                        live.unlink()
+                    if state == "file":
+                        live.write_text("F", encoding="utf-8")
+                    elif state == "dir":
+                        live.mkdir()
+                        (live / "data.txt").write_text("D", encoding="utf-8")
+                    copy_src_dir(cfg)
+                    if state == "file":
+                        assert staged.is_file()
+                        assert staged.read_text(encoding="utf-8") == "F"
+                    elif state == "dir":
+                        assert staged.is_dir()
+                        assert (staged / "data.txt").is_file()
+                    else:
+                        assert not staged.exists()
+        finally:
+            shutil.rmtree(live_root, ignore_errors=True)
+
+
 class TestForceHonesty:
     def test_partial_removal_is_reported_not_sold_as_clean(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1039,3 +1591,239 @@ class TestForceHonesty:
 
         assert "could not fully remove" in result.output.lower()
         assert "removed mutants/" not in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Retain policy for generator output (M-002 / M-031, issue #144)
+# ---------------------------------------------------------------------------
+
+_GENERATED_BYTES = "# trampolined generator output\n"
+
+
+def _simulate_generated_target(
+    project: Path, rel_path: str, *, generated: str = _GENERATED_BYTES
+) -> Path:
+    """Q-12 helper: trampolined bytes plus an owned sidecar for *rel_path*."""
+    live = project / rel_path
+    staged = project / "mutants" / rel_path
+    assert staged.is_file(), "simulate generation after an initial copy run"
+    staged.write_text(generated, encoding="utf-8")
+    SourceFileMutationData(
+        path=rel_path,
+        source_hash=hashlib.sha256(live.read_bytes()).hexdigest(),
+        generation_fingerprint="a" * 64,
+        generated_hash=hashlib.sha256(staged.read_bytes()).hexdigest(),
+    ).save_generation_metadata()
+    return staged
+
+
+class TestRetainPolicy:
+    """M-002: generator output survives only for retained targets; M-031:
+    proven-own sidecars survive configured-mirror deletion passes."""
+
+    def test_coverage_mode_restores_unmutated_bytes_and_drops_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "src/mod.py")
+
+        coverage_cfg = MutmutConfig(
+            paths_to_mutate=["src"], max_children=1, mutate_only_covered_lines=True
+        )
+        copy_src_dir(coverage_cfg)
+
+        live_bytes = (project / "src" / "mod.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_deselected_target_restores_original_and_drops_owned_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "src/mod.py")
+
+        deselected = MutmutConfig(
+            paths_to_mutate=["src"], max_children=1, do_not_mutate=["src/mod.py"]
+        )
+        copy_src_dir(deselected)
+
+        live_bytes = (project / "src" / "mod.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_selected_target_without_coverage_keeps_generated_bytes_over_two_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+        copy_src_dir(cfg)
+        staged = _simulate_generated_target(project, "src/mod.py")
+
+        copy_src_dir(cfg)
+        copy_src_dir(cfg)
+
+        assert staged.read_text(encoding="utf-8") == _GENERATED_BYTES
+        assert staged.with_name(staged.name + ".meta").exists()
+
+    def test_sync_tree_only_run_restores_deselected_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Isolated _sync_tree path: only copy_also_copy_files runs."""
+        project = _project(tmp_path, monkeypatch)
+        tests_pkg = project / "tests" / "pkg"
+        tests_pkg.mkdir(parents=True)
+        (tests_pkg / "mod.py").write_text("def g(a):\n    return a - 1\n", encoding="utf-8")
+        selected = MutmutConfig(paths_to_mutate=["tests/pkg"], also_copy=["tests"], max_children=1)
+        copy_also_copy_files(selected)
+        staged = _simulate_generated_target(project, "tests/pkg/mod.py")
+
+        deselected = MutmutConfig(
+            paths_to_mutate=["tests/pkg"],
+            also_copy=["tests"],
+            max_children=1,
+            do_not_mutate=["tests/pkg/mod.py"],
+        )
+        copy_also_copy_files(deselected)
+
+        live_bytes = (tests_pkg / "mod.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_deselected_also_copy_file_entry_restores_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        data_dir = project / "data"
+        data_dir.mkdir()
+        (data_dir / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        selected = MutmutConfig(
+            paths_to_mutate=["data/helper.py"], also_copy=["data/helper.py"], max_children=1
+        )
+        copy_src_dir(selected)
+        copy_also_copy_files(selected)
+        staged = _simulate_generated_target(project, "data/helper.py")
+
+        deselected = MutmutConfig(also_copy=["data/helper.py"], max_children=1)
+        copy_also_copy_files(deselected)
+
+        live_bytes = (data_dir / "helper.py").read_bytes()
+        assert staged.read_bytes() == live_bytes
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    def test_configured_mirror_keeps_owned_generation_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-031: the deletion pass of a configured mirror keeps own sidecars."""
+        project = _project(tmp_path, monkeypatch)
+        tests_pkg = project / "tests" / "pkg"
+        tests_pkg.mkdir(parents=True)
+        (tests_pkg / "mod.py").write_text("def g(a):\n    return a - 1\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["tests/pkg"], also_copy=["tests"], max_children=1)
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = _simulate_generated_target(project, "tests/pkg/mod.py")
+
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+
+        sidecar = staged.with_name(staged.name + ".meta")
+        assert sidecar.exists()
+        from mutmut_win.models import read_owned_source_metadata
+
+        assert read_owned_source_metadata(sidecar) is not None
+
+    def test_owned_sidecar_without_live_companion_is_removed_in_configured_mirror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _project(tmp_path, monkeypatch)
+        tests_pkg = project / "tests" / "pkg"
+        tests_pkg.mkdir(parents=True)
+        (tests_pkg / "mod.py").write_text("def g(a):\n    return a - 1\n", encoding="utf-8")
+        cfg = MutmutConfig(paths_to_mutate=["tests/pkg"], also_copy=["tests"], max_children=1)
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = _simulate_generated_target(project, "tests/pkg/mod.py")
+        sidecar = staged.with_name(staged.name + ".meta")
+        assert sidecar.exists()
+
+        (tests_pkg / "mod.py").unlink()  # companion disappears from the live tree
+        copy_also_copy_files(cfg)
+
+        assert not sidecar.exists()
+        assert not staged.exists()
+
+    def test_revert_a_b_a_in_configured_mirror_restores_live_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gegenprüfung 1: no stale sidecar may outlive refreshed bytes."""
+        project = _project(tmp_path, monkeypatch)
+        tests_pkg = project / "tests" / "pkg"
+        tests_pkg.mkdir(parents=True)
+        source = tests_pkg / "mod.py"
+        source.write_text("A = 1\n", encoding="utf-8")
+        cfg = MutmutConfig(also_copy=["tests"], max_children=1)
+        copy_src_dir(cfg)
+        copy_also_copy_files(cfg)
+        staged = _simulate_generated_target(project, "tests/pkg/mod.py")
+
+        source.write_text("B = 2\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+        source.write_text("A = 1\n", encoding="utf-8")
+        copy_also_copy_files(cfg)
+
+        assert staged.read_bytes() == source.read_bytes()
+        assert not staged.with_name(staged.name + ".meta").exists()
+
+    @given(
+        coverage_mode=st.booleans(),
+        selection=st.sets(st.sampled_from(["mod1", "mod2", "mod3"]), min_size=0, max_size=3),
+    )
+    @settings(
+        max_examples=25,
+        deadline=None,
+    )
+    def test_retain_policy_property(self, coverage_mode: bool, selection: set[str]) -> None:
+        """After a follow-up run, generated bytes survive iff selected and not
+        coverage mode; everything else carries live bytes and no own sidecar."""
+        import contextlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            package = root / "src"
+            package.mkdir()
+            for index in (1, 2, 3):
+                (package / f"mod{index}.py").write_text(
+                    f"def f{index}(a):\n    return a + {index}\n", encoding="utf-8"
+                )
+            with contextlib.chdir(root):
+                cfg = MutmutConfig(paths_to_mutate=["src"], max_children=1)
+                copy_src_dir(cfg)
+                for index in (1, 2, 3):
+                    _simulate_generated_target(root, f"src/mod{index}.py")
+
+                do_not = [
+                    f"src/mod{index}.py" for index in (1, 2, 3) if f"mod{index}" not in selection
+                ]
+                followup = MutmutConfig(
+                    paths_to_mutate=["src"],
+                    max_children=1,
+                    do_not_mutate=do_not,
+                    mutate_only_covered_lines=coverage_mode,
+                )
+                copy_src_dir(followup)
+
+                for index in (1, 2, 3):
+                    staged = root / "mutants" / f"src/mod{index}.py"
+                    retained = (f"mod{index}" in selection) and not coverage_mode
+                    if retained:
+                        assert staged.read_text(encoding="utf-8") == _GENERATED_BYTES
+                        assert staged.with_name(staged.name + ".meta").exists()
+                    else:
+                        live = (package / f"mod{index}.py").read_bytes()
+                        assert staged.read_bytes() == live
+                        assert not staged.with_name(staged.name + ".meta").exists()

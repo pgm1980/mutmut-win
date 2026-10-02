@@ -10,8 +10,13 @@ import pytest
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
-from mutmut_win.orchestrator import MutationOrchestrator, _apply_timeouts, _print_timeout_model
-from mutmut_win.stats import RunBasisEvidence
+from mutmut_win.orchestrator import (
+    MutationOrchestrator,
+    _apply_timeouts,
+    _assign_tests_to_tasks,
+    _print_timeout_model,
+)
+from mutmut_win.stats import MutmutStats, RunBasisEvidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -135,6 +140,200 @@ def test_mixed_dispatch_reports_both_active_models(
     assert (
         f"Timeout model: 1 task(s) use the fallback: max(60.0s, clean run {clean_wall:.1f}s x 2.0)."
     ) in out.splitlines()
+
+
+# --- M-102: exactly one truthful diagnosis line per affected run ------------
+#
+# Tasks WITH timing data still get the full-suite fallback budget when the
+# test mapping is not authoritative (the production normal case: the collector
+# never sets MutmutStats.mapping_is_authoritative).  The diagnosis explains
+# WHY per-test budgets stayed inactive — budgets and verdicts are untouched.
+
+
+def test_non_authoritative_timing_tasks_report_one_diagnosis_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tasks = [
+        MutationTask(
+            mutant_name="src/calc.py::add__mutmut_1",
+            tests=["test_fast"],
+            test_selection_is_authoritative=False,
+        ),
+        MutationTask(
+            mutant_name="src/calc.py::add__mutmut_2",
+            tests=["test_fast"],
+            test_selection_is_authoritative=False,
+        ),
+        # Authoritative with timing -> selective budget, not affected.
+        MutationTask(mutant_name="src/calc.py::add__mutmut_3", tests=["test_fast"]),
+        # No test selection -> fallback, but no timing-based selection to explain.
+        MutationTask(mutant_name="src/calc.py::add__mutmut_4", tests=[]),
+    ]
+    dispatched = _apply_timeouts(
+        tasks, {"test_fast": 0.5}, 2.0, startup_floor=5.0, clean_wall_seconds=9.0
+    )
+
+    _print_timeout_model(
+        dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=9.0, total_test_time=0.5
+    )
+
+    # Budgets are unchanged: selective for the authoritative task only.
+    assert [task.timeout_seconds for task in dispatched] == [60.0, 60.0, 6.0, 60.0]
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    diagnosis = (
+        "Timeout model: 2 task(s) with timing data use the fallback budget "
+        "because the test mapping is not authoritative; each such task runs the full suite."
+    )
+    assert diagnosis in lines
+    # Exactly one diagnosis per run — not one per affected task.
+    assert out.count("test mapping is not authoritative") == 1
+    # It appears after the fallback line it explains.
+    assert lines.index(diagnosis) > lines.index(
+        "Timeout model: 3 task(s) use the fallback: max(60.0s, clean run 9.0s x 2.0)."
+    )
+
+
+def test_purely_authoritative_dispatch_prints_no_diagnosis_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tasks = [
+        MutationTask(mutant_name=f"src/calc.py::add__mutmut_{index}", tests=["test_slow"])
+        for index in range(1, 3)
+    ]
+    dispatched = _apply_timeouts(
+        tasks, {"test_slow": 2.0}, 3.0, startup_floor=6.5, clean_wall_seconds=9.0
+    )
+
+    _print_timeout_model(
+        dispatched, 3.0, startup_floor=6.5, clean_wall_seconds=9.0, total_test_time=4.0
+    )
+
+    out = capsys.readouterr().out
+    assert "test mapping is not authoritative" not in out
+    assert "use the fallback budget because" not in out
+
+
+def test_tasks_without_tests_print_no_diagnosis_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Tasks without a test selection have no timing-based selection that the
+    # non-authority could suppress — the diagnosis must stay silent for them.
+    tasks = [
+        MutationTask(mutant_name=f"src/calc.py::add__mutmut_{index}", tests=[])
+        for index in range(1, 3)
+    ]
+    dispatched = _apply_timeouts(
+        tasks, {"test_a": 1.0}, 2.0, startup_floor=5.0, clean_wall_seconds=8.0
+    )
+
+    _print_timeout_model(
+        dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=8.0, total_test_time=1.0
+    )
+
+    out = capsys.readouterr().out
+    # The fallback path ran (mean timing > 0), yet no diagnosis line appears.
+    assert (
+        "Timeout model: 2 task(s) use the fallback: max(60.0s, clean run 8.0s x 2.0)."
+        in out.splitlines()
+    )
+    assert "test mapping is not authoritative" not in out
+
+
+def test_missing_timing_data_prints_no_diagnosis_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # M-102 counting rule: the diagnosis speaks about tasks WITH timing data.
+    # This task HAS a selection and IS non-authoritative, but its selected
+    # test has no recorded duration (estimated == 0) — printing the
+    # "with timing data" diagnosis here would be a lie.
+    task = MutationTask(
+        mutant_name="src/calc.py::add__mutmut_1",
+        tests=["test_unknown"],
+        test_selection_is_authoritative=False,
+    )
+    dispatched = _apply_timeouts(
+        [task], {"test_other": 3.0}, 2.0, startup_floor=5.0, clean_wall_seconds=8.0
+    )
+
+    _print_timeout_model(
+        dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=8.0, total_test_time=3.0
+    )
+
+    assert dispatched[0].estimated_time == 0.0
+    assert dispatched[0].timeout_seconds == 60.0  # the fallback branch ran
+    out = capsys.readouterr().out
+    assert (
+        "Timeout model: 1 task(s) use the fallback: max(60.0s, clean run 8.0s x 2.0)."
+        in out.splitlines()
+    )
+    assert "test mapping is not authoritative" not in out
+
+
+def test_production_sequence_prints_the_diagnosis_exactly_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The production data flow: _assign_tests_to_tasks overwrites the
+    # authority bit with MutmutStats.mapping_is_authoritative (always False
+    # with the current collector) while the mapping DOES carry timings —
+    # such a run must print exactly one diagnosis, and the budget stays the
+    # full-suite fallback.
+    assigned = _assign_tests_to_tasks(
+        [MutationTask(mutant_name="calc.x_add__mutmut_1")],
+        MutmutStats(
+            tests_by_mangled_function_name={"calc.x_add": {"tests/test_calc.py::test_add"}},
+            duration_by_test={"tests/test_calc.py::test_add": 30.0},
+            mapping_is_authoritative=False,
+        ),
+    )
+    dispatched = _apply_timeouts(
+        assigned,
+        {"tests/test_calc.py::test_add": 30.0},
+        2.0,
+        startup_floor=5.0,
+        clean_wall_seconds=100.0,
+    )
+    _print_timeout_model(
+        dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=100.0, total_test_time=30.0
+    )
+
+    assert dispatched[0].timeout_seconds == 200.0  # fallback budget, unchanged
+    out = capsys.readouterr().out
+    assert (
+        out.count(
+            "Timeout model: 1 task(s) with timing data use the fallback budget "
+            "because the test mapping is not authoritative; each such task runs the full suite."
+        )
+        == 1
+    )
+
+
+def test_diagnosis_line_follows_the_cli_json_redirect_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # cli.py wraps the whole run (incl. _print_timeout_model) in
+    # redirect_stdout(sys.stderr) for --output json; the diagnosis must keep
+    # the stdout JSON channel clean through that same mechanism.
+    import contextlib
+    import sys
+
+    task = MutationTask(
+        mutant_name="src/calc.py::add__mutmut_1",
+        tests=["test_fast"],
+        test_selection_is_authoritative=False,
+    )
+    dispatched = _apply_timeouts(
+        [task], {"test_fast": 0.5}, 2.0, startup_floor=5.0, clean_wall_seconds=9.0
+    )
+
+    with contextlib.redirect_stdout(sys.stderr):
+        _print_timeout_model(
+            dispatched, 2.0, startup_floor=5.0, clean_wall_seconds=9.0, total_test_time=0.5
+        )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("test mapping is not authoritative") == 1
 
 
 def test_no_dispatch_has_no_timeout_announcement(capsys: pytest.CaptureFixture[str]) -> None:

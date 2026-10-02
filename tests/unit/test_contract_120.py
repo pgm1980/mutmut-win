@@ -18,6 +18,7 @@ now loads its config through the same exit-2 helper as show/apply.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -114,6 +115,59 @@ class TestSubsetPurgeWiring:
         assert result.exit_code == 0, result.output
         assert self._purge_flag(orch) is False
         assert self._full_run_flag(orch) is False
+
+
+class TestDryRunMinScoreConflict:
+    """M-073: ``--dry-run --min-score`` is an options conflict (exit 2).
+
+    A dry-run preview executes no tests, so ``MutationOrchestrator.dry_run``
+    returns a result whose ``execution_basis_complete`` stays ``False``.
+    The score gate therefore used to fail AFTER the preview with the
+    misleading runtime diagnosis "Execution basis incomplete" (exit 1)
+    instead of rejecting the incompatible request upfront like the subset
+    selection conflict below.
+    """
+
+    def test_dry_run_with_min_score_is_a_usage_error(self) -> None:
+        result, orchestrator_cls = _invoke_run("--dry-run", "--min-score", "50")
+
+        assert result.exit_code == 2
+        assert "--dry-run" in result.stderr
+        assert "cannot be combined" in result.stderr
+        orchestrator_cls.assert_not_called()
+
+    def test_dry_run_with_min_score_json_error_object(self) -> None:
+        result, _orch = _invoke_run("--output", "json", "--dry-run", "--min-score", "50")
+
+        payload = json.loads(result.stdout)
+        assert payload["exit_code"] == 2
+        assert "--dry-run" in payload["error"]
+        assert "cannot be combined" in result.stderr
+
+    def test_dry_run_with_min_score_and_force_keeps_staging(
+        self,
+        isolated_cli_workspace: Path,
+    ) -> None:
+        staging = isolated_cli_workspace / "mutants"
+        staging.mkdir()
+        marker = staging / "marker.txt"
+        marker.write_text("staging evidence", encoding="utf-8")
+
+        result, _orch = _invoke_run("--dry-run", "--min-score", "50", "--force")
+
+        assert result.exit_code == 2
+        assert marker.read_text(encoding="utf-8") == "staging evidence"
+        # The workspace lock was released with the exit: a follow-up --force
+        # run acquires it and removes the untouched staging.
+        follow_up, _orch = _invoke_run("--force")
+        assert follow_up.exit_code == 0, follow_up.output
+        assert "Removed mutants/" in follow_up.output
+        assert not staging.exists()
+
+    def test_plain_dry_run_still_succeeds(self) -> None:
+        result, _orch = _invoke_run("--dry-run")
+
+        assert result.exit_code == 0, result.output
 
 
 # ---------------------------------------------------------------------------

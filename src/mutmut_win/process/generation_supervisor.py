@@ -35,6 +35,7 @@ import time
 import traceback
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -57,6 +58,10 @@ _PARENT_LIVENESS_POLL_SECONDS = 0.2
 # but interpreter/resource-tracker teardown can still be slow under host load.
 # Keep that healthy teardown distinct from the deliberately short abort bound.
 _SUCCESS_JOIN_TIMEOUT_SECONDS = 15.0
+# Mirror of CPython's ``concurrent.futures.process._MAX_WINDOWS_WORKERS``:
+# a Windows ProcessPoolExecutor rejects max_workers above this bound.  The
+# private symbol must not be imported; tests pin both values together.
+_WINDOWS_PPE_MAX_WORKERS = 61
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +103,14 @@ class GenerationNoProgressTimeoutError(GenerationSupervisorError):
 
 
 class GenerationSupervisorCrashedError(GenerationSupervisorError):
-    """The dedicated supervisor exited without completing its protocol."""
+    """The dedicated supervisor died outside its happy path.
+
+    Either the supervisor exited before completing its protocol (unexpected
+    exit or closed progress pipe), or it failed its bounded post-DONE
+    teardown — still alive after reporting completion or exited with a
+    nonzero code afterwards.  Completed results are discarded fail-closed in
+    both cases.
+    """
 
 
 class GenerationSupervisorRemoteError(GenerationSupervisorError):
@@ -496,7 +508,14 @@ def _decode_result(
 
 
 def _join_completed_supervisor(process: BaseProcess) -> None:
-    """Bound a healthy post-DONE teardown independently from abort cleanup."""
+    """Bound a healthy post-DONE teardown independently from abort cleanup.
+
+    Raises:
+        GenerationSupervisorCrashedError: The supervisor was still alive
+            after reporting completion, or exited with a nonzero code
+            afterwards.  Results of an otherwise complete generation are
+            discarded fail-closed in both cases.
+    """
     process.join(timeout=_SUCCESS_JOIN_TIMEOUT_SECONDS)
     if process.is_alive():
         raise GenerationSupervisorCrashedError(
@@ -517,6 +536,24 @@ def _remote_error(message: tuple[object, ...]) -> GenerationSupervisorRemoteErro
     )
 
 
+def _effective_generation_workers(max_children: int, file_count: int) -> int:
+    """Return the PPE worker count the generation supervisor may use.
+
+    Windows bounds ``ProcessPoolExecutor`` at ``_WINDOWS_PPE_MAX_WORKERS``,
+    and more workers than files cannot help.  The result is capped to both
+    and never below one, so the supervisor always keeps a real PPE worker.
+
+    Args:
+        max_children: Configured worker limit (already validated >= 1).
+        file_count: Number of files to generate.
+
+    Returns:
+        Effective worker count between 1 and ``min(max_children, 61,
+        file_count)`` (1 for an empty file list).
+    """
+    return max(1, min(max_children, _WINDOWS_PPE_MAX_WORKERS, file_count))
+
+
 def run_generation_supervised[ArgT, ResultT](
     file_args: Sequence[ArgT],
     *,
@@ -531,12 +568,18 @@ def run_generation_supervised[ArgT, ResultT](
     The no-progress clock starts before the supervisor is spawned and resets
     only after the parent receives a completed file.  It therefore includes
     supervisor bootstrap, containment handshake, executor construction, worker
-    startup, and all ``submit`` calls.
+    startup, and all ``submit`` calls.  Caller-side START serialization
+    happens before the supervisor is spawned and is not part of the
+    no-progress budget; reconstructing incoming RESULT messages stays
+    synchronous in the parent, so result payloads must be cheap to unpickle.
 
     Args:
         file_args: Picklable per-file worker arguments.
-        max_children: PPE worker count.  One still uses a real PPE worker; the
-            worker callable is never executed in the main or supervisor process.
+        max_children: PPE worker limit.  One still uses a real PPE worker;
+            the worker callable is never executed in the main or supervisor
+            process.  On Windows the effective count is additionally capped
+            at 61 (CPython's ProcessPoolExecutor limit) and at the number of
+            files.
         no_progress_timeout: Maximum seconds without a completed file.
         worker: Spawn-picklable single-argument worker callable.
         on_progress: Optional main-process callback invoked in completion order.
@@ -547,10 +590,17 @@ def run_generation_supervised[ArgT, ResultT](
 
     Raises:
         GenerationNoProgressTimeoutError: No file completed before the deadline.
-        GenerationSupervisorCrashedError: Supervisor exited without a final message.
+        GenerationSupervisorCrashedError: Supervisor exited without a final
+            message, or failed its bounded post-DONE teardown — still alive
+            after reporting completion or exited with a nonzero code
+            afterwards; completed results are discarded fail-closed.
         GenerationSupervisorRemoteError: Executor/bootstrap/worker failure.
         GenerationContainmentError: Job Object or process group setup failed.
         GenerationProtocolError: The child violated the wire protocol.
+        pickle.PicklingError: ``file_args`` or ``worker`` failed START
+            serialization before the supervisor was spawned (exceptions from
+            custom ``__reduce__`` implementations propagate unchanged); no
+            pipe, Job Object, or process exists at that point.
         BaseException: Callback exceptions and ``KeyboardInterrupt`` are
             preserved after exception-safe process-tree cleanup.
     """
@@ -565,6 +615,13 @@ def run_generation_supervised[ArgT, ResultT](
         raise ValueError(msg)
 
     arguments = tuple(file_args)
+    effective_children = _effective_generation_workers(max_children, len(arguments))
+    # Pickle START before the pipe and Job Object exist: a hanging or failing
+    # __reduce__ then surfaces before any resource is opened instead of after
+    # the supervisor has already been spawned.  send_bytes later writes the
+    # same wire bytes Connection.send would have produced; materializing the
+    # pickler's buffer view up front keeps no exported BytesIO buffer alive.
+    start_payload = bytes(ForkingPickler.dumps((_START, arguments, worker)))
     context = multiprocessing.get_context("spawn")
     parent_connection, child_connection = context.Pipe(duplex=True)
     containment = _Containment()
@@ -594,7 +651,7 @@ def run_generation_supervised[ArgT, ResultT](
             process = JobContainedSpawnProcess(
                 job_handle=containment.job_handle,
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 daemon=False,
             )
             process.name = _SUPERVISOR_NAME
@@ -603,14 +660,14 @@ def run_generation_supervised[ArgT, ResultT](
 
             process = SessionContainedSpawnProcess(
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 daemon=False,
             )
             process.name = _SUPERVISOR_NAME
         else:
             process = context.Process(
                 target=_generation_supervisor_main,
-                args=(child_connection, max_children),
+                args=(child_connection, effective_children),
                 name=_SUPERVISOR_NAME,
                 daemon=False,
             )
@@ -649,7 +706,7 @@ def run_generation_supervised[ArgT, ResultT](
         supervisor_pid = _decode_ready(ready, process, containment)
         # Windows membership was part of CreateProcess itself.  There is no
         # post-start assignment window and no startup code outside the Job.
-        parent_connection.send((_START, arguments, worker))
+        parent_connection.send_bytes(start_payload)
 
         while True:
             message = _wait_for_wire_event(

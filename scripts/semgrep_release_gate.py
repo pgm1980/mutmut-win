@@ -138,14 +138,15 @@ _EXEC_RULE: Final = "python.lang.security.audit.exec-detected.exec-detected"
 _PICKLE_RULE: Final = "python.lang.security.deserialization.pickle.avoid-pickle"
 _KILL_PROC_FILE_SHA: Final = "aff81671be553a2da9ef0a006baec1bdc8b01133601d3834da9a90fa72a2cb32"
 _ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
-_CLASS_BODY_FILE_SHA: Final = "81ce773253c18c42ce5ace134f08c6a3290b05666709c43cc620686106c30706"
+_CLASS_BODY_FILE_SHA: Final = "cfa26e6a173f08327891116c1604256d92bcef7ea17ce1534e31f8c725c51dc5"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
-    "874635fc0f8b82ef1d8ba4cac975e4bffc7f7712ad7f37d4191c21a7cd40637b"
+    "70a0c10cf3a01b69598f0221beb7e47c45c80d5fed4159ab6ecb4fcc24c28a03"
 )
 _MODELS_FILE_SHA: Final = "cfcd968a3ee16aedadfe1b1a61a95b5418c62537b7c4a02db99cf9ee5915a43a"
-_MUTANT_DIFF_FILE_SHA: Final = "94e89108069d2cd5f924ef02a3cd8f4e60057dc6cb328f94b23ebdf7cf71e967"
+_MUTANT_DIFF_FILE_SHA: Final = "97f3f30ecd1893a5518b045154020e0791d4b430ebfa3a30b0906cd41417d5df"
+_HIT_RECORDING_FILE_SHA: Final = "87381a47877db98d06a08910b1d895b8784c1727d738f44665b57cbb63719584"
 _MUTATION_ADVERSARIAL_FILE_SHA: Final = (
-    "9bbaac97643cb3dffa9143688aac92a7f48372e2c5198f30ac616e4356b55f57"
+    "71b78b0b445dc88fceb069eb69abf71c1dfc60c81b9d7cbd479f3b7bc6941952"
 )
 _MUTATION_HARDENING_FILE_SHA: Final = (
     "f8661ec3c4a78e9d9daa1d519a29a791899ee5b892fdf08aeadfd4ad31943ce8"
@@ -153,7 +154,13 @@ _MUTATION_HARDENING_FILE_SHA: Final = (
 _SITECUSTOMIZE_FILE_SHA: Final = "991169a46ec355325d51178e193e4df8caa6f6647c0a754a9542686f6c2b63bb"
 _STATICMETHOD_FILE_SHA: Final = "d9707d4b429b3274fcebf64b52eaa9f747df9973c0045821b574569f7cae62ca"
 _WRAPPER_CODEGEN_FILE_SHA: Final = (
-    "4b4f889f82a17909ad29fad1c5f48ef667823442ac84a3b6f3ccd7df5137432b"
+    "d62a3f8a3cbf519e9997206502cc329a0da013e415dda784ebc5b268671eed2e"
+)
+_ATOMIC_FAULT_UTIL_FILE_SHA: Final = (
+    "114df1ce5340df56df8aef41c31647c115c7df0285fb9cb3f1b362230699b6c9"
+)
+_MUTANT_SAFETY_NET_FILE_SHA: Final = (
+    "cbc582b22ec6a876e742563ac1af7638d76bf5b232409bbe8c312a8546f15dd3"
 )
 
 
@@ -188,12 +195,60 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
         _ARCHITECTURE_FILE_SHA,
     ),
+    # The remediation fault-injection harness (AP-00 / Q-01) resolves its
+    # patch target from a dotted string supplied by test code only (e.g.
+    # "os.replace", "mutmut_win.atomic_file.atomic_write_bytes").  No product
+    # input reaches import_module; the dynamic import is the harness purpose:
+    # reaching production seams without importing them statically.
+    FindingSignature(
+        "tests/unit/atomic_fault_util.py",
+        _IMPORT_RULE,
+        82,
+        14,
+        82,
+        50,
+        "7093d00f9d3c754e533b6d6d0cb832a98431f42fafb1ceba13b893ac27fe7156",
+        _ATOMIC_FAULT_UTIL_FILE_SHA,
+    ),
+    # M-003 / issue #145: the MutationSurfaceDegradedWarning pickle test
+    # round-trips a locally constructed warning object (trusted data) to
+    # verify spawn-boundary compatibility.  AP-17 position refresh: the
+    # M-045/M-098 changes shifted the pickle round-trip from line 208 to
+    # 316 with unchanged content (identical lines_sha256); both the outer
+    # pickle.loads range and the nested pickle.dumps range were re-recorded.
+    # No new finding.
+    FindingSignature(
+        "tests/unit/test_mutant_safety_net.py",
+        _PICKLE_RULE,
+        316,
+        17,
+        316,
+        52,
+        "8ec3a82d95f1da987303ccc80ddb99038d3706e82cd63ebff99a835d14ef0f8a",
+        _MUTANT_SAFETY_NET_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/unit/test_mutant_safety_net.py",
+        _PICKLE_RULE,
+        316,
+        30,
+        316,
+        51,
+        "8ec3a82d95f1da987303ccc80ddb99038d3706e82cd63ebff99a835d14ef0f8a",
+        _MUTANT_SAFETY_NET_FILE_SHA,
+    ),
+    # Adjudication (AP-17 position refresh): the class-body injection tests
+    # exec their OWN generated codegen output — that is the test purpose; no
+    # product input reaches exec.  The M-039 change (bc75b5f) shifted both
+    # calls down two lines without touching their content (identical
+    # lines_sha256); only the position signature and the file hash were
+    # re-recorded.  No new finding entered the allowlist.
     FindingSignature(
         "tests/unit/test_class_body_injection.py",
         _EXEC_RULE,
-        27,
+        29,
         9,
-        27,
+        29,
         52,
         "25c3ef5ae09a655446756e71bc8771a63e517836bcf7c3a247d64597cd82d64a",
         _CLASS_BODY_FILE_SHA,
@@ -201,9 +256,23 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_class_body_injection.py",
         _EXEC_RULE,
-        88,
+        90,
         13,
-        88,
+        90,
+        56,
+        "8a53a564916e0e3791fddce82e7659a80d021ab5994563bbc4b1effabc7c4ba4",
+        _CLASS_BODY_FILE_SHA,
+    ),
+    # Same adjudication, third occurrence: the M-039 change also added a
+    # test block whose exec(compile(...)) call is byte-identical to the two
+    # above (identical lines_sha256) — executing the file's own codegen
+    # output is the test purpose; no product input reaches exec.
+    FindingSignature(
+        "tests/unit/test_class_body_injection.py",
+        _EXEC_RULE,
+        178,
+        13,
+        178,
         56,
         "8a53a564916e0e3791fddce82e7659a80d021ab5994563bbc4b1effabc7c4ba4",
         _CLASS_BODY_FILE_SHA,
@@ -214,9 +283,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_duplicate_definitions_220.py",
         _EXEC_RULE,
-        193,
+        211,
         5,
-        193,
+        211,
         83,
         "1dccd9aaa511115af8daeb45c3e8fd2fb3efbb8a13ae2d532846bc4c69de89a4",
         _DUPLICATE_DEFINITIONS_FILE_SHA,
@@ -232,7 +301,7 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
             "06bcfb77f28dc11c6fe59297f6856a66300b0b1ad39bd1d0709030d79bf8e1af",
             _DUPLICATE_DEFINITIONS_FILE_SHA,
         )
-        for line in (277, 304, 314, 332)
+        for line in (295, 322, 332, 350, 471, 561)
     ),
     FindingSignature(
         "tests/unit/test_models.py",
@@ -265,6 +334,16 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         _MODELS_FILE_SHA,
     ),
     FindingSignature(
+        "src/mutmut_win/file_setup.py",
+        _IMPORT_RULE,
+        2654,
+        22,
+        2654,
+        58,
+        "d9d54c69ac7a744f05cf0b035cebb2c6c3f6adffb21898d0845c6898b82ced8f",
+        "8262f1e4985fe33699bc7e7898b940af5f9a7f0bd51d30116ac8ba866a8222aa",
+    ),
+    FindingSignature(
         "tests/unit/test_models.py",
         _PICKLE_RULE,
         70,
@@ -279,9 +358,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_mutant_diff.py",
         _EXEC_RULE,
-        581,
+        677,
         9,
-        583,
+        679,
         10,
         "23d8ffb9e2cacc9b6edf4c0e7b02146b23771c7496f4e70ebf68d0964c05c0b9",
         _MUTANT_DIFF_FILE_SHA,
@@ -336,12 +415,18 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "3acad4d2c553a254e64bd6d227214c405e05a9ff7138001ccf6ca734b279e1fc",
         _STATICMETHOD_FILE_SHA,
     ),
+    # AP-17 position refresh: M-040 (68bd9fe) shifted both adjudicated exec
+    # sites down five lines (30 -> 35, 50 -> 55) with unchanged content
+    # (identical lines_sha256); the compiled-name oracle it added executes
+    # a locally defined ``source`` literal — trusted test data, no product
+    # input reaches exec — so its signature at line 158 joined the same
+    # adjudication.
     FindingSignature(
         "tests/unit/test_wrapper_codegen.py",
         _EXEC_RULE,
-        30,
+        35,
         9,
-        30,
+        35,
         52,
         "25c3ef5ae09a655446756e71bc8771a63e517836bcf7c3a247d64597cd82d64a",
         _WRAPPER_CODEGEN_FILE_SHA,
@@ -349,12 +434,32 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_wrapper_codegen.py",
         _EXEC_RULE,
-        50,
+        55,
         9,
-        50,
+        55,
         42,
         "5645ddad68cc2f6be58271d12732f06c354fcc0e5df1e796ef3f18e847d3897c",
         _WRAPPER_CODEGEN_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/unit/test_wrapper_codegen.py",
+        _EXEC_RULE,
+        158,
+        5,
+        158,
+        57,
+        "138c9b93db4fe6f5dc0ae76dff726ee6df183cbb9498635cb7e42679c5391f1a",
+        _WRAPPER_CODEGEN_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/unit/test_hit_recording.py",
+        _EXEC_RULE,
+        175,
+        9,
+        175,
+        41,
+        "7aeebb7bac13a5dc2ddf55dfb695ad49831db1e2986fdc6017079c736fa76c0f",
+        _HIT_RECORDING_FILE_SHA,
     ),
 )
 

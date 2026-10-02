@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from importlib.metadata import Distribution
 
 import pytest
 
 import mutmut_win.atomic_file as atomic_file_module
+import mutmut_win.stats as stats_module
 from mutmut_win.atomic_file import UnsafeAtomicWriteError
+from mutmut_win.config import MutmutConfig
 from mutmut_win.stats import (
     _CICD_STATS_FILENAME,
     _STATS_FILENAME,
     CicdStats,
     ListAllTestsResult,
     MutmutStats,
+    build_run_basis_evidence,
     collect_or_load_stats,
     compute_cicd_stats,
     load_stats,
@@ -526,3 +530,101 @@ class TestSaveCicdStats:
 
         assert artifact.read_text(encoding="utf-8") == '{"known": "good"}\n'
         assert not list(tmp_path.glob(f".{_CICD_STATS_FILENAME}.*.tmp"))
+
+
+# ---------------------------------------------------------------------------
+# Ignore boundary: staging selection vs core import-root binding (M-032, M-061=B)
+# ---------------------------------------------------------------------------
+
+
+class _DirectUrlDistribution:
+    """Minimal editable distribution advertising one ``direct_url.json``."""
+
+    def __init__(self, root: Path, direct_url: str) -> None:
+        self.root = root
+        self.metadata = {"Name": "demo-editable"}
+        self.version = "1.0"
+        self.files = [Path("direct_url.json")]
+        self._direct_url = direct_url
+
+    def locate_file(self, entry: object) -> Path:
+        return self.root / str(entry)
+
+    def read_text(self, filename: str) -> str | None:
+        return self._direct_url if filename == "direct_url.json" else None
+
+
+class TestIgnoredImportRootCoreBinding:
+    """M-032 / decided M-061=B: staging selection vs import-root binding.
+
+    The combined ambient fingerprint respects the project gitignore boundary
+    exactly like staging selection does; the terminal core digest deliberately
+    binds the bytes of effective project import roots that remain importable
+    in place (flat-layout project root on ``sys.path``, editable install)
+    without pruning — an ignored build tree inside such an import root is core
+    drift, not silently ignored bytes.
+    """
+
+    def test_ignored_build_tree_in_flat_import_root_binds_core_not_ambient(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "tests").mkdir()
+        (project / "src" / "target.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (project / ".gitignore").write_text("build/\n", encoding="utf-8")
+        module = project / "build" / "runtime_helper.py"
+        module.parent.mkdir()
+        module.write_text("VALUE = 1\n", encoding="utf-8")
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(stats_module.importlib.metadata, "distributions", list)
+        monkeypatch.setattr(stats_module.sys, "path", [str(project)])
+        config = MutmutConfig(paths_to_mutate=["src"], tests_dir=["tests"])
+
+        before = build_run_basis_evidence(config, project_root=project)
+        module.write_text("VALUE = 2\n", encoding="utf-8")
+        after = build_run_basis_evidence(config, project_root=project)
+
+        assert before.core_complete is True
+        assert after.core_complete is True
+        assert after.digest == before.digest
+        assert after.core_digest != before.core_digest
+
+    def test_ignored_tree_in_editable_import_root_binds_core_not_ambient(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "tests").mkdir()
+        (project / "src" / "target.py").write_text("VALUE = 1\n", encoding="utf-8")
+        # A custom ignored tree name: top-level generic output names such as
+        # ``build`` are additionally root-skipped in the editable core walk.
+        (project / ".gitignore").write_text("generated/\n", encoding="utf-8")
+        module = project / "generated" / "runtime_helper.py"
+        module.parent.mkdir()
+        module.write_text("VALUE = 1\n", encoding="utf-8")
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+        direct_url = json.dumps(
+            {"url": project.as_uri(), "dir_info": {"editable": True}},
+            separators=(",", ":"),
+        )
+        (site_packages / "direct_url.json").write_text(direct_url, encoding="utf-8")
+        distribution = _DirectUrlDistribution(site_packages, direct_url)
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(stats_module.sys, "path", [str(site_packages)])
+        monkeypatch.setattr(
+            stats_module.importlib.metadata,
+            "distributions",
+            lambda **_kw: [cast("Distribution", distribution)],
+        )
+        config = MutmutConfig(paths_to_mutate=["src"], tests_dir=["tests"])
+
+        before = build_run_basis_evidence(config, project_root=project)
+        module.write_text("VALUE = 2\n", encoding="utf-8")
+        after = build_run_basis_evidence(config, project_root=project)
+
+        assert before.core_complete is True
+        assert after.core_complete is True
+        assert after.digest == before.digest
+        assert after.core_digest != before.core_digest

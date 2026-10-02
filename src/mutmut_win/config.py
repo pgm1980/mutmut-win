@@ -14,11 +14,15 @@ import tomllib
 from configparser import ConfigParser, NoOptionError, NoSectionError
 from configparser import Error as ConfigParserError
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from mutmut_win.constants import Profile
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _default_max_children() -> int:
@@ -66,7 +70,11 @@ def guess_paths_to_mutate() -> list[str]:
     Mirrors the heuristic from mutmut 3.5.0: checks for ``lib/``, ``src/``,
     a directory named after the current working directory (with common
     transformations applied), and finally a top-level ``.py`` file with the
-    same stem.
+    same stem. Empty candidates are never guessed (M-082 / BC-124): in a
+    drive or UNC-share root ``Path.cwd().name`` is ``''``, and a cwd named
+    like ``'---'`` produces the empty candidate via ``replace('-', '')`` —
+    ``Path('').is_dir()`` is True on Windows, so the empty string silently
+    became the mutation root.
 
     Returns:
         A list containing the single best-guess path.
@@ -85,7 +93,7 @@ def guess_paths_to_mutate() -> list[str]:
         this_dir.replace(" ", ""),
     ]
     for candidate in candidates:
-        if Path(candidate).is_dir():
+        if candidate and Path(candidate).is_dir():
             return [candidate]
 
     py_file = this_dir + ".py"
@@ -106,6 +114,19 @@ def _guess_paths_safe() -> list[str]:
         return guess_paths_to_mutate()
     except FileNotFoundError:
         return ["src/"]
+
+
+#: Number of stack frames the stats hit-recorder burns before any user or
+#: test frame is reachable: ``record_trampoline_hit`` itself, the trampoline
+#: template's ``_mutmut_trampoline``, and the generated wrapper that called
+#: it (M-072 / BC-083). None of the three can ever match a pytest/unittest
+#: filename, so ``max_stack_depth`` values 1..3 unconditionally discard
+#: EVERY stats hit — the config validator rejects them. With a direct call
+#: from a test file the first pytest frame sits at index 4, which is why
+#: ``PytestRunner.run_stats`` adds a hint when a loaded mapping is empty.
+#: (This constant lives here, NOT in hit_recording: that kernel module must
+#: stay free of mutmut_win imports at module level.)
+_INSTRUMENTATION_FRAME_COUNT = 3
 
 
 class MutmutConfig(BaseModel):
@@ -135,7 +156,9 @@ class MutmutConfig(BaseModel):
         description=(
             "Regex patterns (mutmut-3.6.0 backport): a function or class whose "
             "name matches any pattern (re.search) is excluded from mutation "
-            "together with its whole body."
+            "together with its whole body. In single-line setup.cfg values, "
+            "commas inside valid quantifiers ({m,n}, {m,}, {,n}) are part of "
+            "the pattern, not list separators."
         ),
     )
     also_copy: list[str] = Field(
@@ -190,10 +213,16 @@ class MutmutConfig(BaseModel):
     max_stack_depth: int = Field(
         default=-1,
         # ge=-1: values below the sentinel walked the frame stack with a
-        # truthy-negative counter (issue #110 / A4-QX-018). 0 is rejected
-        # separately below — it would discard EVERY stats hit.
+        # truthy-negative counter (issue #110 / A4-QX-018). 0..3 are
+        # rejected separately below — those budgets are consumed by the
+        # three instrumentation frames and discard every stats hit (M-072).
         ge=-1,
-        description="Maximum stack depth for mutations (-1 = unlimited)",
+        description=(
+            "Maximum stack depth for the stats-hit frame walk "
+            "(-1 = unlimited; the budget starts at the recorder — three "
+            "frames are mutmut instrumentation, so 0-3 are rejected and "
+            "sensible depths start at 5)"
+        ),
     )
     debug: bool = Field(
         default=False,
@@ -300,26 +329,41 @@ class MutmutConfig(BaseModel):
         A string is parsed case-insensitively via :meth:`Profile.from_name`
         (which raises ValueError on an unknown name, surfaced by pydantic as a
         ValidationError); a Profile passes through unchanged, as does the int
-        form pydantic emits on a model_dump round-trip.
+        form pydantic emits on a model_dump round-trip (M-083 / BC-125: the
+        int form stays deliberately valid for the cli.py/db.py JSON basis —
+        but booleans and floats are rejected here, because pydantic's lax
+        IntEnum coercion would silently map ``true`` to ADVANCED, ``false``
+        to BASIC and ``2.0`` to ALL when a TOML boolean/float is configured).
         """
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            msg = f"mutation_profile must be one of basic/advanced/all, got {type(v).__name__}"
+            raise ValueError(msg)
         if isinstance(v, str):
             return Profile.from_name(v)
         return v
 
     @field_validator("max_stack_depth", mode="after")
     @classmethod
-    def _reject_zero_stack_depth(cls, v: int) -> int:
-        """Reject ``max_stack_depth=0`` loudly (issue #110 / A4-QX-018).
+    def _reject_dead_stack_depths(cls, v: int) -> int:
+        """Reject ``max_stack_depth`` values that discard every stats hit.
 
-        0 exhausts the frame-walk budget before the first frame, so EVERY
-        stats hit is silently discarded — every mutant then runs the full
-        suite. Nobody means that; -1 is the documented "unlimited" sentinel.
+        Issue #110 / A4-QX-018 rejected only 0; M-072 / BC-083 extends the
+        rejection to 1..3: the frame walk starts at the recorder itself,
+        and the recorder, ``_mutmut_trampoline`` and the generated wrapper
+        occupy the first three frames without ever matching a pytest or
+        unittest filename — so depths 1..3 (like 0) unconditionally
+        discard EVERY stats hit and every mutant silently runs the full
+        suite. With a direct call from a test file the first pytest frame
+        sits at index 4, so 4 is dead there too and sensible depths start
+        at 5; -1 is the documented "unlimited" sentinel.
         """
-        if v == 0:
+        if 0 <= v <= _INSTRUMENTATION_FRAME_COUNT:
             msg = (
-                "max_stack_depth=0 would discard every stats hit "
-                "(every mutant would run the full suite) — use -1 for "
-                "unlimited or a positive depth."
+                f"max_stack_depth={v} would discard every stats hit: the "
+                f"budget is consumed by {_INSTRUMENTATION_FRAME_COUNT} mutmut "
+                "instrumentation frames (recorder, trampoline, generated "
+                "wrapper) before any pytest/unittest frame — use -1 for "
+                "unlimited or a depth of at least 5."
             )
             raise ValueError(msg)
         return v
@@ -357,7 +401,24 @@ class MutmutConfig(BaseModel):
             else:
                 # Preserve the user's harmless relative spelling (including a
                 # trailing separator); only resolved containment is normalized.
-                safe.append(entry)
+                if ".." in path.parts:
+                    # Canonicalise '..'-aliases after containment is proven:
+                    # the staging reservation, generation, sidecar paths, and
+                    # mutant names all key on the literal entry, so an
+                    # unnormalised alias would bypass the '<source>.meta'
+                    # reservation and form unusable mutant names (M-034).
+                    normalized = Path(os.path.normpath(entry))
+                    if ".." in normalized.parts:
+                        # normpath kept '..' (the entry leaves and re-enters
+                        # the project root); the resolved relative form is
+                        # the authoritative canonical spelling.
+                        normalized = relative
+                    canonical = "." if normalized == Path() else normalized.as_posix()
+                    if entry.endswith(("/", os.sep)) and canonical != ".":
+                        canonical += "/"
+                    safe.append(canonical)
+                else:
+                    safe.append(entry)
         return safe
 
     @field_validator(
@@ -439,6 +500,127 @@ def _apply_default_also_copy(config: MutmutConfig, project_dir: Path) -> MutmutC
     return config.model_copy(update={"also_copy": config.also_copy + default_also_copy})
 
 
+#: Sentinel ``default_section`` for the M-080 diagnostic parser: a
+#: newline can never occur inside an INI section header, so no literal
+#: section is treated as the defaults section and ``[DEFAULT]`` becomes
+#: an ordinary section whose keys are NOT inherited into ``[mutmut]``.
+_NO_DEFAULT_SECTION_SENTINEL = "\n"
+
+#: A regex quantifier containing a comma — ``{m,n}``, ``{m,}`` and
+#: ``{,n}`` (all three are valid in Python's ``re``).  The comma inside
+#: such a span is part of the pattern, never a list separator (M-029).
+_QUANTIFIER_WITH_COMMA_RE = re.compile(r"\{\d*,\d*\}")
+
+
+def _split_setup_cfg_regex_list(value: str) -> list[str]:
+    """Split a single-line setup.cfg regex list, protecting quantifier commas.
+
+    M-029: the generic single-line comma split turned
+    ``do_not_mutate_patterns = ^f[0-9]{1,3}$`` into the fragments
+    ``'^f[0-9]{1'`` and ``'3}$'`` — both compile, so the regex validator
+    stayed green while neither fragment matched any function name and the
+    exclusion silently stopped working.
+
+    Only commas inside syntactically valid quantifiers (``{m,n}``,
+    ``{m,}``, ``{,n}``, found via :data:`_QUANTIFIER_WITH_COMMA_RE`) are
+    protected; every other comma splits exactly like the legacy
+    comprehension ``[x.strip() for x in value.split(",") if x.strip()]``
+    (design review: a bracket-depth state machine and an ambiguity
+    ``ValueError`` were rejected — they would newly reject accepted,
+    compilable lists such as ``'a{, b'``).  Commas in character classes or
+    groups keep splitting; the resulting fragments do not compile and
+    already fail loudly in ``_validate_regex_patterns``.
+
+    Args:
+        value: The raw single-line setup.cfg value.
+
+    Returns:
+        The separated, stripped, non-empty patterns.
+    """
+    protected = [(m.start(), m.end()) for m in _QUANTIFIER_WITH_COMMA_RE.finditer(value)]
+    if not protected:
+        return [x.strip() for x in value.split(",") if x.strip()]
+    parts: list[str] = []
+    start = 0
+    for i, ch in enumerate(value):
+        if ch == "," and not any(begin <= i < end for begin, end in protected):
+            parts.append(value[start:i])
+            start = i + 1
+    parts.append(value[start:])
+    return [x.strip() for x in parts if x.strip()]
+
+
+def _read_setup_cfg_text(path: Path) -> str | None:
+    """Read setup.cfg once as UTF-8 text (M-027 / M-079, Q-37).
+
+    ``ConfigParser.read`` swallows every ``OSError`` around its whole
+    ``with`` block, and under Windows a byte-range lock (msvcrt) opens
+    fine and fails only at ``read()`` — so an existing-but-unreadable
+    setup.cfg used to degrade to silent ``MutmutConfig()`` defaults.
+    Reading explicitly makes only ``FileNotFoundError`` proven absence;
+    UTF-8 decoding also happens at ``read()`` time, so both failures
+    must sit inside the SAME try block.
+
+    Args:
+        path: Path of the setup.cfg file.
+
+    Returns:
+        The file content as text, or ``None`` if the file is absent.
+
+    Raises:
+        ConfigError: If the file exists but cannot be read (any
+            ``OSError`` other than ``FileNotFoundError``) or is not
+            valid UTF-8.
+    """
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as exc:
+        msg = f"Failed to read setup.cfg: file is not valid UTF-8 ({exc})"
+        raise ConfigError(msg) from exc
+    except OSError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+
+
+def _validate_config_mapping(
+    normalized: dict[str, object], project_dir: Path, *, source: str
+) -> MutmutConfig:
+    """Validate a normalized mapping from either config source (Q-39).
+
+    M-077 shared validation boundary: value errors of pyproject.toml AND
+    setup.cfg surface as ``InvalidConfigValueError`` naming the source,
+    so the CLI exit-2 contract holds for both (a pydantic
+    ``ValidationError`` used to escape the setup.cfg path as a raw
+    traceback). Only ``project_dir.resolve()`` and ``model_validate``
+    sit inside the try — anything else would be mislabelled as a value
+    error. ``except Exception`` keeps parity with the previous TOML-only
+    wrapper (it also catches OSError from path.resolve in a validator).
+
+    Args:
+        normalized: Hyphen-normalized key/value mapping of one source.
+        project_dir: Project root passed as validator context.
+        source: Human-readable source label for the error message.
+
+    Returns:
+        The validated ``MutmutConfig``.
+
+    Raises:
+        InvalidConfigValueError: If model validation fails for any reason.
+    """
+    try:
+        return MutmutConfig.model_validate(
+            normalized, context={"project_root": project_dir.resolve()}
+        )
+    except Exception as e:
+        msg = f"Invalid {source} configuration: {e}"
+        # Value-level failure → the specific subclass (issue #114 /
+        # A4-QX-006); still a ConfigError for every existing handler.
+        raise InvalidConfigValueError(msg) from e
+
+
 def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     """Attempt to load mutmut configuration from setup.cfg [mutmut] section.
 
@@ -450,21 +632,32 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     Returns:
         ``MutmutConfig`` loaded from setup.cfg, or ``None`` if the file does
         not exist or has no ``[mutmut]`` section.
+
+    Raises:
+        ConfigError: If an existing setup.cfg cannot be read, is not valid
+            UTF-8, or cannot be parsed.
+        InvalidConfigValueError: If a setup.cfg [mutmut] value fails model
+            validation (message names the source).
     """
     setup_cfg_path = project_dir / "setup.cfg"
-    if not setup_cfg_path.exists():
+    text = _read_setup_cfg_text(setup_cfg_path)
+    if text is None:
         return None
 
     # Percent signs are ordinary command/config characters here, not
     # ConfigParser interpolation markers (MW220-036).
     parser = ConfigParser(interpolation=None)
     try:
-        parser.read(str(setup_cfg_path), encoding="utf-8")
-    except (ConfigParserError, OSError) as exc:
+        parser.read_string(text, source=str(setup_cfg_path))
+    except ConfigParserError as exc:
         msg = f"Failed to read setup.cfg: {exc}"
         raise ConfigError(msg) from exc
 
-    def _get(key: str, default: object) -> object:
+    def _get(
+        key: str,
+        default: object,
+        single_line_splitter: Callable[[str], list[str]] | None = None,
+    ) -> object:
         try:
             result = parser.get("mutmut", key)
         except (
@@ -476,6 +669,8 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
             # Multi-line values: split on newlines; single-line: split on commas
             if "\n" in result:
                 return [x for x in result.split("\n") if x]
+            if single_line_splitter is not None:
+                return single_line_splitter(result)
             return [x.strip() for x in result.split(",") if x.strip()]
         return result
 
@@ -486,7 +681,26 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
     # silently ignored — the run proceeded with defaults and the user
     # believed the option was active. The known set is the model itself,
     # so new fields can never drift out of this check.
-    unknown = sorted(set(parser.options("mutmut")) - set(MutmutConfig.model_fields))
+    #
+    # M-080: parser.options() exposes the EFFECTIVE view, so keys merely
+    # inherited from [DEFAULT] produced a false typo warning on every
+    # run. A second, purely diagnostic parse of the SAME text — with a
+    # sentinel default_section (see _NO_DEFAULT_SECTION_SENTINEL) and
+    # strict=False, because the strict parser accepts repeated [DEFAULT]
+    # headers — yields the section-local key set. VALUE inheritance from
+    # [DEFAULT] stays with the strict parser (mutmut 3.5.0 parity).
+    diagnostic_parser = ConfigParser(
+        interpolation=None,
+        default_section=_NO_DEFAULT_SECTION_SENTINEL,
+        strict=False,
+    )
+    try:
+        diagnostic_parser.read_string(text, source=str(setup_cfg_path))
+        local_keys = set(diagnostic_parser.options("mutmut"))
+    except ConfigParserError as exc:
+        msg = f"Failed to read setup.cfg: {exc}"
+        raise ConfigError(msg) from exc
+    unknown = sorted(local_keys - set(MutmutConfig.model_fields))
     if unknown:
         print(
             f"Warning: setup.cfg [mutmut] contains unknown option(s): "
@@ -498,7 +712,9 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         "paths_to_mutate": _get("paths_to_mutate", []),
         "tests_dir": _get("tests_dir", ["tests/"]),
         "do_not_mutate": _get("do_not_mutate", []),
-        "do_not_mutate_patterns": _get("do_not_mutate_patterns", []),
+        "do_not_mutate_patterns": _get(
+            "do_not_mutate_patterns", [], single_line_splitter=_split_setup_cfg_regex_list
+        ),
         "also_copy": _get("also_copy", []),
         "max_children": _get("max_children", _default_max_children()),
         "timeout_multiplier": _get("timeout_multiplier", 30.0),
@@ -536,7 +752,7 @@ def _load_setup_cfg(project_dir: Path) -> MutmutConfig | None:
         normalized["mutation_profile"] = profile_value
     # Remove empty-list defaults that were not configured so model defaults apply
     normalized = {k: v for k, v in normalized.items() if v != [] or k in ("do_not_mutate",)}
-    return MutmutConfig.model_validate(normalized, context={"project_root": project_dir.resolve()})
+    return _validate_config_mapping(normalized, project_dir, source="setup.cfg [mutmut]")
 
 
 def load_config(project_dir: Path | None = None) -> MutmutConfig:
@@ -553,7 +769,13 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         Validated MutmutConfig instance.
 
     Raises:
-        ConfigError: If pyproject.toml cannot be read or parsed.
+        ConfigError: If pyproject.toml cannot be read, is not valid UTF-8,
+            or cannot be parsed; if ``tool`` is present but not a table; if
+            an existing setup.cfg cannot be read, is not valid UTF-8, or
+            cannot be parsed.
+        InvalidConfigValueError: If ``tool.mutmut`` is present but not a
+            table (e.g. ``[[tool.mutmut]]``), or if a value of either
+            configuration source fails model validation.
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -569,12 +791,40 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
     try:
         with pyproject_path.open("rb") as f:
             data = tomllib.load(f)
+    except UnicodeDecodeError as e:
+        # M-079: tomllib decodes lazily, so an undecodable file raises
+        # UnicodeDecodeError (a ValueError) past the tuple below —
+        # keep the 'Failed to read' contract prefix for the CLI exit-2
+        # path.
+        msg = f"Failed to read pyproject.toml: file is not valid UTF-8 ({e})"
+        raise ConfigError(msg) from e
     except (tomllib.TOMLDecodeError, OSError) as e:
         msg = f"Failed to read pyproject.toml: {e}"
         raise ConfigError(msg) from e
 
-    tool_config = data.get("tool", {}).get("mutmut", {})
-    if not isinstance(tool_config, dict) or not tool_config:
+    # Q-38 structure check BEFORE any fallback (M-078 / M-028): the old
+    # data.get("tool", {}).get("mutmut", {}) chain crashed with a raw
+    # AttributeError when 'tool' was a scalar, and silently treated a
+    # present non-table 'tool.mutmut' (e.g. [[tool.mutmut]]) as a
+    # missing section — falling back to setup.cfg or guessed defaults
+    # without a single word of diagnosis.
+    tool_table: object = data.get("tool")
+    if tool_table is not None and not isinstance(tool_table, dict):
+        msg = f"Invalid pyproject.toml: [tool] must be a table, got {type(tool_table).__name__}"
+        raise ConfigError(msg)
+    tool_config: object = tool_table.get("mutmut") if isinstance(tool_table, dict) else None
+    if tool_config is not None and not isinstance(tool_config, dict):
+        # A present non-table value (an array of tables such as
+        # [[tool.mutmut]], a scalar, or the empty array) is NOT a
+        # missing section; only the EMPTY TABLE keeps the documented
+        # setup.cfg/default fallback below.
+        msg = (
+            "Invalid [tool.mutmut] configuration: expected a table, got "
+            f"{type(tool_config).__name__} (an array of tables such as "
+            "[[tool.mutmut]] is not supported)"
+        )
+        raise InvalidConfigValueError(msg)
+    if not tool_config:
         # No [tool.mutmut] section — try setup.cfg before returning defaults
         setup_cfg_config = _load_setup_cfg(project_dir)
         if setup_cfg_config is not None:
@@ -606,14 +856,6 @@ def load_config(project_dir: Path | None = None) -> MutmutConfig:
         hint = f" — did you mean '{matches[0]}'?" if matches else ""
         print(f"Warning: unknown [tool.mutmut] key '{unknown}'{hint}", file=sys.stderr)
 
-    try:
-        config = MutmutConfig.model_validate(
-            normalized, context={"project_root": project_dir.resolve()}
-        )
-    except Exception as e:
-        msg = f"Invalid [tool.mutmut] configuration: {e}"
-        # Value-level failure → the specific subclass (issue #114 /
-        # A4-QX-006); still a ConfigError for every existing handler.
-        raise InvalidConfigValueError(msg) from e
+    config = _validate_config_mapping(normalized, project_dir, source="[tool.mutmut]")
 
     return _apply_default_also_copy(config, project_dir)

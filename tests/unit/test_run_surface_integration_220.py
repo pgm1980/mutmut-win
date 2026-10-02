@@ -34,6 +34,7 @@ from mutmut_win.exceptions import (
     OrchestratorError,
     UnsafeWorkspaceStateError,
 )
+from mutmut_win.file_setup import copy_src_dir
 from mutmut_win.models import (
     MutationRunResult,
     MutationTask,
@@ -44,10 +45,12 @@ from mutmut_win.process.run_lock import (
     DatabaseRunLocks,
     RunLockHeldError,
     WorkspaceRunLock,
+    database_lock_paths_for_db,
     run_lock_path_for_db,
 )
 from mutmut_win.stats import (
     RunBasisEvidence,
+    build_run_basis_evidence,
     build_run_basis_fingerprint,
     canonical_run_basis_config,
     save_cicd_stats,
@@ -365,10 +368,11 @@ def test_shared_hardlink_database_is_rejected_without_foreign_run_invalidation(
         pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
 
     monkeypatch.chdir(workspace_a)
-    with (
-        WorkspaceRunLock(run_lock_path_for_db(database)),
-        DatabaseRunLocks(database),
-    ):
+    # [M-036] deliberate contract change: DatabaseRunLocks refuses a
+    # hardlink database outright (RunLockCorruptError), so the live holder
+    # only keeps the workspace lock; the contender is still rejected by
+    # validate_cache_path before any lock derivation or run invalidation.
+    with WorkspaceRunLock(run_lock_path_for_db(database)):
         monkeypatch.chdir(workspace_b)
         contender = MutationOrchestrator(
             MutmutConfig(),
@@ -386,6 +390,112 @@ def test_shared_hardlink_database_is_rejected_without_foreign_run_invalidation(
         assert current.status == "running"
 
     finish_run(database, run_id, "aborted")
+
+
+def _custom_db_project(tmp_path: Path) -> Path:
+    """Create a minimal project whose custom database lives in the source root."""
+    source_root = tmp_path / "src" / "pkg"
+    source_root.mkdir(parents=True)
+    (source_root / "mod.py").write_text(
+        "def add(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    (tests_root / "test_mod.py").write_text(
+        "from pkg.mod import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_held_database_locks_stay_out_of_staging_and_basis_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[M-036] colocated lock/guard files are neither staged nor hashed.
+
+    The custom database lives under the project source root, so its lock
+    domain is colocated inside the walked project tree.  With the database
+    locks held (guard files OS-locked, owner records mutating), staging and
+    the run-basis fingerprint must neither raise nor observe them.
+    """
+    project = _custom_db_project(tmp_path)
+    monkeypatch.chdir(project)
+    db_path = project / "rundb" / "cache.db"
+    db_path.parent.mkdir()
+    db_path.write_bytes(b"sqlite identity placeholder")
+    config = MutmutConfig(paths_to_mutate=["src"])
+    orchestrator = MutationOrchestrator(
+        config,
+        runner=MagicMock(),
+        executor=MagicMock(),
+        db_path=db_path,
+    )
+    legacy_excludes: tuple[Path, ...] = (
+        db_path,
+        Path(f"{db_path}-journal"),
+        Path(f"{db_path}-wal"),
+        Path(f"{db_path}-shm"),
+    )
+    baseline = build_run_basis_evidence(config, excluded_paths=legacy_excludes)
+
+    with DatabaseRunLocks(db_path):
+        excluded = orchestrator._basis_excluded_paths()
+        for lock_path in database_lock_paths_for_db(db_path):
+            assert lock_path in excluded
+            assert lock_path.with_name(f"{lock_path.name}.guard") in excluded
+
+        evidence = build_run_basis_evidence(config, excluded_paths=excluded)
+        assert evidence.digest == baseline.digest
+        assert evidence.complete == baseline.complete
+
+        copy_src_dir(config, excluded_paths=excluded)
+
+    staged = [entry for entry in (project / "mutants").rglob("*") if ".run.lock" in entry.name]
+    assert staged == []
+
+
+def test_run_ensures_cache_parent_before_database_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[M-036] run() materializes the db parent before deriving lock paths.
+
+    The colocated lock domain needs the canonical db parent to exist; a
+    fresh workspace has no ``.mutmut-cache/`` yet, so the orchestrator must
+    create it (via the db-layer helper) before ``DatabaseRunLocks``.
+    """
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / ".mutmut-cache" / "mutmut-cache.db"
+    orchestrator = MutationOrchestrator(
+        MutmutConfig(),
+        runner=MagicMock(),
+        executor=MagicMock(),
+        db_path=db_path,
+    )
+
+    observed: dict[str, object] = {}
+
+    class RecordingDatabaseLocks:
+        def __init__(self, path: Path) -> None:
+            observed["parent"] = path.absolute().parent
+
+        def __enter__(self) -> RecordingDatabaseLocks:
+            observed["parent_exists"] = db_path.parent.is_dir()
+            raise OrchestratorError("stop after lock derivation")
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "mutmut_win.process.run_lock.DatabaseRunLocks",
+        RecordingDatabaseLocks,
+    )
+    with pytest.raises(OrchestratorError, match="stop after lock derivation"):
+        orchestrator.run()
+
+    assert observed == {"parent": db_path.parent, "parent_exists": True}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
@@ -1194,6 +1304,10 @@ def test_apply_does_not_touch_source_when_evidence_invalidation_fails(
     artifact = tmp_path / "mutants" / "mutmut-cicd-stats.json"
     artifact.parent.mkdir()
     artifact.write_text('{"trusted": true}\n', encoding="utf-8")
+    # M-036: the database lock domain lives in the canonical database
+    # parent directory — apply requires it to exist (the orchestrator
+    # creates it via ensure_cache_parent before locking).
+    (tmp_path / ".mutmut-cache").mkdir()
 
     with (
         patch("mutmut_win.cli.load_config", return_value=MutmutConfig()),
@@ -1208,7 +1322,6 @@ def test_apply_does_not_touch_source_when_evidence_invalidation_fails(
         patch("mutmut_win.cli.apply_mutant") as apply_mock,
     ):
         applied = CliRunner().invoke(cli, ["apply", "pkg.mod.x_f__mutmut_1"])
-
     assert applied.exit_code == 1
     assert "database unavailable" in applied.output
     apply_mock.assert_not_called()
@@ -1345,3 +1458,67 @@ def test_atomic_cicd_export_preserves_previous_artifact_on_write_failure(
 
     assert artifact.read_bytes() == original
     assert list(mutants_dir.glob(".mutmut-cicd-stats.json.*.tmp")) == []
+
+
+def test_cicd_export_without_staging_dir_fails_closed_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-075 (issue #160): a missing mutants/ is a domain failure, not a traceback.
+
+    An externally removed staging directory (manual cleanup, CI cache wipe)
+    passed every evidence check and died inside the atomic writer with a raw
+    ``UnsafeAtomicWriteError`` (an ``OSError``, not a ``MutmutWinError``).
+    """
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+    (tmp_path / "mutants").rmdir()
+
+    result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "mutants" in result.output
+    assert "CI/CD export failed closed" in result.output
+    assert "could not acquire a consistent state" not in result.output
+    assert not (tmp_path / "mutants").exists()
+
+
+def test_cicd_export_with_staging_as_file_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+    (tmp_path / "mutants").rmdir()
+    (tmp_path / "mutants").write_text("not a directory", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    # A file where the staging root belongs perturbs the live basis, so the
+    # drift check may fail first — either way this stays a domain failure:
+    # exit 1, a SystemExit (no raw OSError traceback), and never the outer
+    # lock-acquisition message.
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "CI/CD export failed closed" in result.output
+    assert "could not acquire a consistent state" not in result.output
+    assert (tmp_path / "mutants").is_file()
+
+
+def test_cicd_export_write_failure_is_reported_locally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write failure is reported next to the artifact, not as a lock failure."""
+    monkeypatch.chdir(tmp_path)
+    _persist_verified_completed_run(tmp_path)
+
+    with patch("mutmut_win.cli.save_cicd_stats", side_effect=OSError("simulated")):
+        result = CliRunner().invoke(cli, ["export-cicd-stats"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "simulated" in result.output
+    assert "Saved CI/CD stats" not in result.output
+    assert "could not acquire a consistent state" not in result.output

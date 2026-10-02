@@ -24,6 +24,41 @@ if TYPE_CHECKING:
 
     import pytest
 
+#: The canonical oid the git dispatcher answers rev-parse with (M-022).
+REV_PARSE_OID = "7" * 40
+
+
+def _git_dispatcher(
+    diff_stdout: str | bytes = "",
+    *,
+    diff_stderr: str | bytes = "",
+    diff_returncode: int = 0,
+) -> Any:
+    """``subprocess.run`` side effect answering rev-parse and diff (M-022).
+
+    The since-commit flow issues TWO git calls: ``git rev-parse --verify``
+    resolves the ref to :data:`REV_PARSE_OID`, then ``git diff`` reports
+    *diff_stdout*.  A single ``return_value`` mock would hand the diff
+    payload to the oid validation and exit 2.
+    """
+
+    def _run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if argv[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(
+                args=argv,
+                returncode=0,
+                stdout=f"{REV_PARSE_OID}\n",
+                stderr=b"",
+            )
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=diff_returncode,
+            stdout=diff_stdout,
+            stderr=diff_stderr,
+        )
+
+    return _run
+
 
 def _invoke_run(*args: str, orchestrator_error: Exception | None = None) -> tuple[int, str]:
     orchestrator = MagicMock()
@@ -106,7 +141,8 @@ class TestSinceCommitTruth:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A3-CM-006: the git returncode was never checked — an invalid ref
-        # meant 'nothing changed' + exit 0: a FALSE CI success.
+        # meant 'nothing changed' + exit 0: a FALSE CI success.  M-022: the
+        # rc 128 now comes from the rev-parse resolution stage.
         monkeypatch.chdir(tmp_path)
         with patch("subprocess.run", return_value=self._git(returncode=128)):
             result = CliRunner().invoke(cli, ["run", "--since-commit", "not-a-ref"])
@@ -136,7 +172,7 @@ class TestSinceCommitTruth:
 
         git_output = "src/mod.py\nsrc/deleted.py\ntests/test_mod.py\n"
         with (
-            patch("subprocess.run", return_value=self._git(stdout=git_output)),
+            patch("subprocess.run", side_effect=_git_dispatcher(git_output)),
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -176,7 +212,7 @@ class TestSinceCommitTruth:
 
         git_output = "src/mod.py\ntests/unit/test_mod.py\n"
         with (
-            patch("subprocess.run", return_value=self._git(stdout=git_output)),
+            patch("subprocess.run", side_effect=_git_dispatcher(git_output)),
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -208,7 +244,7 @@ class TestSinceCommitTruth:
             stderr=b"",
         )
         with (
-            patch("subprocess.run", return_value=completed) as git_diff,
+            patch("subprocess.run", side_effect=_git_dispatcher(completed.stdout)) as git_calls,
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -217,7 +253,20 @@ class TestSinceCommitTruth:
 
         assert result.exit_code == 0, result.output
         assert captured["paths"] == ["src/grüße.py"]
-        assert git_diff.call_args.args[0] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
+        # #128 guard (M-021/M-022 form): exactly one revision — the
+        # canonical OID from rev-parse, never the raw ref — and a
+        # terminating "--"; no range element anywhere in argv.
+        diff_argv = git_calls.call_args_list[-1].args[0]
+        assert diff_argv == [
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            REV_PARSE_OID,
+            "--",
+        ]
+        assert not any(".." in arg for arg in diff_argv[1:])
 
     def test_uppercase_python_suffix_is_a_windows_mutation_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -241,7 +290,7 @@ class TestSinceCommitTruth:
             stderr=b"",
         )
         with (
-            patch("subprocess.run", return_value=completed),
+            patch("subprocess.run", side_effect=_git_dispatcher(completed.stdout)),
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -281,7 +330,7 @@ class TestSinceCommitTruth:
             stderr=b"",
         )
         with (
-            patch("subprocess.run", return_value=completed),
+            patch("subprocess.run", side_effect=_git_dispatcher(completed.stdout)),
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -320,7 +369,7 @@ class TestSinceCommitTruth:
             stderr=b"",
         )
         with (
-            patch("subprocess.run", return_value=completed),
+            patch("subprocess.run", side_effect=_git_dispatcher(completed.stdout)),
             patch("mutmut_win.cli.MutationOrchestrator", side_effect=fake_orchestrator),
             patch("mutmut_win.cli.PytestRunner"),
             patch("mutmut_win.cli.SpawnPoolExecutor"),
@@ -342,10 +391,11 @@ class TestSinceCommitTruth:
         (tmp_path / "src" / "mod.py").write_text("x = 1\n", encoding="utf-8")
 
         seen: dict[str, Any] = {}
+        dispatch = _git_dispatcher("src/mod.py\n")
 
-        def spy_run(cmd: Any, **_kwargs: Any) -> MagicMock:
-            seen["cmd"] = list(cmd)
-            return self._git(stdout="src/mod.py\n")
+        def spy_run(cmd: Any, **_kwargs: Any) -> Any:
+            seen["cmds"] = [*seen.get("cmds", []), list(cmd)]
+            return dispatch(cmd)
 
         with (
             patch("subprocess.run", side_effect=spy_run),
@@ -359,8 +409,22 @@ class TestSinceCommitTruth:
             result = CliRunner().invoke(cli, ["run", "--since-commit", "HEAD~1"])
 
         assert result.exit_code == 0, result.output
-        assert seen["cmd"][:5] == ["git", "diff", "--name-only", "-z", "HEAD~1"]
-        assert "HEAD~1..HEAD" not in seen["cmd"]
+        # #128 guard (M-021/M-022 form): the diff runs against the
+        # resolved OID alone; '..' ranges would hide uncommitted
+        # working-tree edits.  The raw ref only ever reaches rev-parse.
+        diff_cmds = [cmd for cmd in seen["cmds"] if cmd[:2] == ["git", "diff"]]
+        assert len(diff_cmds) == 1
+        assert diff_cmds[0] == [
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            REV_PARSE_OID,
+            "--",
+        ]
+        assert "HEAD~1..HEAD" not in diff_cmds[0]
+        assert "HEAD~1" not in diff_cmds[0]
 
 
 class TestDebugIsReal:

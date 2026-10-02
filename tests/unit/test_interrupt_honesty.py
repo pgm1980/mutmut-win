@@ -8,6 +8,7 @@ misleading score.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,6 +72,69 @@ class TestCliInterruptHonesty:
         assert exit_code == 130
         assert "gate" in output.lower()
         assert "below threshold" not in output
+
+
+class TestCtrlCBeforeWorkerPhase:
+    """M-076 (issue #160): the documented exit-130 contract covers every
+    Ctrl-C during ``run`` — not only the worker event loop, whose interrupt
+    path already produces a result with ``was_interrupted=True``.
+
+    A KeyboardInterrupt raised before, between, or after the worker phases
+    used to escape to Click's standalone abort handling: "Aborted!" and
+    exit 1, with an empty stdout even under ``--output json``.
+    """
+
+    def _invoke_run_raising(self, exc: BaseException, *args: str) -> Any:
+        orchestrator = MagicMock()
+        orchestrator.run.side_effect = exc
+        orchestrator.dry_run.side_effect = exc
+        with (
+            patch("mutmut_win.cli.MutationOrchestrator", return_value=orchestrator),
+            patch("mutmut_win.cli.PytestRunner"),
+            patch("mutmut_win.cli.SpawnPoolExecutor"),
+            patch("mutmut_win.cli.load_config", return_value=MagicMock(model_copy=MagicMock())),
+        ):
+            return CliRunner().invoke(cli, ["run", *args])
+
+    def test_interrupt_before_worker_phase_exits_130(self) -> None:
+        result = self._invoke_run_raising(KeyboardInterrupt())
+
+        assert result.exit_code == 130
+        assert "interrupted" in result.stderr.lower()
+        assert "Aborted!" not in result.stderr
+
+    def test_interrupt_before_worker_phase_json_error_object(self) -> None:
+        import json
+
+        result = self._invoke_run_raising(KeyboardInterrupt(), "--output", "json")
+
+        assert result.exit_code == 130
+        assert json.loads(result.stdout) == {
+            "error": "Run interrupted before completion (Ctrl-C); no score was produced.",
+            "exit_code": 130,
+        }
+
+    def test_interrupt_during_dry_run_exits_130(self) -> None:
+        result = self._invoke_run_raising(KeyboardInterrupt(), "--dry-run")
+
+        assert result.exit_code == 130
+        assert "interrupted" in result.stderr.lower()
+
+    def test_interrupt_notes_reach_stderr_and_keep_json_pure(self) -> None:
+        import json
+
+        interrupt = KeyboardInterrupt()
+        interrupt.add_note(
+            "cached-verdict reuse revocation failed; the run remains running for recovery"
+        )
+        result = self._invoke_run_raising(interrupt, "--output", "json")
+
+        assert result.exit_code == 130
+        assert "reuse revocation failed" in result.stderr
+        assert json.loads(result.stdout) == {
+            "error": "Run interrupted before completion (Ctrl-C); no score was produced.",
+            "exit_code": 130,
+        }
 
 
 class TestExecutionBasisScoreAuthority:

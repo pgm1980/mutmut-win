@@ -472,12 +472,20 @@ class TestMutationOrchestratorInit:
         tasks, source_data, fast_path_names = orch._generate_mutants()
 
         absolute = database.absolute()
-        assert captured["excluded"] == (
+        expected = (
             absolute,
             absolute.with_name(f"{absolute.name}-journal"),
             absolute.with_name(f"{absolute.name}-wal"),
             absolute.with_name(f"{absolute.name}-shm"),
         )
+        # M-036: colocated lock/guard files (path- and identity-keyed) are
+        # additionally excluded from staging and basis evidence; they start
+        # with the engine prefix inside the DB parent directory.
+        extra = captured["excluded"][len(expected) :]
+        assert captured["excluded"][: len(expected)] == expected
+        for path in extra:
+            assert path.parent == absolute.parent
+            assert path.name.startswith(".mutmut-win-db-")
         assert tasks == []
         assert source_data == {}
         assert fast_path_names == set()
@@ -504,13 +512,13 @@ class TestMutationOrchestratorInit:
         def fake_run_generation_supervised(
             file_args: list[Any],
             **_kwargs: Any,
-        ) -> list[tuple[str, list[str], None, list[str], bool]]:
+        ) -> list[tuple[str, list[str], None, list[str], bool, list[Any]]]:
             assert len(file_args) == 1
             preparation = get_preparation_data("mutmut-win-generation-path-regression")
             prepared_path = preparation["sys_path"]
             assert isinstance(prepared_path, list)
             spawn_sys_path.extend(prepared_path)
-            return [(file_args[0][0], [], None, [], False)]
+            return [(file_args[0][0], [], None, [], False, [])]
 
         monkeypatch.setattr(
             process,
@@ -1007,6 +1015,24 @@ class TestFilterTasksByNames:
         tasks = [_task(f"src.mod.x_fn__mutmut_{i}") for i in range(5)]
         result = _filter_tasks_by_names(tasks, ("src.mod.*",))
         assert [t.mutant_name for t in result] == [t.mutant_name for t in tasks]
+
+    # M-056 / Q-20: run's task filter shares the matcher with show/apply —
+    # mutant names are case-sensitive identifiers, also under Windows.
+    def test_case_twin_exact_name_selects_exactly_one_task(self) -> None:
+        tasks = [
+            _task("src.mod.x_parse__mutmut_1"),
+            _task("src.mod.x_Parse__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.mod.x_parse__mutmut_1",))
+        assert [t.mutant_name for t in result] == ["src.mod.x_parse__mutmut_1"]
+
+    def test_case_sensitive_glob_selects_only_the_case_twin(self) -> None:
+        tasks = [
+            _task("src.mod.x_parse__mutmut_1"),
+            _task("src.mod.x_Parse__mutmut_1"),
+        ]
+        result = _filter_tasks_by_names(tasks, ("src.mod.x_P*",))
+        assert [t.mutant_name for t in result] == ["src.mod.x_Parse__mutmut_1"]
 
 
 # ---------------------------------------------------------------------------

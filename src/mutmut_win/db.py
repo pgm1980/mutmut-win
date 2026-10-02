@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, NoReturn
 from uuid import uuid4
 
 from mutmut_win.exceptions import (
+    CacheEnvironmentError,
     CorruptCacheError,
     MutmutWinError,
     UnsafeWorkspaceStateError,
@@ -284,6 +285,26 @@ type _FileIdentity = tuple[int, int]
 
 _SQLITE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
 
+#: SQLite base codes (``sqlite_errorcode & 0xFF``) that describe the cache's
+#: ENVIRONMENT rather than its bytes (M-037 / issue #164): READONLY (8),
+#: IOERR (10), FULL (13) and CANTOPEN (14) are the asserted environmental
+#: failures; PERM (3, OS-level permission denial) and NOLFS (22, database
+#: larger than the filesystem supports) are included on the same grounds —
+#: none of them is evidence of corruption. SQLITE_AUTH (23) is deliberately
+#: absent: it can only appear with an authorizer this project never sets, so
+#: including it would be an unjustified widening. CORRUPT, NOTADB, and any
+#: code without a sqlite_errorcode stay conservative (CorruptCacheError).
+_ENVIRONMENT_SQLITE_CODES = frozenset(
+    {
+        sqlite3.SQLITE_PERM,
+        sqlite3.SQLITE_READONLY,
+        sqlite3.SQLITE_IOERR,
+        sqlite3.SQLITE_FULL,
+        sqlite3.SQLITE_CANTOPEN,
+        sqlite3.SQLITE_NOLFS,
+    }
+)
+
 
 def _absolute_cache_path(path: Path) -> Path:
     """Return a normalized absolute path without resolving redirects."""
@@ -381,6 +402,18 @@ def _inspect_cache_leaf(
             if _attempt < 2:
                 continue
             _unsafe_cache_path(path, f"SQLite {label} still has no links after repeated validation")
+        if metadata.st_nlink == 0:
+            # A zero link count means the metadata itself could not be read
+            # (the CPython lstat fallback for an unopenable regular file),
+            # not that a second directory entry was observed. The sidecar
+            # branch above has already retried, so this is the database leaf
+            # refusing fail-closed on the first observation (M-095 / Q-45).
+            _unsafe_cache_path(
+                path,
+                f"SQLite {label} reports no links (link count 0); its metadata "
+                "could not be read reliably, so it cannot be verified as a "
+                "single-link file",
+            )
         if metadata.st_nlink != 1:
             _unsafe_cache_path(path, f"SQLite {label} is a hardlink ({metadata.st_nlink} links)")
         try:
@@ -444,12 +477,18 @@ def validate_cache_path(path: Path = DEFAULT_DB_PATH) -> None:
     _validate_database_tree(path)
 
 
-def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
-    """Safely pre-create a missing DB leaf and return its fixed identity."""
+def ensure_cache_parent(path: Path) -> Path:
+    """Validate and create the parent directory of a cache database (M-036).
+
+    The database lock domain is colocated in this directory, so callers that
+    acquire database run locks must make it exist first; the run orchestrator
+    does so before ``DatabaseRunLocks``.  Validation runs before and after
+    ``mkdir(parents=True, exist_ok=True)`` so an already redirected ancestor
+    cannot turn parent creation into an external write.  A same-user swap
+    during mkdir is part of the explicitly documented stdlib pathname race
+    in :func:`validate_cache_path`.
+    """
     absolute = _absolute_cache_path(path)
-    # Validate before mkdir so an already redirected ancestor cannot turn
-    # parent creation into an external write. A same-user swap during mkdir is
-    # part of the explicitly documented stdlib pathname race above.
     _validate_parent_components(absolute)
     try:
         absolute.parent.mkdir(parents=True, exist_ok=True)
@@ -458,6 +497,13 @@ def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
             f"Refusing workspace state access: cannot create cache parent {absolute.parent}."
         ) from exc
     _validate_parent_components(absolute)
+    return absolute.parent
+
+
+def _prepare_database_file(path: Path) -> tuple[Path, _FileIdentity]:
+    """Safely pre-create a missing DB leaf and return its fixed identity."""
+    absolute = _absolute_cache_path(path)
+    ensure_cache_parent(absolute)
 
     existing = _validate_database_tree(absolute)
     if existing is not None:
@@ -518,7 +564,13 @@ def _corrupt_cache(path: Path, detail: str, exc: BaseException | None = None) ->
 
 
 def _raise_database_error(path: Path, exc: sqlite3.DatabaseError) -> NoReturn:
-    """Classify transient SQLite contention separately from corrupt bytes."""
+    """Classify contention and environment failures separately from corrupt bytes.
+
+    SQLITE_BUSY/LOCKED stay transient run-state contention; the environment
+    base codes raise :class:`CacheEnvironmentError` without any delete advice;
+    everything else — including exceptions that carry no ``sqlite_errorcode``
+    at all — conservatively remains a corrupt cache.
+    """
     error_code = getattr(exc, "sqlite_errorcode", None)
     base_code = error_code & 0xFF if isinstance(error_code, int) else None
     detail = str(exc).casefold()
@@ -530,6 +582,21 @@ def _raise_database_error(path: Path, exc: sqlite3.DatabaseError) -> NoReturn:
             f"cache database at '{path}' is busy or locked by another process; "
             "wait for that mutmut-win operation to finish and retry. The cache "
             "is not known to be corrupt and must not be deleted."
+        ) from exc
+    if base_code in _ENVIRONMENT_SQLITE_CODES:
+        error_name = getattr(exc, "sqlite_errorname", None)
+        code_detail = (
+            f"{error_name} ({error_code})"
+            if isinstance(error_name, str)
+            else f"sqlite error code {error_code}"
+        )
+        raise CacheEnvironmentError(
+            f"cache database at '{path}' could not be read or written because "
+            f"of an environment problem ({code_detail}: {exc}). Check whether "
+            "the file or its directory is read-only, the disk is full, an "
+            "antivirus or backup tool is holding the file, or another I/O or "
+            "permission problem applies. The cache is not known to be corrupt "
+            "and must not be deleted."
         ) from exc
     _corrupt_cache(path, str(exc), exc)
 
@@ -721,6 +788,11 @@ def create_db(path: Path = DEFAULT_DB_PATH) -> None:
     Raises:
         CorruptCacheError: if the file exists but is not a valid SQLite
             database (external QA CACHE-001); recover with ``run --force``.
+        CacheEnvironmentError: if the cache's environment blocks reading or
+            writing it — a read-only file or directory, a full disk, an I/O
+            error, or an unopenable path (M-037). The cache is not known to
+            be corrupt, so deleting it (``--force``) is deliberately not
+            advised; fix the environment instead.
     """
     with _verified_connection(path, create=True) as (conn, identity, absolute):
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1708,6 +1780,39 @@ def invalidate_cached_reuse_for_run(path: Path, run_id: str) -> int:
         return max(0, cursor.rowcount)
 
 
+def revoke_active_run_export_authority(path: Path, run_id: str) -> None:
+    """Revoke a completed run's export/score authority, keeping verdict reuse.
+
+    Narrow revocation for an incomplete mutation surface (M-003): sets the
+    run's basis to NULL and marks evidence invalidated so ``--min-score``
+    and CI/CD export fail closed, but leaves both ``tests_fingerprint``
+    columns untouched — the verdicts of the files that were generated are
+    still valid and are reused in follow-up runs (no runtime regression,
+    unlike :func:`deauthorize_active_run_evidence`, which also clears every
+    historical reuse fingerprint and is reserved for ambient-basis drift).
+
+    Also distinct from :func:`invalidate_latest_run_evidence` (apply-side,
+    latest-by-sequence, no active-run guard): this function requires the
+    exact *run_id* of a run that is still ``running``.
+    """
+    create_db(path)
+    with _write_transaction(path) as conn:
+        _require_active_run(conn, run_id)
+        cursor = conn.execute(
+            """
+            UPDATE mutation_run
+            SET basis_fingerprint = NULL,
+                basis_config_json = NULL,
+                evidence_invalidated = 1
+            WHERE run_id = ? AND status = ?
+            """,
+            (run_id, RUN_STATUS_RUNNING),
+        )
+        if cursor.rowcount != 1:
+            msg = f"run {run_id!r} is not the active running run"
+            raise RunStateError(msg)
+
+
 def deauthorize_active_run_evidence(path: Path, run_id: str) -> int:
     """Atomically preserve diagnostics while revoking every evidence capability.
 
@@ -1716,7 +1821,9 @@ def deauthorize_active_run_evidence(path: Path, run_id: str) -> int:
     result rows remain visible, while the run basis, export authority and both
     current-run and historical verdict-reuse fingerprints are removed in one
     transaction.  Requiring the exact active run prevents a stale caller from
-    deauthorizing a newer attempt.
+    deauthorizing a newer attempt.  For the narrow surface-degradation
+    revocation (keeps verdict reuse) see
+    :func:`revoke_active_run_export_authority`.
 
     Returns:
         Number of historical cache rows whose reuse fingerprint was cleared.

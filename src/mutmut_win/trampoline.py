@@ -1,15 +1,32 @@
 """Templates and helpers for generating mutation trampoline functions."""
 
+import unicodedata
+
 CLASS_NAME_SEPARATOR = "ǁ"
-#: Prefix for the collision-safe encoding used only when a source function or
-#: class name itself contains the reserved ``__mutmut_`` delimiter.  Ordinary
-#: names retain their historical ``x_`` / ``xǁ`` IDs byte-for-byte.
+#: Prefix for the collision-safe encoding used when a source function or
+#: class name itself contains the reserved ``__mutmut_`` delimiter, or when
+#: either component is not NFKC-normal (the CPython tokenizer binds the NFKC
+#: form of every identifier, so e.g. ``K`` and its fullwidth variant U+FF2B
+#: are the same compiled name, M-041).  Ordinary NFKC-normal names retain
+#: their historical ``x_`` / ``xǁ`` IDs byte-for-byte.
 COLLISION_SAFE_NAME_PREFIX = "xq"
 
 
 def _encoded_source_name(name: str) -> str:
     """Encode one Python identifier without using the mutant delimiter."""
     return name.encode("utf-8").hex()
+
+
+def _is_nfkc_normal(name: str) -> bool:
+    """Return whether *name* is unchanged by NFKC normalization.
+
+    CPython normalizes every identifier with NFKC before binding it, so two
+    raw spellings with the same NFKC form (``K`` and its fullwidth variant
+    U+FF2B) compile to the very same name.  Hex-encoding the RAW identifier
+    keeps such spellings distinct; encoding the normalized form would
+    re-create the collision.
+    """
+    return unicodedata.normalize("NFKC", name) == name
 
 
 def create_trampoline_lookup(
@@ -25,7 +42,11 @@ def create_trampoline_lookup(
     a class body is no descriptor, so ``enum.Enum`` turned it into a phantom
     member, and the former ``ClassVar[...]`` annotation crashed ``NamedTuple``
     creation (audit A1-MT-004/005).  For methods the dict values and the
-    ``__name__`` target are therefore qualified with ``<ClassName>.``.
+    ``__name__`` target are therefore qualified with ``<ClassName>.``.  For
+    methods, the class body additionally receives equivalent creation-time
+    bindings (M-039, see ``mutation._class_creation_bindings``) so the names
+    already resolve while the class is being built; these module-level
+    statements remain the authoritative post-class bindings.
 
     Args:
         orig_name: The original (unmangled) function name.
@@ -75,6 +96,10 @@ def mangle_function_name(
 
     Returns:
         Mangled function name string.
+
+    Raises:
+        ValueError: If *name* or *class_name* contains the reserved class-name
+            separator, or *definition_ordinal* is not a positive integer.
     """
     if CLASS_NAME_SEPARATOR in name:
         msg = f"Function name must not contain '{CLASS_NAME_SEPARATOR}': {name!r}"
@@ -100,8 +125,20 @@ def mangle_function_name(
         if class_name
         else f"x_{name}"
     )
+    # M-041: a non-NFKC-normal function OR class component also forces the
+    # collision-safe hex encoding, context-independently of any other
+    # definition in the module.  The compiler NFKC-normalizes identifiers,
+    # so the legacy private names of e.g. "K" and its fullwidth variant
+    # would collapse onto the same binding and one definition would
+    # silently win; the hex form is pure ASCII (NFKC-stable) and injective
+    # per raw spelling.  This is identity-affecting for such functions:
+    # previously cached verdicts are deliberately orphaned, never silently
+    # remapped.
     needs_collision_safe_encoding = (
-        "__mutmut_" in legacy_mangled_base or legacy_mangled_base.endswith("__mutmut")
+        "__mutmut_" in legacy_mangled_base
+        or legacy_mangled_base.endswith("__mutmut")
+        or not _is_nfkc_normal(name)
+        or (class_name is not None and not _is_nfkc_normal(class_name))
     )
     if needs_collision_safe_encoding:
         encoded_name = _encoded_source_name(name)

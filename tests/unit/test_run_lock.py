@@ -7,11 +7,14 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 
 import psutil
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 import mutmut_win.atomic_file as atomic_file_module
 import mutmut_win.process.run_lock as run_lock_module
@@ -584,32 +587,46 @@ def test_workspace_lock_path_fails_closed_when_workspace_cannot_be_canonicalized
     assert list(tmp_path.glob(".mutmut-win-*.run.lock*")) == []
 
 
-def test_database_lock_domains_cover_canonical_path_and_hardlink_identity(
+def _stat_with_link_count(metadata: os.stat_result, link_count: int) -> os.stat_result:
+    values = list(metadata)
+    values[3] = link_count
+    return os.stat_result(
+        values,
+        {
+            name: getattr(metadata, name)
+            for name in ("st_file_attributes", "st_reparse_tag")
+            if hasattr(metadata, name)
+        },
+    )
+
+
+def test_database_lock_domains_cover_canonical_path_and_identity_in_db_parent(
     tmp_path: Path,
 ) -> None:
-    first_db = tmp_path / "workspace-a" / "cache.db"
-    alias_db = tmp_path / "workspace-b" / "alias.db"
-    first_db.parent.mkdir()
-    alias_db.parent.mkdir()
-    first_db.write_bytes(b"sqlite identity placeholder")
-    try:
-        os.link(first_db, alias_db)
-    except OSError as exc:
-        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
+    """[M-036] both database lock keys are colocated in the canonical db parent.
 
-    first_paths = database_lock_paths_for_db(first_db)
-    alias_paths = database_lock_paths_for_db(alias_db)
+    Deliberate contract change (M-036 = A): the domain replaces the former
+    temp-directory root whose path/identity keys converged hardlink aliases.
+    """
+    database = tmp_path / "workspace-a" / "cache.db"
+    database.parent.mkdir()
+    database.write_bytes(b"sqlite identity placeholder")
 
-    assert len(first_paths) == 2
-    assert len(alias_paths) == 2
-    assert first_paths[0] != alias_paths[0]
-    assert first_paths[1] == alias_paths[1]
+    paths = database_lock_paths_for_db(database)
+
+    assert len(paths) == 2
+    assert {lock_path.parent for lock_path in paths} == {database.parent}
+    assert paths[0].name.startswith(".mutmut-win-db-0-path-")
+    assert paths[1].name.startswith(".mutmut-win-db-1-file-")
+    for lock_path in paths:
+        assert lock_path.name.endswith(".run.lock")
 
 
 def test_absolute_database_uses_same_lock_domain_from_different_workspaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """[M-036] neither different cwds nor diverging TEMP roots split the domain."""
     workspace_a = tmp_path / "workspace-a"
     workspace_b = tmp_path / "workspace-b"
     database = tmp_path / "shared" / "cache.db"
@@ -617,18 +634,95 @@ def test_absolute_database_uses_same_lock_domain_from_different_workspaces(
     workspace_b.mkdir()
     database.parent.mkdir()
     database.write_bytes(b"sqlite identity placeholder")
+    temp_a = tmp_path / "temp-a"
+    temp_b = tmp_path / "temp-b"
+    temp_a.mkdir()
+    temp_b.mkdir()
 
     monkeypatch.chdir(workspace_a)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_a))
     first_paths = database_lock_paths_for_db(database)
     monkeypatch.chdir(workspace_b)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_b))
     second_paths = database_lock_paths_for_db(database)
 
     assert first_paths == second_paths
+    assert first_paths[0].parent == database.parent
+
+
+def test_database_lock_domain_is_independent_of_process_temp_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[M-036] two diverging TEMP roots must not both grant the 'exclusive' lock.
+
+    Repro in miniature (glm-followup p08-036-repro.py): before the colocated
+    lock domain, the second acquisition under a different effective TEMP
+    root silently succeeded.
+    """
+    database = tmp_path / "shared" / "cache.db"
+    database.parent.mkdir()
+    database.write_bytes(b"sqlite identity placeholder")
+    temp_a = tmp_path / "temp-a"
+    temp_b = tmp_path / "temp-b"
+    temp_a.mkdir()
+    temp_b.mkdir()
+
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_a))
+    first = DatabaseRunLocks(database).acquire()
+    try:
+        monkeypatch.setattr(tempfile, "tempdir", str(temp_b))
+        with pytest.raises(RunLockHeldError):
+            DatabaseRunLocks(database).acquire()
+    finally:
+        first.release()
+
+
+@given(
+    temp_names=st.lists(
+        st.from_regex(r"[a-z]{1,12}", fullmatch=True),
+        min_size=2,
+        max_size=4,
+        unique=True,
+    )
+)
+@settings(deadline=None)
+def test_database_lock_paths_are_stable_across_arbitrary_temp_roots(
+    tmp_path_factory: pytest.TempPathFactory,
+    temp_names: list[str],
+) -> None:
+    """[M-036] any sequence of effective TEMP roots yields identical lock paths."""
+    base = tmp_path_factory.mktemp("m036-temp-roots")
+    database = base / "shared" / "cache.db"
+    database.parent.mkdir()
+    database.write_bytes(b"sqlite identity placeholder")
+
+    reference: tuple[Path, ...] | None = None
+    for name in temp_names:
+        temp_root = base / f"temp-{name}"
+        temp_root.mkdir()
+        previous = tempfile.tempdir
+        tempfile.tempdir = str(temp_root)
+        try:
+            paths = database_lock_paths_for_db(database)
+        finally:
+            tempfile.tempdir = previous
+        if reference is None:
+            reference = paths
+        assert paths == reference
+        assert paths[0].parent == database.parent
 
 
 def test_database_lock_rejects_hardlink_alias_while_original_is_held(
     tmp_path: Path,
 ) -> None:
+    """[M-036] hardlink databases are corrupt, not identity-converged lock aliases.
+
+    Deliberate contract change: the former identity key unified hardlink
+    aliases (including the "replacement acquisition" below); the colocated
+    domain cannot converge aliases in foreign directories and rejects the
+    aliased database fail-closed instead.
+    """
     first_db = tmp_path / "workspace-a" / "cache.db"
     alias_db = tmp_path / "workspace-b" / "alias.db"
     first_db.parent.mkdir()
@@ -639,8 +733,203 @@ def test_database_lock_rejects_hardlink_alias_while_original_is_held(
     except OSError as exc:
         pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
 
-    with DatabaseRunLocks(first_db), pytest.raises(RunLockHeldError):
+    with pytest.raises(RunLockCorruptError, match="hard links"):
+        DatabaseRunLocks(first_db).acquire()
+
+    # The rejection is a property of the aliased database itself (every name
+    # sees the same link count), not of any held lock state.
+    with pytest.raises(RunLockCorruptError, match="hard links"):
         DatabaseRunLocks(alias_db).acquire()
 
-    with DatabaseRunLocks(alias_db) as replacement:
-        assert replacement.acquired is True
+
+def test_database_lock_zero_link_count_is_rejected_without_hardlink_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[M-036/M-095] an unobservable link count is not a single-link proof.
+
+    A zero link count is the CPython lstat fallback for an unopenable regular
+    file; identity (0, 0) must never be hashed as a lock key, and the
+    refusal must not claim a hardlink that was not observed.
+    """
+    database = tmp_path / "shared" / "cache.db"
+    database.parent.mkdir()
+    database.write_bytes(b"sqlite identity placeholder")
+    real_lstat = Path.lstat
+
+    def zero_link_lstat(path: Path) -> os.stat_result:
+        metadata = real_lstat(path)
+        if path == database:
+            return _stat_with_link_count(metadata, 0)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", zero_link_lstat)
+
+    with pytest.raises(RunLockCorruptError) as exc_info:
+        database_lock_paths_for_db(database)
+
+    message = str(exc_info.value)
+    assert "hard link" not in message
+    assert "link count" in message
+
+
+def test_database_lock_missing_parent_fails_closed_without_temp_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[M-036] a missing db parent is an error; the temp root is never a fallback."""
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    database = tmp_path / "missing-parent" / "cache.db"
+
+    with pytest.raises(run_lock_module.RunLockError, match="cannot canonicalize"):
+        database_lock_paths_for_db(database)
+
+    assert not (temp_root / "mutmut-win-database-locks-v1").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_database_lock_parent_junction_is_rejected_before_normalization(
+    tmp_path: Path,
+) -> None:
+    """[M-036] a redirected db parent cannot move the colocated lock domain.
+
+    The lexical parent is inspected before ``resolve()`` could follow the
+    junction, so the lock files (and their owner metadata) stay out of the
+    junction target.
+    """
+    target = tmp_path / "real-db-home"
+    target.mkdir()
+    database = target / "cache.db"
+    payload = b"sqlite identity placeholder"
+    database.write_bytes(payload)
+    junction = tmp_path / "linked-db-home"
+    cmd_executable = Path(os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"))
+    created = subprocess.run(  # noqa: S603 - cmd builtin creates the test Junction
+        [cmd_executable, "/d", "/u", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        encoding="utf-16-le",
+        errors="replace",
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation was refused on this host: {created.stdout!r}")
+
+    with pytest.raises(
+        run_lock_module.RunLockError,
+        match=r"symlink, junction, or reparse",
+    ):
+        database_lock_paths_for_db(junction / "cache.db")
+
+    assert database.read_bytes() == payload
+    assert [entry.name for entry in target.iterdir()] == ["cache.db"]
+
+
+class TestDatabaseLockInterruptSafeRelease:
+    """M-093: every partial lock is released even under interruption."""
+
+    def _database(self, tmp_path: Path) -> Path:
+        database = tmp_path / "cache" / "mutmut-cache.db"
+        database.parent.mkdir(parents=True, exist_ok=True)
+        database.write_bytes(b"placeholder")
+        return database
+
+    def test_release_interrupt_still_releases_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        locks = DatabaseRunLocks(database).acquire()
+        assert len(locks.paths) == 2
+        identity_path = locks.paths[-1]
+        original_release = WorkspaceRunLock.release
+
+        def interrupting_release(self: WorkspaceRunLock) -> None:
+            original_release(self)
+            if self.path == identity_path:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(WorkspaceRunLock, "release", interrupting_release)
+        with pytest.raises(KeyboardInterrupt):
+            locks.release()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        with DatabaseRunLocks(database).acquire() as fresh:
+            assert len(fresh.paths) == 2
+
+    def test_realistic_interrupt_inside_release_frees_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        locks = DatabaseRunLocks(database).acquire()
+        path_lock = locks.paths[0]
+        identity_path = locks.paths[-1]
+        original_write_owner = run_lock_module._write_owner
+
+        def interrupting_write_owner(
+            path: Path,
+            owner: run_lock_module.RunLockOwner,
+            **kwargs: object,
+        ) -> None:
+            if path == identity_path:
+                raise KeyboardInterrupt
+            original_write_owner(path, owner, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(run_lock_module, "_write_owner", interrupting_write_owner)
+        with pytest.raises(KeyboardInterrupt):
+            locks.release()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        with WorkspaceRunLock(path_lock):
+            pass  # the path lock is free even though the identity stage broke
+
+    def test_construction_failure_rolls_back_path_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        path_lock, identity_lock = database_lock_paths_for_db(database)
+
+        class FailingWorkspaceRunLock(WorkspaceRunLock):
+            def __init__(self, path: Path) -> None:
+                if path == identity_lock:
+                    raise run_lock_module.RunLockError("construction failed")
+                super().__init__(path)
+
+        monkeypatch.setattr(run_lock_module, "WorkspaceRunLock", FailingWorkspaceRunLock)
+        with pytest.raises(run_lock_module.RunLockError):
+            DatabaseRunLocks(database).acquire()
+        monkeypatch.undo()
+
+        with WorkspaceRunLock(path_lock):
+            pass  # the already-acquired path lock was rolled back
+
+    def test_interrupt_between_acquire_and_registration_releases_lock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        database = self._database(tmp_path)
+        original_acquire = WorkspaceRunLock.acquire
+
+        def interrupting_acquire(self: WorkspaceRunLock) -> None:
+            original_acquire(self)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(WorkspaceRunLock, "acquire", interrupting_acquire)
+        locks = DatabaseRunLocks(database)
+        with pytest.raises(KeyboardInterrupt):
+            locks.acquire()
+        monkeypatch.undo()
+
+        assert locks.paths == ()
+        for path in database_lock_paths_for_db(database):
+            with WorkspaceRunLock(path):
+                pass

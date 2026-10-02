@@ -1,7 +1,9 @@
 """This module contains the mutations for individual nodes, e.g. replacing a != b with a == b."""
 
+import ast
 import math
 import re
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, cast
 
@@ -32,21 +34,90 @@ TAGGED_OPERATORS_TYPE = Sequence[
 NON_ESCAPE_SEQUENCE = re.compile(r"((?<!\\)[^\\]+)")
 
 
+def _literal_value(token: str) -> str | bytes:
+    """Evaluate a complete string-literal token, suppressing escape warnings.
+
+    ``ast.literal_eval`` (and libcst's ``evaluated_value``) emit a
+    SyntaxWarning for invalid escape sequences such as ``'\\d'`` in a regex
+    or path literal. ``create_mutants_for_file`` records every warning with
+    ``record=True`` / ``simplefilter('always')`` and forwards it to the user,
+    so evaluating one warning per candidate would flood the orchestrator
+    channel (M-049). Only SyntaxWarning is suppressed — unexpected errors
+    propagate, keeping the evaluation fail-closed.
+
+    Args:
+        token: A complete string-literal token (prefix + quotes + body).
+
+    Returns:
+        The constant value of the token (``str`` or ``bytes``).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        # mypy: literal_eval is typed Any; a string-literal token always
+        # evaluates to str or bytes.
+        return cast("str | bytes", ast.literal_eval(token))
+
+
+def _int_token(value: int) -> str:
+    """Render a nonnegative integer as a libcst-safe literal token.
+
+    CPython refuses to convert integers with more than
+    ``sys.get_int_max_str_digits()`` decimal digits (default 4300) to a
+    string, so ``repr`` raises ``ValueError`` — which used to abort mutant
+    generation for the whole file (M-045 / issue #168). ``hex`` has no such
+    limit and produces a valid ``cst.Integer`` token, so oversized values
+    fall back to hexadecimal rendering. Only nonnegative values ever reach
+    this helper (the ``evaluated_value`` of a ``cst.Integer`` and ``abs()``
+    in ``_crcr_literal``), so the result is never the ``-0x…`` spelling that
+    ``cst.Integer`` would reject.
+
+    Args:
+        value: Nonnegative integer to render.
+
+    Returns:
+        ``repr(value)`` when within the digit limit, else ``hex(value)``.
+    """
+    try:
+        return repr(value)
+    except ValueError:
+        return hex(value)
+
+
 def operator_number(
     node: cst.BaseNumber,
 ) -> Iterable[cst.BaseNumber]:
-    """Mutate numeric literals by incrementing their value."""
-    if isinstance(node, (cst.Integer, cst.Float)):
+    """Mutate numeric literals by incrementing their value.
+
+    Integer increments whose decimal rendering would exceed CPython's
+    int→str digit limit render hexadecimally (see :func:`_int_token`) instead
+    of crashing the run; every literal within the limit stays byte-identical.
+    Float and imaginary increments that round back to the original value
+    (magnitudes from 2**53 upward) are not published — they would be
+    equivalent mutants.
+    """
+    if isinstance(node, cst.Integer):
+        yield node.with_changes(value=_int_token(node.evaluated_value + 1))
+    elif isinstance(node, cst.Float):
         new_value = node.evaluated_value + 1
         # 1e400 is a legal literal evaluating to inf, but repr(inf) is not a
         # valid float token — with_changes would raise CSTValidationError and
         # kill mutant generation for the whole file (issue #78 / A1-NM-007).
-        if isinstance(new_value, float) and not math.isfinite(new_value):
+        if not math.isfinite(new_value):
+            return
+        # Rounding: from magnitudes of 2**53 upward the nearest float to
+        # x + 1 is x itself — the candidate would differ textually
+        # ('1e20' -> '1e+20') yet be value-equal, i.e. an unkillable
+        # equivalent mutant (M-098).
+        if new_value == node.evaluated_value:
             return
         yield node.with_changes(value=repr(new_value))
     elif isinstance(node, cst.Imaginary):
         new_imag = node.evaluated_value + 1j
         if not (math.isfinite(new_imag.real) and math.isfinite(new_imag.imag)):
+            return
+        # Same rounding bound as the float branch (M-098): '1e20j' + 1j
+        # rounds back to 1e20j.
+        if new_imag == node.evaluated_value:
             return
         yield node.with_changes(value=repr(new_imag))
     else:
@@ -58,19 +129,30 @@ def operator_number(
 # ---------------------------------------------------------------------------
 
 
-def _crcr_literal(value: int | float) -> cst.BaseExpression:
+def _crcr_literal(value: int | float, original: cst.Integer | cst.Float) -> cst.BaseExpression:
     """Render a CRCR replacement value as a libcst literal.
 
     A negative value becomes ``UnaryOperation(Minus, <literal>)`` since libcst
-    has no negative-literal node.
+    has no negative-literal node. Integer magnitudes beyond CPython's int→str
+    digit limit render hexadecimally via :func:`_int_token` (M-045).
+
+    The replaced node's parentheses transfer to the OUTERMOST replacement
+    node (M-046): on the literal they would fake a bound like ``-(1)`` where
+    the source said ``(-1)``, and losing them entirely turns ``(2).bit_length()``
+    into the SyntaxError ``0.bit_length()``.
     """
-    magnitude = abs(value)
-    literal: cst.BaseExpression = (
-        cst.Integer(str(magnitude)) if isinstance(value, int) else cst.Float(repr(magnitude))
-    )
+    if isinstance(value, int):
+        literal: cst.Integer | cst.Float = cst.Integer(_int_token(abs(value)))
+    else:
+        literal = cst.Float(repr(abs(value)))
     if value < 0:
-        return cst.UnaryOperation(operator=cst.Minus(), expression=literal)
-    return literal
+        return cst.UnaryOperation(
+            operator=cst.Minus(),
+            expression=literal,
+            lpar=original.lpar,
+            rpar=original.rpar,
+        )
+    return literal.with_changes(lpar=original.lpar, rpar=original.rpar)
 
 
 def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
@@ -84,6 +166,11 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
     ``-orig`` collapse to a single ``-1`` — which matters because there is no
     visitor-level dedup. Non-finite floats are left alone; ``Imaginary`` literals
     stay with ``operator_number``.
+
+    Parentheses: the replacement carries the original literal's own ``lpar``/
+    ``rpar`` (so ``(2).bit_length()`` stays valid), and a negative candidate at
+    a ``**`` base is parenthesised by the visitor (``(-1) ** x``, not the
+    rebinding ``-1 ** x``).
     """
     orig: int | float
     candidates: tuple[int | float, ...]
@@ -102,13 +189,19 @@ def operator_number_crcr(node: cst.BaseNumber) -> Iterable[cst.BaseExpression]:
         if value == orig or value in seen:
             continue
         seen.add(value)
-        yield _crcr_literal(value)
+        yield _crcr_literal(value, node)
 
 
 def operator_string(
     node: cst.BaseString,
 ) -> Iterable[cst.BaseString]:
     """Mutate string literals: prepend/append XX, lowercase, uppercase.
+
+    Case variants that only re-spell escape notation (hex digits of
+    ``\\x``/``\\u``/``\\U``, ``\\N{...}`` names) are value-equal to the
+    original and are not published — they would be unkillable equivalent
+    mutants (M-049). Raw strings and bytes ``\\N{...}`` genuinely change
+    their value and stay published.
 
     f-strings mutate their literal TEXT parts only (one mutant per part,
     XX-wrapped) — format specs and expressions live in
@@ -141,11 +234,21 @@ def operator_string(
             lambda x: NON_ESCAPE_SEQUENCE.sub(lambda match: match.group(1).upper(), x),
         ]
 
+        # Value-based equivalence filter (M-049): the case variants only
+        # re-spell hex-escape digits (\x, \u, \U) and \N{...} names, which
+        # are case-insensitive — such candidates are value-equal to the
+        # original and therefore unkillable equivalent mutants. The original
+        # value is computed once; \N{...} in bytes literals and raw strings
+        # genuinely change the value and stay published.
+        original_literal_value = _literal_value(old_value)
+
         for mut_func in supported_str_mutations:
             new_value = f"{prefix}{value[0]}{mut_func(value[1:-1])}{value[-1]}"
             if new_value == value:
                 continue
             if new_value == old_value:
+                continue
+            if _literal_value(new_value) == original_literal_value:
                 continue
             yield node.with_changes(value=new_value)
 
@@ -254,6 +357,9 @@ def operator_unsymmetrical_string_methods_swap(
 #: Expression types that can safely replace their enclosing node bare: they
 #: bind at least as tightly as a call and cannot carry hanging continuation
 #: lines unless already parenthesized (then the lpar check applies anyway).
+#: One exception is context-dependent and handled in the visitor (M-047): a
+#: bare DECIMAL integer is invalid directly before an attribute dot, so
+#: ``_parenthesize_for_context`` adds parens in exactly that position.
 _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.Name,
     cst.Integer,
@@ -273,6 +379,28 @@ _ATOMIC_UNWRAP_TYPES: tuple[type[cst.BaseExpression], ...] = (
     cst.DictComp,
     cst.Tuple,
 )
+
+
+def _is_bare_decimal_integer(expression: cst.CSTNode) -> bool:
+    """True for an unparenthesised decimal ``cst.Integer``.
+
+    A bare decimal integer directly before an attribute dot is invalid —
+    ``0.bit_length()`` tokenises the dot as the start of a float and is a
+    SyntaxError (M-047 / issue #168). Hex/octal/binary integers keep their
+    prefix character before the dot and stay valid, as do floats and
+    imaginaries. Already-parenthesised integers are safe by construction.
+
+    Args:
+        expression: Candidate replacement node.
+
+    Returns:
+        True when the node is a decimal integer without its own parentheses.
+    """
+    return (
+        isinstance(expression, cst.Integer)
+        and not expression.lpar
+        and expression.value[:2].lower() not in {"0x", "0o", "0b"}
+    )
 
 
 def _safe_unwrap(expression: cst.BaseExpression) -> cst.BaseExpression:
@@ -483,12 +611,122 @@ _RE_PATTERN_FUNCTIONS: set[str] = {
     "subn",
 }
 
+#: Zero-based positional index of the ``flags`` parameter per function
+#: (``inspect.signature`` under CPython 3.14.7; positional passing is
+#: deprecated since 3.13 but still valid to read).
+_FLAGS_POSITIONAL_INDEX: dict[str, int] = {
+    "compile": 1,
+    "match": 2,
+    "search": 2,
+    "fullmatch": 2,
+    "findall": 2,
+    "finditer": 2,
+    "split": 3,
+    "sub": 4,
+    "subn": 4,
+}
+
+
+def _static_re_flags_value(node: cst.CSTNode) -> int | None:
+    """Evaluate a flags expression statically, or return ``None``.
+
+    Supports ``re.<NAME>`` members (must be ``re.RegexFlag`` attributes),
+    integer literals, and ``|`` combinations thereof.  Any other expression
+    (names, calls, comparisons) is unknown.
+    """
+    if isinstance(node, cst.Attribute):
+        base = node.value
+        if isinstance(base, cst.Name) and base.value == "re":
+            name = node.attr.value
+            flag = getattr(re, name, None)
+            if isinstance(flag, re.RegexFlag):
+                return int(flag)
+        return None
+    if isinstance(node, cst.Integer):
+        value = node.evaluated_value
+        if isinstance(value, int):
+            return value
+        return None
+    if isinstance(node, cst.BinaryOperation) and isinstance(node.operator, cst.BitOr):
+        left = _static_re_flags_value(node.left)
+        right = _static_re_flags_value(node.right)
+        if left is None or right is None:
+            return None
+        return left | right
+    return None
+
+
+def _static_verbose_member(node: cst.CSTNode) -> bool:
+    """Return whether a BitOr operand statically carries ``re.VERBOSE``.
+
+    Monotonic under ``|``: one known VERBOSE operand proves the flag even
+    when the remaining operands are statically unknown.
+    """
+    value = _static_re_flags_value(node)
+    if value is not None:
+        return bool(value & re.VERBOSE)
+    if isinstance(node, cst.BinaryOperation) and isinstance(node.operator, cst.BitOr):
+        return _static_verbose_member(node.left) or _static_verbose_member(node.right)
+    return False
+
+
+def _resolve_verbose_flag(args: Sequence[cst.Arg], func_name: str) -> bool | None:
+    """Resolve whether ``re.VERBOSE`` is statically set for a call.
+
+    ``True``/``False`` mean the flag is proven set/unset; ``None`` means the
+    flags expression (or the argument shape, e.g. ``*args``) is unknown and
+    the caller must keep today's flagless behaviour.  A missing flags
+    argument counts as unset.
+    """
+    flags_expr: cst.CSTNode | None = None
+    for arg in args:
+        if arg.keyword is not None and arg.keyword.value == "flags" and arg.star == "":
+            flags_expr = arg.value
+            break
+    if flags_expr is None:
+        index = _FLAGS_POSITIONAL_INDEX[func_name]
+        for positional_seen, arg in enumerate(args):
+            if arg.keyword is not None:
+                return None  # keyword boundary before the positional slot
+            if positional_seen == index:
+                if arg.star != "":
+                    return None  # star at the flags slot: unknown
+                flags_expr = arg.value
+                break
+            if arg.star != "":
+                return None  # star swallows the positional counting
+        if flags_expr is None:
+            return False  # fewer positional arguments than the flags slot
+    value = _static_re_flags_value(flags_expr)
+    if value is not None:
+        return bool(value & re.VERBOSE)
+    if _static_verbose_member(flags_expr):
+        return True
+    return None
+
+
+def _regex_pattern_arg_index(args: Sequence[cst.Arg]) -> int | None:
+    """Return the index of the regex pattern argument, or ``None`` (M-099).
+
+    ``args[0]`` counts when it is a plain positional (no keyword, no star);
+    otherwise the ``pattern=`` keyword argument (also without star) is used.
+    Starred or otherwise unbindable calls (``*parts``, ``**kw``) yield ``None``
+    so they never receive regex mutations.
+    """
+    if args and args[0].keyword is None and args[0].star == "":
+        return 0
+    for index, arg in enumerate(args):
+        if arg.keyword is not None and arg.keyword.value == "pattern" and arg.star == "":
+            return index
+    return None
+
 
 def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     """Mutate regex patterns in ``re.*()`` calls.
 
     Recognises calls like ``re.compile(r"\\d+")``, ``re.match(r"^foo", text)``,
-    etc. and mutates the pattern string (first argument).
+    etc. and mutates the pattern string — the first positional argument or,
+    for reordered keyword calls, the ``pattern=`` argument (M-099).
     """
     from mutmut_win.regex_mutation import mutate_regex_pattern
 
@@ -500,11 +738,14 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     if node.func.attr.value not in _RE_PATTERN_FUNCTIONS:
         return
 
-    # The first positional argument should be a string literal (the pattern).
+    # The pattern argument is positional or bound via ``pattern=``.
     if not node.args:
         return
-    first_arg = node.args[0]
-    if not isinstance(first_arg.value, cst.SimpleString):
+    pattern_index = _regex_pattern_arg_index(node.args)
+    if pattern_index is None:
+        return
+    pattern_arg = node.args[pattern_index]
+    if not isinstance(pattern_arg.value, cst.SimpleString):
         return
 
     # Mutate the runtime pattern, not the Python source-token payload.  In a
@@ -512,11 +753,19 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
     # regex engine receives one; mutating the token therefore missed shorthand
     # operators and diverged from the equivalent raw spelling.  Bytes patterns
     # remain outside this string-only engine.
-    pattern = first_arg.value.evaluated_value
+    pattern = pattern_arg.value.evaluated_value
     if not isinstance(pattern, str):
         return
 
-    for mutated_pattern in mutate_regex_pattern(pattern):
+    # Statically resolve re.VERBOSE (keyword, positional, or a monotonic
+    # BitOr member); a global inline (?x) prefix counts too.  Unknown flags
+    # keep today's flagless behaviour (M-051).
+    verbose = _resolve_verbose_flag(node.args, node.func.attr.value)
+    effective_flags = 0
+    if verbose or pattern.startswith("(?x)"):
+        effective_flags = re.VERBOSE
+
+    for mutated_pattern in mutate_regex_pattern(pattern, effective_flags):
         # ``repr`` chooses and escapes a safe Python literal independently for
         # every candidate.  Reusing the source quote delimiter made a valid
         # regex range mutation such as [!-#] -> ["-#] invalidate the complete
@@ -535,9 +784,15 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
         if serialized.evaluated_value != mutated_pattern:
             continue
 
-        new_string = first_arg.value.with_changes(value=serialized.value)
-        new_arg = first_arg.with_changes(value=new_string)
-        yield node.with_changes(args=[new_arg, *node.args[1:]])
+        new_string = pattern_arg.value.with_changes(value=serialized.value)
+        new_arg = pattern_arg.with_changes(value=new_string)
+        yield node.with_changes(
+            args=[
+                *node.args[:pattern_index],
+                new_arg,
+                *node.args[pattern_index + 1 :],
+            ]
+        )
 
 
 # ---------------------------------------------------------------------------

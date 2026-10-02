@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -30,10 +31,12 @@ from mutmut_win.db import (
     begin_run,
     create_db,
     deauthorize_active_run_evidence,
+    ensure_cache_parent,
     finish_run,
     invalidate_cached_reuse_for_run,
     load_current_run,
     mark_reused_results,
+    revoke_active_run_export_authority,
     save_result,
     set_run_plan,
     validate_cache_path,
@@ -42,12 +45,16 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     CleanTestFailedError,
     ForcedFailError,
+    InvalidConfigValueError,
+    MutantNameDispatchError,
+    MutationSurfaceDegradedWarning,
     OrchestratorError,
     StaleStagingError,
     UnsafeStagingError,
     UnsupportedPytestVersionError,
 )
 from mutmut_win.models import (
+    GenerationDegradation,
     MutationResult,
     MutationRunResult,
     MutationTask,
@@ -63,9 +70,15 @@ from mutmut_win.stats import (
     collect_or_load_stats,
     context_allows_result_reuse,
 )
-from mutmut_win.test_mapping import match_mutant_names, tests_for_mutant_names
+from mutmut_win.test_mapping import (
+    mangled_name_from_mutant_name,
+    match_mutant_names,
+    tests_for_mutant_names,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from mutmut_win.config import MutmutConfig
     from mutmut_win.models import TaskEvent
     from mutmut_win.process.executor import SpawnPoolExecutor
@@ -81,6 +94,28 @@ _MIN_TIMEOUT: float = 5.0
 #: also the upper clamp bound of the measured startup floor (issue #105).
 _FALLBACK_TIMEOUT: float = 60.0
 
+#: Upper bound for any single mutation-task timeout budget (M-103 / EDGE-05).
+#: Windows' WaitForSingleObject — the timeout primitive beneath every
+#: subprocess wait — accepts DWORD milliseconds, silently truncates values
+#: at or above 2**32 ms (~49.7 days), and treats 0xFFFFFFFF as INFINITE;
+#: ``Popen.wait(timeout=inf)`` only raises OverflowError deep inside the
+#: worker's recovery path.  A finite-but-unusable budget (for example
+#: ``timeout_multiplier=1e308`` overflowing the fallback product to inf)
+#: must therefore fail closed at dispatch time: 2_000_000 s (~23 days)
+#: stays safely inside the DWORD range while remaining far beyond any
+#: legitimate suite budget.
+_MAX_TIMEOUT: float = 2_000_000.0
+
+#: Bounded re-observation delays when at least one basis snapshot in a
+#: stability proof is incomplete (transiently locked or unreadable inputs).
+#: Together with the two initial builds this caps the proof at
+#: ``2 + len(_BASIS_REOBSERVE_DELAYS)`` full basis computations.
+_BASIS_REOBSERVE_DELAYS: tuple[float, ...] = (0.25, 1.0)
+
+#: Single bounded re-measurement before an incomplete staging snapshot is
+#: reported as unobservable instead of as drift.
+_STAGING_REOBSERVE_DELAYS: tuple[float, ...] = (0.25,)
+
 
 def _only_ambient_basis_changed(
     previous: RunBasisEvidence,
@@ -93,6 +128,32 @@ def _only_ambient_basis_changed(
         and current.core_complete
         and previous.core_digest is not None
         and previous.core_digest == current.core_digest
+    )
+
+
+def _classify_observed_basis_pair(
+    previous: RunBasisEvidence,
+    current: RunBasisEvidence,
+) -> RunBasisEvidence:
+    """Classify two fully observed but unequal basis snapshots."""
+
+    if _only_ambient_basis_changed(previous, current):
+        print(
+            "The ambient interpreter, dependency, or environment basis changed "
+            "while it was being fingerprinted. The run will continue for "
+            "diagnostics only; verdict reuse, --min-score, and CI/CD export "
+            "remain disabled."
+        )
+        return RunBasisEvidence(
+            digest=current.digest,
+            complete=False,
+            core_digest=current.core_digest,
+            core_complete=True,
+        )
+    raise OrchestratorError(
+        "source, test, configuration, dependency, or environment inputs changed "
+        "while their run basis "
+        "was being fingerprinted"
     )
 
 
@@ -116,15 +177,69 @@ def _validate_staging_unchanged(
     expected: RunBasisEvidence,
     source_data_by_file: dict[str, SourceFileMutationData],
 ) -> None:
-    """Reject any stable executable staging drift since generation completed."""
+    """Reject real staging drift; re-observe transient incompleteness.
+
+    An incomplete snapshot (transiently locked or unreadable inputs) is
+    re-measured once before it is reported as "could not be completely
+    observed" — it must never masquerade as executable-staging drift.
+    """
 
     _validate_generated_staging(source_data_by_file)
     current = build_staging_context_evidence()
-    if not current.complete or current != expected:
+    if not current.complete:
+        for delay in _STAGING_REOBSERVE_DELAYS:
+            time.sleep(delay)
+            current = build_staging_context_evidence()
+            if current.complete:
+                break
+        if not current.complete:
+            raise OrchestratorError(
+                "executable staging tree could not be completely observed "
+                "(transiently locked or unreadable inputs); rerun with "
+                "--basis-diagnostics"
+            )
+    if current != expected:
         raise OrchestratorError(
             "executable staging files changed after mutant generation; the run cannot "
             "authorize cached verdicts, score gates, or CI/CD export"
         )
+
+
+def _verify_type_checker_left_staging_intact(staging_evidence: RunBasisEvidence) -> None:
+    """Fail with a checker-specific diagnosis if ``mutants/`` changed under it.
+
+    A checker writing into the staging tree (for example an unknown
+    checker's cache directory) would otherwise surface later as generic
+    staging drift.  An incomplete post-check snapshot stays on the separated
+    unobservable path from M-062 and is not blamed on the checker here.
+    """
+
+    post_checker_evidence = build_staging_context_evidence()
+    if post_checker_evidence.complete and post_checker_evidence != staging_evidence:
+        raise OrchestratorError(
+            "the type checker modified mutants/ (for example by writing "
+            "a cache directory); configure its cache outside mutants/"
+        )
+
+
+@contextlib.contextmanager
+def _watched_basis_phase(phase_text: str, completion_text: str) -> Iterator[None]:
+    """Cover one basis-fingerprint phase with the diagnostic stall watchdog.
+
+    The watchdog only dumps stacks on stalls (stderr) and never aborts the
+    run; it is closed on every path, including exceptions, because its
+    faulthandler timer is process-global and must not leak into later
+    phases.  ``StallWatchdog`` is imported locally so tests can patch
+    ``mutmut_win.stall_watchdog.StallWatchdog``.
+    """
+
+    from mutmut_win.stall_watchdog import StallWatchdog
+
+    print(phase_text)
+    started = time.monotonic()
+    with StallWatchdog():
+        yield
+    print(f"{completion_text} in {time.monotonic() - started:.1f}s")
 
 
 class MutationOrchestrator:
@@ -135,7 +250,12 @@ class MutationOrchestrator:
     1. Walk source files and generate mutants (via ``mutation.mutate_file_contents``).
     2. Run clean test baseline to ensure the suite passes without mutations.
     3. Collect per-test timing statistics.
-    4. Run a forced-fail check to verify the trampoline mechanism.
+    4. Verify name dispatch and the trampoline: a consistency gate matches
+       the runtime function keys recorded by the stats run against the
+       generated mutant names (a divergent import root would silently run
+       originals), then a forced-fail run proves the trampoline wrapper is
+       installed and reads ``MUTANT_UNDER_TEST`` — the global 'fail'
+       sentinel does not switch a concrete mutant.
     5. Build ``MutationTask`` objects with computed wall-clock timeouts.
     6. Start a ``SpawnPoolExecutor`` and stream events.
     7. Map exit codes to statuses, persist results, return summary.
@@ -187,6 +307,7 @@ class MutationOrchestrator:
         self._active_run_id: str | None = None
         self._run_plan_finalized = False
         self._allow_cache_reuse = True
+        self._generation_degradations: list[GenerationDegradation] = []
 
         # Allow dependency injection for unit testing.
         if runner is not None:
@@ -247,6 +368,13 @@ class MutationOrchestrator:
             )
 
         def run_with_database_lock() -> MutationRunResult:
+            # The colocated database lock domain (M-036) lives in the
+            # database's canonical parent directory, so that directory must
+            # exist before DatabaseRunLocks can derive and create its lock
+            # files.  Run commands materialize the cache parent here (db
+            # layer — run_lock must not import db); read commands decide
+            # their own policy at the CLI boundary.
+            ensure_cache_parent(self._db_path)
             with DatabaseRunLocks(self._db_path) as database_locks:
                 # A missing database has no filesystem identity yet.  Create
                 # its schema while the canonical-path key is held, then add
@@ -265,17 +393,54 @@ class MutationOrchestrator:
             return run_with_database_lock()
 
     def _basis_excluded_paths(self) -> tuple[Path, ...]:
-        """Return mutable database files that are state, never run inputs."""
+        """Return mutable database state files that are never run inputs.
+
+        Besides the database and its SQLite sidecars this covers the
+        colocated database lock/guard files (M-036): while a run is active
+        their guard bytes sit under an OS byte-range lock and their owner
+        records change between observations, so staging and basis
+        fingerprinting must neither read nor hash them.  Lock paths are
+        derived per call — the file-identity key exists only once the
+        database exists (after ``create_db``), while the path key is
+        deterministic before that.  A database that cannot yield a lock
+        domain at all (hardlink alias, redirected parent) is rejected by
+        ``validate_cache_path``/``DatabaseRunLocks`` at the lock boundary;
+        the read-only namespace preflight that runs first must not pre-empt
+        that authoritative error, so exclusions degrade to the database
+        files instead of failing here.
+        """
         database = self._db_path.absolute()
-        return (
+        excluded: list[Path] = [
             database,
             Path(f"{database}-journal"),
             Path(f"{database}-wal"),
             Path(f"{database}-shm"),
+        ]
+        from mutmut_win.process.run_lock import (
+            RunLockError,
+            _guard_path_for,
+            database_lock_paths_for_db,
         )
 
+        try:
+            lock_paths = database_lock_paths_for_db(self._db_path)
+        except RunLockError:
+            return tuple(excluded)
+        for lock_path in lock_paths:
+            excluded.append(lock_path)
+            excluded.append(_guard_path_for(lock_path))
+        return tuple(excluded)
+
     def _stable_run_basis_evidence(self) -> RunBasisEvidence:
-        """Capture one stable execution-basis snapshot or fail closed."""
+        """Capture one stable execution-basis snapshot or fail closed.
+
+        Two fully observed but unequal snapshots keep the historical
+        classification (ambient degradation vs. terminal drift).  When at
+        least one snapshot of a pair is incomplete, the pair is re-observed
+        with bounded delays: a stable equal pair is accepted (complete or
+        degraded), persistent incompleteness raises "could not be completely
+        observed" instead of misreporting transient locks as drift.
+        """
         excluded_paths = self._basis_excluded_paths()
         first = build_run_basis_evidence(
             self._config,
@@ -285,26 +450,27 @@ class MutationOrchestrator:
             self._config,
             excluded_paths=excluded_paths,
         )
-        if first != second:
-            if _only_ambient_basis_changed(first, second):
-                print(
-                    "The ambient interpreter, dependency, or environment basis changed "
-                    "while it was being fingerprinted. The run will continue for "
-                    "diagnostics only; verdict reuse, --min-score, and CI/CD export "
-                    "remain disabled."
-                )
-                return RunBasisEvidence(
-                    digest=second.digest,
-                    complete=False,
-                    core_digest=second.core_digest,
-                    core_complete=True,
-                )
-            raise OrchestratorError(
-                "source, test, configuration, dependency, or environment inputs changed "
-                "while their run basis "
-                "was being fingerprinted"
+        if first == second:
+            return first
+        if first.complete and second.complete:
+            return _classify_observed_basis_pair(first, second)
+        previous = second
+        for delay in _BASIS_REOBSERVE_DELAYS:
+            time.sleep(delay)
+            current = build_run_basis_evidence(
+                self._config,
+                excluded_paths=excluded_paths,
             )
-        return first
+            if current == previous:
+                return current
+            if current.complete and previous.complete:
+                return _classify_observed_basis_pair(previous, current)
+            previous = current
+        raise OrchestratorError(
+            "source, test, configuration, dependency, or environment inputs "
+            "could not be completely observed while their run basis was being "
+            "fingerprinted; rerun with --basis-diagnostics"
+        )
 
     def _run_with_identity(self) -> MutationRunResult:
         """Run under the workspace lock and publish one truthful run snapshot.
@@ -429,6 +595,11 @@ class MutationOrchestrator:
             # between that invariant and the implementation as a product bug.
             raise OrchestratorError("mutation run completed without a persisted run identity")
 
+        # M-003: set degraded_files centrally, right after the pipeline and
+        # before any terminal-status branching (independent of early returns).
+        result.degraded_files = list(self._generation_degradations)
+        surface_complete = not result.degraded_files
+
         if result.was_interrupted:
             terminal_status = "interrupted"
         elif result.run_aborted or result.total_mutants == 0:
@@ -438,7 +609,11 @@ class MutationOrchestrator:
         if terminal_status == "completed":
             execution_basis_deauthorized = False
             try:
-                live_basis = self._stable_run_basis_evidence()
+                with _watched_basis_phase(
+                    "Verifying execution basis after the run…",
+                    "Execution basis verified",
+                ):
+                    live_basis = self._stable_run_basis_evidence()
             except OrchestratorError:
                 invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
@@ -450,6 +625,13 @@ class MutationOrchestrator:
             ):
                 invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
                 finish_run(self._db_path, self._active_run_id, "failed")
+                if not live_basis.core_complete:
+                    raise OrchestratorError(
+                        "the execution basis could not be completely observed "
+                        "after the mutation run (transiently locked or unreadable "
+                        "inputs); the run was recorded as failed and cannot "
+                        "authorize CI/CD export; rerun with --basis-diagnostics"
+                    )
                 raise OrchestratorError(
                     "source, test, configuration, or project-contained import "
                     "inputs changed during the mutation run; "
@@ -491,6 +673,29 @@ class MutationOrchestrator:
                         "Results were preserved, but every current and historical "
                         "verdict-reuse capability was revoked."
                     )
+
+            # M-003: an incomplete mutation surface revokes export/score
+            # authority via the NARROW revocation — verdict reuse stays intact
+            # so follow-up runs do not re-execute every mutant.
+            if not surface_complete and not execution_basis_deauthorized:
+                try:
+                    revoke_active_run_export_authority(
+                        self._db_path,
+                        self._active_run_id,
+                    )
+                except Exception as exc:
+                    raise OrchestratorError(
+                        f"the mutation surface was incomplete "
+                        f"({len(result.degraded_files)} file(s) could not be mutated) "
+                        "and its evidence authority could not be revoked; the run "
+                        "remains running for revoke-first recovery"
+                    ) from exc
+                print(
+                    f"{len(result.degraded_files)} file(s) could not be mutated "
+                    "(mutation surface incomplete); --min-score and CI/CD export "
+                    "are disabled for this run. Exclude them via do_not_mutate "
+                    "to accept the reduced surface."
+                )
         else:
             execution_basis_deauthorized = False
             try:
@@ -522,6 +727,7 @@ class MutationOrchestrator:
             terminal_status == "completed"
             and basis_evidence.complete
             and not execution_basis_deauthorized
+            and surface_complete
         )
         return result
 
@@ -665,6 +871,7 @@ class MutationOrchestrator:
                 source_data_by_file,
                 self._config.type_check_command,
             )
+            _verify_type_checker_left_staging_intact(staging_evidence)
         if not all_tasks:
             # Every mutant was caught by the type checker — a legitimate,
             # successful run, not an IndexError (issue #93 / A3-OS-010).
@@ -731,10 +938,14 @@ class MutationOrchestrator:
         # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
         print("Collecting test timing statistics…")
-        stats_context = build_stats_context_fingerprint(
-            self._config,
-            excluded_paths=self._basis_excluded_paths(),
-        )
+        with _watched_basis_phase(
+            "Re-fingerprinting execution basis for timing stats…",
+            "Timing-stats basis fingerprinted",
+        ):
+            stats_context = build_stats_context_fingerprint(
+                self._config,
+                excluded_paths=self._basis_excluded_paths(),
+            )
         mutmut_stats: MutmutStats = collect_or_load_stats(
             self._runner,
             context_fingerprint=stats_context,
@@ -742,11 +953,21 @@ class MutationOrchestrator:
         )
         _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
+        # M-053: prove NAME dispatch before any verdict producer.  The
+        # forced-fail run below only proves that the trampoline wrapper is
+        # installed and reads MUTANT_UNDER_TEST (its 'fail' sentinel
+        # terminates before the prefix dispatch); the stats keys above are
+        # the only runtime evidence for the actual mutant-name dispatch.
+        _verify_runtime_mutant_names(all_generated_names, mutmut_stats)
+
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
         # ------------------------------------------------------------------
         print("Running forced-fail verification…")
-        # Pick the first mutant name as the activation token.
+        # NOTE (M-053): this name is NOT an activation token — the forced
+        # fail run activates the global 'fail' sentinel, whose trampoline
+        # branch terminates before the name-prefix dispatch.  Name-based
+        # dispatch is proven by _verify_runtime_mutant_names above.
         first_mutant = all_tasks[0].mutant_name
         ff_exit = self._runner.run_forced_fail(first_mutant)
         if ff_exit == 0:
@@ -1113,6 +1334,9 @@ class MutationOrchestrator:
             walk_source_files,
         )
 
+        # Fresh surface truth per generation pass (M-003).
+        self._generation_degradations = []
+
         # Step 1-3: Prepare the mutants/ directory.  The orchestration process
         # itself must keep importing the live engine; pytest children receive
         # explicit staged paths from ``MutantTestRunner._mutants_env``.
@@ -1213,8 +1437,9 @@ class MutationOrchestrator:
         # Every worker count, including one, runs behind a dedicated
         # non-daemonic supervisor. Its Job Object/process group contains the
         # complete PPE tree before project-dependent payload is transferred;
-        # the no-progress deadline covers bootstrap, submit serialization and
-        # execution (MW220-020).
+        # START is serialized in this process before the spawn (outside the
+        # no-progress budget), so the deadline covers only supervisor
+        # bootstrap, submit serialization and execution (MW220-020).
         from mutmut_win.process import GenerationSupervisorError, run_generation_supervised
 
         try:
@@ -1238,12 +1463,13 @@ class MutationOrchestrator:
 
         generation_errors: list[str] = []
         for result in raw_results:
-            rel_path_result, mutant_names, error, warn_msgs, took_fast_path = result
+            rel_path_result, mutant_names, error, warn_msgs, took_fast_path, degradations = result
             for msg in warn_msgs:
                 print(f"Warning: {msg}")
             if error is not None:
                 generation_errors.append(f"{rel_path_result}: {error}")
                 continue
+            self._generation_degradations.extend(degradations)
             if not mutant_names:
                 continue
             src_file_result = Path(rel_path_result)
@@ -1270,6 +1496,9 @@ class MutationOrchestrator:
                 f"universe fingerprint:\n{details}"
             )
             raise OrchestratorError(msg)
+
+        # Deterministic ordering for logs and the additive JSON contract.
+        self._generation_degradations.sort(key=lambda d: (d.path, d.reason))
 
         # Catch a mismatched file/meta pair (including the crash window between
         # their two atomic publications) before type checking or clean tests
@@ -1334,7 +1563,7 @@ class MutationOrchestrator:
 
 def _create_mutants_worker(
     args: tuple[str, Path, Path, set[int] | None, bool, Profile, tuple[str, ...]],
-) -> tuple[str, list[str], Exception | None, list[str], bool]:
+) -> tuple[str, list[str], Exception | None, list[str], bool, list[GenerationDegradation]]:
     """Top-level picklable worker for parallel mutant generation.
 
     Called by ``multiprocessing.Pool.imap_unordered`` inside
@@ -1350,9 +1579,11 @@ def _create_mutants_worker(
 
     Returns:
         A tuple of ``(rel_path, mutant_names, error, warning_messages,
-        took_fast_path)`` where ``error`` is ``None`` on success,
-        ``mutant_names`` may be empty, and ``took_fast_path`` marks files
-        whose staging was reused unchanged (issue #119 result reuse).
+        took_fast_path, degradations)`` where ``error`` is ``None`` on
+        success, ``mutant_names`` may be empty, ``took_fast_path`` marks
+        files whose staging was reused unchanged (issue #119 result reuse),
+        and ``degradations`` carries the file-level surface degradations
+        (M-003) — ``[]`` on the error path.
     """
     from mutmut_win.file_setup import create_mutants_for_file
 
@@ -1375,9 +1606,20 @@ def _create_mutants_worker(
             do_not_mutate_patterns=skip_patterns,
         )
         warn_msgs = [str(w.message) for w in warns]
-        return rel_path, mutant_names, None, warn_msgs, took_fast_path
+        # Built inside the try so an unknown degradation reason (pydantic
+        # ValidationError) ends up fail-closed in generation_errors.
+        degradations = [
+            GenerationDegradation(
+                path=rel_path,
+                reason=w.message.reason,  # type: ignore[arg-type]  # pydantic Literal; validated by GenerationDegradation
+                detail=str(w.message),
+            )
+            for w in warns
+            if isinstance(w.message, MutationSurfaceDegradedWarning)
+        ]
+        return rel_path, mutant_names, None, warn_msgs, took_fast_path, degradations
     except Exception as exc:  # broad catch: pool workers must not crash the parent
-        return rel_path, [], exc, [], False
+        return rel_path, [], exc, [], False, []
 
 
 def _filter_tasks_by_names(
@@ -1500,7 +1742,14 @@ def _print_timeout_model(
     clean_wall_seconds: float,
     total_test_time: float,
 ) -> None:
-    """Describe the budgets already assigned to the tasks being dispatched."""
+    """Describe the budgets already assigned to the tasks being dispatched.
+
+    M-102: tasks that HAVE timing data still receive the full-suite fallback
+    budget when the test mapping is not authoritative (the production normal
+    case — see :func:`_apply_timeouts`).  For such a run exactly ONE
+    diagnosis line explains why the per-test budgets stayed inactive; the
+    budgets themselves are never changed here.
+    """
     if not tasks:
         return
 
@@ -1529,6 +1778,20 @@ def _print_timeout_model(
             f"max({_FALLBACK_TIMEOUT:.1f}s, clean run {clean_wall_seconds:.1f}s "
             f"x {multiplier})."
         )
+    # M-102: count the tasks the fallback actually surprises — timing data
+    # present, but the non-authoritative mapping keeps the per-test budget
+    # inactive.  Tasks WITHOUT a selection have nothing timing-based to
+    # explain, so they are not counted.  Exactly one line per affected run.
+    non_authoritative_with_timing = sum(
+        bool(task.tests and not task.test_selection_is_authoritative and task.estimated_time > 0)
+        for task in tasks
+    )
+    if non_authoritative_with_timing:
+        print(
+            f"Timeout model: {non_authoritative_with_timing} task(s) with timing data "
+            "use the fallback budget because the test mapping is not authoritative; "
+            "each such task runs the full suite."
+        )
 
 
 def _apply_timeouts(
@@ -1541,16 +1804,26 @@ def _apply_timeouts(
 ) -> list[MutationTask]:
     """Return a copy of *tasks* with ``timeout_seconds`` computed from *stats*.
 
-    The budget for a task with timing data is
-    ``max(_MIN_TIMEOUT, startup_floor + estimated_time * multiplier)`` —
-    the additive floor covers the constant process overhead the multiplier
-    cannot scale (issue #105 / DOG-001: 175/244 pilot mutants timed out
-    with FINISHED pytest summaries in their tails).
+    The selective per-test budget ``max(_MIN_TIMEOUT, startup_floor +
+    estimated_time * multiplier)`` applies ONLY when the task has a
+    non-empty ``tests`` selection, ``test_selection_is_authoritative`` is
+    True, AND the estimated time is greater than zero — the additive floor
+    covers the constant process overhead the multiplier cannot scale
+    (issue #105 / DOG-001: 175/244 pilot mutants timed out with FINISHED
+    pytest summaries in their tails).
 
-    Without any timing data the task runs the full suite, so its budget is
-    ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)`` — the
-    measured wall time of exactly such a run; a flat 60s would pseudo-
-    timeout every suite that takes longer than a minute.
+    Every other task runs the FULL suite (no node-id arguments), so its
+    budget is ``max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)``
+    — the measured wall time of exactly such a run; a flat 60s would
+    pseudo-timeout every suite that takes longer than a minute (issue
+    #130 / 360°-B3).  The authority bit decides which branch runs: the
+    pipeline always calls :func:`_assign_tests_to_tasks` first, which
+    overwrites it with ``MutmutStats.mapping_is_authoritative`` — False
+    on every production path of the current collector — so the fallback
+    is the NORMAL case even for tasks WITH timing data, and the selective
+    branch is reachable only for directly constructed (test) tasks
+    despite the ``MutationTask`` field default of True.  See the README
+    section "Map & budget".
 
     ``estimated_time`` stays free of the floor: it means "estimated TEST
     runtime" and feeds the independent mutant-task sort.
@@ -1564,6 +1837,15 @@ def _apply_timeouts(
 
     Returns:
         New list of ``MutationTask`` instances with updated timeout values.
+
+    Raises:
+        InvalidConfigValueError: If a computed budget is not finite or
+            exceeds ``_MAX_TIMEOUT``.  Such a budget (for example from an
+            extreme finite ``timeout_multiplier``) would silently truncate
+            inside the Windows wait primitives instead of timing out, so
+            it fails closed before any dispatch.  The error surfaces
+            through ``run`` as a domain error (exit 1), because only the
+            orchestrator knows the measured wall time behind the product.
     """
     updated: list[MutationTask] = []
     for task in tasks:
@@ -1577,6 +1859,7 @@ def _apply_timeouts(
 
         if task.tests and task.test_selection_is_authoritative and estimated > 0:
             timeout = max(_MIN_TIMEOUT, startup_floor + estimated * multiplier)
+            base = f"estimated test time {estimated:g}s"
         else:
             # Issue #130 / 360°-B3: a task WITHOUT an assignment runs the
             # FULL suite (no node-id args) — budget it like one. The old
@@ -1585,6 +1868,17 @@ def _apply_timeouts(
             # never imported by tests). The mean still feeds the independent
             # mutant-task sort via ``estimated_time``.
             timeout = max(_FALLBACK_TIMEOUT, clean_wall_seconds * multiplier)
+            base = f"clean-run wall time {clean_wall_seconds:g}s"
+
+        if not math.isfinite(timeout) or timeout > _MAX_TIMEOUT:
+            raise InvalidConfigValueError(
+                f"timeout_multiplier={multiplier!r} applied to the {base} "
+                f"produces an unusable timeout budget of {timeout!r}s for "
+                f"mutant {task.mutant_name!r}. Budgets must stay finite and "
+                f"at or below {_MAX_TIMEOUT:.0f}s — larger values silently "
+                "truncate inside the Windows wait primitives instead of "
+                "timing out. Reduce [tool.mutmut].timeout_multiplier."
+            )
 
         updated.append(
             task.model_copy(update={"estimated_time": estimated, "timeout_seconds": timeout})
@@ -1628,6 +1922,121 @@ def _assign_tests_to_tasks(
             )
         )
     return result
+
+
+def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutStats) -> None:
+    """Fail closed when a runtime function key cannot address any mutant.
+
+    The stats run records trampoline hits under the RUNTIME name of each
+    mutated function — ``orig.__module__ + '.' + orig.__name__`` — while
+    mutant names are built from the staged PATH via
+    :func:`mutmut_win.file_setup.get_mutant_name`, which strips only the
+    ``src``/``source`` roots.  Workers activate a mutant through
+    ``MUTANT_UNDER_TEST=<mutant name>`` and the trampoline compares that
+    value against its own runtime prefix: on divergence it silently calls
+    the original, so every affected mutant survives without ever running.
+
+    This gate derives the function key of EVERY generated mutant (the
+    complete pre-filter set — partial ``--mutant-names`` runs must not
+    narrow the proof) and compares it with the recorded runtime keys.  A
+    runtime key ``k`` that is not itself a generated key but is
+    dotted-suffix-related to a generated key ``g`` proves the divergence —
+    but only when ``g`` was never observed at runtime; a ``g`` observed
+    under both names is a double import, which only warrants a warning.
+    Runtime keys with NO suffix relation to any generated key are ignored:
+    stale cache keys prove nothing.  Names without a well-formed numeric
+    ``__mutmut_`` suffix are skipped — they cannot be trampoline-dispatched
+    and generation well-formedness is owned elsewhere.
+
+    Invariant (``mutation.py`` emits trampolines only for functions with at
+    least one mutant): in a consistent layout the runtime keys are a subset
+    of the generated function keys, so the suffix relation is a
+    conservative narrowing — an unmutated function can never trigger it.
+
+    Args:
+        all_generated_names: Complete set of generated mutant names,
+            captured before any ``--mutant-names``/type-checker filtering.
+        stats: Timing stats whose ``tests_by_mangled_function_name`` keys
+            carry the runtime function names recorded by the stats run.
+
+    Raises:
+        MutantNameDispatchError: If a runtime key proves that name-based
+            dispatch can never reach its suffix-related generated mutant.
+    """
+    generated_keys: set[str] = set()
+    for name in all_generated_names:
+        try:
+            generated_keys.add(mangled_name_from_mutant_name(name))
+        except ValueError:
+            continue
+    if not generated_keys or not stats.tests_by_mangled_function_name:
+        return
+
+    # Index every dotted suffix of every generated key once, so the
+    # ``g.endswith('.' + k)`` lookup stays linear in the runtime keys.
+    suffix_index: dict[str, list[str]] = {}
+    for key in generated_keys:
+        remainder = key
+        while True:
+            suffix_index.setdefault(remainder, []).append(key)
+            dot = remainder.find(".")
+            if dot == -1:
+                break
+            remainder = remainder[dot + 1 :]
+
+    def _generated_suffixes_of(key: str) -> set[str]:
+        # Reverse direction (k.endswith('.' + g)): every dotted suffix of
+        # the runtime key that is itself a generated key.
+        found: set[str] = set()
+        remainder = key
+        while True:
+            if remainder in generated_keys:
+                found.add(remainder)
+            dot = remainder.find(".")
+            if dot == -1:
+                break
+            remainder = remainder[dot + 1 :]
+        return found
+
+    runtime_keys = set(stats.tests_by_mangled_function_name)
+    divergent: list[tuple[str, str]] = []
+    for runtime_key in sorted(runtime_keys):
+        if runtime_key in generated_keys:
+            continue
+        related = sorted(
+            set(suffix_index.get(runtime_key, [])) | _generated_suffixes_of(runtime_key)
+        )
+        if not related:
+            continue
+        unobserved = [g for g in related if g not in runtime_keys]
+        if unobserved:
+            divergent.append((runtime_key, unobserved[0]))
+        else:
+            # Every suffix twin was observed under its generated name too:
+            # a double import (module reachable under two names), which
+            # still dispatches correctly — warn, do not abort.
+            print(
+                f"Warning: runtime function key {runtime_key!r} and generated key(s) "
+                f"{', '.join(repr(g) for g in related)} were both observed at "
+                "runtime — the module appears to be imported under two names. "
+                "mutmut-win dispatches the generated key; verify the import layout."
+            )
+    if not divergent:
+        return
+    examples = "\n".join(
+        f"  {runtime_key!r} != {generated_key!r}" for runtime_key, generated_key in divergent[:5]
+    )
+    more = f"\n  … and {len(divergent) - 5} more" if len(divergent) > 5 else ""
+    raise MutantNameDispatchError(
+        "the runtime function names recorded by the stats run cannot address "
+        "the generated mutants — the trampoline would silently run the "
+        f"originals:\n{examples}{more}\n"
+        "The mutated tree appears to be imported under a root (for example an "
+        "extra_paths entry, or a literal src/source package) that the mutant "
+        "names do not strip. Align paths_to_mutate with the import roots the "
+        "tests actually use, so mutant names equal "
+        "'<runtime module>.<mangled function>'."
+    )
 
 
 def _filter_with_type_checker(

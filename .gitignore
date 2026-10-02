@@ -70,3 +70,6 @@ _issues/
 # untracked as a manual reference — the report itself is archived under
 # _docs/audit/ (Sprint 35 / #118).
 _bug_reports/
+
+# Local agent tooling state (never shipped): serena memories are user work
+.serena/

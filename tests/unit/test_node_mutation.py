@@ -1,6 +1,11 @@
 """Unit tests for mutmut_win.node_mutation."""
 
+import ast
+import warnings
+
 import libcst as cst
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.constants import Profile
 from mutmut_win.node_mutation import (
@@ -87,6 +92,86 @@ class TestOperatorString:
         # upper variant should be skipped since it's identical
         values = [r.value for r in results]
         assert all(v != '"HELLO"' or v == '"XXHELLOXX"' for v in values)
+
+    def test_hex_escape_case_change_is_not_published(self) -> None:
+        # M-049 (issue #168): lower/upper of hex-escape digits (\x, \u, \U)
+        # and of \N{...} names changes only the spelling, never the value —
+        # such candidates are equivalent, practically unkillable mutants.
+        for src in ['"ab\\x4Ac"', '"\\N{LATIN SMALL LETTER A}"', 'b"\\x4A"']:
+            node = cst.parse_expression(src)
+            orig = ast.literal_eval(src)
+            mutants = list(operator_string(node))
+            assert mutants, f"XX mutant must survive for {src!r}"
+            for mutant in mutants:
+                rendered = cst.Module(body=[]).code_for_node(mutant)
+                assert ast.literal_eval(rendered) != orig, f"value-equal mutant {rendered!r}"
+
+    def test_value_changing_case_mutants_still_published(self) -> None:
+        node = cst.SimpleString('"FOO"')
+        values = [r.value for r in operator_string(node)]
+        # Exact set AND count: the upper variant is textually equal and must
+        # be skipped — a duplicated lower candidate would also fail this pin.
+        assert values == ['"XXFOOXX"', '"foo"']
+
+    def test_already_lowercase_string_still_uppercased(self) -> None:
+        # Pins that the textual skip of the lower variant does not abort the
+        # candidate loop: the upper variant must still be published.
+        node = cst.SimpleString('"hello"')
+        values = [r.value for r in operator_string(node)]
+        assert values == ['"XXhelloXX"', '"HELLO"']
+
+    def test_hex_escape_upper_variant_still_published(self) -> None:
+        # Value-based filter must drop only the VALUE-EQUAL lower variant;
+        # the value-changing upper variant stays (and so does XX).
+        node = cst.parse_expression('"ab\\x4Ac"')
+        values = [r.value for r in operator_string(node)]
+        assert values == ['"XXab\\x4AcXX"', '"AB\\x4AC"']
+
+    def test_raw_string_escape_case_still_published(self) -> None:
+        # In a raw string the backslash is literal: case changes DO change
+        # the value and must not be filtered.
+        node = cst.SimpleString('r"\\x4A"')
+        values = [r.value for r in operator_string(node)]
+        assert 'r"\\x4a"' in values
+
+    def test_bytes_named_escape_case_still_published(self) -> None:
+        # \N{...} is not an escape in bytes literals — the backslash is
+        # literal, so case changes alter the value and must be kept. (The
+        # char right after the backslash stays protected by
+        # NON_ESCAPE_SEQUENCE; only the name inside the braces changes.)
+        node = cst.SimpleString('b"\\N{X}"')
+        values = [r.value for r in operator_string(node)]
+        assert 'b"\\N{x}"' in values
+
+    def test_invalid_escape_literal_emits_no_syntax_warning(self) -> None:
+        # Warning regression (M-049): evaluating literals with invalid
+        # escapes ('\d') emits a SyntaxWarning. create_mutants_for_file
+        # records every warning ('always') and forwards it to the user, so
+        # operator_string must evaluate under a local ignore filter — one
+        # warning per regex/path literal would flood the channel.
+        node = cst.parse_expression('"\\d\\x4A"')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            mutants = list(operator_string(node))
+        assert mutants
+        assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
+
+    @given(
+        chunks=st.lists(
+            st.one_of(
+                st.text(alphabet="abcXYZ", min_size=1),
+                st.integers(0, 255).map(lambda b: "\\" + f"x{b:02X}"),
+            ),
+            min_size=1,
+        )
+    )
+    def test_no_value_equal_case_mutant_property(self, chunks: list[str]) -> None:
+        token = '"' + "".join(chunks) + '"'
+        node = cst.parse_expression(token)
+        orig = ast.literal_eval(token)
+        for mutant in operator_string(node):
+            rendered = cst.Module(body=[]).code_for_node(mutant)
+            assert ast.literal_eval(rendered) != orig
 
 
 # --- operator_lambda -----------------------------------------------------------

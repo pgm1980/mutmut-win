@@ -1,11 +1,16 @@
 """Unit tests for mutmut_win.mutation."""
 
+import ast
+
 import libcst as cst
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.mutation import (
     ChildReplacementTransformer,
     Mutation,
     _is_generator,
+    _pragma_block_range,
     _pragma_no_mutate_suffix,
     create_mutations,
     deep_replace,
@@ -140,6 +145,130 @@ class TestPragmaNoMutateLines:
         src = "    if x:  # pragma: no mutate block\n        a = 1\nb = 2\n"
         assert pragma_no_mutate_lines(src) == {1, 2}
 
+    def test_block_survives_column0_comment_inside_suite(self) -> None:
+        # M-043 regression: a column-0 comment line is NOT a statement and must
+        # not end the block - the suite continues with ` b = 2` below it.
+        src = "def f():  # pragma: no mutate block\n    a = 1\n# note\n    b = 2\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4}
+
+    def test_block_survives_multiline_string_content_at_column0(self) -> None:
+        # M-043 regression: the STRING token spans several physical lines; its
+        # column-0 content lines are not suite boundaries.
+        src = 'def f():  # pragma: no mutate block\n    s = """\nx\n"""\n    b = 2\nc = 3\n'
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4, 5}
+
+    def test_block_survives_multiline_fstring_content_at_column0(self) -> None:
+        # f-strings tokenise as FSTRING_START/MIDDLE/END; same rule as plain
+        # multi-line strings (guard for the token-based extent).
+        src = 'def g(v):  # pragma: no mutate block\n    s = f"""{v}\nx\n"""\n    b = 2\nc = 3\n'
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4, 5}
+
+    def test_block_excludes_trailing_comment_after_last_statement(self) -> None:
+        # pinned new semantic: the extent ends at the last NEWLINE inside the
+        # suite, so a trailing comment line after the last statement drops out
+        # (it cannot carry a mutation target anyway).
+        src = "def f():  # pragma: no mutate block\n    a = 1\n    # tail\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2}
+
+    def test_comment_only_block_pragma_as_first_suite_line_stays_single_line(self) -> None:
+        # guard against silent widening: for a comment-only pragma the next
+        # significant token is the INDENT of the ENCLOSING header, which must
+        # not swallow the whole body - comment-only pragmas keep the legacy
+        # physical-indent extent.
+        src = "def f():\n    # pragma: no mutate block\n    if x:\n        a = 1\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_comment_only_block_pragma_before_header_stays_single_line(self) -> None:
+        src = "x = 1\n# pragma: no mutate block\ndef f():\n    a = 1\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_block_pragma_on_bracket_continuation_line_stays_legacy(self) -> None:
+        # pinned conservative decision: the token-based extent only applies to
+        # pragmas on a code line that CLOSES its logical line (NEWLINE on the
+        # same physical line). A pragma inside a bracketed multi-line header
+        # keeps the physical-indent extent instead of widening to the suite.
+        src = "def f(\n    a,  # pragma: no mutate block\n):\n    x = 1\n"
+        assert pragma_no_mutate_lines(src) == {2}
+
+    def test_block_pragma_over_multiline_string_prevents_all_mutants(self) -> None:
+        # end to end: nothing inside the block pragma's suite may produce a
+        # mutant name (`c = 3` is a module statement and never mutated).
+        source = 'def f():  # pragma: no mutate block\n    s = """\nx\n"""\n    b = 2\nc = 3\n'
+        _code, names = mutate_file_contents("m.py", source)
+        assert list(names) == []
+
+    @given(
+        st.lists(st.sampled_from(["assign", "comment", "string", "blank"]), min_size=1, max_size=6)
+    )
+    @settings(deadline=None)
+    def test_block_extent_matches_ast_suite_property(self, parts: list[str]) -> None:
+        """A code-line block pragma covers at least the whole ast function suite."""
+        lines = ["def f():  # pragma: no mutate block", "    v0 = 0"]
+        for part in parts:
+            if part == "assign":
+                lines.append(f"    v{len(lines)} = {len(lines)}")
+            elif part == "comment":
+                lines.append("# col0 comment")
+            elif part == "string":
+                lines += ['    s = """', "col0 string content", '    """']
+            else:
+                lines.append("")
+        lines.append("z = 1")
+        source = "\n".join(lines) + "\n"
+        tree = ast.parse(source)
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        result = pragma_no_mutate_lines(source)
+        assert set(range(function.lineno, (function.end_lineno or 0) + 1)) <= result
+        assert tree.body[1].lineno not in result
+
+    @given(
+        st.lists(st.sampled_from(["assign", "comment", "string", "blank"]), min_size=1, max_size=6)
+    )
+    @settings(deadline=None)
+    def test_comment_only_block_pragma_keeps_legacy_extent_property(self, parts: list[str]) -> None:
+        """A comment-only block pragma keeps exactly the legacy indent-based extent."""
+        lines = ["def g():", "    w0 = 0", "    # pragma: no mutate block"]
+        for part in parts:
+            if part == "assign":
+                lines.append(f"    w{len(lines)} = {len(lines)}")
+            elif part == "comment":
+                lines.append("# col0 comment")
+            elif part == "string":
+                lines += ['    t = """', "col0 string content", '    """']
+            else:
+                lines.append("")
+        lines.append("y = 1")
+        source = "\n".join(lines) + "\n"
+        legacy = _pragma_block_range(source.split("\n"), 2)
+        assert pragma_no_mutate_lines(source) == set(legacy)
+
+    def test_block_starts_suite_after_blank_line_between_header_and_body(self) -> None:
+        # the NL/COMMENT skip between the header's NEWLINE and the suite's
+        # INDENT must not end the block (token-path boundary).
+        src = "def f():  # pragma: no mutate block\n\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_block_starts_suite_after_comment_line_between_header_and_body(self) -> None:
+        src = "def f():  # pragma: no mutate block\n# lead\n    a = 1\nb = 2\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3}
+
+    def test_block_pragma_on_final_line_without_newline_or_suite(self) -> None:
+        # EOF right after the pragma's logical line: no suite, no crash.
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate block") == {1}
+
+    def test_block_pragma_with_trailing_blank_line_after_simple_statement(self) -> None:
+        # trailing NL tokens after the pragma's NEWLINE must be skipped and
+        # still yield no suite (the next significant token is code, not INDENT).
+        assert pragma_no_mutate_lines("x = 1  # pragma: no mutate block\n\ny = 2\n") == {1}
+
+    def test_block_covers_nested_indented_suite_completely(self) -> None:
+        # nested INDENT/DEDENT inside the suite must not end the block at the
+        # FIRST inner DEDENT - the block only ends when the pragma header's own
+        # suite dedents (INDENT/DEDENT depth counting).
+        src = "if x:  # pragma: no mutate block\n    if y:\n        a = 1\n    b = 2\nc = 3\n"
+        assert pragma_no_mutate_lines(src) == {1, 2, 3, 4}
+
     def test_suffix_helper_return_values(self) -> None:
         # direct probe of the classifier: pins the exact return value so the
         # caller-equivalent mutants (unknown / empty -> a non-"" sentinel) die
@@ -238,7 +367,8 @@ class TestIsGenerator:
         module = cst.parse_module("def foo():\n    return 1\n")
         func = module.body[0]
         assert isinstance(func, cst.FunctionDef)
-        assert not _is_generator(func)
+        # exact bool: the API contract is a bool return, not any falsy value
+        assert _is_generator(func) is False
 
     def test_generator_returns_true(self) -> None:
         module = cst.parse_module("def foo():\n    yield 1\n")
@@ -253,6 +383,63 @@ class TestIsGenerator:
         assert isinstance(func, cst.FunctionDef)
         # foo does not yield, only bar does
         assert not _is_generator(func)
+
+    def test_lambda_yield_not_counted(self) -> None:
+        # M-044: a lambda body is its own scope — a yield there makes only
+        # the LAMBDA a generator, not the surrounding function.
+        code = "def foo():\n    g = lambda: (yield)\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_default_yield_still_counted(self) -> None:
+        # guard against over-fixing (M-044 review): parameter defaults are
+        # evaluated in the ENCLOSING scope, so this foo IS a generator.
+        code = "def foo():\n    g = lambda x=(yield): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
+
+    def test_nested_lambda_default_body_yield_not_counted(self) -> None:
+        # the inner lambda's BODY yield must not leak through the outer
+        # lambda's default expression
+        code = "def foo():\n    g = lambda x=(lambda: (yield)): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_param_without_default_and_body_yield_not_counted(self) -> None:
+        # a default-less lambda parameter plus a yield only in the lambda
+        # BODY: foo is not a generator, and the default visit loop must skip
+        # the parameter instead of dereferencing its absent default.
+        code = "def foo():\n    g = lambda x: (yield)\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert not _is_generator(func)
+
+    def test_lambda_posonly_and_kwonly_defaults_counted(self) -> None:
+        # the default visit loop covers every ordinary parameter group:
+        # positional-only (with a default) and keyword-only defaults are
+        # evaluated in the enclosing scope as well.
+        code = "def foo():\n    g = lambda x=1, /, *, k=(yield): x\n    return g\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
+
+    def test_yield_in_outermost_comprehension_iterable_counted(self) -> None:
+        # guard (M-044 review): the outermost for-iterable is evaluated in
+        # the enclosing scope — this foo IS a generator and must not be
+        # excluded by any scope boundary the visitor adds.
+        code = "def foo():\n    return [x for x in (yield)]\n"
+        module = cst.parse_module(code)
+        func = module.body[0]
+        assert isinstance(func, cst.FunctionDef)
+        assert _is_generator(func)
 
 
 # --- create_mutations ---------------------------------------------------------

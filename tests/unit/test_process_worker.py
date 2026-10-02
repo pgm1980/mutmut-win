@@ -12,9 +12,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from _pytest.config.argparsing import Parser
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 import mutmut_win.process.worker as worker_module
-from mutmut_win.exceptions import BadTestExecutionCommandsException, ProcessContainmentError
+from mutmut_win.atomic_file import AtomicReplaceError
+from mutmut_win.exceptions import (
+    BadTestExecutionCommandsException,
+    ProcessContainmentError,
+    PytestBoundaryError,
+)
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.worker import MUTANT_ENV_VAR, _kill_proc_tree, worker_main
 
@@ -240,9 +247,192 @@ class TestWorkerMain:
         # The second task was not consumed after the fatal boundary failure.
         assert task_q.get() == second
 
+    @pytest.mark.parametrize(
+        ("seam", "side_effect"),
+        [
+            (
+                "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+                OSError(28, "No space left on device"),
+            ),
+            (
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+                OSError(267, "Directory name invalid"),
+            ),
+            (
+                "mutmut_win.process.worker._write_pytest_argfile",
+                AtomicReplaceError("replace locked by an antivirus filter"),
+            ),
+        ],
+    )
+    def test_task_preparation_oserror_is_fatal_and_stops_worker(
+        self, seam: str, side_effect: BaseException
+    ) -> None:
+        """M-065: a preparation OSError describes the host, not the mutant.
+
+        Before the fix every preparation OSError escaped as a raw exception,
+        was classified non-fatal by worker_main, and a persistent host-wide
+        disturbance (ENOSPC, AV locks, quota exhaustion) turned into one
+        persisted 'suspicious' row per remaining mutant.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(seam, side_effect=side_effect):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.mutant_name == first["mutant_name"]
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "WorkerEnvironmentError" in (completed.last_output or "")
+        assert str(side_effect) in (completed.last_output or "")
+        # The fatal environment failure stops the worker; task 2 stays queued.
+        assert task_q.get() == second
+
+    def test_task_preparation_non_oserror_stays_non_fatal(self) -> None:
+        """M-065 boundary: only OSError is reclassified as environment-fatal.
+
+        A non-OSError preparation failure (here: a ValueError) is still a
+        Bug-#12 recovery event with fatal=False, and the worker loop keeps
+        consuming tasks.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+            side_effect=ValueError("code-level fault, host is healthy"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        first_completed = TaskCompleted.model_validate(event_q.get())
+        second_completed = TaskCompleted.model_validate(event_q.get())
+        assert first_completed.exit_code == 35
+        assert first_completed.fatal is False
+        assert second_completed.mutant_name == second["mutant_name"]
+        assert second_completed.fatal is False
+        assert event_q.empty()
+        # Recovery kept the loop alive through the sentinel.
+        assert task_q.empty()
+
+    def test_task_preparation_pytest_boundary_error_is_not_reclassified(self) -> None:
+        """M-065: PytestBoundaryError keeps its own fatal identity.
+
+        The boundary drift must surface as PytestBoundaryError (not the new
+        environment class) so diagnostics keep distinguishing a pytest
+        boundary fault from a host fault.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.apply_pytest_boundary_environment",
+            side_effect=PytestBoundaryError("boundary drifted mid-run"),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "PytestBoundaryError" in (completed.last_output or "")
+        assert "WorkerEnvironmentError" not in (completed.last_output or "")
+        assert task_q.get() == second
+
+    def test_task_preparation_failure_cleans_up_runtime_context(self, tmp_path: Path) -> None:
+        """M-065: every preparation failure (not only OSError) cleans the runtime dir."""
+        runtime_root = tmp_path / "worker-runtime"
+        runtime_root.mkdir()
+        cleaned: list[str] = []
+
+        class _FakeTemporaryDirectory:
+            """Real directory, but cleanup must be called explicitly."""
+
+            def __init__(self, **_kwargs: object) -> None:
+                self.name = str(runtime_root)
+
+            def cleanup(self) -> None:
+                cleaned.append(self.name)
+
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        with (
+            patch(
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+                _FakeTemporaryDirectory,
+            ),
+            patch(
+                "mutmut_win.process.worker.apply_pytest_boundary_environment",
+                side_effect=PytestBoundaryError("boundary drifted mid-run"),
+            ),
+        ):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        assert cleaned == [str(runtime_root)]
+
+    @given(
+        exc_type=st.sampled_from(
+            [
+                OSError,
+                PermissionError,
+                FileNotFoundError,
+                FileExistsError,
+                AtomicReplaceError,
+            ]
+        ),
+        seam=st.sampled_from(
+            [
+                "mutmut_win.process.worker.configure_ephemeral_pytest_environment",
+                "mutmut_win.process.worker._write_pytest_argfile",
+                "mutmut_win.process.worker.tempfile.TemporaryDirectory",
+            ]
+        ),
+    )
+    @settings(max_examples=25, deadline=None)
+    def test_every_preparation_environment_fault_is_fatal(
+        self, exc_type: type[BaseException], seam: str
+    ) -> None:
+        """M-065 property: any OSError flavour on any preparation seam is fatal."""
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        first = _simple_task()
+        second = _simple_task(mutant_name="src/foo.py::baz__mutmut_1")
+        task_q.put(first)
+        task_q.put(second)
+        task_q.put(None)
+
+        with patch(seam, side_effect=exc_type("hypothesis fault")):
+            worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.fatal is True
+        # The worker stopped instead of digesting the remaining task.
+        assert task_q.get() == second
+
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
-    def test_real_task_resume_failure_is_fatal_and_stops_worker(self) -> None:
-        """A kernel resume failure must not degrade into an ordinary exit 35."""
+    def test_real_instance_from_replaced_popen_is_fatal_and_stops_worker(self) -> None:
+        """M-144 (TQ-006): the fatal path exercises the real refusal guard.
+
+        A replaced Popen yielding an instance that passes the real-type
+        check is refused BEFORE job creation and reported as a fatal
+        containment failure — the guards are no longer patched away."""
         task_q: _SimpleQueue = _SimpleQueue()
         event_q: _SimpleQueue = _SimpleQueue()
         task_q.put(_simple_task())
@@ -252,12 +442,8 @@ class TestWorkerMain:
         with (
             patch("mutmut_win.process.worker.subprocess.Popen", return_value=fake_proc),
             patch("mutmut_win.process.worker._REAL_POPEN_TYPE", object),
-            patch("mutmut_win.process.worker._create_task_job", return_value=77),
-            patch(
-                "mutmut_win.process.worker._resume_suspended_process",
-                side_effect=OSError("resume denied"),
-            ),
-            patch("mutmut_win.process.job_object.close_job") as close_job,
+            patch("mutmut_win.process.worker._kill_proc_tree") as kill_tree,
+            patch("mutmut_win.process.worker._create_task_job") as create_job,
         ):
             worker_main(task_q, event_q, _make_config())  # type: ignore[arg-type]
 
@@ -265,8 +451,9 @@ class TestWorkerMain:
         assert completed.exit_code == 35
         assert completed.fatal is True
         assert "ProcessContainmentError" in (completed.last_output or "")
-        assert "resume" in (completed.last_output or "").lower()
-        close_job.assert_called_once_with(77)
+        assert "replaced after import" in (completed.last_output or "")
+        kill_tree.assert_called_once_with(fake_proc)
+        create_job.assert_not_called()
         # Fatal containment failure stops before consuming the sentinel.
         assert task_q.get() is None
 
@@ -713,6 +900,43 @@ def test_preferred_killer():
         assert "tests/test_foo.py" not in captured[0]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows suspended-resume contract")
+class TestResumeAfterContainment:
+    """M-144 (T3b): resume failures close the Job exactly once and fail closed."""
+
+    def _real_type_double(self) -> MagicMock:
+        """A double that passes the real-type gate of _resume_after_containment."""
+        double = MagicMock(spec=worker_module.subprocess.Popen)
+        double.pid = 12345
+        double.wait.return_value = 0
+        return double
+
+    def test_resume_failure_closes_job_and_raises(self) -> None:
+        proc = self._real_type_double()
+
+        with (
+            patch(
+                "mutmut_win.process.worker._resume_suspended_process",
+                side_effect=OSError("resume denied"),
+            ),
+            patch("mutmut_win.process.job_object.close_job") as close_job,
+            pytest.raises(ProcessContainmentError, match="resume"),
+        ):
+            worker_module._resume_after_containment(proc, 77)
+
+        # Closing the kill-on-close Job atomically terminates the child —
+        # exactly once, and the caller sees the containment failure.
+        close_job.assert_called_once_with(77)
+
+    def test_missing_job_object_kills_child_and_refuses(self) -> None:
+        proc = self._real_type_double()
+
+        with pytest.raises(ProcessContainmentError, match="Job Object"):
+            worker_module._resume_after_containment(proc, None)
+
+        proc.kill.assert_called_once_with()
+
+
 class TestMutantEnvVar:
     def test_constant_value(self) -> None:
         assert MUTANT_ENV_VAR == "MUTANT_UNDER_TEST"
@@ -761,3 +985,55 @@ def test_various_exit_codes_forwarded(exit_code: int, expected: int) -> None:
     event_q.get()  # TaskStarted
     completed = TaskCompleted.model_validate(event_q.get())
     assert completed.exit_code == expected
+
+
+# ---------------------------------------------------------------------------
+# Bounded, decoding-free proof consumption (M-142, issue #143)
+# ---------------------------------------------------------------------------
+
+
+class TestConsumePhaseGuard:
+    def test_non_utf8_marker_is_a_missing_proof(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        marker = tmp_path / "corrupt.sentinel"
+        marker.write_bytes(b"\xff\xfe")
+        assert consume_pytest_phase_guard(marker, "ab" * 32) is False
+        assert not marker.exists()
+
+    def test_marker_read_is_bounded_and_exact(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        token = "cd" * 32
+        marker = tmp_path / "bounded.sentinel"
+        marker.write_text(token + "trailing", encoding="ascii")
+        assert consume_pytest_phase_guard(marker, token) is False
+        assert not marker.exists()
+
+        marker.write_text(token, encoding="ascii")
+        assert consume_pytest_phase_guard(marker, token) is True
+        assert not marker.exists()
+
+    def test_directory_at_marker_path_is_a_missing_proof(self, tmp_path: Path) -> None:
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        marker = tmp_path / "sentinel-dir"
+        marker.mkdir()
+        assert consume_pytest_phase_guard(marker, "ab" * 32) is False
+
+    @example(b"")
+    @example(b"\xff\xfe")
+    @example(b"\xff" * 64)
+    @given(payload=st.binary(max_size=256))
+    @settings(max_examples=50, deadline=None)
+    def test_consume_never_raises_and_matches_exactly(self, payload: bytes) -> None:
+        import tempfile
+
+        from mutmut_win.process.worker import consume_pytest_phase_guard
+
+        token = "ef" * 32
+        with tempfile.TemporaryDirectory() as name:
+            marker = Path(name) / "fuzz.sentinel"
+            marker.write_bytes(payload)
+            assert consume_pytest_phase_guard(marker, token) is (payload == token.encode())
+            assert not marker.exists()

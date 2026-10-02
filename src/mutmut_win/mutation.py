@@ -1,8 +1,10 @@
 """This module contains code for managing mutant creation for whole files."""
 
+import ast
 import io
 import re
 import tokenize
+import unicodedata
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -19,7 +21,11 @@ from libcst.metadata import (
 )
 
 from mutmut_win.constants import Profile
-from mutmut_win.node_mutation import OPERATORS_TYPE, operators_for_profile
+from mutmut_win.node_mutation import (
+    OPERATORS_TYPE,
+    _is_bare_decimal_integer,
+    operators_for_profile,
+)
 from mutmut_win.trampoline import create_trampoline_lookup, mangle_function_name, trampoline_impl
 
 if TYPE_CHECKING:
@@ -36,6 +42,15 @@ NEVER_MUTATE_FUNCTION_NAMES = {
     "__class_getitem__",
 }
 NEVER_MUTATE_FUNCTION_CALLS = {"len", "isinstance"}
+#: Qualified names of builtin calls whose CALL node and function expression
+#: are never mutated (M-042 / BC-085).  Resolved via ``QualifiedNameProvider``
+#: (source BUILTIN or IMPORT) — never by spelling: a local shadow
+#: ``def len(x): ...`` is an ordinary user function and mutates normally,
+#: while the qualified ``builtins.len(...)`` attribute call IS protected.
+#: ``NEVER_MUTATE_FUNCTION_CALLS`` above is kept as the legacy spelling view
+#: of this set (public module-level name; binding resolution replaced its use
+#: in the visitor).
+NEVER_MUTATE_QUALIFIED_CALLS = frozenset({"builtins.len", "builtins.isinstance"})
 
 
 def _is_static_only(function: cst.FunctionDef) -> bool:
@@ -189,7 +204,16 @@ class MutationVisitor(cst.CSTVisitor):
     Ignore nodes at lines `ignore_lines` and several other cases
     (e.g. nodes within type annotations).
 
-    The created mutations will be accessible at `self.mutations`."""
+    The created mutations will be accessible at `self.mutations`.
+
+    Two candidate-local guards run before a mutation is recorded: a
+    context-sensitive parenthesisation that fixes bare unary replacements at
+    a ``**`` base and bare decimal integers at an attribute base (M-046,
+    M-047), and a pattern-local syntax gate that discards candidates which
+    cannot legally appear inside a ``case`` pattern, e.g. ``case +1``
+    (M-048). Both keep the file-wide compile net in create_mutants_for_file
+    as the last line of defence.
+    """
 
     METADATA_DEPENDENCIES = (
         PositionProvider,
@@ -212,13 +236,23 @@ class MutationVisitor(cst.CSTVisitor):
         # Compiled name-skip regexes (mutmut-3.6.0 do_not_mutate_patterns backport):
         # a FunctionDef/ClassDef whose name matches any of these is skipped wholesale.
         self._name_skip_patterns = [re.compile(p) for p in do_not_mutate_patterns]
-        # Enclosing-class names (maintained by on_visit/on_leave) so the
+        # Enclosing ClassDef nodes (maintained by on_visit/on_leave) so the
         # do_not_mutate_patterns can match a QUALIFIED ``Class.method`` name.
-        self._class_stack: list[str] = []
+        # Invariant: the list holds exactly the ClassDef nodes whose subtree
+        # is currently being visited.  Node IDENTITY is load-bearing: libcst
+        # calls on_leave for every node — including ClassDefs skipped by
+        # on_visit — so on_leave pops only when the leaving node is the top
+        # entry (see M-038).
+        self._class_nodes: list[cst.ClassDef] = []
         # ids() of CST nodes whose entire subtree must NOT be mutated.
         # Populated lazily when we hit a special-cased call like ``typing.cast(...)``
         # whose first argument is a pure type annotation (see Bug #4).
         self._skip_subtree_ids: set[int] = set()
+        # id() -> enclosing case-pattern root for every node inside a match
+        # pattern (M-048 pattern-local syntax gate). Filled in on_visit when
+        # a MatchCase is entered; node identity stays valid for the whole
+        # visitor run.
+        self._pattern_root_by_id: dict[int, cst.MatchPattern] = {}
 
     def on_visit(self, node: cst.CSTNode) -> bool:
         if id(node) in self._skip_subtree_ids:
@@ -251,14 +285,35 @@ class MutationVisitor(cst.CSTVisitor):
         if isinstance(node, cst.Call) and self._is_typing_cast_call(node) and node.args:
             node.args[0].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
 
+        # A genuine len()/isinstance() builtin call (M-042 / BC-085): the call
+        # node itself and the function expression are never mutated — on_visit
+        # returns before _create_mutations for the call, and the callee subtree
+        # plus (for isinstance under an unambiguous positional binding) the
+        # type argument are collected into _skip_subtree_ids.  The ARGUMENT
+        # LOGIC stays ordinary mutable code and is visited below.  With any
+        # star argument the positional binding is unclear, so all argument
+        # subtrees keep the conservative pre-M-042 whole-argument skip.
+        if isinstance(node, cst.Call) and self._is_never_mutate_builtin_call(node):
+            self._protect_never_mutate_builtin_call(node)
+            return True
+
+        # Pattern-local syntax gate (M-048): record for every node inside a
+        # case PATTERN which pattern it belongs to, so _create_mutations can
+        # probe candidates against the pattern sub-grammar. Guards are plain
+        # expressions and deliberately not part of the mapping.
+        if isinstance(node, cst.MatchCase):
+            node.pattern.visit(_PatternRootCollector(node.pattern, self._pattern_root_by_id))
+
         if self._should_mutate_node(node):
             self._create_mutations(node)
 
         # Track the enclosing class so do_not_mutate_patterns can match a
-        # qualified ``Class.method`` name (on_leave pops it). Pushed only after
-        # the skip checks above — a skipped class returns early, never pushed.
+        # qualified ``Class.method`` name. Pushed only after the skip checks
+        # above — a skipped class returns early, never pushed. on_leave only
+        # pops when the leaving node IS the top entry, so skipped nested
+        # classes cannot desynchronise the stack (M-038).
         if isinstance(node, cst.ClassDef):
-            self._class_stack.append(node.name.value)
+            self._class_nodes.append(node)
         # continue to mutate children
         return True
 
@@ -297,12 +352,17 @@ class MutationVisitor(cst.CSTVisitor):
     def on_leave(self, original_node: cst.CSTNode) -> None:
         """Pop the enclosing-class stack when leaving a ``ClassDef``.
 
-        Balanced with the push in :meth:`on_visit`: libcst calls ``on_leave``
-        exactly for the nodes whose ``on_visit`` returned True, so a skipped
-        (never-pushed) class is never popped here.
+        libcst calls ``on_leave`` for EVERY node — including nodes whose
+        ``on_visit`` returned ``False`` (a skipped nested ``ClassDef`` never
+        pushes).  The stack stays balanced through node identity: pop only
+        when the node being left IS the current top entry.
         """
-        if isinstance(original_node, cst.ClassDef) and self._class_stack:
-            self._class_stack.pop()
+        if (
+            isinstance(original_node, cst.ClassDef)
+            and self._class_nodes
+            and self._class_nodes[-1] is original_node
+        ):
+            self._class_nodes.pop()
 
     def _create_mutations(self, node: cst.CSTNode) -> None:
         is_cast = isinstance(node, cst.Call) and self._is_typing_cast_call(node)
@@ -311,9 +371,26 @@ class MutationVisitor(cst.CSTVisitor):
             # mypy: the is_cast guard already proves node is a cst.Call
             assert isinstance(node, cst.Call)  # noqa: S101 - narrow-only assert
             original_first_arg = node.args[0] if node.args else None
+        pattern_root = self._pattern_root_by_id.get(id(node))
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
+                    # Context-sensitive parenthesisation (Q-55): a bare unary
+                    # replacement at a ** base (M-046) and a bare decimal
+                    # integer at an attribute base (M-047) must be
+                    # parenthesised BEFORE the candidate is recorded, so the
+                    # gate below probes the repaired node.
+                    mutated_node = _parenthesize_for_context(
+                        self.get_metadata(ParentNodeProvider, node, None), node, mutated_node
+                    )
+                    # Pattern-local syntax gate (M-048): match patterns are a
+                    # strict sub-grammar; discard candidates that cannot
+                    # appear in a case pattern instead of losing the whole
+                    # file in the file-wide safety net.
+                    if pattern_root is not None and not _pattern_candidate_parses(
+                        pattern_root, node, mutated_node
+                    ):
+                        continue
                     # Bug #4: drop any mutation of a typing.cast(...) call that would
                     # change the first argument — it has no runtime effect and the
                     # resulting mutants are unkillable equivalents.
@@ -351,6 +428,62 @@ class MutationVisitor(cst.CSTVisitor):
             for qualified_name in qualified_names
         )
 
+    def _is_never_mutate_builtin_call(self, node: cst.Call) -> bool:
+        """True only when the callee genuinely binds to a protected builtin.
+
+        A spelling-only ``len(...)``/``isinstance(...)`` comparison both
+        over- and under-protects (M-042 / BC-085): a locally shadowed name
+        (``def len(x): ...``, a parameter named ``len``) is an ordinary user
+        function yet was silenced wholesale, while the qualified attribute
+        call ``builtins.len(...)`` and genuine import aliases
+        (``from builtins import len as L``) were not protected at all.
+        QualifiedNameProvider resolves the callee's actual binding: only the
+        real builtin (``QualifiedNameSource.BUILTIN``) or a genuine
+        ``from builtins import ...`` (``QualifiedNameSource.IMPORT``) counts.
+        """
+        return bool(self._resolved_never_mutate_names(node))
+
+    def _resolved_never_mutate_names(self, node: cst.Call) -> set[str]:
+        """Resolve which protected builtins the callee of *node* binds to.
+
+        Args:
+            node: The call whose callee expression is resolved.
+
+        Returns:
+            The subset of ``NEVER_MUTATE_QUALIFIED_CALLS`` that the callee
+            genuinely binds to (empty for shadowed/local definitions).
+        """
+        return {
+            qualified_name.name
+            for qualified_name in self.get_metadata(QualifiedNameProvider, node.func, set())
+            if qualified_name.name in NEVER_MUTATE_QUALIFIED_CALLS
+            and qualified_name.source in (QualifiedNameSource.BUILTIN, QualifiedNameSource.IMPORT)
+        }
+
+    def _protect_never_mutate_builtin_call(self, node: cst.Call) -> None:
+        """Record the no-mutate subtrees of a genuine protected builtin call.
+
+        The call node itself receives no mutations because ``on_visit``
+        returns before ``_create_mutations`` for it.  The callee expression
+        subtree is protected verbatim.  For ``isinstance`` the type expression
+        is protected only under an unambiguous positional binding: at least
+        two arguments, the second positional (``keyword is None``) and not a
+        star target.  With ANY star argument (``isinstance(*pair)``,
+        ``len(*parts)``) positional binding is unclear, so every argument
+        subtree keeps the conservative whole-argument skip.
+        """
+        node.func.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+        if any(arg.star != "" for arg in node.args):
+            for arg in node.args:
+                arg.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+            return
+        if (
+            "builtins.isinstance" in self._resolved_never_mutate_names(node)
+            and len(node.args) >= 2
+            and node.args[1].keyword is None
+        ):
+            node.args[1].value.visit(_SubtreeIdCollector(self._skip_subtree_ids))
+
     def _should_mutate_node(self, node: cst.CSTNode) -> bool:
         # currently, the position metadata does not always exist
         # (see https://github.com/Instagram/LibCST/issues/1322)
@@ -367,15 +500,18 @@ class MutationVisitor(cst.CSTVisitor):
         return True
 
     def _skip_node_and_children(self, node: cst.CSTNode) -> bool:
-        is_never_mutate_call = (
-            isinstance(node, cst.Call)
-            and isinstance(node.func, cst.Name)
-            and node.func.value in NEVER_MUTATE_FUNCTION_CALLS
-        )
+        # NOTE (M-042 / BC-085): len()/isinstance() calls are NO LONGER
+        # skipped here.  Spelling-only recognition silenced locally shadowed
+        # user functions, missed the qualified ``builtins.len(...)`` call and
+        # discarded the entire argument subtree.  Genuine builtin calls are
+        # now resolved in on_visit via _is_never_mutate_builtin_call, which
+        # protects only the call node, the callee expression and (for
+        # isinstance) the unambiguous positional type argument — the argument
+        # logic itself stays mutable.
         is_never_mutate_func = (
             isinstance(node, cst.FunctionDef) and node.name.value in NEVER_MUTATE_FUNCTION_NAMES
         )
-        if is_never_mutate_call or is_never_mutate_func:
+        if is_never_mutate_func:
             return True
 
         # Python has no ``async yield from``.  A hand-written async-generator
@@ -408,7 +544,7 @@ class MutationVisitor(cst.CSTVisitor):
         # matcher used to be name-only).
         if self._name_skip_patterns and isinstance(node, (cst.FunctionDef, cst.ClassDef)):
             simple = node.name.value
-            qualified = ".".join([*self._class_stack, simple])
+            qualified = ".".join([*(klass.name.value for klass in self._class_nodes), simple])
             if any(
                 pattern.search(simple) or pattern.search(qualified)
                 for pattern in self._name_skip_patterns
@@ -441,6 +577,18 @@ class MutationVisitor(cst.CSTVisitor):
         #    to mutate their arguments and cause exceptions
         # 3) @property decorators break the trampoline signature assignment
         #    (which expects it to be a function)
+        # 4) decorated CLASSES are locked for their own technical reason, not
+        #    merely inherited from the function rules (external QA BC-132,
+        #    refuted at the code): combine_mutations_to_source rewrites the
+        #    class body so that each mutated method's public trampoline
+        #    wrapper, its private ``…__mutmut_orig`` copy AND all mutant
+        #    copies live INSIDE the class body.  A class decorator that
+        #    touches members during class creation — calling, registering or
+        #    introspecting them, as @dataclass-style registries do — still
+        #    sees those private copies as unexpected class members (their
+        #    lookup module names are pre-bound at class-creation time since
+        #    M-039, so calls no longer NameError, but member-visible private
+        #    copies remain).  Keep decorated classes unmutated wholesale.
         # EXCEPTION (W5 / mutmut-3.6.0 backport): a method decorated SOLELY with
         # @staticmethod IS mutated — create_trampoline_wrapper dispatches it like
         # a free function (no instance/class arg). Other decorators stay skipped.
@@ -459,6 +607,115 @@ class _SubtreeIdCollector(cst.CSTVisitor):
     def on_visit(self, node: cst.CSTNode) -> bool:
         self._target.add(id(node))
         return True
+
+
+def _parenthesize_for_context(
+    parent: cst.CSTNode | None,
+    node: cst.CSTNode,
+    mutated_node: cst.CSTNode,
+) -> cst.CSTNode:
+    """Parenthesise a replacement only where the parent context demands it.
+
+    Two contexts rebind or invalidate a bare replacement (Q-55, issue #168):
+
+    - the base of ``**``: a bare ``UnaryOperation`` rebinds — ``-1 ** x``
+      parses as ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046);
+    - the base of an attribute access: a bare decimal integer swallows the
+      dot into a float token — ``0.bit_length()`` is a SyntaxError (M-047).
+
+    Everything else stays untouched: mutant texts remain diff-minimal, and
+    mapping keys under profile ALL keep their valid bare form.
+
+    Args:
+        parent: The replaced node's parent from ``ParentNodeProvider``.
+        node: The original node being replaced.
+        mutated_node: The operator's candidate replacement.
+
+    Returns:
+        The candidate, parenthesised where the context demands it.
+    """
+    if (
+        isinstance(parent, cst.BinaryOperation)
+        and isinstance(parent.operator, cst.Power)
+        and parent.left is node
+    ):
+        if isinstance(mutated_node, cst.UnaryOperation) and not mutated_node.lpar:
+            return mutated_node.with_changes(
+                lpar=[cst.LeftParen()],
+                rpar=[cst.RightParen()],
+            )
+        return mutated_node
+    if (
+        isinstance(parent, cst.Attribute)
+        and parent.value is node
+        and _is_bare_decimal_integer(mutated_node)
+    ):
+        return mutated_node.with_changes(
+            lpar=[cst.LeftParen()],
+            rpar=[cst.RightParen()],
+        )
+    return mutated_node
+
+
+class _PatternRootCollector(cst.CSTVisitor):
+    """Map every node id inside a match pattern to that pattern's root node.
+
+    Feeds the pattern-local syntax gate (M-048): for any node inside a
+    ``case`` pattern, the gate needs the enclosing pattern to render the
+    candidate in place and probe it. ``MatchCase.guard`` is deliberately NOT
+    part of the subtree — guards are plain expressions that every operator
+    may mutate freely.
+    """
+
+    def __init__(self, root: cst.MatchPattern, mapping: dict[int, cst.MatchPattern]) -> None:
+        super().__init__()
+        self._root = root
+        self._mapping = mapping
+
+    def on_visit(self, node: cst.CSTNode) -> bool:
+        self._mapping[id(node)] = self._root
+        return True
+
+
+def _pattern_candidate_parses(
+    pattern_root: cst.MatchPattern,
+    node: cst.CSTNode,
+    mutated_node: cst.CSTNode,
+) -> bool:
+    """Probe a candidate replacement inside a match pattern for valid syntax.
+
+    Match patterns are a strict expression sub-grammar: ``case +1`` and
+    ``case --1`` are SyntaxErrors even though ``+1``/``--1`` are fine as
+    expressions, and a single invalid mutant made the file-wide safety net
+    drop every mutant of the file with a loud SyntaxWarning (M-048 /
+    issue #168). The candidate is rendered into its enclosing pattern and
+    parsed inside a synthetic ``match`` statement.
+
+    Only ``SyntaxError`` rejects a candidate; any other error propagates
+    (fail-closed). SyntaxWarnings are suppressed locally because
+    ``create_mutants_for_file`` records warnings with ``record=True`` /
+    ``simplefilter('always')`` and forwards them to the user — string
+    patterns with invalid escapes would otherwise leak one warning per
+    candidate into the orchestrator channel.
+
+    Args:
+        pattern_root: The enclosing ``case`` pattern of ``node``.
+        node: The original node being replaced.
+        mutated_node: The operator's candidate replacement.
+
+    Returns:
+        True when the probed pattern parses, False on ``SyntaxError``.
+    """
+    candidate = pattern_root.deep_replace(node, mutated_node)
+    rendered = cst.Module(body=[]).code_for_node(candidate)
+    probe = f"match _:\n    case {rendered}:\n        pass\n"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        try:
+            ast.parse(probe)
+        except SyntaxError:
+            return False
+    return True
 
 
 MODULE_STATEMENT = cst.SimpleStatementLine | cst.BaseCompoundStatement
@@ -525,6 +782,11 @@ def combine_mutations_to_source(
     :return: Mutated code and list of mutation names"""
     source_names = _source_name_values(module)
     trampoline_name = _fresh_module_name("_mutmut_trampoline", source_names)
+    # M-041: the compiler NFKC-normalizes every identifier before binding it,
+    # so the trampoline-namespace collision check must compare normalized
+    # forms.  Precompute the normalized view once per module rather than once
+    # per function.
+    nfkc_source_names = {unicodedata.normalize("NFKC", name) for name in source_names}
 
     # copy start of the module (in particular __future__ imports)
     result: list[MODULE_STATEMENT] = get_statements_until_func_or_class(module.body)
@@ -567,6 +829,7 @@ def combine_mutations_to_source(
                     class_name=None,
                     trampoline_name=trampoline_name,
                     source_names=source_names,
+                    nfkc_source_names=nfkc_source_names,
                     definition_ordinal=definition_ordinal,
                 )
             except ValueError as exc:
@@ -612,6 +875,7 @@ def combine_mutations_to_source(
                             class_name=cls.name.value,
                             trampoline_name=trampoline_name,
                             source_names=source_names,
+                            nfkc_source_names=nfkc_source_names,
                             definition_ordinal=definition_ordinal,
                         )
                     except ValueError as exc:
@@ -644,6 +908,7 @@ def function_trampoline_arrangement(
     *,
     trampoline_name: str = "_mutmut_trampoline",
     source_names: set[str] | None = None,
+    nfkc_source_names: set[str] | None = None,
     definition_ordinal: int = 1,
 ) -> tuple[Sequence[MODULE_STATEMENT], Sequence[MODULE_STATEMENT], Sequence[str]]:
     """Create mutated functions and a trampoline that switches between versions.
@@ -652,6 +917,18 @@ def function_trampoline_arrangement(
     returned separately: they must be emitted at MODULE level — for methods
     AFTER the class definition — because a dict in a class body becomes an
     ``enum.Enum`` member and its annotation broke ``NamedTuple`` (issue #77).
+    For methods the original-scope nodes additionally end with class-body
+    creation-time bindings (:func:`_class_creation_bindings`, M-039): a
+    ``global`` statement plus module-global assignments that make the
+    wrapper's names resolvable while the class itself is still being built.
+
+    The trampoline-namespace collision check compares NFKC-normalized
+    identifiers (M-041): CPython's tokenizer binds the NFKC form of every
+    identifier, so a source identifier written with the fullwidth variant
+    U+FF2B instead of ``K`` collides with the private namespace of a
+    function ``K`` although the raw strings do not share a prefix.  Pass
+    *nfkc_source_names* to reuse a per-module precomputed normalized view;
+    when omitted it is derived from *source_names*.
 
     :return: A tuple of (nodes for the original scope, module-level lookup
         nodes, mutant names)"""
@@ -677,13 +954,18 @@ def function_trampoline_arrangement(
         )
         + "__mutmut"
     )
+    if nfkc_source_names is None and source_names is not None:
+        nfkc_source_names = {
+            unicodedata.normalize("NFKC", source_name) for source_name in source_names
+        }
+    normalized_mangled_prefix = unicodedata.normalize("NFKC", mangled_name) + "_"
     collisions = (
         sorted(
             source_name
-            for source_name in source_names
-            if source_name.startswith(f"{mangled_name}_")
+            for source_name in nfkc_source_names
+            if source_name.startswith(normalized_mangled_prefix)
         )
-        if source_names is not None
+        if nfkc_source_names is not None
         else []
     )
     if collisions:
@@ -739,6 +1021,13 @@ def function_trampoline_arrangement(
         mutant_names.append(mutant_name)
         nodes.append(candidate.with_changes(name=cst.Name(mutant_name)))
 
+    if class_name is not None:
+        # M-039: bind the wrapper's module-level names at class-creation
+        # time, directly after THIS method's own nodes (not collected at the
+        # class end) so an interleaved class attribute, decorator or enum
+        # member creation between two methods already sees them.
+        nodes.extend(_class_creation_bindings(mangled_name, mutant_names))
+
     lookup_nodes = _unannotated_trampoline_lookup(
         orig_name=name,
         mutants=mutant_names,
@@ -749,6 +1038,94 @@ def function_trampoline_arrangement(
     lookup_nodes[0] = lookup_nodes[0].with_changes(leading_lines=[cst.EmptyLine()])
 
     return nodes, lookup_nodes, mutant_names
+
+
+def _class_creation_bindings(
+    mangled_name: str, mutant_names: Sequence[str]
+) -> list[cst.SimpleStatementLine]:
+    """Bind a method's trampoline module globals at class-creation time.
+
+    The public wrapper (still inside the class body) resolves
+    ``<mangled>_orig_ref`` and ``<mangled>_mutants`` as GLOBAL names, but the
+    module-level capture and lookup only run AFTER the class statement
+    (issue #77).  Any call of the method while the class is being built —
+    ``enum`` member creation invoking ``__init__`` or
+    ``_generate_next_value_``, a class attribute computed from an own method,
+    a decorator defined in the class body — therefore raised NameError before
+    the trampoline could run (M-039).  A ``global`` statement inside the
+    class body binds both names at module scope WITHOUT touching the class
+    namespace: no ``enum.Enum`` member, no ``NamedTuple`` field — issue #77
+    stays preserved.  The ``__name__`` assignment mirrors
+    ``create_trampoline_lookup`` so ``MUTANT_UNDER_TEST`` activation and the
+    stats prefix already work during class creation; the unchanged post-class
+    capture and lookup rebind both names after the class statement exactly as
+    before.
+
+    No other class-body statement may read either name before this
+    declaration (SyntaxError "used prior to global declaration"); the
+    source-name collision check in :func:`function_trampoline_arrangement`
+    guarantees that.
+
+    :param mangled_name: Private name prefix including the ``__mutmut`` suffix.
+    :param mutant_names: Mangled names of this method's mutants.
+    :return: Statements to emit directly after the method's own nodes.
+    """
+    type_ignore = cst.TrailingWhitespace(comment=cst.Comment("# type: ignore"))
+    public_name = mangled_name.removesuffix("__mutmut")
+    mutants_dict = cst.Dict(
+        [
+            # Keys are the mangled mutant-name strings; values are the
+            # class-body-local mutant functions defined just above.
+            cst.DictElement(cst.SimpleString(repr(mutant_name)), cst.Name(mutant_name))
+            for mutant_name in mutant_names
+        ]
+    )
+    return [
+        cst.SimpleStatementLine(
+            body=[
+                cst.Global(
+                    [
+                        cst.NameItem(cst.Name(f"{mangled_name}_orig_ref")),
+                        cst.NameItem(cst.Name(f"{mangled_name}_mutants")),
+                    ]
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_orig_ref"))],
+                    value=cst.Name(f"{mangled_name}_orig"),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[cst.AssignTarget(cst.Name(f"{mangled_name}_mutants"))],
+                    value=mutants_dict,
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+        cst.SimpleStatementLine(
+            body=[
+                cst.Assign(
+                    targets=[
+                        cst.AssignTarget(
+                            cst.Attribute(
+                                value=cst.Name(f"{mangled_name}_orig"), attr=cst.Name("__name__")
+                            )
+                        )
+                    ],
+                    value=cst.SimpleString(repr(public_name)),
+                )
+            ],
+            trailing_whitespace=type_ignore,
+        ),
+    ]
 
 
 def _unannotated_trampoline_lookup(
@@ -901,6 +1278,32 @@ def _docstring_statement(function: cst.FunctionDef) -> cst.BaseStatement | None:
     return None
 
 
+def _compiled_parameter_name(name: str, class_name: str | None) -> str:
+    """Return the identifier CPython actually binds for a parameter name.
+
+    The tokenizer normalizes every identifier with NFKC (``U+00B5`` becomes
+    ``U+03BC``, the KELVIN SIGN becomes ``K``), and inside a class body
+    private name mangling additionally rewrites an identifier that starts
+    with two underscores but does not end with them to
+    ``_<class><name>`` — the leading underscores of the class name are
+    stripped, and a class name consisting only of underscores does not
+    mangle at all (``_Py_Mangle`` semantics of CPython 3.14).  NFKC runs
+    FIRST on the parameter and the class name, then the mangling rule is
+    applied to the normalized forms.
+
+    :param name: Raw parameter name as written in the source.
+    :param class_name: Raw enclosing class name, or ``None`` for a
+        top-level function (no mangling).
+    :return: The compiled identifier, for use in generated string keys.
+    """
+    compiled = unicodedata.normalize("NFKC", name)
+    if class_name is not None and compiled.startswith("__") and not compiled.endswith("__"):
+        stripped_class = unicodedata.normalize("NFKC", class_name).lstrip("_")
+        if stripped_class:
+            compiled = f"_{stripped_class}{compiled}"
+    return compiled
+
+
 def create_trampoline_wrapper(
     function: cst.FunctionDef,
     mangled_name: str,
@@ -921,10 +1324,16 @@ def create_trampoline_wrapper(
     ``yield from`` equivalent.  Methods whose complete positional signature is
     ``*args`` are supported as well: descriptor binding places the instance in
     that tuple and the wrapper forwards it without guessing a ``self`` name.
+
+    Keyword-only parameters are forwarded through a dict whose STRING keys
+    must be the identifiers CPython binds (M-040): NFKC-normalized and, for
+    methods, privately mangled (``__x`` in ``class C`` compiles to ``_C__x``
+    because the wrapper shares the class body).  Keyword names at CALL sites
+    are never mangled, so a caller overrides such a default with ``_C__x=…``.
     """
     named_params = [*function.params.posonly_params, *function.params.params]
     used_names = {
-        param.name.value
+        _compiled_parameter_name(param.name.value, class_name)
         for param in [
             *function.params.posonly_params,
             *function.params.params,
@@ -932,9 +1341,9 @@ def create_trampoline_wrapper(
         ]
     }
     if isinstance(function.params.star_arg, cst.Param):
-        used_names.add(function.params.star_arg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_arg.name.value, class_name))
     if function.params.star_kwarg is not None:
-        used_names.add(function.params.star_kwarg.name.value)
+        used_names.add(_compiled_parameter_name(function.params.star_kwarg.name.value, class_name))
     args_local_name = _fresh_wrapper_name("_mutmut_args", used_names)
     kwargs_local_name = _fresh_wrapper_name("_mutmut_kwargs", used_names)
 
@@ -952,7 +1361,13 @@ def create_trampoline_wrapper(
     )
 
     kwargs: list[cst.DictElement | cst.StarredDictElement] = [
-        cst.DictElement(cst.SimpleString(f"'{p.name.value}'"), p.name)
+        # M-040: the key is the COMPILED parameter name (NFKC + private
+        # class mangling); the value expression is a CST name that the
+        # compiler renames identically, so both sides stay in sync.
+        cst.DictElement(
+            cst.SimpleString(repr(_compiled_parameter_name(p.name.value, class_name))),
+            p.name,
+        )
         for p in function.params.kwonly_params
     ]
     if isinstance(function.params.star_kwarg, cst.Param):
@@ -970,6 +1385,10 @@ def create_trampoline_wrapper(
         # captured immediately after class creation.  Rebinding the public
         # class name later therefore cannot break saved class aliases, and the
         # complete argument list above retains ordinary descriptor semantics.
+        # During class creation itself the same module globals already exist
+        # via the class-body creation-time bindings (M-039), so calls from
+        # ``__init__`` during enum member creation, class attributes computed
+        # from own methods, and class-body decorators resolve as well.
         return cst.Name(f"{mangled_name}_orig_ref")
 
     result: cst.BaseExpression = cst.Call(
@@ -1076,6 +1495,11 @@ def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
 
     The pragma line plus the suite below it: every following line indented
     deeper than the pragma line, through the last such non-blank line.
+
+    Legacy physical-indent extent; still used for ``block`` pragmas on
+    comment-only lines and inside bracketed continuation lines, where the
+    token-based extent (:func:`_pragma_block_range_from_tokens`) must not
+    apply (it would swallow the enclosing header's suite).
     """
     base = _indent_width(lines[pragma_index])
     last_body = pragma_index
@@ -1091,13 +1515,68 @@ def _pragma_block_range(lines: list[str], pragma_index: int) -> range:
     return range(pragma_index + 1, last_body + 2)
 
 
+def _pragma_block_range_from_tokens(
+    tokens: Sequence[tokenize.TokenInfo], pragma_index: int
+) -> range | None:
+    """Token-stream block extent for a ``block`` pragma, or ``None`` for the legacy path.
+
+    Applies only when the pragma comment sits on a CODE line that closes its
+    logical line (the very next token is a ``NEWLINE`` on the same physical
+    line). The extent then is that logical line plus — when the next
+    significant token opens a suite — the whole suite, bounded by INDENT/DEDENT
+    depth counting through the last ``NEWLINE`` before the matching ``DEDENT``.
+    Comments and string CONTENT are invisible to the tokenizer's indent
+    bookkeeping, so unlike the physical-indent scan they cannot end the block
+    early (M-043).
+
+    Returns:
+        The covered 1-based line range, or ``None`` when the caller must keep
+        the legacy physical-indent extent: comment-only pragma lines (the next
+        significant token would be the ENCLOSING header's INDENT, swallowing
+        the whole surrounding body) and pragmas inside bracketed continuation
+        lines (no same-line ``NEWLINE``; widening to the full suite would
+        exceed the documented pragma contract).
+    """
+    pragma_line = tokens[pragma_index].start[0]
+    following = tokens[pragma_index + 1] if pragma_index + 1 < len(tokens) else None
+    if following is None or following.type != tokenize.NEWLINE or following.start[0] != pragma_line:
+        return None
+    end_line = following.end[0]
+
+    cursor = pragma_index + 2
+    while cursor < len(tokens) and tokens[cursor].type in (tokenize.NL, tokenize.COMMENT):
+        cursor += 1
+    if cursor >= len(tokens) or tokens[cursor].type != tokenize.INDENT:
+        # no suite below: the block is just the (logical) pragma line
+        return range(pragma_line, end_line + 1)
+
+    depth = 1
+    cursor += 1
+    while cursor < len(tokens) and depth:
+        token = tokens[cursor]
+        if token.type == tokenize.INDENT:
+            depth += 1
+        elif token.type == tokenize.DEDENT:
+            depth -= 1
+        elif token.type == tokenize.NEWLINE:
+            # remember the last statement line inside the suite; comments or
+            # blank lines after it do not extend the block
+            end_line = token.end[0]
+        cursor += 1
+    return range(pragma_line, end_line + 1)
+
+
 def pragma_no_mutate_lines(source: str) -> set[int]:
     """Return line numbers (1-based) excluded by ``# pragma: no mutate`` comments.
 
     Recognises four forms (mutmut-3.6.0 surface backport):
 
     - ``# pragma: no mutate`` — the comment's own line (the original behaviour).
-    - ``# pragma: no mutate block`` — that line plus the indented suite below it.
+    - ``# pragma: no mutate block`` — that line plus the suite below it. On a
+      code line the extent follows the token stream (INDENT/DEDENT depth), so
+      comment lines and multi-line string contents do not end the block early;
+      comment-only and continuation-line pragmas keep the physical-indent
+      extent.
     - ``# pragma: no mutate start`` … ``# pragma: no mutate end`` — the inclusive
       range between the two markers; a dangling ``start`` skips to end-of-file.
     """
@@ -1110,14 +1589,13 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
     # Tokenization is essential here: scanning raw source text mistakes pragma
     # lookalikes in ordinary, raw, f- and triple-quoted strings for comments and
     # can suppress every mutation through EOF.  Only Python COMMENT tokens are
-    # directives; the original physical lines are still used to determine a
-    # ``block`` pragma's indentation extent.
+    # directives.  A ``block`` pragma's extent is likewise derived from the
+    # token stream (INDENT/DEDENT depth, see _pragma_block_range_from_tokens)
+    # so comment-only lines and multi-line string CONTENT cannot end the block
+    # early; comment-only and continuation-line pragmas keep the physical
+    # indent extent via _pragma_block_range.
     try:
-        comment_tokens = [
-            token
-            for token in tokenize.generate_tokens(io.StringIO(scanner_source).readline)
-            if token.type == tokenize.COMMENT
-        ]
+        tokens = list(tokenize.generate_tokens(io.StringIO(scanner_source).readline))
     except (
         tokenize.TokenError,
         SyntaxError,
@@ -1128,7 +1606,9 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
         # Ignore all provisional directives and let the real parser adjudicate
         # the invalid source.
         return set()
-    for token in comment_tokens:
+    for position, token in enumerate(tokens):
+        if token.type != tokenize.COMMENT:
+            continue
         suffix = _pragma_no_mutate_suffix(token.string)
         if suffix is None:
             continue
@@ -1142,7 +1622,11 @@ def pragma_no_mutate_lines(source: str) -> set[int]:
             ignored.update(range(start, lineno + 1))
             open_start = None
         elif suffix == "block":
-            ignored.update(_pragma_block_range(lines, index))
+            token_range = _pragma_block_range_from_tokens(tokens, position)
+            if token_range is not None:
+                ignored.update(token_range)
+            else:
+                ignored.update(_pragma_block_range(lines, index))
         else:
             ignored.add(lineno)
     if open_start is not None:
@@ -1189,8 +1673,13 @@ def _is_generator(function: cst.FunctionDef) -> bool:
 class IsGeneratorVisitor(cst.CSTVisitor):
     """Check if a function is a generator.
 
-    We do so by checking if any child is a Yield statement, but not looking into
-    inner function definitions."""
+    We do so by checking if any child is a Yield statement, but not looking
+    into inner function definitions or lambda BODIES (both are their own
+    scope: a ``yield`` there makes only the nested callable a generator).
+    Lambda parameter DEFAULTS, however, are evaluated in the enclosing
+    scope — ``lambda x=(yield): x`` DOES make the surrounding (async)
+    function a generator — so they are visited explicitly before the body
+    is skipped (M-044)."""
 
     def __init__(self, original_function: cst.FunctionDef) -> None:
         self.is_generator = False
@@ -1201,6 +1690,17 @@ class IsGeneratorVisitor(cst.CSTVisitor):
         if self.original_function != node:
             return False
         return None
+
+    def visit_Lambda(self, node: cst.Lambda) -> bool | None:  # noqa: N802
+        # do not recurse into the lambda BODY (own scope), but evaluate its
+        # parameter defaults in this scope like the compiler does.  A var-*
+        # parameter cannot carry a default in valid Python source, so only
+        # the three ordinary parameter groups are visited.
+        params = node.params
+        for param in (*params.posonly_params, *params.params, *params.kwonly_params):
+            if param.default is not None:
+                param.default.visit(self)
+        return False
 
     # ARG002: libcst CSTVisitor requires the node parameter in visitor methods
     def visit_Yield(self, node: cst.Yield) -> bool | None:  # noqa: N802, ARG002

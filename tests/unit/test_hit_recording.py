@@ -26,12 +26,17 @@ import json
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 from mutmut_win import _state
 from mutmut_win._state import _reset_globals
+from mutmut_win.constants import MUTANT_ENV_VAR
 from mutmut_win.hit_recording import _get_max_stack_depth, record_trampoline_hit
 from mutmut_win.trampoline import trampoline_impl
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestTemplateImportsTheKernel:
@@ -137,6 +142,65 @@ class TestRecordTrampolineHit:
         _reset_globals()
         _state._cached_max_stack_depth = 5
         assert _get_max_stack_depth() == 5
+        _reset_globals()
+
+
+class TestInstrumentationFrameDeadZone:
+    """M-072 / BC-083: budgets 1..3 are consumed by mutmut's own frames.
+
+    The walk starts at the recorder itself: record_trampoline_hit,
+    ``_mutmut_trampoline`` and the generated wrapper occupy the first
+    three frames and never match a pytest/unittest filename, so depths
+    1..3 unconditionally discard EVERY stats hit. The config validator
+    rejects those values now; this class documents the runtime fact on a
+    REAL frame chain — no ``_get_max_stack_depth`` patch, the state cache
+    is primed directly, and the shipped trampoline template is executed.
+    """
+
+    def _primed_chain(self, budget: int, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, str]:
+        """Prime the state cache and build the real wrapper chain.
+
+        The returned wrapper must be called DIRECTLY from the test method:
+        ``recorder(0) <- trampoline(1) <- wrapper(2) <- test(3) <- first
+        _pytest frame (4)`` — any helper level in between would shift the
+        whole chain (that is exactly how value 4 dies for deeper call
+        sites). The trampoline only records in stats mode; a plain pytest
+        run carries no MUTANT_UNDER_TEST, so the None branch would just
+        call the original without ever reaching the recorder.
+        """
+        _reset_globals()
+        _state._cached_max_stack_depth = budget
+        monkeypatch.setenv(MUTANT_ENV_VAR, "stats")
+        namespace: dict[str, object] = {}
+        exec(trampoline_impl, namespace)  # noqa: S102 — executing our own shipped trampoline template IS the test purpose (adjudicated in the semgrep release gate allowlist)
+        trampoline: Any = namespace["_mutmut_trampoline"]
+
+        def orig(value: int) -> int:
+            return value + 1
+
+        def generated_wrapper(value: int) -> int:
+            result: int = trampoline(orig, {}, (value,), {})
+            return result
+
+        return generated_wrapper, f"{orig.__module__}.{orig.__name__}"
+
+    def test_budget_three_discards_the_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The most generous dead value: frames 0..2 are recorder,
+        # trampoline, wrapper — no pytest frame is ever reached.
+        wrapper, name = self._primed_chain(3, monkeypatch)
+        wrapper(1)
+        assert name not in _state._stats
+        _reset_globals()
+
+    def test_budget_five_captures_the_hit_under_direct_test_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Frame 4 is the first pytest/_pytest frame above a test function
+        # called directly by the runner, so 5 still captures the hit —
+        # recorded under the mangled module-qualified name.
+        wrapper, name = self._primed_chain(5, monkeypatch)
+        wrapper(1)
+        assert name in _state._stats
         _reset_globals()
 
 

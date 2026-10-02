@@ -101,13 +101,13 @@ external, mutable state: verify that the exact annotated tag and its matching
 GitHub release exist before using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.5"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.4" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.5" --dev
 ```
 
 Do not use the pinned dependency unless that verification succeeds. Published
@@ -130,8 +130,9 @@ tags are immutable release provenance and are never moved or deleted.
    ```
 
    The run validates the clean suite, collects per-test timing stats,
-   verifies the mutation machinery with a forced-fail check, and then
-   executes all mutants in parallel.
+   verifies the mutation machinery (a name-consistency gate plus a
+   forced-fail trampoline check), and then executes all mutants in
+   parallel.
 
 3. Inspect the outcome:
 
@@ -154,6 +155,27 @@ tags are immutable release provenance and are never moved or deleted.
 | `mutmut-win time-estimates [MUTANT_NAMES…]` | Estimated runtime per mutant |
 | `mutmut-win export-cicd-stats` | Write `mutants/mutmut-cicd-stats.json` for CI gates |
 
+All `browse` TUI actions (`r`/`f`/`m`/`a`/`t`) run their `mutmut-win`
+sub-command inside a Windows Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: if the TUI dies hard, the kernel
+terminates the whole child process tree. When no Job Object can be
+established the action is refused outright — there is no uncontained
+fallback.
+
+The browser's `m` (retest module) action derives the module boundary from
+the loaded metadata mapping, not from the mutant name: for a mutant from
+a package `__init__.py` the name is qualified by the *package*
+(`__init__` is dropped from mutant names), so a name-derived glob would
+retest every submodule of the package — in a one-package `src/` layout
+effectively the whole project. `m` therefore retests package-`__init__`
+modules via the exact, sorted mutant-name list of that one file (names
+outside the current run plan included), and keeps the short `module.*`
+glob for ordinary modules. Without a metadata mapping for the selected
+mutant (DB-only, unmapped, or stale names) the action is refused with a
+warning instead of guessing a scope — and an `__init__` name list that
+would exceed the Windows command-line length limit is refused with a
+pointer to a manual `mutmut-win run <mutant names>` subset.
+
 `run` persists a new run attempt before staging or generation starts and
 finalizes its exact mutant plan only after successful generation. `results`,
 `browse`, and `export-cicd-stats` use that current run snapshot as their
@@ -163,12 +185,14 @@ current run. CI export therefore refuses an incomplete current snapshot and
 removes a stale export rather than presenting it as fresh evidence.
 
 Mutant name matching is the same everywhere: an argument is either an
-exact mutant name or a glob pattern (`*`, `?`, `[...]`). `run` and
-`time-estimates` accept any number of matches; `show` and `apply`
-operate on a single mutant — a pattern matching more than one fails
-with the candidate list. `show` diffs are patch-capable for top-level
-functions (`a/`–`b/` labels, hunk lines refer to the original file);
-for class methods prefer `mutmut-win apply` over `patch`.
+exact mutant name or a glob pattern (`*`, `?`, `[...]`). Names and globs
+are compared case-sensitively, also under Windows — mutant names carry
+Python identifiers verbatim, so a differently spelled name is simply not
+found. `run` and `time-estimates` accept any number of matches; `show`
+and `apply` operate on a single mutant — a pattern matching more than
+one fails with the candidate list. `show` diffs are patch-capable for
+top-level functions (`a/`–`b/` labels, hunk lines refer to the original
+file); for class methods prefer `mutmut-win apply` over `patch`.
 
 Frequently used `run` options (see `mutmut-win run --help` for all):
 
@@ -176,11 +200,11 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 |---|---|
 | `--paths-to-mutate PATH` | Mutate only these paths. **Repeatable** — one path per flag |
 | `--profile {basic,advanced,all}` | Operator profile (overrides `[tool.mutmut]`): `advanced` (default) = mutmut base + mutmut-win's extras; `basic` = strict mutmut parity (the 15 base operators); `all` = + aggressive operators |
-| `--since-commit REF` | Mutate only files changed since a git ref (e.g. `HEAD~1`) — committed **and** uncommitted tracked changes; untracked files need a full run |
-| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets (exit 2) |
+| `--since-commit REF` | Mutate only files changed since a git ref — a single branch, tag, or commit (e.g. `HEAD~1`); committed **and** uncommitted tracked changes; paths are evaluated relative to the project directory, so monorepo subprojects are supported; untracked files need a full run. The ref is resolved via `git rev-parse --verify --end-of-options <ref>^{commit}` (needs git ≥ 2.36; older git fails closed with exit 2) and only the canonical commit id reaches `git diff`; option-like values, pathspecs, blobs, trees, and range expressions (`A..B`, `A...B`) are rejected with exit 2 |
+| `--min-score N` | Full-run CI gate: exit 1 below N percent/incomplete basis; incompatible with name, path, or `--since-commit` subsets and with `--dry-run` (exit 2) |
 | `--output json` | Pure JSON result on stdout; prose on stderr |
 | `--max-children N` | Worker process count |
-| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate) |
+| `--force` | Delete `mutants/` and `.mutmut-cache/` first (clean slate); read-only staging leaves are cleared through the identity-checked removal hook, hardlinked/redirected leaves are refused with exit 1 |
 | `--rerun-all` | Execute every mutant even when a cached verdict could be reused |
 | `--dry-run` | Count mutants without running tests |
 | `--no-progress` | Suppress live progress lines (the final summary always prints) |
@@ -190,10 +214,33 @@ Frequently used `run` options (see `mutmut-win run --help` for all):
 Exit codes of `run`: `0` success, `1` runtime failure, failed
 `--min-score` gate or aborted run (worker pool collapsed — the unchecked
 remainder is reported and the score gate is skipped), `2` invalid
-configuration or option value, `130` interrupted (Ctrl-C — partial
-results are persisted, the score gate is skipped).
+configuration or option value, `130` interrupted (Ctrl-C — partial results
+are persisted, the score gate is skipped). `130` covers every Ctrl-C during
+`run`, including phases before the worker pool starts; when no result JSON
+exists yet (`--output json`), a JSON error object with `exit_code: 130` is
+emitted on stdout instead.
+
+**Degraded mutation surface:** when individual source files cannot be fully
+mutated (unparsable syntax, engine-safety skips), the run reports them in
+the `degraded_files` list and the JSON result. The run itself ends
+diagnostically successfully (exit 0 without `--min-score`), but the
+`--min-score` gate and CI/CD export are disabled because the mutation
+surface is incomplete: a score over a partially mutated universe cannot
+authorize a project-level quality claim. Verdicts of the unaffected files
+remain valid and reusable — the degradation is file-scoped, not a
+wholesale invalidation. Explicit user exclusions (`do_not_mutate_patterns`,
+`do_not_mutate`) are *not* degradations: they are deliberate surface
+reductions that never disable the gate.
 
 ### Execution-basis diagnostics
+
+Inputs that are transiently locked or unreadable (antivirus scanners, indexers,
+fresh publications) are re-read with short bounded delays before any verdict:
+hashing retries Windows sharing violations on open, and incomplete basis or
+staging snapshots are re-observed a bounded number of times. Inputs that stay
+unobservable are reported as "could not be completely observed" (rerun with
+`--basis-diagnostics`) — distinct from real drift, which keeps its terminal
+"inputs changed" diagnosis.
 
 To investigate a changing execution basis, create an evidence directory outside
 your project and Python installation, then use a fresh absolute destination:
@@ -217,7 +264,20 @@ timeout classification retain their existing behavior.
 
 Everything lives in `pyproject.toml` under `[tool.mutmut]` (CLI flags
 override per run). Unknown keys produce a warning with a did-you-mean
-suggestion.
+suggestion. A `setup.cfg` `[mutmut]` section is honored as fallback when
+`pyproject.toml` has no `[tool.mutmut]` table; `[tool.mutmut]` itself must
+be a table — an array of tables (`[[tool.mutmut]]`) or any other non-table
+value is rejected as a configuration error (exit 2) instead of silently
+falling back. Both files must be UTF-8:
+a `pyproject.toml` or `setup.cfg` that exists but cannot be read (for
+example a locked file) or decoded is a configuration error (exit 2),
+never silent defaults.
+
+Single-line `setup.cfg` list values are comma-separated. For
+`do_not_mutate_patterns`, commas inside valid regex quantifiers
+(`{m,n}`, `{m,}`, `{,n}`) are part of the pattern, not separators —
+use the multi-line (indented continuation) form for patterns containing
+any other commas.
 
 ```toml
 [tool.mutmut]
@@ -231,8 +291,13 @@ also_copy = ["fixtures/"]             # extra files copied into mutants/
 extra_paths = ["benchmarks/"]         # sibling packages: copied + on worker PYTHONPATH
 
 # Execution
-max_children = 8                      # workers (default: CPU count)
-timeout_multiplier = 30               # scales the measured per-mutant test time
+max_children = 8                      # workers (default: CPU count; generation
+                                       # uses at most 61 workers on Windows)
+timeout_multiplier = 30               # scales the measured test time (or, for
+                                       # full-suite fallback tasks, the clean-run
+                                       # wall time); a budget that is not finite
+                                       # or exceeds the ceiling (~23 days) fails
+                                       # the run closed before dispatch
 clean_run_timeout = 300               # budget (s) for the clean baseline / stats runs
 forced_fail_timeout = 120             # budget (s) for the forced-fail verification
 generation_timeout = 300              # max seconds without generation progress
@@ -253,9 +318,18 @@ type_check_command = ["mypy", "--output=json", "src/"] # JSON output is required
                                       # Checker-rejected mutants count as caught;
                                       # errors replicated from the original code
                                       # are subtracted, not counted as kills.
+                                      # mutmut-win redirects MYPY_CACHE_DIR into
+                                      # an ephemeral directory so the checker
+                                      # never writes into mutants/; any checker
+                                      # that still writes there fails the run
+                                      # with a checker-specific diagnosis
+                                      # (a --cache-dir argument in the command
+                                      # overrides the redirect).
 
 # Advanced
-max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited (0 is rejected)
+max_stack_depth = -1                  # stats-hit frame walk; -1 = unlimited
+                                       # (0-3 rejected: 3 frames are mutmut
+                                       # instrumentation; use >= 5)
 
 # Infinite-loop detection (psutil-based; on by default)
 infinite_loop_detection = true
@@ -292,9 +366,20 @@ Notes:
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
-  Code exercised only in test-spawned subprocesses or pytest-xdist
-  workers is invisible to it — such a run fails loudly instead of
-  silently filtering every mutant.
+  The project's own coverage configuration is honored: `relative_files
+  = true` keys are resolved against the staged `mutants/` tree before
+  matching, and parallel data files (`parallel = true`, including
+  `concurrency = multiprocessing` children) are merged into one
+  measurement. Code exercised only in test-spawned subprocesses or
+  pytest-xdist workers is invisible to it — such a run fails loudly
+  instead of silently filtering every mutant. Follow-up runs restore every target to
+  its unmutated bytes before the coverage phase, so coverage always
+  measures original line numbers. The trade-off: in this mode no
+  trampolined output survives between runs — every file is re-generated
+  each run and verdict reuse (fast path) is unavailable for them. Subset
+  runs (CLI `--paths-to-mutate`, `do_not_mutate`) likewise restore
+  deselected targets to unmutated bytes and drop their generation
+  sidecars, so the next full run re-generates them.
 - Test observations that cannot prove complete coverage of subprocesses,
   threads, or xdist workers are never allowed to omit or reorder tests. Their
   durations may schedule independent mutant tasks, while pytest keeps the
@@ -348,7 +433,7 @@ Notes:
 | `segfault` | The test process crashed under the mutant — also a detection |
 | `survived` | **No test noticed the change — this is your test gap** |
 | `timeout` | Budget exceeded without an infinite-loop verdict |
-| `suspicious` | Unexpected pytest exit code (diagnostic tail is captured) |
+| `suspicious` | Unexpected pytest exit code, or pytest exited 0 without a verified test-call execution proof (neutralized phase, only skipped tests, or a proof publication failure — never counted as a kill); the diagnostic tail is captured |
 | `no tests` | Reserved for a future runtime-authoritative mapper; the current collector never emits this verdict |
 | `skipped` | Excluded from this run |
 
@@ -369,6 +454,12 @@ The denominator excludes `skipped`, historical or future-authoritative
 creates new `no tests` verdicts: an unobserved mutant runs the full suite.
 Always read the bucket counts next to the percentage.
 
+The deprecated `run --treat-timeout-as-kill` flag (see `results`) only
+changes what the `--min-score` gate judges: the JSON `score` field and the
+text summary always report the raw score, and the effective
+timeouts-counted-as-kills value is printed as one dedicated stderr line
+next to it.
+
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:
 
@@ -377,12 +468,33 @@ functions and top-level-class methods. The two kinds of nesting differ:
   top-level function's mutant set, so closure logic is covered.
 - A **method of a class nested inside another class** is genuinely not
   mutated and contributes no mutants rather than appearing as `survived`.
+- **Decorated functions and classes** are excluded wholesale, together with
+  everything they contain (a method decorated solely with `@staticmethod` is
+  the documented exception). For classes this is a conservative contract,
+  not a current technical necessity: since M-039 the trampoline bindings
+  are placed *inside* the class body (pre-bound during class creation), so
+  the historical half-built-trampoline argument no longer applies to the
+  generated code itself. The exclusion stays because a class decorator can
+  still observe and mutate member behavior before, during, and after class
+  creation in ways the trampoline dispatch cannot fully isolate; lifting
+  the lock requires an explicit behavioral decision (per decision
+  zurückgestellt).
 
 Repeated same-named top-level functions or class methods remain distinct.
 The first occurrence keeps its historical mutant name; occurrence 2 and later
 use a reversible `ǁ<ordinal>` suffix before `__mutmut_…` (for example
 `pkg.x_fǁ2__mutmut_1`). This is intentionally identity-affecting: cached
 verdicts from the former colliding representation are not reused.
+
+Function or class identifiers that are not NFKC-normal are always hex-encoded
+into an ASCII `xq_…` (top-level) or `xqǁ<class>ǁ<function>…` (method) mutant
+name — context-independently, even without a second definition. CPython's
+tokenizer binds the NFKC form of every identifier, so `K` and fullwidth `Ｋ`
+(U+FF2B) are the same compiled name; the legacy private names would collapse
+and one definition would silently overwrite the other's trampoline bindings.
+This is identity-affecting as well: cached verdicts of such functions from
+earlier runs are explicitly orphaned and are never silently remapped onto the
+new IDs.
 
 ## Typical workflows
 
@@ -391,6 +503,17 @@ verdicts from the former colliding representation are not reused.
 ```bash
 mutmut-win run --since-commit HEAD~1
 mutmut-win results
+```
+
+`--since-commit` takes a **single** commit reference (branch, tag, or
+commit). Range expressions are rejected with exit 2 — they were never
+documented and let git reinterpret the value (option injection, pathspec,
+tree-vs-worktree diffs). For the former range-style "everything since the
+branches diverged" diff, compute the merge base yourself and pass the
+resulting commit:
+
+```bash
+mutmut-win run --since-commit "$(git merge-base origin/main HEAD)"
 ```
 
 **Targeted** — one module, fresh staging:
@@ -427,9 +550,17 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
    only when exact source and mutation-universe content digests match; output,
    metadata, and the generation fingerprint are published transactionally.
 2. **Validate**: the unmutated suite must pass inside `mutants/`; a
-   forced-fail check proves the trampoline actually switches mutants —
-   the failure must come from the trampoline's own exception, a hung or
-   unrelated failure fails the gate.
+   name-consistency gate then proves that the runtime function names
+   recorded by the stats run can address the generated mutants — a
+   mutated tree imported under a root that mutant names do not strip (for
+   example an `extra_paths` entry, or tests importing a literal `src`
+   package) would otherwise silently run originals and report everything
+   as `survived`, so the run fails closed before dispatch. Finally, a
+   forced-fail check proves the trampoline wrapper is installed and reads
+   `MUTANT_UNDER_TEST` — the failure must come from the trampoline's own
+   exception, a hung or unrelated failure fails the gate. The global
+   `fail` sentinel does not switch a concrete mutant; name dispatch is
+   what the consistency gate proves.
 3. **Map & budget**: a stats run records per-test durations and a diagnostic
    test↔function mapping. The current collector cannot prove completeness
    across subprocesses, threads and native launchers, so on-disk mappings are
@@ -456,8 +587,54 @@ mutmut-win run src.pkg.parser.x_parse__mutmut_4
 
 Normal mutation runs never modify original sources; execution happens in the
 `mutants/` staging directory. The explicit `apply` command is the exception: it
-backs up and atomically replaces the selected source file. Add `mutants/`,
-`.mutmut-cache/` and `.mutmut-win-*.run.lock*` to `.gitignore`.
+uses an audited compare-and-swap protocol — the selected source file is
+displaced to a recovery sibling, the replacement is written to a private
+temporary sibling and validated (identity, bytes, parent), then promoted onto
+the target name. This two-rename sequence is *not* a single atomic visibility
+switch: a concurrent reader between the two renames observes a briefly absent
+original path. The displaced original is preserved under a deterministic
+recovery name (or the known backup path) and its location is reported on any
+failure. Add `mutants/`, `.mutmut-cache/` and `.mutmut-win-*.run.lock*` to
+`.gitignore`.
+
+**`.gitignore` limits of staging:** staging walks, staging copies, and the
+combined ambient fingerprint of the run basis respect hierarchical
+project-local `.gitignore` files, so correctly ignored build trees are neither
+staged nor change the ambient basis. Pattern case follows the repository's
+effective `core.ignorecase` (ASCII-only folding, exactly like Git's wildmatch;
+read once per run — outside a Git worktree matching stays case-sensitive).
+Explicitly configured entries are the
+deliberate exception — `paths_to_mutate`, `also_copy`, and `extra_paths`
+entries are force-included with git `add -f` semantics (an ignore file
+*inside* such an entry still governs its contents). A git-ignored
+`paths_to_mutate` root is therefore fully staged, non-`.py` resources
+included, exactly matching the mutation surface; its bytes are also bound
+into the run-basis evidence. Dotenv files stay out of staging even when
+ignored, but their bytes keep binding the basis.
+
+Basis hashing separates that staging selection from the terminal *core*
+digest. The core binds the bytes of every effective project import root — the
+project root or its package source, reached through `sys.path` or an editable
+install — deliberately **without** gitignore pruning (decided M-061/B: import
+roots that remain importable by the executed tests stay bound; only `src` and
+`source` roots are removed from the child's `sys.path`, so a flat-layout
+project root or an editable install stays importable in place). A git-ignored
+build tree inside such a flat-layout or editable import root therefore still
+hashes into the core digest: changing it counts as project (core) drift and
+invalidates verdict reuse instead of being silently ignored, while pure
+ambient churn never changes the core digest. Runtime environment trees are
+never pruned in either digest: a project-internal `.venv`, `venv`, `.tox`,
+`.nox`, or any active interpreter prefix strictly inside the project executes
+in place and is fully bound, including unclaimed modules and `.pth` files.
+The boundary is permitted only in the opposite direction: `src`/`source`
+package roots — which the child no longer imports because the runner removes
+them from its `sys.path` and executes the staged copy instead — keep gitignore
+pruning in the ambient fingerprint, so an ignored artifact inside such an
+isolated source tree changes neither the ambient digest nor verdict reuse.
+That pruning is a stability property of the ambient digest, not a completeness
+proof: bytes that stay importable in the child are covered by the core digest
+alone, and only the core digest decides whether drift is terminal project
+drift.
 
 ## Development
 
@@ -521,7 +698,12 @@ default), v2.17.0 landed the first six advanced Phase-2 operators
 match-guard — acceptance harness 152/152, 100 %), and v2.18.0 completed
 the regex operator with the full 14-sub-mutator suite (anchors,
 quantifiers, shorthands, character classes, groups/look-around — harness
-184/188). v2.19.0 added the aggressive `all`-tier operators (arithmetic
+184/188). Regex mutation binds the pattern argument positionally or via
+`pattern=`, never mutates `(?#...)` comments, and honours statically
+resolvable `re.VERBOSE`/`re.X` flags (including `flags=` keywords and a
+global `(?x)` prefix) by locking `#` line comments; unknown flag
+expressions keep the flagless behaviour and scoped `(?x:...)` groups are
+a documented limit. v2.19.0 added the aggressive `all`-tier operators (arithmetic
 operand deletion, exception swap, general-statement and member-assignment
 removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 (pragma `block`/`start`-`end`, regex `do_not_mutate_patterns`, and
@@ -554,7 +736,36 @@ seconds without progress), retries `--force` cleanup through transient file
 locks, absorbs transient Windows filter-driver interference at three narrow
 atomic-publication points, publishes the pytest phase-guard execution proof
 once per phase instead of once per test report, and documents
-`clean_run_timeout` for large staged suites. Details:
+`clean_run_timeout` for large staged suites. The current remediation wave
+additionally restores the exclusion guarantees of that surface: qualified
+`do_not_mutate_patterns` stay effective even after a nested class was
+skipped (the visitor's class stack is now identity-bound). The same wave
+grounds the wholesale exclusion of decorated classes in the trampoline
+architecture (private method copies live in the class body and stay visible
+to class decorators that touch members during class creation; their lookup
+names are pre-bound at class-creation time and rebound after the class
+statement) instead of the inherited function-decorator rationale, and
+computes `block` pragma extents from the token stream so column-0 comments
+and multi-line string contents no longer end a block early. The trampoline
+codegen itself is hardened next (issue #167): a method called while its own
+class is being built — enum member creation invoking `__init__` or
+`_generate_next_value_`, a class attribute computed from an own method, a
+decorator defined in the class body — used to fail the import with NameError
+because the wrapper's module-level lookup names were bound only after the
+class statement; the class body now carries creation-time `global` bindings
+that bypass the class namespace (no enum member, no NamedTuple field), while
+the post-class capture and lookup stay byte-identical. The same codegen pass
+fixes the generator verdict: a `yield` inside a lambda body no longer turns
+the surrounding function into a generator (the wrapper returned a generator
+object instead of the value, and async functions with such lambdas were
+wrongly excluded wholesale), while `yield` in a lambda default still counts
+because defaults are evaluated in the enclosing scope. The same wave makes
+mutant identity NFKC-safe (M-041): every function or class identifier that is
+not NFKC-normal now receives a deterministic ASCII `xq_` hex mutant name —
+CPython's tokenizer binds NFKC forms, so `K` and fullwidth `Ｋ` used to
+collapse onto the same private trampoline bindings and corrupt clean runs —
+and cached verdicts of such functions are explicitly invalidated as orphans
+rather than silently remapped to the new IDs. Details:
 the [release notes](https://github.com/pgm1980/mutmut-win/releases).
 
 **Status:** the codebase version and active installation references agree.

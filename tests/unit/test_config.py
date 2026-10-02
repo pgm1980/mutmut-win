@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from mutmut_win.config import (
     guess_paths_to_mutate,
     load_config,
 )
-from mutmut_win.exceptions import ConfigError
+from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 
 
 class TestMutmutConfig:
@@ -203,6 +204,43 @@ class TestLoadConfig:
         config = load_config(tmp_path)
         assert config.paths_to_mutate == ["src/"]
 
+    def test_setup_cfg_value_error_is_invalid_config_value(self, tmp_path: Path) -> None:
+        """M-077: setup.cfg value failures enter the ConfigError contract.
+
+        The unguarded model_validate used to leak a raw pydantic
+        ValidationError traceback (exit 1) past the exit-2 contract.
+        """
+        (tmp_path / "setup.cfg").write_text(
+            "[mutmut]\npaths_to_mutate = src/\nmax_children = 0\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(InvalidConfigValueError, match=r"setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_tool_scalar_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-078: a non-table 'tool' used to crash with AttributeError."""
+        (tmp_path / "pyproject.toml").write_text("tool = 1\n", encoding="utf-8")
+        with pytest.raises(ConfigError, match=r"\[tool\] must be a table"):
+            load_config(tmp_path)
+
+    def test_mutmut_scalar_is_invalid_config_value(self, tmp_path: Path) -> None:
+        """M-028: a present non-table [tool.mutmut] is not a missing section."""
+        (tmp_path / "pyproject.toml").write_text("[tool]\nmutmut = 1\n", encoding="utf-8")
+        with pytest.raises(InvalidConfigValueError, match="expected a table"):
+            load_config(tmp_path)
+
+    def test_utf16_setup_cfg_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-079: undecodable setup.cfg becomes ConfigError, not a crash."""
+        (tmp_path / "setup.cfg").write_bytes("[mutmut]\npaths_to_mutate = src/\n".encode("utf-16"))
+        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            load_config(tmp_path)
+
+    def test_directory_named_setup_cfg_is_a_config_error(self, tmp_path: Path) -> None:
+        """M-027: an unreadable existing setup.cfg never yields silent defaults."""
+        (tmp_path / "setup.cfg").mkdir()
+        with pytest.raises(ConfigError, match=r"Failed to read setup\.cfg"):
+            load_config(tmp_path)
+
 
 class TestApplyDefaultAlsoCopy:
     def test_adds_standard_defaults(self, tmp_path: Path) -> None:
@@ -285,3 +323,135 @@ class TestGuessPathsToMutate:
             assert result == [f"{cwd_name}.py"]
         finally:
             os.chdir(orig)
+
+    def test_dash_only_cwd_name_is_never_guessed(self, tmp_path: Path) -> None:
+        # M-082 (BC-124): '---'.replace('-', '') == '' and Path('').is_dir()
+        # is True on Windows, so the empty candidate silently became the
+        # mutation root. Before the fix this returned [''] instead of
+        # raising; the same code path is taken for a drive/UNC-share root
+        # (Path.cwd().name == '').
+        dash_dir = tmp_path / "---"
+        dash_dir.mkdir()
+        orig = Path.cwd()
+        try:
+            os.chdir(dash_dir)
+            with pytest.raises(FileNotFoundError, match="Could not figure out"):
+                guess_paths_to_mutate()
+        finally:
+            os.chdir(orig)
+
+    def test_dash_only_cwd_falls_back_to_the_src_default(self, tmp_path: Path) -> None:
+        # Same cwd: the model default falls back to ['src/'], so the CLI
+        # can reject the configuration precisely instead of running with
+        # an empty mutation root.
+        dash_dir = tmp_path / "---"
+        dash_dir.mkdir()
+        orig = Path.cwd()
+        try:
+            os.chdir(dash_dir)
+            assert MutmutConfig().paths_to_mutate == ["src/"]
+        finally:
+            os.chdir(orig)
+
+    def test_dash_only_cwd_exits_2_on_missing_src_before_staging(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # CLI Folge test: exit 2 with the precise paths_to_mutate
+        # diagnosis BEFORE any staging. Before the fix the empty root
+        # slipped past the existence check (Path('').exists() is True) and
+        # the run ended at 'No mutants generated.' instead.
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        dash_dir = tmp_path / "---"
+        (dash_dir / "mutants").mkdir(parents=True)
+        monkeypatch.chdir(dash_dir)
+
+        result = CliRunner().invoke(cli, ["run", "--dry-run"])
+
+        assert result.exit_code == 2
+        combined = result.output + str(result.stderr)
+        assert "paths_to_mutate entry does not exist: src/" in combined
+
+    @given(dashes=st.text(alphabet="-", min_size=1, max_size=20))
+    def test_dash_names_never_yield_the_empty_path(self, dashes: str) -> None:
+        # Property: an all-dash cwd name never yields the empty path —
+        # either FileNotFoundError or a non-empty guess. Temp dir + manual
+        # chdir under @given (no function-scoped fixtures), try/finally.
+        with tempfile.TemporaryDirectory() as td:
+            dash_dir = Path(td) / dashes
+            dash_dir.mkdir()
+            orig = Path.cwd()
+            try:
+                os.chdir(dash_dir)
+                try:
+                    result = guess_paths_to_mutate()
+                except FileNotFoundError:
+                    pass
+                else:
+                    assert result != [""]
+            finally:
+                os.chdir(orig)
+
+
+class TestPathsToMutateCanonicalisation:
+    """M-034 (issue #144): '..'-aliases must canonicalise after containment.
+
+    An unnormalised alias like ``src/../src/mod.py`` passes containment but
+    bypasses the ``<source>.meta`` staging reservation and produces mutant
+    names that never match the trampoline prefix (``...src.mod.<m>``).
+    """
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            ("src/../src/mod.py", "src/mod.py"),
+            ("src/../src/", "src/"),
+            ("src/mod/../mod.py", "src/mod.py"),
+            ("src/..", "."),
+            ("src/../", "."),
+        ],
+    )
+    def test_dotdot_alias_is_canonicalised(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        entry: str,
+        expected: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=[entry])
+        assert config.paths_to_mutate == [expected]
+
+    def test_harmless_relative_spelling_is_preserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["src/", "lib/pkg/mod.py"])
+        assert config.paths_to_mutate == ["src/", "lib/pkg/mod.py"]
+
+    def test_canonicalisation_is_idempotent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        config = MutmutConfig(paths_to_mutate=["src/../src/mod.py"])
+        again = MutmutConfig(paths_to_mutate=config.paths_to_mutate)
+        assert again.paths_to_mutate == config.paths_to_mutate == ["src/mod.py"]
+
+    @given(
+        segments=st.lists(st.from_regex(r"[a-z]{1,8}", fullmatch=True), min_size=1, max_size=4),
+        position=st.integers(min_value=0, max_value=4),
+    )
+    def test_canonicalised_entries_resolve_identically_and_stay_canonical(
+        self, segments: list[str], position: int
+    ) -> None:
+        position = min(position, len(segments))
+        entry = "/".join([*segments[:position], "x", "..", *segments[position:]])
+        config = MutmutConfig(paths_to_mutate=[entry])
+        canonical = config.paths_to_mutate[0]
+        assert ".." not in Path(canonical).parts
+        again = MutmutConfig(paths_to_mutate=[canonical])
+        assert again.paths_to_mutate == [canonical]
+        project_root = Path.cwd().resolve()
+        assert (project_root / entry).resolve() == (project_root / canonical).resolve()

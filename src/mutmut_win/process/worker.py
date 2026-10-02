@@ -35,6 +35,7 @@ from mutmut_win.exceptions import (
     BadTestExecutionCommandsException,
     ProcessContainmentError,
     PytestBoundaryError,
+    WorkerEnvironmentError,
 )
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
 from mutmut_win.process.output_capture import BoundedOutputCapture
@@ -53,6 +54,20 @@ _MAX_DIAGNOSTIC_LINES: int = 50
 #: collection errors (2), pytest internal errors (3), suspicious (35),
 #: crashes (NTSTATUS) — gets its last output captured (issue #91).
 _QUIET_EXIT_CODES: frozenset[int] = frozenset({0, 1, 5, 33, 34})
+
+#: Fixed stderr prefix the generated phase-guard plugin writes when publishing
+#: the execution proof fails.  Must stay byte-identical to the literal inside
+#: ``_PYTEST_PHASE_GUARD_SOURCE`` (pinned by a contract test).
+_PROOF_PUBLICATION_FAILURE_PREFIX: str = "mutmut-win: execution proof publication failed"
+
+#: Neutralization message when pytest exits 0 without an execution proof:
+#: the phase was neutralized, every selected test was skipped, or the proof
+#: could not be published (M-008/M-143/M-145 shared wording).
+_EXIT_ZERO_WITHOUT_PROOF_MESSAGE: str = (
+    "pytest exited 0 without executing a test call; the worker phase was "
+    "neutralized by pytest arguments/configuration, every selected test was "
+    "skipped, or the execution proof could not be published"
+)
 
 # Retain the concrete class even when unit tests patch subprocess.Popen.  The
 # Windows fallback tracker must never inspect or kill a PID carried by a mock
@@ -454,29 +469,80 @@ def pytest_collection_finish(session):
         )
 
 
+_PUBLICATION_FAILURE_PREFIX = "mutmut-win: execution proof publication failed"
 _proof_published = False
+_proof_publication_failed = False
+_proof_publication_diagnostic = None
+
+
+def _emit_publication_diagnostic():
+    """Best-effort: repeat a recorded proof publication failure on fd 2."""
+    try:
+        if _proof_publication_diagnostic:
+            os.write(
+                2,
+                (_proof_publication_diagnostic + os.linesep).encode(
+                    "utf-8", "backslashreplace"
+                ),
+            )
+    except Exception:
+        pass
 
 
 def pytest_runtest_logreport(report):
-    """Publish proof once after pytest executed a non-skipped test call.
+    """Publish the execution proof once after a qualifying call report.
 
-    The first qualifying call report publishes the execution proof with the
-    full strict atomic-publication contract.  Every later report is a no-op:
-    republishing an identical token adds no proof strength, and one complete
-    publication chain per phase (instead of one per report) keeps filter
-    drivers from being fed thousands of fresh temporary files that starved
-    the whole phase under load (MBR-2026-09-14-01 follow-up).
+    A publication failure is recorded once (one-shot for success and
+    failure alike — no per-report retry keeps filter drivers from being fed
+    thousands of fresh temporary files), reported on file descriptor 2 with
+    a fixed prefix, and repeated in pytest_unconfigure so it stays inside
+    the captured output tail.  It never escapes into pytest: an escaping
+    hook exception would become a pytest INTERNALERROR (exit 3), which the
+    score counts as killed.  A missing proof neutralizes an otherwise clean
+    exit 0 to suspicious (35) in the worker; a non-zero exit keeps its
+    ordinary mapping.
     """
-    if report.when != "call" or report.skipped:
+    if report.when != "call":
         return
-    global _proof_published
-    if _proof_published:
+    if report.skipped:
+        # An expected xfail whose test body actually ran counts as executed
+        # (wasxfail carries the reason); xfail(run=False) — marked '[NOTRUN]'
+        # — and runtime pytest.skip() do not (M-143).
+        reason = getattr(report, "wasxfail", None)
+        if not isinstance(reason, str) or reason.startswith("[NOTRUN]"):
+            return
+    global _proof_published, _proof_publication_failed, _proof_publication_diagnostic
+    if _proof_published or _proof_publication_failed:
         return
     marker_path = os.environ.get(_PATH_ENV)
     proof = os.environ.get(_PROOF_ENV)
-    if marker_path and proof:
+    if not (marker_path and proof):
+        return
+    try:
         atomic_write_bytes(Path(marker_path), proof.encode("utf-8"))
-        _proof_published = True
+    except Exception as exc:
+        _proof_publication_failed = True
+        try:
+            _proof_publication_diagnostic = (
+                f"{_PUBLICATION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}"
+            )
+        except Exception:
+            _proof_publication_diagnostic = (
+                f"{_PUBLICATION_FAILURE_PREFIX}: {type(exc).__name__}"
+            )
+        _emit_publication_diagnostic()
+        return
+    _proof_published = True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    """Repeat a recorded publication failure so it stays in the output tail.
+
+    Fully guarded: an exception here would surface as an ordinary pytest
+    failure (exit 1, counted as killed), so this hook must never raise.
+    """
+    _emit_publication_diagnostic()
 '''
 
 # pytest accepts several informational/control options that exit successfully
@@ -776,10 +842,24 @@ def apply_pytest_boundary_environment(boundary: PytestBoundary, env: dict[str, s
     )
 
 
-def _publish_pytest_guard(plugin_path: Path) -> None:
-    """Publish the immutable guard, or fail as an execution-boundary error."""
+def _publish_pytest_guard(
+    plugin_path: Path,
+    *,
+    replace_unverifiable: bool = True,
+) -> None:
+    """Publish the immutable guard, or fail as an execution-boundary error.
+
+    ``replace_unverifiable=False`` switches the underlying idempotent
+    publication to verify-only: an unprovable-but-possibly-identical leaf
+    fails with the real observation error instead of being republished
+    (M-011 — republication would change the frozen staging evidence).
+    """
     try:
-        ensure_atomic_bytes(plugin_path, _PYTEST_PHASE_GUARD_SOURCE.encode("utf-8"))
+        ensure_atomic_bytes(
+            plugin_path,
+            _PYTEST_PHASE_GUARD_SOURCE.encode("utf-8"),
+            replace_unverifiable=replace_unverifiable,
+        )
     except OSError as exc:
         raise PytestBoundaryError(
             f"Could not publish the pytest execution guard at {plugin_path}: "
@@ -787,11 +867,15 @@ def _publish_pytest_guard(plugin_path: Path) -> None:
         ) from exc
 
 
-def prepare_pytest_collection_guard(mutants_dir: Path = Path("mutants")) -> None:
+def prepare_pytest_collection_guard(
+    mutants_dir: Path = Path("mutants"),
+    *,
+    replace_unverifiable: bool = True,
+) -> None:
     """Install the location guard for collection-only phases."""
 
     plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
-    _publish_pytest_guard(plugin_path)
+    _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
 
 def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Path) -> Path:
@@ -826,6 +910,7 @@ def prepare_pytest_phase_guard(
     mutants_dir: Path = Path("mutants"),
     *,
     runtime_dir: Path | None = None,
+    replace_unverifiable: bool = True,
 ) -> tuple[Path, str]:
     """Install the guard plugin and add one unique proof target to *env*.
 
@@ -833,18 +918,31 @@ def prepare_pytest_phase_guard(
     publication. A different or unverifiable competing leaf is a fatal pytest
     execution-boundary failure, never a mutant verdict.
 
+    This fatal classification covers the parent-side publication of the
+    guard plugin only. The generated plugin publishes the execution proof
+    later inside the pytest child; a failure there is reported on stderr
+    with the prefix ``mutmut-win: execution proof publication failed:`` and
+    leaves no proof, so an exit 0 is neutralized to suspicious (35) while a
+    non-zero exit keeps its ordinary mapping. It never becomes a pytest
+    internal error.
+
     Args:
         env: Child-process environment to augment.
         mutants_dir: Staging directory from which pytest loads the plugin.
         runtime_dir: Fresh parent-owned directory for the execution proof.
             Production callers always provide one outside executable staging;
             the legacy default is retained for direct helper callers.
+        replace_unverifiable: Keep the publishing default.  Post-snapshot
+            callers over frozen staging pass ``False`` so an unprovable
+            leaf fails with the real cause instead of being republished
+            (M-011); direct helper callers on unpublished staging keep
+            ``True``.
 
     Returns:
         ``(marker_path, expected_token)`` for post-process verification.
     """
     plugin_path = mutants_dir / f"{PYTEST_PHASE_GUARD_PLUGIN}.py"
-    _publish_pytest_guard(plugin_path)
+    _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
     # Do not create and reopen a workspace marker through tempfile: an
     # existing redirected staging parent would already have received that
@@ -861,9 +959,18 @@ def prepare_pytest_phase_guard(
 
 
 def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
-    """Return whether a matching execution proof exists, then remove it."""
+    """Return whether a matching execution proof exists, then remove it.
+
+    Reads at most ``len(expected) + 1`` bytes and compares without any
+    decoding (M-142): invalid UTF-8, truncated, or foreign bytes are simply
+    a missing proof — the marker never fails the caller's cleanup, and a
+    bloated marker file cannot be read unboundedly.
+    """
+    expected = expected_token.encode("utf-8")
     try:
-        return marker_path.read_text(encoding="utf-8") == expected_token
+        with marker_path.open("rb") as handle:
+            observed = handle.read(len(expected) + 1)
+        return observed == expected
     except OSError:
         return False
     finally:
@@ -914,6 +1021,14 @@ def worker_main(
     Pulls ``MutationTask`` objects from *task_queue*, runs pytest in a
     subprocess for the mutant under test, and sends domain events back via
     *event_queue*.  Exits when it receives the ``None`` sentinel.
+
+    Fatal classification (M-065): containment, pytest-boundary, and worker-
+    environment failures (``ProcessContainmentError``,
+    ``PytestBoundaryError``, ``WorkerEnvironmentError``) produce a terminal
+    ``TaskCompleted(fatal=True)`` and stop the loop — a host-wide
+    disturbance must abort the run instead of persisting one 'suspicious'
+    row per mutant. Every other exception stays a non-fatal Bug-#12
+    recovery event.
 
     Args:
         task_queue: Queue from which ``MutationTask`` dicts (or ``None``) are
@@ -985,7 +1100,9 @@ def worker_main(
                 file=sys.stderr,
                 flush=True,
             )
-            fatal = isinstance(exc, (ProcessContainmentError, PytestBoundaryError))
+            fatal = isinstance(
+                exc, (ProcessContainmentError, PytestBoundaryError, WorkerEnvironmentError)
+            )
             event_queue.put(
                 TaskCompleted(
                     mutant_name=fallback_name,
@@ -997,9 +1114,11 @@ def worker_main(
                 ).model_dump()
             )
             if fatal:
-                # Continuing would turn a host-wide containment/boundary
-                # failure into one suspicious row per mutant. The executor
-                # treats this terminal event as a run-aborting failure.
+                # Continuing would turn a host-wide containment, boundary, or
+                # environment failure into one suspicious row per mutant
+                # (M-065: worker-side OSErrors are host infrastructure, never
+                # a mutant property). The executor treats this terminal
+                # event as a run-aborting failure.
                 break
 
 
@@ -1017,6 +1136,13 @@ def _process_task(
 
     Extracted from the main loop so ``worker_main`` can catch any exception
     that bubbles up from here and synthesise a recovery event (Bug #12).
+
+    Fatal classification (M-065): raw ``OSError`` from the task preparation
+    or the execution boundary is converted to ``WorkerEnvironmentError`` —
+    a host condition (disk, AV filter, handles, quotas) is never a mutant
+    property. Non-OSError exceptions stay non-fatal recovery events;
+    ``PytestBoundaryError`` and ``ProcessContainmentError`` keep their own
+    fatal semantics and pass through unclassified.
     """
     task = MutationTask.model_validate(raw_item)
     # Per-task budget computed by the orchestrator (estimated runtime of the
@@ -1029,104 +1155,144 @@ def _process_task(
     # setup succeeds, only the remaining task budget is passed to wait().
     start = time.monotonic()
     deadline = start + timeout_seconds
-    runtime_context = tempfile.TemporaryDirectory(
-        prefix="mutmut-win-worker-runtime-",
-        ignore_cleanup_errors=True,
-    )
-    runtime_dir = Path(runtime_context.name)
-
-    # Build the pytest command.
-    cmd: list[str] = _pytest_base_cmd()
-    cmd.extend(pytest_extra_args)
-    # Revalidate immediately before every task. A config/root/target identity
-    # that drifted after worker startup aborts the entire run.
-    cmd.extend(pytest_boundary.arguments())
-
-    # Always use pytest's @file syntax for test arguments.
-    # This avoids the Windows CreateProcess 32767-char command line limit
-    # (WinError 206) regardless of how many tests are assigned — no magic
-    # thresholds, no dual code paths, predictable behavior at any scale.
-    # pytest reads arguments from the file, one per line.
-    # Requires pytest >= 8.2 (issue #125 / 360°-A2): enforced by the
-    # dependency floor AND the orchestrator's run-start guard against
-    # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
-    tests_argfile: Path | None = None
-    selected_targets: list[str] = []
-    if task.tests and task.test_selection_is_authoritative:
-        selected_targets = validated_pytest_targets(
-            task.tests,
-            field_name="MutationTask.tests",
+    # M-065: the preparation stretch below touches the host filesystem —
+    # TemporaryDirectory, the @argfile write (atomic replace), the ephemeral
+    # pytest directories, and the output-capture pipe. A raw OSError from any
+    # of those describes the HOST (ENOSPC, AV-filter locks, handle/quota
+    # exhaustion, path-length failures), never the mutant, and is converted
+    # into the fatal WorkerEnvironmentError after best-effort cleanup of the
+    # runtime context. Typed failures (PytestBoundaryError from the boundary
+    # or guard publishers) pass through unchanged but still get the cleanup,
+    # so the runtime directory never waits for the finalizer.
+    runtime_context: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        runtime_context = tempfile.TemporaryDirectory(
+            prefix="mutmut-win-worker-runtime-",
+            ignore_cleanup_errors=True,
         )
-    elif pytest_targets:
-        # A non-authoritative mapping is only a scheduling hint. Preserve the
-        # complete configured target vector, in its original order, while
-        # keeping it out of Windows' 32,767-character command-line limit.
-        selected_targets = pytest_targets
-    if selected_targets:
-        tests_argfile = _write_pytest_argfile(selected_targets, runtime_dir)
-        cmd.append("--")
-        cmd.append(f"@{tests_argfile.absolute()}")
+        runtime_dir = Path(runtime_context.name)
 
-    # Activate the specific mutant via the trampoline env var.
-    # Set PYTHONPATH so subprocess can import from mutants/src etc.
-    env = os.environ.copy()
-    # The value has already been parsed and validated into ``cmd``. Removing
-    # it prevents pytest from prepending it a second time ahead of the internal
-    # config/root boundary (including a hostile ``--`` separator).
-    env.pop("PYTEST_ADDOPTS", None)
-    # Keep mutation subprocesses inside the same explicit staging universe as
-    # clean/stats phases.  Live inherited PYTHONPATH entries are not evidence-
-    # bound staging inputs; users must mirror them through extra_paths.
-    env.pop("PYTHONPATH", None)
-    apply_pytest_boundary_environment(pytest_boundary, env)
-    pythonpath_dirs: list[str] = []
-    for subdir in [*SOURCE_ROOT_NAMES, "."]:
-        candidate = Path("mutants") / subdir
-        if candidate.exists():
-            pythonpath_dirs.append(str(candidate.absolute()))
-    # Bug #69: extra_paths from config map to mutants/<extra_path> and must be
-    # on PYTHONPATH so sibling-package imports resolve inside the mutants venv.
-    raw_extra_paths = config_data.get("extra_paths", [])
-    if isinstance(raw_extra_paths, list):
-        for extra in raw_extra_paths:
-            extra_as_path = configured_staging_relative_path(
-                str(extra),
-                project_root=Path.cwd(),
+        # Build the pytest command.
+        cmd: list[str] = _pytest_base_cmd()
+        cmd.extend(pytest_extra_args)
+        # Revalidate immediately before every task. A config/root/target
+        # identity that drifted after worker startup aborts the entire run.
+        cmd.extend(pytest_boundary.arguments())
+
+        # Always use pytest's @file syntax for test arguments.
+        # This avoids the Windows CreateProcess 32767-char command line limit
+        # (WinError 206) regardless of how many tests are assigned — no magic
+        # thresholds, no dual code paths, predictable behavior at any scale.
+        # pytest reads arguments from the file, one per line.
+        # Requires pytest >= 8.2 (issue #125 / 360°-A2): enforced by the
+        # dependency floor AND the orchestrator's run-start guard against
+        # constants.MINIMUM_PYTEST_VERSION — never silently degraded here.
+        tests_argfile: Path | None = None
+        selected_targets: list[str] = []
+        if task.tests and task.test_selection_is_authoritative:
+            selected_targets = validated_pytest_targets(
+                task.tests,
+                field_name="MutationTask.tests",
             )
-            if extra_as_path is None:
-                continue
-            extra_path = Path("mutants") / extra_as_path
-            if extra_path.exists():
-                pythonpath_dirs.append(str(extra_path.absolute()))
-    if pythonpath_dirs:
-        env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs)
-    env[MUTANT_ENV_VAR] = task.mutant_name
-    # Unbuffered stdout/stderr for the whole subprocess tree: with block
-    # buffering the capture byte counter froze while the suite made progress,
-    # blinding the IL classifier's output signal (issue #88 / A2-JT-002).
-    env["PYTHONUNBUFFERED"] = "1"
-    # Same env truth as every runner phase (issue #111 / A2-RN-012): the
-    # copied test modules in mutants/ keep their original basenames, and
-    # pytest's import-mismatch check would reject them via stale __pycache__.
-    env["PY_IGNORE_IMPORTMISMATCH"] = "1"
-    cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
-    cmd = redirect_pytest_output_args(cmd, runtime_dir)
-    phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
-        env,
-        runtime_dir=runtime_dir,
-    )
-    separator = cmd.index("--") if "--" in cmd else len(cmd)
-    # Mutation testing needs only the first failing test. Keep pytest's native
-    # order: reordering diagnostic mapping hits would change the semantics of
-    # order-dependent suites and could create false survivors or false kills.
-    # When no failure occurs, the entire configured suite still runs.
-    cmd[separator:separator] = ["--maxfail=1", "-o", f"cache_dir={cache_dir}"]
+        elif pytest_targets:
+            # A non-authoritative mapping is only a scheduling hint. Preserve
+            # the complete configured target vector, in its original order,
+            # while keeping it out of Windows' 32,767-character command-line
+            # limit.
+            selected_targets = pytest_targets
+        if selected_targets:
+            tests_argfile = _write_pytest_argfile(selected_targets, runtime_dir)
+            cmd.append("--")
+            cmd.append(f"@{tests_argfile.absolute()}")
 
-    # A continuously drained pipe avoids PIPE-buffer deadlock while retaining
-    # only a bounded tail. The monotonic byte counter remains an honest output
-    # progress signal without allowing a print loop to exhaust the disk.
-    capture = BoundedOutputCapture()
+        # Activate the specific mutant via the trampoline env var.
+        # Set PYTHONPATH so subprocess can import from mutants/src etc.
+        env = os.environ.copy()
+        # The value has already been parsed and validated into ``cmd``. Removing
+        # it prevents pytest from prepending it a second time ahead of the
+        # internal config/root boundary (including a hostile ``--`` separator).
+        env.pop("PYTEST_ADDOPTS", None)
+        # Keep mutation subprocesses inside the same explicit staging universe
+        # as clean/stats phases.  Live inherited PYTHONPATH entries are not
+        # evidence-bound staging inputs; users must mirror them through
+        # extra_paths.
+        env.pop("PYTHONPATH", None)
+        apply_pytest_boundary_environment(pytest_boundary, env)
+        pythonpath_dirs: list[str] = []
+        for subdir in [*SOURCE_ROOT_NAMES, "."]:
+            candidate = Path("mutants") / subdir
+            if candidate.exists():
+                pythonpath_dirs.append(str(candidate.absolute()))
+        # Bug #69: extra_paths from config map to mutants/<extra_path> and must
+        # be on PYTHONPATH so sibling-package imports resolve inside the
+        # mutants venv.
+        raw_extra_paths = config_data.get("extra_paths", [])
+        if isinstance(raw_extra_paths, list):
+            for extra in raw_extra_paths:
+                extra_as_path = configured_staging_relative_path(
+                    str(extra),
+                    project_root=Path.cwd(),
+                )
+                if extra_as_path is None:
+                    continue
+                extra_path = Path("mutants") / extra_as_path
+                if extra_path.exists():
+                    pythonpath_dirs.append(str(extra_path.absolute()))
+        if pythonpath_dirs:
+            env["PYTHONPATH"] = os.pathsep.join(pythonpath_dirs)
+        env[MUTANT_ENV_VAR] = task.mutant_name
+        # Unbuffered stdout/stderr for the whole subprocess tree: with block
+        # buffering the capture byte counter froze while the suite made
+        # progress, blinding the IL classifier's output signal (issue #88 /
+        # A2-JT-002).
+        env["PYTHONUNBUFFERED"] = "1"
+        # Same env truth as every runner phase (issue #111 / A2-RN-012): the
+        # copied test modules in mutants/ keep their original basenames, and
+        # pytest's import-mismatch check would reject them via stale
+        # __pycache__.
+        env["PY_IGNORE_IMPORTMISMATCH"] = "1"
+        cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+        cmd = redirect_pytest_output_args(cmd, runtime_dir)
+        phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
+            env,
+            runtime_dir=runtime_dir,
+            # Every task re-checks the guard inside frozen staging (written
+            # once by write_pth_blocker before the evidence snapshot): an
+            # unprovable leaf must fail with the real cause, never
+            # republish frozen content (M-011).
+            replace_unverifiable=False,
+        )
+        separator = cmd.index("--") if "--" in cmd else len(cmd)
+        # Mutation testing needs only the first failing test. Keep pytest's
+        # native order: reordering diagnostic mapping hits would change the
+        # semantics of order-dependent suites and could create false survivors
+        # or false kills. When no failure occurs, the entire configured suite
+        # still runs.
+        cmd[separator:separator] = ["--maxfail=1", "-o", f"cache_dir={cache_dir}"]
+
+        # A continuously drained pipe avoids PIPE-buffer deadlock while
+        # retaining only a bounded tail. The monotonic byte counter remains an
+        # honest output progress signal without allowing a print loop to
+        # exhaust the disk.
+        capture = BoundedOutputCapture()
+    except OSError as exc:
+        if runtime_context is not None:
+            with contextlib.suppress(OSError):
+                runtime_context.cleanup()
+        raise WorkerEnvironmentError(
+            f"Task preparation failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    except BaseException:
+        # Keep the original class (and its own fatal semantics) — only the
+        # runtime-directory cleanup is added for typed failures.
+        if runtime_context is not None:
+            with contextlib.suppress(OSError):
+                runtime_context.cleanup()
+        raise
+    # Every failure path above raises, so the context is live from here on.
+    assert runtime_context is not None  # noqa: S101 - narrow-only assert
     last_output: str | None = None
+    neutralization_message: str | None = None
     forensics_dict: dict[str, object] | None = None
     exit_code: int = 35  # default to suspicious so the finally clause is safe
 
@@ -1143,6 +1309,7 @@ def _process_task(
     # orchestrator, once per RUN — a per-worker guard meant N-fold spam on
     # N worker processes (issue #110 / DOG-002).
 
+    infrastructure_error: OSError | None = None
     proc: subprocess.Popen[bytes] | None = None
     task_job_handle: int | None = None
     tree_cleanup_done = False
@@ -1228,46 +1395,72 @@ def _process_task(
                 exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:
         print(f"WORKER ERROR for {task.mutant_name}: {exc}", file=sys.stderr, flush=True)
-        exit_code = 35  # suspicious
+        # M-065: remember the host fault for AFTER the finally block — the
+        # pinned stderr line and the complete cleanup order stay untouched;
+        # only the classification changes to fatal.
+        infrastructure_error = exc
+        exit_code = 35  # suspicious placeholder keeps the finally clause safe
     finally:
-        phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
-        if exit_code == 0 and not phase_executed:
-            exit_code = 35
-            last_output = (
-                "pytest exited 0 without executing a test call; the worker phase was "
-                "neutralized by pytest arguments/configuration or every selected test was skipped"
-            )
-        if task_job_handle is not None:
-            # Normal completion: closing the kill-on-close job reaps any
-            # background processes the tests left behind (issue #82).
-            with contextlib.suppress(Exception):
-                from mutmut_win.process.job_object import close_job
+        # M-142: the proof check must never prevent the cleanup below it —
+        # user test code can overwrite the marker with arbitrary bytes.
+        try:
+            phase_executed = consume_pytest_phase_guard(phase_marker_path, phase_marker_token)
+            if exit_code == 0 and not phase_executed:
+                exit_code = 35
+                # M-145: keep the explanation as a message; the captured tail
+                # is appended only after capture.close() below, so the pytest
+                # output of the neutralized phase stays diagnosable.
+                neutralization_message = _EXIT_ZERO_WITHOUT_PROOF_MESSAGE
+        finally:
+            if task_job_handle is not None:
+                # Normal completion: closing the kill-on-close job reaps any
+                # background processes the tests left behind (issue #82).
+                with contextlib.suppress(Exception):
+                    from mutmut_win.process.job_object import close_job
 
-                close_job(task_job_handle)
-            tree_cleanup_done = True
-        elif proc is not None and not tree_cleanup_done:
-            # POSIX has no Job Object. Successful tests may still leave
-            # background descendants, so normal completion needs the same
-            # explicit process-group/PPID cleanup as timeout paths. A mocked
-            # Windows Popen can also reach this branch in unit tests.
-            _kill_proc_tree(proc)
-            tree_cleanup_done = True
-        if monitor is not None:
-            with contextlib.suppress(Exception):
-                monitor.shutdown()
-        capture.close_writer()
-        capture.close()
-        # Read diagnostics for every anomalous exit (if not already read by
-        # the timeout path). Issue #91: exit 2 is a collection-error kill and
-        # NTSTATUS codes are crashes — their forensics ARE the pytest output;
-        # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
-        # diagnostic value.
-        if exit_code not in _QUIET_EXIT_CODES and last_output is None:
-            last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
-        if tests_argfile is not None and tests_argfile.exists():
-            with contextlib.suppress(OSError):
-                tests_argfile.unlink()
-        runtime_context.cleanup()
+                    close_job(task_job_handle)
+                tree_cleanup_done = True
+            elif proc is not None and not tree_cleanup_done:
+                # POSIX has no Job Object. Successful tests may still leave
+                # background descendants, so normal completion needs the same
+                # explicit process-group/PPID cleanup as timeout paths. A mocked
+                # Windows Popen can also reach this branch in unit tests.
+                _kill_proc_tree(proc)
+                tree_cleanup_done = True
+            if monitor is not None:
+                with contextlib.suppress(Exception):
+                    monitor.shutdown()
+            capture.close_writer()
+            capture.close()
+            # Read diagnostics for every anomalous exit (if not already read by
+            # the timeout path). Issue #91: exit 2 is a collection-error kill and
+            # NTSTATUS codes are crashes — their forensics ARE the pytest output;
+            # only the quiet outcomes (survived/killed/no-tests/skipped) carry no
+            # diagnostic value.
+            if neutralization_message is not None:
+                tail = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+                last_output = (
+                    f"{neutralization_message}\n{tail}"
+                    if tail is not None
+                    else neutralization_message
+                )
+            elif exit_code not in _QUIET_EXIT_CODES and last_output is None:
+                last_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+            if tests_argfile is not None and tests_argfile.exists():
+                with contextlib.suppress(OSError):
+                    tests_argfile.unlink()
+            runtime_context.cleanup()
+
+    # M-065: raised only after the ENTIRE try/finally statement so no cleanup
+    # is skipped (M-142 inner try/finally, M-145 tail after capture.close()).
+    # worker_main converts this into the fatal recovery event; the same task
+    # therefore prints two stderr lines ('WORKER ERROR …' and
+    # 'WORKER RECOVERY (#12) …') — documented fail-closed behaviour.
+    if infrastructure_error is not None:
+        raise WorkerEnvironmentError(
+            "Task execution infrastructure failed: "
+            f"{type(infrastructure_error).__name__}: {infrastructure_error}"
+        ) from infrastructure_error
 
     duration = time.monotonic() - start
 
@@ -1446,9 +1639,15 @@ def _pytest_base_cmd() -> list[str]:
 def _create_task_job(pid: int | None = None) -> int | None:
     """Create a per-task Windows Job (issue #82 / A2-EW-008).
 
-    Production creates the child atomically in this Job.  The optional *pid*
-    retains the old assign-before-resume path only for Popen test doubles;
-    real processes never cross that non-atomic boundary.
+    Production creates the child atomically inside this Job via the
+    ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` startup attribute, so membership and
+    process creation are one kernel operation and no PID-based assignment
+    happens at all.  The optional *pid* is only for a REAL, still-suspended
+    process that the documented compatibility/integration cases assign
+    before resuming (``tests/integration/test_kill_proc_tree.py``); Popen
+    test doubles always pass ``None`` — a synthetic pid must never reach
+    OpenProcess/AssignProcessToJobObject, where it could attach a foreign
+    process to the Job.
     """
     if sys.platform != "win32":
         return None
@@ -1488,9 +1687,18 @@ def _popen_contained(
     """Start one subprocess with a parent-owned containment boundary.
 
     Windows passes the Job through ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` so
-    membership and process creation are one kernel operation. Unit tests that
-    replace ``subprocess.Popen`` retain the old suspended handshake; no real
-    production child uses that compatibility branch.
+    membership and process creation are one kernel operation — that is the
+    only path real production children take (M-144).  The suspended
+    handshake branch below serves only Popen TEST DOUBLES left in place by
+    unit tests that replace ``subprocess.Popen``; a double's synthetic pid
+    is never assigned to the Job.  A ``subprocess.Popen`` replaced after
+    import is fail-closed refused instead: a replacing subclass before
+    anything starts, and a real instance returned by a function wrapper
+    immediately after the launch, before any Job creation — both raise
+    ``ProcessContainmentError``.  The wrapper kill only guarantees that no
+    user code ran if the replacement passed ``CREATE_SUSPENDED`` through
+    unchanged; otherwise ``_kill_proc_tree`` terminates the tree
+    best-effort.
     """
     if sys.platform != "win32":
         launch_cmd = cmd
@@ -1553,8 +1761,16 @@ def _popen_contained(
             _close_posix_gate_fd(gate_write)
 
     if subprocess.Popen is not _REAL_POPEN_TYPE:
+        # M-144 stage 2: refuse a Popen subclass before starting anything.
+        _refuse_replaced_popen_subclass(_REAL_POPEN_TYPE)
         proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
-        job_handle = _create_task_job(proc.pid)
+        # M-144 stage 2: refuse a real process from a function wrapper.
+        _refuse_real_process_from_replaced_popen(proc, _REAL_POPEN_TYPE)
+        # M-144 stage 1 (BC-100): a test double's synthetic pid must never
+        # reach OpenProcess/AssignProcessToJobObject.  The job is still
+        # created (and closed by the caller's finally), but only real
+        # Popen instances are assigned.
+        job_handle = _create_task_job(proc.pid if isinstance(proc, _REAL_POPEN_TYPE) else None)
         try:
             _resume_after_containment(proc, job_handle)
         except BaseException:
@@ -1586,6 +1802,44 @@ def _popen_contained(
     return proc, job_handle
 
 
+_REPLACED_POPEN_REFUSAL = (
+    "subprocess.Popen was replaced after import; refusing the non-atomic "
+    "containment path for a real process"
+)
+_REPLACED_POPEN_SUBCLASS_REFUSAL = (
+    "subprocess.Popen was replaced after import by a Popen subclass; "
+    "refusing the non-atomic containment path before starting a real process"
+)
+
+
+def _refuse_replaced_popen_subclass(real_popen_type: type[Any]) -> None:
+    """Refuse a Popen subclass replacement before any process starts (M-144).
+
+    A class wrapper is detectable before the launch; a function wrapper
+    is only detectable by the returned instance (checked separately in
+    :func:`_refuse_real_process_from_replaced_popen`).
+    """
+    current: object = subprocess.Popen
+    if sys.platform != "win32" or current is real_popen_type:
+        return
+    if isinstance(current, type) and issubclass(current, real_popen_type):
+        raise ProcessContainmentError(_REPLACED_POPEN_SUBCLASS_REFUSAL)
+
+
+def _refuse_real_process_from_replaced_popen(proc: object, real_popen_type: type[Any]) -> None:
+    """Refuse a real process from a replaced Popen after the launch (M-144).
+
+    Kills the still-suspended child and raises ``ProcessContainmentError``.
+    The suspension is only guaranteed if the wrapper passed ``CREATE_SUSPENDED``
+    through unchanged (documented condition).
+    """
+    if sys.platform != "win32" or not isinstance(proc, real_popen_type):
+        return  # Test doubles carry no process identity
+    with contextlib.suppress(Exception):
+        _kill_proc_tree(proc)
+    raise ProcessContainmentError(_REPLACED_POPEN_REFUSAL)
+
+
 def _close_posix_gate_fd(fd: int | None) -> None:
     if fd is not None:
         with contextlib.suppress(OSError):
@@ -1605,35 +1859,63 @@ def _abort_posix_gated_process(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=2.0)
 
 
-def _iter_descendants(root_pid: int) -> list[Any]:
-    """Collect live descendant processes of *root_pid* by walking ppids.
+def _iter_descendants(root_pid: int, root_create_time: float | None = None) -> list[Any]:
+    """Collect identity-verified descendant processes of *root_pid* by walking ppids.
 
     Unlike ``psutil.Process(root_pid).children(recursive=True)`` this also
     works when the root itself ALREADY EXITED (issue #82 / A2-EW-008):
     Windows does not re-parent orphans, so their recorded ppid keeps
-    pointing at the dead pid.  Minor caveat: if the dead pid is recycled
-    very quickly, an unrelated process tree could match — the window is
-    milliseconds wide and the previous behaviour (orphans surviving until
-    job-object close) was strictly worse.
+    pointing at the dead pid.
+
+    Identity rule (M-009 / AR-01) — the same rule for every caller and
+    platform: an edge parent→child is only accepted if the child's
+    create_time is >= the parent's verified create_time, which prevents
+    the walker from following stale PPID edges left by PID recycling.
+    Nodes whose create_time is not readable (AccessDenied, None) are
+    neither traversed nor returned.  When *root_create_time* is None the
+    walk deliberately returns NOTHING on every platform: there is no
+    unverified fallback, because psutil's per-Process object identity only
+    protects against reuse of a child PID — it cannot prove the
+    provenance of the parent→child edge itself, and an unverified edge
+    can attribute (and kill) a foreign orphan (C-001 / SEC-001).  Callers
+    must capture the root create_time at safe creation time, while the
+    launch handle still reserves the PID, and pass it through; without it
+    they must not kill by PPID at all (fail-closed).
     """
+    if root_create_time is None:
+        return []
+
     import psutil  # type: ignore[import-untyped,unused-ignore]
 
     children_by_ppid: dict[int, list[Any]] = {}
-    for proc in psutil.process_iter(["pid", "ppid"]):
+    create_times: dict[int, float] = {}
+    for proc in psutil.process_iter(["pid", "ppid", "create_time"]):
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            children_by_ppid.setdefault(proc.info["ppid"], []).append(proc)
+            ppid = proc.info["ppid"]
+            children_by_ppid.setdefault(ppid, []).append(proc)
+            pid = proc.info["pid"]
+            ctime = proc.info.get("create_time")
+            if ctime is not None:
+                create_times[pid] = ctime
 
     descendants: list[Any] = []
-    pending = [root_pid]
+    # Track the verified create_time for each accepted node so the edge
+    # check applies against the direct parent, not just the root.
+    pending: list[tuple[int, float]] = [(root_pid, root_create_time)]
     seen: set[int] = set()
     while pending:
-        current = pending.pop()
-        for child in children_by_ppid.get(current, []):
+        current_pid, parent_ctime = pending.pop()
+        for child in children_by_ppid.get(current_pid, []):
             if child.pid in seen:
+                continue
+            child_ctime = create_times.get(child.pid)
+            # Verified walk: reject nodes with unreadable or older
+            # create_times (stale PPID from PID recycling).
+            if child_ctime is None or child_ctime < parent_ctime:
                 continue
             seen.add(child.pid)
             descendants.append(child)
-            pending.append(child.pid)
+            pending.append((child.pid, child_ctime))
     return descendants
 
 
@@ -1648,6 +1930,13 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
     even when the direct child already exited (the old code returned early
     and orphaned the grandchildren until the END of the whole run).  Two
     sweeps narrow the TOCTOU window for processes spawned mid-kill.
+
+    Identity verification (M-009): the root's create_time is captured
+    BEFORE the job close (while the Popen handle still reserves the PID)
+    and threaded into the walker so stale PPID edges from PID recycling
+    are not followed.  Without a readable create_time the sweep is
+    skipped (fail-closed: better to miss a descendant than to kill a
+    foreign process).
     """
     # Unit tests and third-party integrations can supply Popen-like objects.
     # Their synthetic ``pid`` values are not process identities and must never
@@ -1660,6 +1949,17 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
         with contextlib.suppress(Exception):
             proc.wait(timeout=2.0)
         return
+
+    # Capture the root's create_time BEFORE the job close, while the
+    # Popen handle still reserves the PID from recycling (M-009).
+    root_create_time: float | None = None
+    try:
+        import psutil  # type: ignore[import-untyped,unused-ignore]
+
+        root_create_time = psutil.Process(proc.pid).create_time()
+    # The bare PEP 758 form breaks the pinned Semgrep 1.175 parser (M-004 contract)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ImportError, OSError):  # fmt: skip
+        root_create_time = None
 
     if job_handle is not None:
         with contextlib.suppress(Exception):
@@ -1684,13 +1984,11 @@ def _kill_proc_tree(proc: subprocess.Popen[bytes], job_handle: int | None = None
     if use_psutil:
         import psutil  # type: ignore[import-untyped,unused-ignore]
 
-        for _sweep in range(2):
-            for child in _iter_descendants(proc.pid):
-                with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-                    child.kill()
-            if proc.poll() is None:
-                with contextlib.suppress(Exception):
-                    proc.kill()
+        if root_create_time is not None:
+            for _sweep in range(2):
+                for child in _iter_descendants(proc.pid, root_create_time):
+                    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                        child.kill()
 
     with contextlib.suppress(Exception):
         proc.kill()

@@ -5,16 +5,19 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from mutmut_win.atomic_file import AtomicPathLengthError
 from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import configured_staging_relative_path
 from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
+    _copy_with_retry,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
@@ -385,6 +388,32 @@ class TestCopySrcDir:
             match=r"mod\.py\.meta.*mutation metadata",
         ):
             copy_src_dir(_config(paths_to_mutate=["src/mod.py"]))
+
+        assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
+        assert not (tmp_path / "mutants").exists()
+
+    def test_dotdot_alias_reserves_the_same_metadata_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-034 (issue #144): a '..'-alias must reserve the same meta name.
+
+        Unnormalised, the reservation is keyed under ('src','..','src',
+        'mod.py.meta') while the automatic mirror plans the live fixture
+        under ('src','mod.py.meta') — the collision goes undetected and the
+        staged fixture copy is later replaced by generator metadata.
+        """
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "mod.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        legitimate_metadata = tmp_path / "src" / "mod.py.meta"
+        legitimate_metadata.write_bytes(b"PROJECT-FIXTURE-METADATA")
+
+        with pytest.raises(
+            StagingNamespaceCollisionError,
+            match=r"mod\.py\.meta.*mutation metadata",
+        ):
+            copy_src_dir(_config(paths_to_mutate=["src/../src/mod.py"]))
 
         assert legitimate_metadata.read_bytes() == b"PROJECT-FIXTURE-METADATA"
         assert not (tmp_path / "mutants").exists()
@@ -1233,6 +1262,11 @@ class TestGetMutantName:
         result = get_mutant_name(path, "x_f__mutmut_1")
         assert result == "mypkg.mod.x_f__mutmut_1"
 
+    def test_dotdot_relative_path_is_rejected(self) -> None:
+        """M-034 (issue #144): non-canonical '..'-aliases never form names."""
+        with pytest.raises(ValueError, match=r"canonical.*project-relative"):
+            get_mutant_name(Path("src/../src/mod.py"), "f__mutmut_1")
+
     @pytest.mark.skipif(os.name != "nt", reason="Windows path casing contract")
     def test_uppercase_source_root_and_init_stem_match_runtime_name(self) -> None:
         path = Path("SRC") / "pkg" / "__INIT__.PY"
@@ -1458,3 +1492,53 @@ class TestCreateMutantsForFile:
                 assert meta.exists()
         finally:
             os.chdir(original_cwd)
+
+    def test_dotdot_relative_path_fails_before_any_staging_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-034 (issue #144): the engine refuses '..'-aliases up front.
+
+        get_mutant_name runs only after the generated module is written, so
+        the invariant must fire before anything lands in mutants/.
+        """
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "mod.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        output = tmp_path / "mutants" / "src" / "mod.py"
+
+        with pytest.raises(ValueError, match=r"\.\."):
+            create_mutants_for_file(Path("src/../src/mod.py"), output)
+
+        assert not output.exists()
+
+
+def test_copy_with_retry_does_not_retry_path_length_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M-010: a deterministic name-length rejection never clears on retry.
+
+    ``AtomicPathLengthError`` means the destination name cannot fit the
+    Windows path budgets; five attempts with 1.5 s of backoff pauses would
+    only stall every staged copy of an unpublishable target.
+    """
+    import mutmut_win.file_setup as file_setup_module
+
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"x")
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def failing_copy(_source: Path, _destination: Path) -> None:
+        attempts["count"] += 1
+        raise AtomicPathLengthError(22, "simulated length failure", "ignored", 123)
+
+    monkeypatch.setattr(file_setup_module, "atomic_copy_file", failing_copy)
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    with pytest.raises(AtomicPathLengthError, match="simulated length failure"):
+        _copy_with_retry(source, tmp_path / "dst.bin")
+
+    assert attempts["count"] == 1
+    assert sleeps == []

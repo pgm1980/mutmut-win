@@ -1,5 +1,7 @@
 """Unit tests for mutmut_win.trampoline."""
 
+import unicodedata
+
 import pytest
 
 from mutmut_win.trampoline import (
@@ -8,6 +10,14 @@ from mutmut_win.trampoline import (
     mangle_function_name,
     trampoline_impl,
 )
+
+_SEP = CLASS_NAME_SEPARATOR
+#: U+FF2B FULLWIDTH LATIN CAPITAL LETTER K - NFKC-normalizes to "K".
+_FULLWIDTH_K = "\uff2b"
+#: U+FF23 FULLWIDTH LATIN CAPITAL LETTER C - NFKC-normalizes to "C".
+_FULLWIDTH_C = "\uff23"
+#: U+212A KELVIN SIGN - NFKC-normalizes to "K".
+_KELVIN_K = "\u212a"
 
 # --- mangle_function_name -----------------------------------------------------
 
@@ -39,6 +49,48 @@ class TestMangleFunctionName:
     def test_method_starts_with_x_separator(self) -> None:
         result = mangle_function_name(name="foo", class_name="Bar")
         assert result.startswith(f"x{CLASS_NAME_SEPARATOR}")
+
+    def test_nfkc_variant_top_level_name_hex_encodes_the_raw_identifier(self) -> None:
+        # CPython's tokenizer binds the NFKC form of every identifier, so the
+        # legacy private name for U+FF2B would compile to the same binding as
+        # a genuine "K" definition (M-041).  The RAW spelling is encoded -
+        # normalizing before encoding would re-create the collision.
+        result = mangle_function_name(name=_FULLWIDTH_K, class_name=None)
+        assert result == f"xq_{_FULLWIDTH_K.encode('utf-8').hex()}"
+
+    def test_nfkc_normal_identifiers_keep_the_legacy_encoding_byte_for_byte(self) -> None:
+        assert mangle_function_name(name="f", class_name="C") == f"x{_SEP}C{_SEP}f"
+        # Precomposed U+00E4 is already NFKC-normal and therefore stays legacy.
+        assert mangle_function_name(name="\u00e4", class_name=None) == "x_\u00e4"
+
+    def test_non_nfkc_class_name_hex_encodes_class_and_function_component(self) -> None:
+        result = mangle_function_name(name="m", class_name=_FULLWIDTH_C)
+        assert result == f"xq{_SEP}{_FULLWIDTH_C.encode('utf-8').hex()}{_SEP}{b'm'.hex()}"
+
+    def test_non_nfkc_function_name_in_nfkc_normal_class_hex_encodes_both(self) -> None:
+        result = mangle_function_name(name=_FULLWIDTH_K, class_name="C", definition_ordinal=2)
+        assert result == (f"xq{_SEP}{b'C'.hex()}{_SEP}{_FULLWIDTH_K.encode('utf-8').hex()}{_SEP}2")
+
+    def test_nfkc_equivalent_raw_names_map_to_nfkc_distinct_private_names(self) -> None:
+        mangled = [
+            mangle_function_name(name=variant, class_name=None)
+            for variant in ("K", _FULLWIDTH_K, _KELVIN_K)
+        ]
+        assert len(mangled) == len(set(mangled)) == 3
+        assert len({unicodedata.normalize("NFKC", value) for value in mangled}) == 3
+        # Every private name is NFKC-stable in itself: the compiled module
+        # cannot re-collapse two distinct generated identifiers.
+        for value in mangled:
+            assert unicodedata.normalize("NFKC", value) == value
+
+    def test_fullwidth_underscore_connector_is_hex_encoded(self) -> None:
+        # U+FF3F FULLWIDTH LOW LINE is a valid identifier CONTINUATION
+        # character but NFKC-normalizes to "_", so the legacy private name
+        # would collide with the plain-underscore spelling.
+        name = "a\uff3fb"
+        assert unicodedata.normalize("NFKC", name) != name
+        encoded = name.encode("utf-8").hex()
+        assert mangle_function_name(name=name, class_name=None) == f"xq_{encoded}"
 
 
 # --- create_trampoline_lookup --------------------------------------------------

@@ -340,6 +340,10 @@ class PytestRunner:
 
         Returns:
             The exit code (36 on timeout, mirroring the worker convention).
+            A phase that exits 0 without an execution proof raises
+            ``OrchestratorError`` carrying the explanatory message plus the
+            captured output tail, so a proof publication failure inside the
+            child stays diagnosable (M-008).
         """
         from mutmut_win.process.output_capture import BoundedOutputCapture
         from mutmut_win.process.worker import (
@@ -354,6 +358,10 @@ class PytestRunner:
         phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
             env,
             runtime_dir=runtime_dir,
+            # Phases re-check the guard inside frozen staging (written once
+            # by write_pth_blocker before the evidence snapshot): verify
+            # only, never republish frozen content (M-011).
+            replace_unverifiable=False,
         )
         capture = BoundedOutputCapture()
         proc: subprocess.Popen[bytes] | None = None
@@ -415,13 +423,17 @@ class PytestRunner:
             diagnostic = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
             message = (
                 f"{phase_name} exited 0 without executing a pytest test call; "
-                "the phase was neutralized by pytest arguments/configuration "
-                "or every selected test was skipped"
+                "the phase was neutralized by pytest arguments/configuration, "
+                "every selected test was skipped, or the execution proof "
+                "could not be published"
             )
             self._last_diagnostic_output = (
                 f"{message}\n{diagnostic}" if diagnostic is not None else message
             )
-            raise OrchestratorError(message)
+            # The error carries the message plus the captured tail: a proof
+            # publication failure inside the child is only diagnosable from
+            # the plugin's stderr line within that tail (M-008).
+            raise OrchestratorError(self._last_diagnostic_output)
         if exit_code != 0:
             self._last_diagnostic_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
         return exit_code
@@ -452,7 +464,9 @@ class PytestRunner:
             env = self._mutants_env()
             env[MUTANT_ENV_VAR] = ""
             env["PYTHONIOENCODING"] = "utf-8"
-            prepare_pytest_collection_guard()
+            # Verify-only guard republication: collection runs after the
+            # staging evidence snapshot (M-011).
+            prepare_pytest_collection_guard(replace_unverifiable=False)
 
         with tempfile.TemporaryDirectory(
             prefix="mutmut-win-pytest-runtime-",
@@ -527,9 +541,11 @@ class PytestRunner:
 
         # The deterministic plugin is part of the frozen staging basis.  This
         # idempotent ensure is also safe for direct/ad-hoc callers that did not
-        # invoke write_pth_blocker first.
+        # invoke write_pth_blocker first.  Post-snapshot runs verify only:
+        # an unprovable-but-identical plugin fails with the real cause
+        # instead of being republished (M-011).
         mutants_abs = Path("mutants").absolute()
-        self._write_stats_plugin(mutants_abs)
+        self._write_stats_plugin(mutants_abs, replace_unverifiable=False)
 
         # Run all tests with the stats plugin active.
         cmd = [*self._guarded_pytest_cmd(), "-p", "_mutmut_stats_plugin", "--tb=no", "-q"]
@@ -549,6 +565,13 @@ class PytestRunner:
                     f"Warning: stats collection failed — "
                     f"{decode_pytest_exit(exit_code)} (exit {exit_code})"
                 )
+                # The captured tail is the only place the real failure (for
+                # example an import error inside staging or a recursion
+                # storm) is visible — the phase itself runs with ``--tb=no``
+                # (issue #192).
+                diagnostic_tail = self._last_diagnostic_output
+                if diagnostic_tail:
+                    print(f"--- stats pytest output (tail) ---\n{diagnostic_tail}", flush=True)
                 return exit_code
 
             # Read the JSON file written by the plugin in the subprocess.
@@ -561,6 +584,22 @@ class PytestRunner:
             num_mapped = sum(len(t) for t in _state.tests_by_mangled_function_name.values())
             num_tests = len(_state.duration_by_test)
             print(f"Collected {num_mapped} test-to-mutant mappings across {num_tests} tests.")
+            # M-072 / BC-083: a loaded but EMPTY mapping with a bounded
+            # depth is the only symptom of a too-small max_stack_depth —
+            # value 4 is dead for direct test-file call sites (the three
+            # instrumentation frames plus the test frame), which the config
+            # validator cannot catch. Name the cause instead of leaving the
+            # bare "Collected 0" line.
+            if num_mapped == 0 and num_tests > 0 and self._config.max_stack_depth != -1:
+                from mutmut_win.config import _INSTRUMENTATION_FRAME_COUNT
+
+                print(
+                    f"Hint: max_stack_depth={self._config.max_stack_depth} may be "
+                    f"too small — the budget includes "
+                    f"{_INSTRUMENTATION_FRAME_COUNT} mutmut instrumentation frames "
+                    "(recorder, trampoline, generated wrapper) before the test "
+                    "frame; use a depth of at least 5 or -1 for unlimited."
+                )
         else:
             print(
                 "Warning: no test-to-mutant mappings found. Tests may not cover any mutated code."
@@ -642,6 +681,15 @@ class PytestRunner:
         )
         if exit_code == 36:
             # A hung suite proves nothing about the trampoline — no verdict.
+            # The captured tail is still published: what the child printed
+            # before hanging is the only lead for diagnosing the stall
+            # (issue #192).
+            timeout_tail = self._last_diagnostic_output
+            if timeout_tail:
+                print(
+                    f"--- forced-fail output before timeout (tail) ---\n{timeout_tail}",
+                    flush=True,
+                )
             self._forced_fail_attributed = None
             return exit_code
         self._forced_fail_attributed = exit_code != 0 and FORCED_FAIL_MARKER in (
@@ -801,7 +849,11 @@ class PytestRunner:
         return env
 
     @staticmethod
-    def _write_stats_plugin(mutants_abs: Path) -> None:
+    def _write_stats_plugin(
+        mutants_abs: Path,
+        *,
+        replace_unverifiable: bool = True,
+    ) -> None:
         """Write the stats-collection pytest plugin into *mutants_abs*.
 
         The generated ``_mutmut_stats_plugin.py`` is loaded by pytest via
@@ -819,6 +871,13 @@ class PytestRunner:
         accumulate in ``_state._stats`` inside the subprocess, the plugin
         snapshots them per-test, and persists the result to a JSON file
         that the parent process reads after the subprocess exits.
+
+        Args:
+            mutants_abs: Absolute staging directory for the plugin leaf.
+            replace_unverifiable: Publishing default; post-snapshot stats
+                runs pass ``False`` so an unprovable-but-identical frozen
+                plugin fails with the real cause instead of being
+                republished (M-011).
         """
         plugin_path = mutants_abs / "_mutmut_stats_plugin.py"
         plugin_source = '''\
@@ -909,7 +968,11 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
         raise RuntimeError("MUTMUT_STATS_OUTPUT_PATH must be absolute")
     atomic_write_bytes(output_path, payload_bytes)
 '''
-        ensure_atomic_bytes(plugin_path, plugin_source.encode("utf-8"))
+        ensure_atomic_bytes(
+            plugin_path,
+            plugin_source.encode("utf-8"),
+            replace_unverifiable=replace_unverifiable,
+        )
 
     def _write_sitecustomize_pth_blocker(self, mutants_abs: Path) -> None:
         """Write a sitecustomize.py that removes the real src/ from sys.path.

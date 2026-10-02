@@ -54,7 +54,7 @@ def _run_mutmut_win(project_dir: Path, *args: str) -> subprocess.CompletedProces
         cwd=project_dir,
         capture_output=True,
         encoding="utf-8",
-        timeout=180,
+        timeout=600,
         check=False,
     )
 

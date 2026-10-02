@@ -25,6 +25,7 @@ import os
 import stat
 import sys
 import sysconfig
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -53,9 +54,44 @@ from mutmut_win.gitignore_boundary import GitignoreBoundary
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import BinaryIO
 
     from mutmut_win.config import MutmutConfig
     from mutmut_win.runner import PytestRunner
+
+#: Delays between bounded re-open attempts for transient Windows sharing
+#: violations in ``_open_for_hash``.
+_CONTEXT_OPEN_RETRY_DELAYS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5)
+
+#: ``ERROR_SHARING_VIOLATION``: another process holds the file without
+#: ``FILE_SHARE_READ`` while we try to open it for hashing.  Range locks
+#: (winerror 33) surface on read, not open, and stay covered by the
+#: orchestrator's snapshot re-observation instead of this open-level retry.
+_SHARING_VIOLATION_WINERROR: int = 32
+
+
+def _open_for_hash(path: Path) -> BinaryIO:
+    """Open ``path`` for hashing, retrying only transient sharing violations.
+
+    A freshly published or concurrently scanned input file can be briefly
+    held without ``FILE_SHARE_READ`` (antivirus, indexer); such opens are
+    retried with bounded delays.  Every other ``PermissionError`` (for
+    example ACL denial, winerror 5) and every exhausted retry re-raises so
+    the caller keeps its fail-closed ``unreadable:`` verdict.
+    """
+
+    last: PermissionError | None = None
+    for delay in (None, *_CONTEXT_OPEN_RETRY_DELAYS):
+        if delay is not None:
+            time.sleep(delay)
+        try:
+            return path.open("rb")
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) != _SHARING_VIOLATION_WINERROR:
+                raise
+            record_event("hash-open-retry", path=str(path))
+            last = exc
+    raise last  # type: ignore[misc]
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:
@@ -421,7 +457,7 @@ def _hash_context_file(
         if absolute in seen:
             hasher.update(b"already-hashed\0")
             return True
-        with absolute.open("rb") as stream:
+        with _open_for_hash(absolute) as stream:
             before = os.fstat(stream.fileno())
             _record_file_observation("before", before)
             if not stat.S_ISREG(before.st_mode):
@@ -442,7 +478,7 @@ def _hash_context_file(
             # On POSIX this catches rename-and-replace; on Windows it avoids
             # comparing ``fstat().st_ctime`` with the path-stat value, whose
             # semantics differ on current CPython releases.
-            with absolute.open("rb") as rebound:
+            with _open_for_hash(absolute) as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
                 _record_file_observation("rebound", rebound_handle)
         if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
@@ -484,7 +520,10 @@ def _editable_source_path(direct_url: str) -> Path | None:
     parsed = urllib.parse.urlparse(raw_url)
     if parsed.scheme.casefold() != "file" or parsed.netloc not in {"", "localhost"}:
         return None
-    raw_path = urllib.request.url2pathname(urllib.parse.unquote(parsed.path))
+    # ``url2pathname`` percent-decodes on Windows already; a leading
+    # ``unquote`` would re-decode literal ``%HH`` sequences in the source
+    # location (M-060).
+    raw_path = urllib.request.url2pathname(parsed.path)
     if os.name == "nt" and len(raw_path) >= 3 and raw_path[0] == "/" and raw_path[2] == ":":
         raw_path = raw_path[1:]
     return Path(raw_path)
@@ -509,6 +548,100 @@ def _project_descended_boundary(
     if str(relative) in {".", ""}:
         return project_boundary
     return project_boundary.descend(*relative.parts)
+
+
+def _import_root_boundary(
+    project_boundary: GitignoreBoundary,
+    project_root: Path,
+    candidate: Path,
+) -> GitignoreBoundary | None:
+    """Return the gitignore boundary for one effective import root (M-006).
+
+    Runtime environment trees (a project-internal ``.venv``, ``venv``,
+    ``.tox``, ``.nox``, or any tree under the active ``sys.prefix`` /
+    ``sys.exec_prefix`` / ``sys.base_prefix`` that is genuinely inside the
+    project) are executed in place and never staged; they receive NO
+    gitignore boundary so their bytes — including unclaimed modules and
+    ``.pth`` files — are fully bound in the digest.  Project core trees
+    (staged and copied to ``mutants/``) keep the pruning that protects
+    against MBR-2026-09-14-01.
+
+    The sys.prefix exception only applies when the prefix is genuinely
+    inside the project root (strictly a descendant, not equal to or an
+    ancestor of it); otherwise the project root itself would lose its
+    boundary and ignored data trees would regress.
+
+    Runtime roots are classified BEFORE ``covered_by`` deduplication so
+    they appear in ``content_roots`` rather than being absorbed as
+    content-covered by the project walk.
+    """
+    try:
+        resolved = candidate.resolve(strict=False)
+        relative = resolved.relative_to(project_root)
+    except (OSError, ValueError):  # fmt: skip
+        return None
+    if str(relative) in {".", ""}:
+        return project_boundary
+
+    # Named tool-environment directories (.venv, venv, .tox, .nox, …) are
+    # always runtime trees regardless of which interpreter is active.
+    if any(part.casefold() in _CONTEXT_ROOT_SKIP_DIRS for part in relative.parts):
+        return None
+
+    # Any active interpreter prefix genuinely inside the project (e.g. a
+    # venv named "env") is also a runtime tree.  Only a prefix that is
+    # STRICTLY INSIDE the project may lift the boundary (AR-10 / PERF-002):
+    # prefixes equal to, above, or outside the project describe an ordinary
+    # project import tree (e.g. a project located below an interpreter
+    # prefix), whose ignored artifacts must keep pruning instead of
+    # becoming new fingerprint drift.
+    for prefix_attr in ("prefix", "exec_prefix", "base_prefix"):
+        prefix_value = getattr(sys, prefix_attr, None)
+        if not prefix_value:
+            continue
+        try:
+            prefix_path = Path(prefix_value).resolve(strict=False)
+            if prefix_path == project_root:
+                continue
+            if not prefix_path.is_relative_to(project_root):
+                continue
+            if resolved.is_relative_to(prefix_path):
+                return None
+        except (OSError, ValueError):  # fmt: skip
+            continue
+
+    return project_boundary.descend(*relative.parts)
+
+
+def _archive_import_root(absolute: Path) -> tuple[Path, str] | None:
+    """Resolve a ZIP (or any regular file) ancestor for a subpath (M-007).
+
+    Walks upward from *absolute* with ``os.stat`` (following symlinks, like
+    ``zipimport``) until the first existing ancestor is found.  If it is a
+    regular file, returns ``(archive_path, inner_prefix)`` where the prefix
+    is the POSIX path below the archive root.  If the first existing
+    ancestor is a directory, returns ``None`` (the entry is genuinely
+    absent, like the default ``python314.zip``).
+
+    Stat errors other than ``FileNotFoundError`` propagate so the caller
+    can record them as import-root errors (reuse_safe=False).
+    """
+    import stat as stat_module
+
+    parts = absolute.parts
+    for depth in range(len(parts) - 1, 0, -1):
+        ancestor = Path(*parts[:depth])
+        try:
+            stat_result = ancestor.stat()
+        except FileNotFoundError:
+            continue
+        if stat_module.S_ISREG(stat_result.st_mode):
+            inner_parts = parts[depth:]
+            inner_prefix = "/".join(inner_parts)
+            return ancestor, inner_prefix
+        # First existing ancestor is a directory — genuinely absent.
+        return None
+    return None
 
 
 @component("tree", identity=("root", "label_prefix"))
@@ -821,6 +954,17 @@ def _hash_project_import_core(
     executable input when the project root (or that child) is on ``sys.path``;
     such bytes are project drift, not ambient interpreter drift.  Runtime
     trees such as ``.venv`` and ``.mutmut-cache`` remain excluded recursively.
+
+    Decided M-061/B: this walk deliberately passes NO gitignore boundary even
+    though the combined ambient walks prune ignored subtrees.  The executed
+    child removes only ``src``/``source`` roots from ``sys.path``
+    (``SOURCE_ROOT_NAMES``), so import roots such as a flat-layout project
+    root stay importable in place — dropping their ignored-but-readable bytes
+    from the terminal core would reclassify real project drift as ambient.
+    The asymmetry is fail-closed by design; a symmetric boundary (variant A)
+    was rejected, and an isolated source root that only the parent imports is
+    still bound whole, conservatively.  Pinned by
+    ``tests/unit/test_core_boundary_decision.py``.
     """
 
     complete = True
@@ -900,15 +1044,17 @@ def _hash_effective_import_paths(
 
     reuse_safe = True
     content_roots: dict[Path, frozenset[str]] = {}
+    runtime_content_roots: set[Path] = set()
     generated_content_roots: set[Path] = set()
-    hasher.update(b"effective-sys-path:v2\0")
+    hasher.update(b"effective-sys-path:v3\0")
     generated_root = _absolute_lexical_path(project_root / "mutants")
     try:
         resolved_project_root = project_root.resolve(strict=True)
     except (OSError, RuntimeError):  # fmt: skip
         resolved_project_root = _absolute_lexical_path(project_root)
-    # Effective import roots inside the project must not re-introduce the
-    # git-ignored trees the project walk pruned (MBR-2026-09-14-01).
+    # Gitignore pruning applies only to project-core trees that are staged
+    # and copied to mutants/; runtime environments (.venv, sys.prefix inside
+    # the project) are executed in place and therefore fully bound (M-006).
     project_boundary = GitignoreBoundary.load(project_root)
 
     def covered_by(root: Path, candidates: tuple[tuple[Path, frozenset[str]], ...]) -> bool:
@@ -974,6 +1120,25 @@ def _hash_effective_import_paths(
                         resolved_generated = generated_root.resolve(strict=True)
                         generated_content_roots.add(resolved_generated)
                         hasher.update(b"generated-content-bound-separately\0")
+                    elif (
+                        _import_root_boundary(project_boundary, resolved_project_root, resolved)
+                        is None
+                    ):
+                        # Runtime environment tree (M-006): always content-walk,
+                        # never absorbed as content-covered by the project
+                        # walk or deduplicated away in selected_roots — but
+                        # ONLY when genuinely inside the project (where the
+                        # gitignore boundary would prune it).  Roots outside
+                        # the project keep normal overlap deduplication.
+                        content_roots[resolved] = partial_coverage_policy(resolved) or (
+                            _IMPORT_CONTEXT_SKIP_DIRS
+                        )
+                        try:
+                            resolved.relative_to(resolved_project_root)
+                        except ValueError:
+                            pass
+                        else:
+                            runtime_content_roots.add(resolved)
                     elif covered_by(resolved, covered_trees):
                         hasher.update(b"content-covered\0")
                     else:
@@ -984,10 +1149,36 @@ def _hash_effective_import_paths(
                     try:
                         absolute.lstat()
                     except FileNotFoundError:
-                        # A truly absent sys.path entry is a fully observed state
-                        # and can affect resolution order. A broken link is not
-                        # equivalent and is handled by the successful lstat path.
-                        hasher.update(b"missing-import-root\0")
+                        # M-007: a missing subpath may live inside a ZIP (or
+                        # any regular file) on sys.path.  Resolve the archive
+                        # ancestor and bind its bytes; only a genuinely absent
+                        # entry stays a fully observed "missing" state.
+                        archive = _archive_import_root(absolute)
+                        if archive is not None:
+                            archive_path, inner_prefix = archive
+                            hasher.update(b"archive-import-root\0")
+                            hasher.update(inner_prefix.encode("utf-8", errors="surrogateescape"))
+                            hasher.update(b"\0")
+                            try:
+                                archive_resolved = archive_path.resolve(strict=False)
+                            except (OSError, RuntimeError):  # fmt: skip
+                                archive_resolved = archive_path
+                            if archive_resolved in excluded:
+                                hasher.update(b"excluded-archive\0")
+                                continue
+                            if not _hash_context_file(
+                                hasher,
+                                archive_path,
+                                label=f"sys.path:{index}:archive",
+                                seen=seen,
+                            ):
+                                reuse_safe = False
+                        else:
+                            # A truly absent sys.path entry is a fully observed
+                            # state and can affect resolution order. A broken
+                            # link is not equivalent and is handled by the
+                            # successful lstat path.
+                            hasher.update(b"missing-import-root\0")
                     except OSError as exc:
                         record_error("stat-import-root", exc, index=index, path=str(absolute))
                         hasher.update(
@@ -1011,6 +1202,12 @@ def _hash_effective_import_paths(
         content_roots,
         key=lambda item: (len(item.parts), os.path.normcase(str(item))),
     ):
+        if root in runtime_content_roots:
+            # Runtime roots are never deduplicated away (M-006 correction 1b):
+            # their bytes must be bound even when a project-core ancestor
+            # was selected first.
+            selected_roots.append((root, content_roots[root]))
+            continue
         if covered_by(root, tuple(selected_roots)):
             continue
         selected_roots.append((root, content_roots[root]))
@@ -1045,7 +1242,7 @@ def _hash_effective_import_paths(
             excluded=excluded,
             skip_dirs=skip_dirs,
             root_skip_dirs=root_skip_dirs,
-            ignore_boundary=_project_descended_boundary(
+            ignore_boundary=_import_root_boundary(
                 project_boundary,
                 resolved_project_root,
                 root,
@@ -1064,7 +1261,15 @@ def _installed_distribution_basis(
     core_hasher: Any | None = None,
     core_seen: set[Path] | None = None,
 ) -> _DependencyBasis:
-    """Hash installed distribution bytes; mark any incomplete basis unsafe."""
+    """Hash installed distribution bytes; mark any incomplete basis unsafe.
+
+    With ``core_hasher`` the same pass also feeds the terminal project core:
+    project-contained distribution files and editable source trees are bound
+    WITHOUT a gitignore boundary (decided M-061/B) — an editable install
+    stays importable in place by the executed child, so its ignored bytes
+    remain core drift, while the combined ambient digest prunes them through
+    its boundaries.
+    """
 
     excluded = excluded or set()
     core_seen = core_seen if core_seen is not None else set()
@@ -1213,6 +1418,12 @@ def _installed_distribution_basis(
                 ignore_boundary=editable_boundary,
             ):
                 reuse_safe = False
+            # Decided M-061/B: the editable core walk deliberately passes no
+            # ignore boundary, unlike the combined walk above.  An editable
+            # install stays importable in place by the executed tests, so
+            # ignored-but-readable bytes inside it stay terminally bound as
+            # project (core) drift; only the combined ambient digest prunes
+            # them via ``editable_boundary``.
             if (
                 core_hasher is not None
                 and _project_core_relative_path(editable_path, project_root) is not None

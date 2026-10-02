@@ -160,9 +160,9 @@ def test_generation_error_does_not_commit_new_universe(
 
     def fail_supervised(
         file_args: list[object], **_kwargs: object
-    ) -> list[tuple[str, list[str], Exception, list[str], bool]]:
+    ) -> list[tuple[str, list[str], Exception, list[str], bool, list[object]]]:
         rel_path = str(file_args[0][0])  # type: ignore[index]
-        return [(rel_path, [], RuntimeError("fault injection"), [], False)]
+        return [(rel_path, [], RuntimeError("fault injection"), [], False, [])]
 
     monkeypatch.setattr("mutmut_win.process.run_generation_supervised", fail_supervised)
     orchestrator = MutationOrchestrator(new, runner=MagicMock(), executor=MagicMock())

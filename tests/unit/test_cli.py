@@ -847,3 +847,49 @@ class TestBrowserImport:
 
         app = ResultBrowser(show_killed=show_killed)
         assert app._show_killed == show_killed
+
+
+class TestEarlyPhaseInterruptContract:
+    """AR-24 / M-076: exit 130 and the JSON error object cover early run phases."""
+
+    def test_ctrl_c_during_config_load_exits_130(self, tmp_path, monkeypatch):
+        """KeyboardInterrupt during _load_config_or_exit produces exit 130
+        with the documented message instead of "Aborted!" and exit 1."""
+        monkeypatch.chdir(tmp_path)
+
+        def _interrupting_load(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        from unittest.mock import patch
+
+        with patch("mutmut_win.cli._load_config_or_exit", side_effect=_interrupting_load):
+            result = CliRunner().invoke(cli, ["run"])
+        assert result.exit_code == 130
+        assert "Run interrupted before completion" in result.output
+
+    def test_ctrl_c_during_config_load_json_gets_error_object(self, tmp_path, monkeypatch):
+        """--output json delivers a JSON error object with exit_code 130
+        on stdout instead of Click's bare "Aborted!" text."""
+        import json as json_module
+
+        monkeypatch.chdir(tmp_path)
+
+        def _interrupting_load(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        from unittest.mock import patch
+
+        with patch("mutmut_win.cli._load_config_or_exit", side_effect=_interrupting_load):
+            result = CliRunner().invoke(cli, ["run", "--output", "json"])
+        assert result.exit_code == 130
+        # The JSON error object follows the stderr prose in CliRunner's
+        # mixed output: strip prose lines, parse the JSON object.
+        lines = result.output.splitlines()
+        json_start = next(
+            (i for i, line in enumerate(lines) if line.strip().startswith("{")),
+            None,
+        )
+        assert json_start is not None, f"no JSON object found: {result.output!r}"
+        payload = json_module.loads("\n".join(lines[json_start:]))
+        assert payload.get("exit_code") == 130
+        assert "interrupted" in payload.get("error", "").lower()

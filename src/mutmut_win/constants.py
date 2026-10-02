@@ -96,6 +96,16 @@ MAXIMUM_PYTEST_VERSION_EXCLUSIVE: tuple[int, int] = (10, 0)
 #: project root carry no prefix to strip.
 SOURCE_ROOT_NAMES: tuple[str, ...] = ("src", "source")
 
+#: Engine self-instrumentation modules that are staged verbatim and never
+#: mutated (issue #192): every generated trampoline wrapper calls
+#: ``record_trampoline_hit`` under ``MUTANT_UNDER_TEST=stats`` — a
+#: trampolined recorder would call itself for every recorded hit and recurse
+#: without bound, breaking the stats phase for every gate that mutates the
+#: engine's own source tree.  Third-party projects are unaffected: their
+#: staging does not contain ``mutmut_win``, so the import in the generated
+#: code resolves to the installed, unmutated package.
+GENERATION_EXCLUDED_SELF_MODULES: frozenset[str] = frozenset({"mutmut_win.hit_recording"})
+
 
 def configured_staging_relative_path(
     raw_path: str | Path,

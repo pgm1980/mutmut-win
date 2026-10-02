@@ -22,8 +22,13 @@ class StagingNamespaceCollisionError(ConfigError):
 class InvalidConfigValueError(ConfigError):
     """A specific configuration value failed validation.
 
-    Producer: config loading wraps pydantic validation failures
-    (issue #114 / A4-QX-006 — the class used to exist without one).
+    Producers: config loading wraps pydantic validation failures
+    (issue #114 / A4-QX-006 — the class used to exist without one), and
+    the orchestrator's timeout-budget validation rejects computed budgets
+    that are not finite or exceed the dispatch ceiling (M-103 / EDGE-05).
+    The latter surfaces through ``run`` as a domain error ("Error: …" on
+    stderr, exit 1), because only the orchestrator knows the measured
+    wall time behind the product — it is not a config-load failure.
     """
 
 
@@ -35,6 +40,26 @@ class WorkerError(MutmutWinError):
     raise — they are recovered into synthesized task events (Bug #12 /
     issue #80), which is why the former ``WorkerCrashError`` /
     ``WorkerInitError`` classes were removed as unproducible.
+    """
+
+
+class WorkerEnvironmentError(MutmutWinError):
+    """A worker task failed because of the host environment, not the mutant.
+
+    Producer: the worker-side task preparation and execution paths in
+    ``process.worker`` wrap raw ``OSError`` conditions that describe the
+    HOST — ENOSPC, antivirus/backup locks on atomic replaces, handle or
+    quota exhaustion, path-length failures — rather than the code under
+    test (M-065 / issue #152). A worker-side ``OSError`` is never a mutant
+    property.
+
+    Consumer: ``worker_main`` classifies this exception as fatal; the
+    resulting ``TaskCompleted`` event carries ``fatal=True`` and aborts the
+    run through the executor instead of persisting a 'suspicious' verdict
+    for every remaining mutant. The class only ever arises INSIDE a worker
+    process — it travels to the parent as the fatal flag of a completion
+    event, never as a raised exception across the process boundary (so it
+    does not contradict ``WorkerError``: worker crashes still never raise).
     """
 
 
@@ -52,6 +77,24 @@ class CleanTestFailedError(OrchestratorError):
 
 class ForcedFailError(OrchestratorError):
     """The forced-fail validation test failed."""
+
+
+class MutantNameDispatchError(OrchestratorError):
+    """A runtime function key recorded by the stats run cannot address a mutant.
+
+    Producer: the orchestrator's name-consistency gate
+    (``_verify_runtime_mutant_names``, M-053) compares the trampoline hit
+    keys (``orig.__module__ + '.' + orig.__name__``) with the function keys
+    of every generated mutant.  A dotted-suffix divergence proves that the
+    worker's ``MUTANT_UNDER_TEST`` name can never match the trampoline's
+    dispatch prefix — the trampoline would silently run the original, so
+    every affected mutant would survive without ever being executed.
+    Typical trigger: the mutated tree is imported under a root (for
+    example an ``extra_paths`` entry) that the mutant names do not strip.
+
+    The gate fails closed before any verdict producer; the CLI renders it
+    like every other domain error ("Error: …" on stderr, exit 1).
+    """
 
 
 class UnsupportedPytestVersionError(OrchestratorError):
@@ -79,12 +122,17 @@ class MutationParseError(MutationError):
 
 
 class StaleStagingError(MutmutWinError):
-    """The staging is older than the source it was generated from.
+    """The staged or source bytes do not match their recorded hashes.
 
-    Producer: ``mutant_diff.apply_mutant`` refuses to patch a source file
-    that changed after its mutants were generated (issue #123 / external QA
-    CLI-003 — the refusal used to escape as a raw ``RuntimeError``
-    traceback past the #114 domain-error rendering).
+    Producers: ``mutant_diff._read_source_bytes_matching_staging`` (source
+    SHA-256 mismatch or missing hash), ``file_setup.read_verified_generated_bytes``
+    (staged bytes mismatch the generated hash), ``mutant_diff._public_mutant_function``
+    (staged original body differs from the source body), and the
+    compare-and-swap publication in ``mutant_diff.apply_mutant`` (source
+    changed while apply was running — nothing is overwritten, M-005).
+    All producers bind byte content, never file timestamps (issue #123 /
+    external QA CLI-003 - the refusal used to escape as a raw
+    ``RuntimeError`` traceback past the #114 domain-error rendering).
     """
 
 
@@ -111,13 +159,38 @@ class UnsafeWorkspaceStateError(MutmutWinError):
 class CorruptCacheError(MutmutWinError):
     """The ``.mutmut-cache/`` SQLite database is corrupt or unreadable.
 
+    Reserved for genuinely corrupt or invalid persisted cache content only:
+    garbage / truncated DB bytes (SQLITE_CORRUPT, SQLITE_NOTADB) and rows that
+    fail schema or domain validation. Recover with ``run --force``, which
+    deletes the cache before rebuilding it.
+
     Producer: ``db.create_db`` (and therefore every reader via
     ``db.load_results``) wraps ``sqlite3.DatabaseError`` — a garbage / truncated
     DB file used to escape as a raw traceback from ``run`` / ``results`` /
     ``export-cicd-stats`` (external QA CACHE-001). Mirrors the domain-error
     contract of the other state errors (e.g. :class:`StaleStagingError`): a clean
-    message + a defined exit code, never a traceback. ``run --force`` recovers by
-    deleting ``.mutmut-cache/`` first.
+    message + a defined exit code, never a traceback.
+    """
+
+
+class CacheEnvironmentError(MutmutWinError):
+    """The cache database could not be read or written because of its environment.
+
+    Producer: ``db._raise_database_error`` for SQLite base codes that describe
+    the surrounding system rather than the persisted bytes — SQLITE_READONLY
+    (read-only file or directory), SQLITE_IOERR (I/O error), SQLITE_FULL
+    (disk full), SQLITE_CANTOPEN (path unopenable), plus SQLITE_PERM and
+    SQLITE_NOLFS on the same grounds (M-037 / issue #164).
+
+    Distinct from :class:`CorruptCacheError`: the cache is NOT known to be
+    corrupt here, so the message deliberately gives recovery guidance
+    (read-only state, disk space, antivirus/backup interference) and never
+    recommends deleting ``.mutmut-cache/`` or re-running with ``--force`` —
+    that would destroy possibly intact, reusable verdicts. Extended
+    SQLITE_IOERR codes can also surface real damage (e.g.
+    SQLITE_IOERR_CORRUPTFS); classifying them as environment errors is the
+    fail-safe direction: the run still aborts with exit 1, it just never
+    advises deleting a possibly intact cache.
     """
 
 
@@ -194,3 +267,27 @@ class InvalidGeneratedSyntaxException(MutmutWinError):  # noqa: N818 — name ma
             "with a minimal reproducible example file."
         )
         super().__init__(msg)
+
+
+class MutationSurfaceDegradedWarning(SyntaxWarning):
+    """A file could not be mutated; the mutation surface is incomplete.
+
+    Producer: ``file_setup.create_mutants_for_file`` when LibCST cannot parse
+    the source (``unsupported_source_syntax``), rejects the syntax tree
+    (``cst_validation_error``), or the generated mutant module does not
+    compile (``generated_code_invalid``).  The file is staged unmutated
+    (issue #78 safety net) and excluded from the mutation surface, so
+    ``--min-score`` and CI/CD export are revoked for the run (M-003).
+
+    Function-granular skips (U+01C1 mangling, trampoline collisions) keep
+    raising plain ``SyntaxWarning`` — they narrow individual functions, not
+    the file-level surface.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(reason, message)
+        self.reason = reason
+        self.detail = message
+
+    def __str__(self) -> str:
+        return self.detail

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from mutmut_win.atomic_file import (
+    _PARENT_CAPTURE_RETRY_DELAYS,
     AtomicReplaceError,
     UnsafeAtomicWriteError,
     atomic_write_bytes,
@@ -215,12 +216,184 @@ class TestParentCaptureRetry:
                 raise OSError(5, "Access is denied (simulated filter lock)")
             return self
 
+        sleeps: list[float] = []
         monkeypatch.setattr(Path, "resolve", refusing_resolve)
-        monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(time, "sleep", sleeps.append)
 
         with pytest.raises(UnsafeAtomicWriteError):
             atomic_write_bytes(target, b"payload")
         monkeypatch.undo()
+
+        # Exactly the eight capture attempts of the parent ladder — never a
+        # nested second ladder (M-011 latency bound: 7 pauses, not 7 x 7).
+        assert sleeps == list(_PARENT_CAPTURE_RETRY_DELAYS)
+
+    def test_parent_resolve_identity_flap_is_still_retried(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "marker.sentinel"
+        real_resolve = Path.resolve
+        state = {"flapped": False}
+
+        def flapping_resolve(self: Path, strict: bool = False) -> Path:
+            # One observation reports a different directory as the resolved
+            # parent: the parent-vs-resolved identity comparison flaps once,
+            # exactly the case the capture ladder exists to absorb.
+            if self == tmp_path and not state["flapped"]:
+                state["flapped"] = True
+                return real_resolve(self.parent, strict=strict)
+            return real_resolve(self, strict=strict)
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(Path, "resolve", flapping_resolve)
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+
+        atomic_write_bytes(target, b"payload")
+        monkeypatch.undo()
+
+        assert target.read_bytes() == b"payload"
+        # The flap is a transient observation failure: one ladder delay was
+        # paid, the write itself still succeeded.
+        assert sleeps == [0.1]
+
+
+def _doctored_stat(
+    result: os.stat_result,
+    *,
+    mode: int | None = None,
+    file_attributes: int | None = None,
+) -> os.stat_result:
+    """Rebuild *result* with an overridden ``st_mode``/``st_file_attributes``.
+
+    ``os.stat_result`` cannot be mutated; the extras dictionary is the only
+    supported way to carry the Windows-only attributes through a rebuild
+    (same technique as ``TestHandleLinkCountDivergence._doctored``).
+    """
+    values = list(result)
+    if mode is not None:
+        values[0] = mode
+    extras = {
+        "st_atime_ns": result.st_atime_ns,
+        "st_mtime_ns": result.st_mtime_ns,
+        "st_ctime_ns": result.st_ctime_ns,
+    }
+    for optional in ("st_birthtime_ns", "st_file_attributes", "st_reparse_tag"):
+        value = getattr(result, optional, None)
+        if value is not None:
+            extras[optional] = value
+    if file_attributes is not None:
+        extras["st_file_attributes"] = file_attributes
+    return os.stat_result(tuple(values), extras)
+
+
+class TestStructuralParentRejectionIsImmediate:
+    """M-069: deterministic rejections never enter the retry ladder.
+
+    A missing parent, a link/reparse parent or ancestor, and a
+    non-directory component fail identically on every attempt; retrying
+    them only stalls every publication by the full 15.85 s ladder before
+    failing with the very same error.
+    """
+
+    def test_reparse_point_parent_is_rejected_without_retry_sleeps(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real_lstat = Path.lstat
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if not reparse_flag:
+            pytest.skip("st_file_attributes reparse signalling unavailable")
+
+        def reparse_parent(self: Path) -> os.stat_result:
+            result = real_lstat(self)
+            if self == tmp_path:
+                return _doctored_stat(
+                    result,
+                    file_attributes=getattr(result, "st_file_attributes", 0) | reparse_flag,
+                )
+            return result
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(Path, "lstat", reparse_parent)
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+
+        with pytest.raises(UnsafeAtomicWriteError, match="reparse point"):
+            atomic_write_bytes(tmp_path / "target.bin", b"payload")
+        monkeypatch.undo()
+
+        assert sleeps == []
+
+    def test_reparse_point_ancestor_is_rejected_without_retry_sleeps(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        real_lstat = Path.lstat
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if not reparse_flag:
+            pytest.skip("st_file_attributes reparse signalling unavailable")
+
+        def reparse_ancestor(self: Path) -> os.stat_result:
+            result = real_lstat(self)
+            if self == tmp_path:
+                return _doctored_stat(
+                    result,
+                    file_attributes=getattr(result, "st_file_attributes", 0) | reparse_flag,
+                )
+            return result
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(Path, "lstat", reparse_ancestor)
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+
+        with pytest.raises(UnsafeAtomicWriteError, match="reparse point"):
+            atomic_write_bytes(nested / "target.bin", b"payload")
+        monkeypatch.undo()
+
+        assert sleeps == []
+
+    def test_non_directory_component_is_rejected_without_retry_sleeps(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        real_lstat = Path.lstat
+
+        def file_component(self: Path) -> os.stat_result:
+            result = real_lstat(self)
+            if self == tmp_path:
+                return _doctored_stat(result, mode=stat.S_IFREG | 0o644)
+            return result
+
+        sleeps: list[float] = []
+        monkeypatch.setattr(Path, "lstat", file_component)
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+
+        with pytest.raises(UnsafeAtomicWriteError, match="not a directory"):
+            atomic_write_bytes(nested / "target.bin", b"payload")
+        monkeypatch.undo()
+
+        assert sleeps == []
+
+    def test_missing_parent_is_rejected_without_retry_sleeps(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sleeps: list[float] = []
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+
+        with pytest.raises(UnsafeAtomicWriteError, match="cannot inspect atomic-write parent"):
+            atomic_write_bytes(tmp_path / "missing" / "target.bin", b"payload")
+
+        assert sleeps == []
 
 
 def _real_identity(file_stat: os.stat_result) -> tuple[int, int]:

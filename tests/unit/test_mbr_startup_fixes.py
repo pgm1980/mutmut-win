@@ -291,3 +291,56 @@ class TestPreludeObservability:
 
         watchdog_instance.arm.assert_called_once()
         watchdog_instance.close.assert_called_once()
+
+
+class TestWatchedBasisPhase:
+    """M-101 stage 1: later basis passes get prelude-style watchdog coverage."""
+
+    def _fake_watchdog(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        import mutmut_win.stall_watchdog as stall_watchdog_module
+
+        calls = {"enter": 0, "exit": 0}
+
+        class FakeStallWatchdog:
+            def __enter__(self) -> FakeStallWatchdog:
+                calls["enter"] += 1
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                calls["exit"] += 1
+                return False
+
+        monkeypatch.setattr(stall_watchdog_module, "StallWatchdog", FakeStallWatchdog)
+        return calls
+
+    def test_phase_prints_entry_and_duration_with_watchdog(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.Capsys,
+    ) -> None:
+        from mutmut_win.orchestrator import _watched_basis_phase
+
+        calls = self._fake_watchdog(monkeypatch)
+
+        with _watched_basis_phase("Phasing basis…", "Basis phased"):
+            pass
+
+        captured = capsys.readouterr().out
+        assert "Phasing basis…" in captured
+        assert "Basis phased in" in captured
+        assert calls == {"enter": 1, "exit": 1}
+
+    def test_watchdog_closes_and_completion_is_skipped_on_exception(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.Capsys,
+    ) -> None:
+        from mutmut_win.orchestrator import _watched_basis_phase
+
+        calls = self._fake_watchdog(monkeypatch)
+
+        with pytest.raises(RuntimeError), _watched_basis_phase("Phasing basis…", "Basis phased"):
+            raise RuntimeError("boom")
+
+        assert calls == {"enter": 1, "exit": 1}
+        assert "Basis phased in" not in capsys.readouterr().out

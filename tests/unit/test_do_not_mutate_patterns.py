@@ -7,6 +7,8 @@ skip threaded through ``mutate_file_contents`` into ``_skip_node_and_children``.
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from mutmut_win.config import MutmutConfig
@@ -100,3 +102,84 @@ class TestQualifiedNameMatching:
         names = _names(_TWO_METHODS, [r"^Drop\.shared$"])
         assert not any("Dropǁshared" in n for n in names)
         assert any("Keepǁshared" in n for n in names)
+
+    @pytest.mark.parametrize(
+        ("inner_class", "patterns"),
+        [
+            pytest.param(
+                "    @deco\n    class Inner:\n        x = 1\n",
+                [r"^Outer\.m$"],
+                id="decorated-inner-class",
+            ),
+            pytest.param(
+                "    class Inner:\n        x = 1\n",
+                [r"^Outer\.Inner$", r"^Outer\.m$"],
+                id="pattern-skipped-inner-class",
+            ),
+        ],
+    )
+    def test_skipped_nested_class_keeps_outer_qualifier(
+        self, inner_class: str, patterns: list[str]
+    ) -> None:
+        # M-038 regression: libcst calls on_leave for EVERY ClassDef, including
+        # ones skipped by on_visit (decorator rule or pattern hit). The blind
+        # pop used to remove the OUTER class entry, so `^Outer\.m$` no longer
+        # matched `m` and the explicitly excluded method was mutated anyway.
+        source = (
+            "class Outer:\n"
+            f"{inner_class}"
+            "    def m(self):\n"
+            "        return 1 + 1\n"
+            "    def n(self):\n"
+            "        return 2 + 2\n"
+        )
+        names = _names(source, patterns)
+        assert not any("Outerǁm" in n for n in names), names
+        assert any("Outerǁn" in n for n in names), names
+
+    def test_skipped_local_class_in_method_keeps_outer_qualifier(self) -> None:
+        # Same desynchronisation through a decorated class LOCAL to a method:
+        # on_leave(Local) must not pop the enclosing `Outer` entry.
+        source = (
+            "class Outer:\n"
+            "    def a(self):\n"
+            "        @deco\n"
+            "        class Local:\n"
+            "            pass\n"
+            "        return 1 + 1\n"
+            "    def m(self):\n"
+            "        return 2 + 2\n"
+        )
+        names = _names(source, [r"^Outer\.m$"])
+        assert not any("Outerǁm" in n for n in names), names
+        assert any("Outerǁa" in n for n in names), names
+
+
+@given(st.lists(st.sampled_from(["decorated", "pattern", "plain"]), max_size=4))
+@settings(deadline=None)
+def test_qualified_pattern_survives_arbitrary_inner_class_skips(kinds: list[str]) -> None:
+    """Anchored qualified patterns keep working after ANY mix of skipped inner classes.
+
+    Deco<N> classes are skipped by the decorator rule only, Skip<N> by the
+    pattern, Keep<N> are plain — the three skip paths must all leave the
+    `Outer` qualifier intact for the methods declared after them.
+    """
+    parts = ["class Outer:\n"]
+    for index, kind in enumerate(kinds):
+        if kind == "decorated":
+            parts.append(f"    @deco\n    class Deco{index}:\n        x = {index + 1}\n")
+        elif kind == "pattern":
+            parts.append(f"    class Skip{index}:\n        x = {index + 2}\n")
+        else:
+            parts.append(f"    class Keep{index}:\n        x = {index + 3}\n")
+    parts += [
+        "    def target(self):\n        return 1 + 1\n",
+        "    def other(self):\n        return 2 + 2\n",
+        "class Second:\n    def m(self):\n        return 3 + 3\n",
+    ]
+    source = "".join(parts)
+    patterns = [r"^Outer\.Skip\d+$", r"^Outer\.target$", r"^Second\.m$"]
+    names = _names(source, patterns)
+    assert not any("Outerǁtarget" in n for n in names), names
+    assert not any("Secondǁm" in n for n in names), names
+    assert any("Outerǁother" in n for n in names), names

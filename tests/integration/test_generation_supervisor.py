@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import multiprocessing
 import os
 import signal
@@ -60,6 +61,33 @@ def _restore_hanging_argument() -> _HangDuringPpeSerialization:
 
 def _consume_argument(_value: object) -> int:
     return 1
+
+
+_START_ORDER_EVENTS: list[str] = []
+
+
+class _OrderProbe:
+    """Records parent-side START pickling into ``_START_ORDER_EVENTS``.
+
+    Unpickles as the plain string ``'x''``, so the supervisor-side worker
+    never depends on this class.
+    """
+
+    def __reduce__(self) -> tuple[type[str], tuple[str]]:
+        _START_ORDER_EVENTS.append("reduce")
+        return str, ("x",)
+
+
+class _UnserializableArgument:
+    """Argument whose ``__reduce__`` fails during parent-side START pickling."""
+
+    def __reduce__(self) -> tuple[type[str], tuple[str]]:
+        msg = "argument refused START serialization"
+        raise ValueError(msg)
+
+
+def _string_length_worker(value: str) -> int:
+    return len(value)
 
 
 def _raise_worker(_value: int) -> None:
@@ -358,3 +386,89 @@ def test_empty_file_list_completes_without_progress_events() -> None:
         == []
     )
     assert progress == []
+
+
+def test_worker_count_above_windows_ppe_limit_still_generates() -> None:
+    """max_children > 61 must be capped, not rejected by ProcessPoolExecutor."""
+    results = run_generation_supervised(
+        [3, 5],
+        max_children=64,
+        no_progress_timeout=10.0,
+        worker=_identify_worker,
+    )
+
+    assert [result[0] for result in results] == [6, 10]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job-contained spawn")
+def test_start_message_is_serialized_before_process_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parent-side START pickling must precede the supervisor spawn (M-110)."""
+    from mutmut_win.process import suspended_spawn
+
+    real_start = suspended_spawn.JobContainedSpawnProcess.start
+
+    def _recording_start(process: suspended_spawn.JobContainedSpawnProcess) -> None:
+        _START_ORDER_EVENTS.append("start")
+        real_start(process)
+
+    monkeypatch.setattr(suspended_spawn.JobContainedSpawnProcess, "start", _recording_start)
+
+    _START_ORDER_EVENTS.clear()
+    results = run_generation_supervised(
+        [_OrderProbe()],
+        max_children=1,
+        no_progress_timeout=10.0,
+        worker=_string_length_worker,
+    )
+
+    assert results == [1]
+    assert _START_ORDER_EVENTS.index("reduce") < _START_ORDER_EVENTS.index("start")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job-contained spawn")
+def test_failed_start_serialization_creates_no_job_or_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing __reduce__ must propagate before any resource is opened."""
+    from mutmut_win.process import job_object, suspended_spawn
+
+    job_calls: list[str] = []
+    real_create_job = job_object.create_kill_on_close_job
+
+    def _recording_create_job() -> int:
+        job_calls.append("job")
+        return real_create_job()
+
+    monkeypatch.setattr(job_object, "create_kill_on_close_job", _recording_create_job)
+
+    start_calls: list[str] = []
+    real_start = suspended_spawn.JobContainedSpawnProcess.start
+
+    def _recording_start(process: suspended_spawn.JobContainedSpawnProcess) -> None:
+        start_calls.append("start")
+        real_start(process)
+
+    monkeypatch.setattr(suspended_spawn.JobContainedSpawnProcess, "start", _recording_start)
+
+    with pytest.raises(ValueError, match="argument refused START serialization"):
+        run_generation_supervised(
+            [_UnserializableArgument()],
+            max_children=1,
+            no_progress_timeout=10.0,
+            worker=_string_length_worker,
+        )
+
+    assert job_calls == []
+    assert start_calls == []
+
+
+def test_no_progress_budget_scope_is_documented() -> None:
+    """The docstring must delimit caller serialization from supervisor progress."""
+    raw_doc = inspect.getdoc(run_generation_supervised)
+    assert raw_doc is not None
+    doc = " ".join(raw_doc.split())
+
+    assert "not part of the no-progress budget" in doc
+    assert "cheap to unpickle" in doc
