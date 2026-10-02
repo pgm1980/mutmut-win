@@ -1,6 +1,6 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-10-01.
+> Last refresh: 2026-10-02.
 
 ## Sanierung v2.21.4 → **Programmziel: v3.0.0** (Sprints 43–47, R0–R4)
 
@@ -44,6 +44,32 @@
 - **Parallelisierung (Auftraggeber-Freigabe):** Ab R2 duerfen Subagenten parallel
   an mehreren Arbeitspaketen arbeiten (Worktree-Isolation, P-12). Der Nutzer hat
   ein hohes Tokenlimit und kann bei Ueberschreitung ohne Kontextverlust wechseln.
+- **R2-Nachbesserung nahezu abgeschlossen (2026-10-02, HEAD `4a6e9a4`):** alle
+  27 AR-Auftraege + 9 P-08-Umsetzungen verifiziert; **Vollsuite PASS** (erstmalig
+  seit R0 vollstaendig auf dem Endstand: 3583/14/44 + Re-Run 105/9 — die 14 Falls
+  waren Venv-Luecken: `[dev]`-Extras fehlten, pytest-asyncio/-benchmark), **Semgrep
+  PASS** (31 adjudizierte Findings, Re-Record nach M-041/M-036/M-144,
+  Pinning-Test 28→31), Governance 79/79. Trampoline-Gate 66,7 % + vollstaendige
+  Survivor-Adjudizierung (~93,6 % Korridor, 5 Gruppen requalifiziert).
+  **Config-Gate abgebrochen** (Nutzerentscheid: pathologische Mutanten-Region
+  mit Stunden-Budgets + Issue #195; Teilevidenz 194k/146s bei 48 % archiviert).
+- **Neue Engine-Issues:** **#194** Forced-Fail-/Kollektions-Hang bei
+  `test_duplicate_definitions_220.py` im tests-dir (3×-Repro, CPU-Loop in
+  `pathlib.__hash__`/`source_to_code`; blockiert Multi-Datei-Adjudizierung,
+  Single-File-Gates unbeeinflusst — Synergie mit AP-41/#185 in R3). **#195**
+  Verdict-Cache wird ueber Laeufe hinweg nicht wiederverwendet
+  (`tests_fingerprint` instabil bei identischen Eingaben) — Absturz/Neustart
+  vernichtet alle Verdikte.
+- **Master-Ledger (neues Abnahme-Instrument):** `R0-R4-MASTER-LEDGER.md` — alle
+  **146 Gruppen** (R1=18, R2=85, R3=43; Handover-Zahlen 15/56/81 waren
+  ungenau) aus 5 autoritativen Quellen; dreistufig: **35 verifiziert /
+  68 implementiert-unverifiziert / 43 offen**. AR-16-Klarstellung: Issue-Kommentare
+  enthaelten NULL receipt-artige Belege (75 Kommentare geprueft) — Modul-Gates
+  sind die einzige Receipt-Quelle. **3.0.0 erst bei 146/146 verifiziert.**
+- **Reihenfolge zur 3.0.0 (Auftraggeber):** Gates abschließen → v2.21.5-Release →
+  R3-Sprint nach `R3-SPRINT-PLAN.md` (4 Wellen; AP-34 zuerst/XL; Receipt-Pflicht
+  ab Tag 1; #194-Loesung in AP-41) → **vollstaendiges externe Astra-Review gegen
+  die Roadmap** → R4/AP-47 → 3.0.0.
 
 ## Stehende Regeln (aus Sprint 42 und früher, weiterhin verbindlich)
 
