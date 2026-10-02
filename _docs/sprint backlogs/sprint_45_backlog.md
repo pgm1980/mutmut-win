@@ -27,14 +27,14 @@ der Sprint-Zielversion und wird erst mit der Releasefreigabe wirksam.
 
 ## Arbeitsumfang (R2-Nachbesserung + P-08)
 
-- [ ] P1-Produkt: AR-01 (M-009 Rootidentität), AR-02 (M-001/M-032 verschachtelte Wurzeln), AR-03 (M-001 Gitlink), AR-17 (M-005 CAS-Race-Tests)
-- [ ] Gate-Infrastruktur: AR-15 (#192-Diagnose/Fix + 17 Gruppen nachqualifizieren), AR-13 (Q-02 HANDLE), AR-09 (M-140), AR-27 (Phasengate-Matrix)
-- [ ] P2-Produkt: AR-04 (M-001 Worktree-Cache), AR-05 (M-144 Popen-Barrieren), AR-06/AR-07 (M-005 CAS-Backup/Siblings), AR-08 (M-011 Retry-Leiter), AR-10 (M-006 Runtime-Präfix), AR-24 (M-076 Exit 130)
-- [ ] P-08-Umsetzungen: M-022/M-023 (AP-16), M-036 (AP-22), M-016 (AP-29b), M-061 (AP-11), M-041 (AP-24), echte M-042 (AP-23), M-058 (AP-15), M-102 (AP-27); M-064/M-101 Stufe 2 per Entscheidung zurückgestellt, AR-12-Benchmark nachliefern
-- [ ] Test-/Evidenzqualität: AR-16 (58 Gruppen-Receipts beschaffen/erzeugen), AR-18 (M-017 Git-Orakel echte Verzeichnisse), AR-19 (AP-16 Gate-Werte trennen)
-- [ ] Dokumentation/Governance: AR-20/21/22/23 (README-Verträge), AR-25 (eindeutige Zählung), AR-26 (Sprint-/Releasezustand konsistent)
-- [ ] Konsolidiertes Phasengate (P-16/P-18): Vollsuite, kanonisches Semgrep-Gate, gezielte Mutationsgates auf dem finalen Stand, Governance grün
-- [ ] Abschlussbericht mit vollständig abgeglichener AR/P-08-Matrix, Gate-Receipts, verbleibenden Risiken und Abnahmeempfehlung
+- [x] P1-Produkt: AR-01 (M-009 Rootidentität), AR-02 (M-001/M-032 verschachtelte Wurzeln), AR-03 (M-001 Gitlink), AR-17 (M-005 CAS-Race-Tests)
+- [x] Gate-Infrastruktur: AR-15 (#192-Diagnose/Fix + 17 Gruppen nachqualifizieren), AR-13 (Q-02 HANDLE), AR-09 (M-140), AR-27 (Phasengate-Matrix)
+- [x] P2-Produkt: AR-04 (M-001 Worktree-Cache), AR-05 (M-144 Popen-Barrieren), AR-06/AR-07 (M-005 CAS-Backup/Siblings), AR-08 (M-011 Retry-Leiter), AR-10 (M-006 Runtime-Präfix), AR-24 (M-076 Exit 130)
+- [x] P-08-Umsetzungen: M-022/M-023 (AP-16), M-036 (AP-22), M-016 (AP-29b), M-061 (AP-11), M-041 (AP-24), echte M-042 (AP-23), M-058 (AP-15), M-102 (AP-27); M-064/M-101 Stufe 2 per Entscheidung zurückgestellt, AR-12-Benchmark nachliefern
+- [x] Test-/Evidenzqualität: AR-16 (58 Gruppen-Receipts beschaffen/erzeugen), AR-18 (M-017 Git-Orakel echte Verzeichnisse), AR-19 (AP-16 Gate-Werte trennen)
+- [x] Dokumentation/Governance: AR-20/21/22/23 (README-Verträge), AR-25 (eindeutige Zählung), AR-26 (Sprint-/Releasezustand konsistent)
+- [x] Konsolidiertes Phasengate (P-16/P-18): Vollsuite, kanonisches Semgrep-Gate, gezielte Mutationsgates auf dem finalen Stand, Governance grün
+- [x] Abschlussbericht mit vollständig abgeglichener AR/P-08-Matrix, Gate-Receipts, verbleibenden Risiken und Abnahmeempfehlung
 
 ## Abgrenzungen
 

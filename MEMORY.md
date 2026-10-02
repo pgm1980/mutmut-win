@@ -1,6 +1,6 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-10-02.
+> Last refresh: 2026-10-02 (v2.21.5 released).
 
 ## Sanierung v2.21.4 → **Programmziel: v3.0.0** (Sprints 43–47, R0–R4)
 
@@ -60,6 +60,16 @@
   Verdict-Cache wird ueber Laeufe hinweg nicht wiederverwendet
   (`tests_fingerprint` instabil bei identischen Eingaben) — Absturz/Neustart
   vernichtet alle Verdikte.
+- **v2.21.5 RELEASED (2026-10-02):** Kandidat `b47209c` (Tree `ee302345`),
+  integriert als `9e3bec8` (Merge PR #196, Baum byte-identisch), annotierter
+  Tag `v2.21.5`, GitHub-Release mit vollständiger Gate-Evidenz. Integrierte
+  Vollsuite 3599/0/43 (pytest 9.0.3 lock-exakt); ruff/format/mypy-strict/
+  import-linter grün auf Kandidat UND Integration; kanonisches Semgrep-Gate
+  PASS (31 adjudizierte Findings); pip-audit sauber bis auf dokumentierte
+  pyjwt-Dev-Abweichung (mcp-Deckelung); Wheel/sdist reproduzierbar gebaut.
+  Gate-Infrastruktur-Regel: Regex-/Node-Gate-Receipts laufen über den
+  Release-Body nach (regex-Wiederholung + Cross-File-Adjudizierung offen;
+  config dokumentiert abgebrochen).
 - **Betriebsregel für Gate-Läufe (harte Lehre 2026-10-02):** Während ein
   Mutation-Gate läuft, darf sich im Worktree **nichts** ändern — weder Commits
   noch Dateien. Der Fingerprint- und der Staging-Integritätswächter invalidieren
