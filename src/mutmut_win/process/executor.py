@@ -16,7 +16,6 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.exceptions import ProcessContainmentError, PytestBoundaryError, WorkerError
@@ -47,21 +46,6 @@ _EXIT_CODE_SUSPICIOUS: int = 35
 #: own per-task timeout instead of killing them from the executor.  Not a user
 #: knob (test-monkeypatchable).
 _STARTUP_GRACE_SECONDS: float = 60.0
-
-
-def _sweep_stale_artifacts(mutants_dir: Path) -> None:
-    """Delete leftover worker artifacts from aborted runs (issue #82 / A2-EW-007).
-
-    Kill paths can leak ``mutmut_out_*.log`` / ``mutmut_tests_*.txt`` into the
-    ``mutants/`` staging (the audit found four orphaned logs in a real tree);
-    every fresh pool start begins with a clean slate instead.
-    """
-    if not mutants_dir.is_dir():
-        return
-    for pattern in ("mutmut_out_*.log", "mutmut_tests_*.txt"):
-        for stale in mutants_dir.glob(pattern):
-            with contextlib.suppress(OSError):
-                stale.unlink()
 
 
 def _idle_grace_expired(*, remaining_tasks: int, in_flight_tasks: int, idle_elapsed: float) -> bool:
@@ -235,6 +219,12 @@ class SpawnPoolExecutor:
         boundary.  After all tasks, one ``None`` sentinel per worker is
         enqueued to signal clean shutdown.
 
+        This method never modifies the ``mutants/`` staging tree: the staging
+        evidence is frozen before it runs, and stale root files are already
+        removed pre-snapshot by ``copy_src_dir`` / ``_sync_deleted_sources``
+        (M-107 — a name-matched live project file is legitimate staging
+        content and must survive the run).
+
         Args:
             tasks: List of mutation tasks to distribute among workers.
         """
@@ -249,7 +239,6 @@ class SpawnPoolExecutor:
         # The workers repeat this check at startup and before every task.
         PytestBoundary.from_dict(raw_boundary).arguments()
 
-        _sweep_stale_artifacts(Path("mutants"))
         self._num_tasks = len(tasks)
 
         try:

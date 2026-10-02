@@ -117,15 +117,21 @@ class TestKillProcTreeOrphans:
                 proc.kill()
 
 
-class TestStartupSweepWiring:
-    def test_start_sweeps_stale_artifacts(
+class TestStartupStagingInvariant:
+    def test_start_does_not_touch_staging_files(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """M-107: pool start must not modify the frozen staging tree.
+
+        Cleanup of stale root files happens BEFORE the evidence snapshot
+        (copy_src_dir / _sync_deleted_sources); a live mirrored project file
+        matching 'mutmut_out_*' is legitimate staging content and must survive
+        the run (the old startup sweep deleted it after the snapshot)."""
         monkeypatch.chdir(tmp_path)
         mutants = tmp_path / "mutants"
         mutants.mkdir()
-        stale = mutants / "mutmut_out_stale.log"
-        stale.write_text("leftover from an aborted run", encoding="utf-8")
+        keep = mutants / "mutmut_out_project.log"
+        keep.write_text("mirrored project file", encoding="utf-8")
 
         config = MutmutConfig()
         executor = SpawnPoolExecutor(max_workers=1, config=config)
@@ -137,6 +143,7 @@ class TestStartupSweepWiring:
         executor.configure_pytest_boundary(boundary.to_dict())
         try:
             executor.start([])  # no tasks: workers drain their sentinel and exit
-            assert not stale.exists()
+            assert keep.exists()
+            assert keep.read_text(encoding="utf-8") == "mirrored project file"
         finally:
             executor.shutdown(timeout=10.0)
