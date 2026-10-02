@@ -1155,25 +1155,34 @@ class MutationOrchestrator:
         completed = 0
         total = len(tasks_with_timeouts)
 
-        executor = self._get_executor()
-        configure_boundary = getattr(executor, "configure_pytest_boundary", None)
-        if callable(configure_boundary):
-            configure_boundary(self._runner.pytest_boundary_data)
         interrupted = False
+        executor = self._get_executor()
+        # The boundary freeze/re-validation runs INSIDE this outer try/finally
+        # so a failure there cannot leak the executor's Job Object handle
+        # (M-104/M-108): shutdown() releases it on every exit path.
+        # KeyboardInterrupt stays OUTSIDE the inner interrupt handler on
+        # purpose — a Ctrl-C before any worker exists must propagate
+        # unchanged to the outer handler (run status 'interrupted', CLI
+        # exit 130) instead of being folded into the event loop's graceful
+        # interrupt accounting.
         try:
-            executor.start(tasks_with_timeouts)
-            for event in executor.get_events():
-                is_completion = _update_summary_and_persist(
-                    event, summary, self._db_path, source_data_by_file, tests_fp_by_name
-                )
-                # Only count completed/timed-out mutants, not started events.
-                if is_completion:
-                    completed += 1
-                    if not self._no_progress:
-                        _print_live_progress(completed, total, summary)
-        except KeyboardInterrupt:
-            interrupted = True
-            print("\nInterrupted — shutting down workers…")
+            configure_boundary = getattr(executor, "configure_pytest_boundary", None)
+            if callable(configure_boundary):
+                configure_boundary(self._runner.pytest_boundary_data)
+            try:
+                executor.start(tasks_with_timeouts)
+                for event in executor.get_events():
+                    is_completion = _update_summary_and_persist(
+                        event, summary, self._db_path, source_data_by_file, tests_fp_by_name
+                    )
+                    # Only count completed/timed-out mutants, not started events.
+                    if is_completion:
+                        completed += 1
+                        if not self._no_progress:
+                            _print_live_progress(completed, total, summary)
+            except KeyboardInterrupt:
+                interrupted = True
+                print("\nInterrupted — shutting down workers…")
         finally:
             # Issue #79 / A2-EW-001: shutdown must run on EVERY exit path —
             # any other exception used to leave workers and the queue feeder

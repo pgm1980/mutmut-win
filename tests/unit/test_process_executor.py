@@ -5,11 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from queue import Queue
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import mutmut_win.process.executor as executor_module
+import mutmut_win.process.job_object as job_object
 from mutmut_win.config import MutmutConfig
 from mutmut_win.exceptions import ProcessContainmentError, PytestBoundaryError
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
@@ -116,6 +119,54 @@ class _FakeMpContext:
         return "spawn"
 
 
+class _RecordingFakeQueue:
+    """Queue stub that records close() calls for rollback verification."""
+
+    def __init__(self, name: str, closed: list[str]) -> None:
+        self.name = name
+        self._closed = closed
+
+    def close(self) -> None:
+        self._closed.append(self.name)
+
+
+class _QueueFailureMpContext:
+    """Spawn-context stub whose queue constructors fail at a chosen position."""
+
+    def __init__(self, fail_at: str) -> None:
+        self._fail_at = fail_at
+        self._queue_calls = 0
+        self.created: list[str] = []
+        self.closed: list[str] = []
+
+    def _fail_if_requested(self, name: str) -> None:
+        if name == self._fail_at:
+            raise OSError(f"simulated {name} construction failure")
+
+    def _track(self, queue: _RecordingFakeQueue, name: str) -> _RecordingFakeQueue:
+        self.created.append(name)
+        return queue
+
+    def Queue(self) -> _RecordingFakeQueue:  # noqa: N802  # matches multiprocessing API
+        self._queue_calls += 1
+        name = f"queue-{self._queue_calls}"
+        self._fail_if_requested(name)
+        return self._track(_RecordingFakeQueue(name, self.closed), name)
+
+    def SimpleQueue(self) -> _RecordingFakeQueue:  # noqa: N802  # matches multiprocessing API
+        self._fail_if_requested("simple-queue")
+        return self._track(_RecordingFakeQueue("simple-queue", self.closed), "simple-queue")
+
+
+def _patch_failing_mp_context(monkeypatch: pytest.MonkeyPatch, ctx: _QueueFailureMpContext) -> None:
+    """Bind a failing spawn context without touching the global multiprocessing module."""
+    monkeypatch.setattr(
+        executor_module,
+        "multiprocessing",
+        SimpleNamespace(get_context=lambda _method: ctx),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -131,6 +182,55 @@ class TestSpawnPoolExecutorInit:
         executor = SpawnPoolExecutor(max_workers=4, config=cfg)
         assert isinstance(executor._config_data, dict)
         assert executor._config_data["max_children"] == 4
+
+
+class TestSpawnPoolExecutorInitRollback:
+    """M-108/M-104: a failure after Job Object creation must release the Job
+    handle (and every queue built so far) before the original error propagates.
+
+    Before the rollback fix each failed construction leaked the kernel handle
+    of an empty Job Object until process exit (direct API runs construct the
+    executor lazily per attempt)."""
+
+    @pytest.fixture
+    def released_job_handles(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        closed: list[int] = []
+        monkeypatch.setattr(job_object, "create_kill_on_close_job", lambda: 4242)
+        monkeypatch.setattr(job_object, "close_job", closed.append)
+        return closed
+
+    @pytest.mark.parametrize("fail_at", ["queue-1", "queue-2", "simple-queue"])
+    def test_queue_failure_releases_job_handle_and_partial_queues(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        released_job_handles: list[int],
+        fail_at: str,
+    ) -> None:
+        ctx = _QueueFailureMpContext(fail_at=fail_at)
+        _patch_failing_mp_context(monkeypatch, ctx)
+
+        with pytest.raises(OSError, match=f"simulated {fail_at}"):
+            SpawnPoolExecutor(max_workers=1, config=_config())
+
+        assert released_job_handles == [4242]
+        assert ctx.closed == ctx.created
+
+    def test_rollback_cleanup_error_never_masks_the_original_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failing close_job during the rollback must not replace the
+        constructor's original OSError (no ExitStack-style masking)."""
+        monkeypatch.setattr(job_object, "create_kill_on_close_job", lambda: 4242)
+
+        def failing_close_job(_handle: int) -> None:
+            raise RuntimeError("close_job exploded")
+
+        monkeypatch.setattr(job_object, "close_job", failing_close_job)
+        ctx = _QueueFailureMpContext(fail_at="simple-queue")
+        _patch_failing_mp_context(monkeypatch, ctx)
+
+        with pytest.raises(OSError, match="simulated simple-queue"):
+            SpawnPoolExecutor(max_workers=1, config=_config())
 
 
 class TestSpawnPoolExecutorStart:

@@ -105,6 +105,16 @@ class SpawnPoolExecutor:
         max_workers: Number of worker processes to spawn.
         config: Validated ``MutmutConfig`` instance; converted to a dict
             before being sent to child processes for pickle safety.
+
+    Raises:
+        ProcessContainmentError: On Windows, when the kill-on-close Job Object
+            cannot be created.  This stays fail-closed and happens before any
+            other allocation.
+        OSError: When the multiprocessing queues cannot be constructed after
+            the Job Object exists (handle/memory exhaustion).  In that case the
+            Job handle and every queue built so far are released and the
+            original exception is re-raised — a failed construction must not
+            leak kernel handles until process exit (M-108/M-104).
     """
 
     def __init__(self, max_workers: int, config: MutmutConfig) -> None:
@@ -125,28 +135,75 @@ class SpawnPoolExecutor:
                     "refusing to start uncontained workers."
                 ) from exc
 
-        # Use "spawn" explicitly — required on Windows, safe on all platforms.
-        self._mp_ctx = multiprocessing.get_context("spawn")
-        self._task_queue: multiprocessing.queues.Queue[dict[str, object] | None] = (
-            self._mp_ctx.Queue()
-        )
-        self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = self._mp_ctx.Queue()
-        # POSIX task subprocesses publish their process group synchronously
-        # here while blocked behind an EOF-safe pre-exec gate. Unlike
-        # Queue.put(), SimpleQueue.put() has no feeder thread; the gate releases
-        # only after the complete PGID record is visible.
-        self._containment_queue: Any = self._mp_ctx.SimpleQueue()
-        self._workers: list[multiprocessing.process.BaseProcess] = []
-        self._posix_groups_by_worker: dict[int, set[int]] = {}
-        self._posix_group_by_task: dict[str, int] = {}
-        self._num_tasks: int = 0
-        self._shutdown_done: bool = False
-        # Pool-collapse declaration (issue #127 / 360°-A7): set by
-        # ``get_events`` when every worker died while tasks were never
-        # started. The orchestrator maps it onto ``run_aborted`` so the run
-        # cannot end like a success (exit 0 / gate over the remainder).
-        self.aborted: bool = False
-        self.abort_reason: str | None = None
+        # Everything below can still fail (e.g. queue construction under
+        # handle/memory exhaustion) while the Job handle is already
+        # allocated.  Wrap the remaining initialisation in a rollback
+        # (M-108/M-104): on ANY failure release the Job and the queues
+        # built so far, then re-raise the original exception.  An
+        # ``ExitStack`` is deliberately NOT used here — a raising callback
+        # would replace the original exception.
+        queues: list[Any] = []
+        try:
+            # Use "spawn" explicitly — required on Windows, safe on all platforms.
+            self._mp_ctx = multiprocessing.get_context("spawn")
+            self._task_queue: multiprocessing.queues.Queue[dict[str, object] | None] = (
+                self._mp_ctx.Queue()
+            )
+            queues.append(self._task_queue)
+            self._event_queue: multiprocessing.queues.Queue[dict[str, object]] = (
+                self._mp_ctx.Queue()
+            )
+            queues.append(self._event_queue)
+            # POSIX task subprocesses publish their process group synchronously
+            # here while blocked behind an EOF-safe pre-exec gate. Unlike
+            # Queue.put(), SimpleQueue.put() has no feeder thread; the gate releases
+            # only after the complete PGID record is visible.
+            self._containment_queue: Any = self._mp_ctx.SimpleQueue()
+            queues.append(self._containment_queue)
+            self._workers: list[multiprocessing.process.BaseProcess] = []
+            self._posix_groups_by_worker: dict[int, set[int]] = {}
+            self._posix_group_by_task: dict[str, int] = {}
+            self._num_tasks: int = 0
+            self._shutdown_done: bool = False
+            # Pool-collapse declaration (issue #127 / 360°-A7): set by
+            # ``get_events`` when every worker died while tasks were never
+            # started. The orchestrator maps it onto ``run_aborted`` so the run
+            # cannot end like a success (exit 0 / gate over the remainder).
+            self.aborted: bool = False
+            self.abort_reason: str | None = None
+        except BaseException:
+            self._release_partial_construction(queues)
+            raise
+
+    def _release_partial_construction(self, queues: list[Any]) -> None:
+        """Best-effort rollback of a partially constructed executor.
+
+        Closes the queues built so far and releases the Job Object handle.
+        ``_job_handle`` is cleared BEFORE ``close_job`` so a failure in this
+        method can never trigger a second close of the same kernel handle
+        (``close_job`` is not idempotent).  Every cleanup error is suppressed
+        and logged: the original constructor exception must propagate
+        unchanged.  Only ``close_job`` deterministically releases the kernel
+        handle — ``Queue.close()`` without a started feeder thread is
+        best-effort and must not be relied upon as pipe cleanup.
+        """
+        for queue in queues:
+            close = getattr(queue, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("constructor rollback: closing partial queue failed: %s", exc)
+        handle, self._job_handle = self._job_handle, None
+        if handle is None:
+            return
+        from mutmut_win.process.job_object import close_job
+
+        try:
+            close_job(handle)
+        except Exception as exc:
+            logger.warning("constructor rollback: closing worker-pool Job Object failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Public API

@@ -11,7 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import CleanTestFailedError, ForcedFailError, OrchestratorError
+from mutmut_win.exceptions import (
+    CleanTestFailedError,
+    ForcedFailError,
+    OrchestratorError,
+    PytestBoundaryError,
+)
 from mutmut_win.models import (
     MutationRunResult,
     MutationTask,
@@ -894,8 +899,86 @@ class TestMutationOrchestratorKeyboardInterrupt:
             db_path=tmp_path / "db",
         )
         result = orch.run()
+
         assert result.was_interrupted is False
         assert result.unchecked == 0
+
+
+class TestBoundaryConfigurationShutsDownExecutor:
+    """M-104/M-108: a boundary failure after (lazy) executor construction must
+    still release the executor's resources.  shutdown() has to run exactly once
+    and the original exception must propagate unchanged — before the fix the
+    boundary freeze sat before the try/finally, so every failed attempt leaked
+    the executor's Job Object handle until process exit."""
+
+    @pytest.fixture(autouse=True)
+    def _cheap_stats_basis(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Skip the live installed-distribution audit for this executor-lifecycle
+        check (same rationale as the module-wide ``_stable_unit_run_basis``)."""
+        monkeypatch.setattr(
+            "mutmut_win.orchestrator.build_stats_context_fingerprint",
+            lambda *_args, **_kwargs: "b" * 64,
+        )
+
+    def _make_orch(self, tmp_path: Path, executor: MagicMock) -> MutationOrchestrator:
+        return MutationOrchestrator(
+            _config(paths_to_mutate=["src"]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "db",
+        )
+
+    def test_boundary_error_runs_shutdown_and_propagates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        executor = MagicMock()
+        executor.configure_pytest_boundary.side_effect = PytestBoundaryError("boundary drift")
+
+        with pytest.raises(PytestBoundaryError, match="boundary drift"):
+            self._make_orch(tmp_path, executor).run()
+
+        executor.shutdown.assert_called_once()
+        executor.start.assert_not_called()
+
+    def test_boundary_keyboard_interrupt_runs_shutdown_and_propagates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl-C during the boundary freeze keeps its raw-interrupt semantics
+        (outer handler marks the run 'interrupted', CLI exits 130) while the
+        finally still releases the executor."""
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        executor = MagicMock()
+        executor.configure_pytest_boundary.side_effect = KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            self._make_orch(tmp_path, executor).run()
+
+        executor.shutdown.assert_called_once()
+        executor.start.assert_not_called()
+
+    def test_event_loop_keyboard_interrupt_stays_graceful(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The inner interrupt handler must keep its exact semantics after the
+        re-nesting: a Ctrl-C from the event loop yields an 'interrupted' result
+        with shutdown called exactly once (runnable twin of
+        TestMutationOrchestratorKeyboardInterrupt, whose full-pipeline run is
+        environment-bound here)."""
+        monkeypatch.chdir(tmp_path)
+        _setup_mini_project(tmp_path)
+
+        executor = MagicMock()
+        executor.get_events.side_effect = KeyboardInterrupt
+
+        result = self._make_orch(tmp_path, executor).run()
+
+        executor.shutdown.assert_called_once()
+        assert result.was_interrupted is True
 
 
 # ---------------------------------------------------------------------------
