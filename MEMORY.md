@@ -60,6 +60,13 @@
   Verdict-Cache wird ueber Laeufe hinweg nicht wiederverwendet
   (`tests_fingerprint` instabil bei identischen Eingaben) — Absturz/Neustart
   vernichtet alle Verdikte.
+- **Betriebsregel für Gate-Läufe (harte Lehre 2026-10-02):** Während ein
+  Mutation-Gate läuft, darf sich im Worktree **nichts** ändern — weder Commits
+  noch Dateien. Der Fingerprint- und der Staging-Integritätswächter invalidieren
+  sonst den Lauf (zwei Läufe verloren: node_mutation Fingerprint-Abbruch,
+  regex_mutation Staging-Selbstinvalidierung nach 5 h). Gates, die parallel zu
+  Repo-Arbeit laufen sollen, gehören in einen SEPARATEN Worktree (z. B.
+  `mutmut-win-gate2`), dessen Checkout eingefroren bleibt.
 - **Master-Ledger (neues Abnahme-Instrument):** `R0-R4-MASTER-LEDGER.md` — alle
   **146 Gruppen** (R1=18, R2=85, R3=43; Handover-Zahlen 15/56/81 waren
   ungenau) aus 5 autoritativen Quellen; dreistufig: **35 verifiziert /
