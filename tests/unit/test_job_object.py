@@ -148,7 +148,7 @@ def _reap_root_identified_tree(
             if root.create_time() != root_create_time:
                 break  # PID reuse: never kill an unverified root
             targets = [root, *root.children(recursive=True)]
-        except (psutil.NoSuchProcess, psutil.AccessDenied):  # fmt: skip — bare PEP 758 form breaks the pinned Semgrep parser (M-004 contract)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):  # M-004: keep parens for Semgrep
             break
         fresh = [process for process in targets if process.pid not in killed]
         if not fresh:
