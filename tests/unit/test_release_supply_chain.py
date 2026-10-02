@@ -2187,8 +2187,11 @@ def test_dependency_export_body_is_path_independent_and_pinned(tmp_path: Path) -
     # boundary binds pathspec's private gitignore API; hierarchical
     # .gitignore walk pruning).  The export body pins exact versions, so
     # the tightened constraint does not change this hash.
+    # v2.21.5 (a591676): the pin moves with the deliberate urllib3
+    # 2.7.0 -> 2.8.0 security upgrade (PYSEC-2026-4175/4176/4177);
+    # the export body pins exact versions, so the hash changes with it.
     assert hashlib.sha256(bodies[0]).hexdigest() == (
-        "ac6f3bde717885b420da8a146c72400613f5c7af4bfa5200f5984b2c1d65c07e"
+        "332addca64b6450a2ad1207c362d1e8b406ad68ed90414e9fe73de55a715b7b4"
     )
 
 
