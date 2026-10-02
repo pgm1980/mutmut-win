@@ -7,13 +7,11 @@ import subprocess
 import sys
 import threading
 import time
-from typing import TYPE_CHECKING
+
+import pytest
 
 import mutmut_win.process.output_capture as output_capture_module
 from mutmut_win.process.output_capture import BoundedOutputCapture
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_capture_counts_all_bytes_but_retains_only_bounded_tail() -> None:
@@ -108,3 +106,105 @@ def test_close_drains_bytes_written_after_an_empty_read_before_stop(
     capture.close()
 
     assert capture.text() == payload.decode()
+
+
+# ---------------------------------------------------------------------------
+# M-109: exception-safe construction — no pipe-descriptor leaks on failure
+# ---------------------------------------------------------------------------
+
+
+def _recording_pipe(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Record the fd pairs created by output_capture's os.pipe calls."""
+    created: list[tuple[int, int]] = []
+    real_pipe = os.pipe
+
+    def wrapper() -> tuple[int, int]:
+        fds = real_pipe()
+        created.append(fds)
+        return fds
+
+    monkeypatch.setattr(output_capture_module.os, "pipe", wrapper)
+    return created
+
+
+def _recording_close(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record every os.close issued through output_capture's os module."""
+    closed: list[int] = []
+    real_close = os.close
+
+    def wrapper(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(output_capture_module.os, "close", wrapper)
+    return closed
+
+
+def test_failed_reader_start_closes_both_pipe_fds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thread/handle exhaustion during start() must not leak either fd."""
+    created = _recording_pipe(monkeypatch)
+    closed = _recording_close(monkeypatch)
+
+    class _StartFailsThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading, "Thread", _StartFailsThread)
+
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        BoundedOutputCapture()
+
+    read_fd, write_fd = created[0]
+    assert closed.count(read_fd) == 1
+    assert closed.count(write_fd) == 1
+
+
+def test_failed_set_blocking_closes_both_pipe_fds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _recording_pipe(monkeypatch)
+    closed = _recording_close(monkeypatch)
+
+    def failing_set_blocking(_fd: int, _blocking: bool) -> None:
+        raise OSError("simulated set_blocking failure")
+
+    monkeypatch.setattr(output_capture_module.os, "set_blocking", failing_set_blocking)
+
+    with pytest.raises(OSError, match="set_blocking"):
+        BoundedOutputCapture()
+
+    read_fd, write_fd = created[0]
+    assert closed.count(read_fd) == 1
+    assert closed.count(write_fd) == 1
+
+
+def test_interrupt_after_reader_start_leaves_read_fd_to_the_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KeyboardInterrupt racing a genuinely started reader must not double-close.
+
+    The ownership handshake decides under the lock: once the reader took
+    ``read_fd``, the abort path only closes the writer and lets the reader see
+    EOF and close ``read_fd`` exactly once in its finally."""
+    created = _recording_pipe(monkeypatch)
+    closed = _recording_close(monkeypatch)
+
+    class _InterruptAfterOwnershipThread(threading.Thread):
+        def start(self) -> None:
+            super().start()
+            capture = self._target.__self__  # type: ignore[union-attr]
+            deadline = time.monotonic() + 2.0
+            while not capture._reader_owns_fd and time.monotonic() < deadline:
+                time.sleep(0.005)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(threading, "Thread", _InterruptAfterOwnershipThread)
+
+    with pytest.raises(KeyboardInterrupt):
+        BoundedOutputCapture()
+
+    read_fd, write_fd = created[0]
+    assert closed.count(write_fd) == 1  # closed once by the abort path
+    assert closed.count(read_fd) == 1  # closed once, by the reader's finally
