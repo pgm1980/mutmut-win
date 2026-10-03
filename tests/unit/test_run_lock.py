@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ from hypothesis import strategies as st
 
 import mutmut_win.atomic_file as atomic_file_module
 import mutmut_win.process.run_lock as run_lock_module
+from mutmut_win.atomic_file import AtomicReplaceError
 from mutmut_win.process.run_lock import (
     DatabaseRunLocks,
     RunLockCorruptError,
@@ -933,3 +935,113 @@ class TestDatabaseLockInterruptSafeRelease:
         for path in database_lock_paths_for_db(database):
             with WorkspaceRunLock(path):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# M-090/M-091/M-092: acquire error taxonomy and re-acquirability
+# ---------------------------------------------------------------------------
+
+
+class TestAcquireErrorTaxonomy:
+    """Q-48 contract: acquire throws only RunLockError subclasses and the
+    lock stays re-acquirable afterwards."""
+
+    @pytest.mark.parametrize(
+        "injected",
+        [
+            AtomicReplaceError(5, "simulated sharing violation"),
+            OSError(errno.ENOSPC, "disk full"),
+            PermissionError(5, "access denied"),
+        ],
+        ids=["replace", "enospc", "permission"],
+    )
+    def test_owner_publication_failure_is_a_run_lock_domain_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        injected: OSError,
+    ) -> None:
+        """M-091: AtomicReplaceError and raw OSError from _write_owner used
+        to escape as raw tracebacks — now they are RunLockUnavailableError."""
+        import mutmut_win.process.run_lock as run_lock
+
+        lock_path = tmp_path / "ws.run.lock"
+
+        def failing_write(*_args: object, **_kwargs: object) -> None:
+            raise injected
+
+        monkeypatch.setattr(run_lock, "atomic_write_bytes", failing_write)
+        with pytest.raises(run_lock.RunLockError):
+            run_lock.WorkspaceRunLock(lock_path).acquire()
+        monkeypatch.undo()
+
+        # Guard released: a fresh acquire succeeds.
+        run_lock.WorkspaceRunLock(lock_path).acquire().release()
+
+    def test_unsafe_still_maps_to_corrupt_not_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Except-order pin: UnsafeAtomicWriteError must stay RunLockCorruptError."""
+        import mutmut_win.process.run_lock as run_lock
+        from mutmut_win.atomic_file import UnsafeAtomicWriteError
+
+        def failing_write(*_args: object, **_kwargs: object) -> None:
+            raise UnsafeAtomicWriteError("simulated unsafe")
+
+        monkeypatch.setattr(run_lock, "atomic_write_bytes", failing_write)
+        with pytest.raises(run_lock.RunLockCorruptError):
+            run_lock.WorkspaceRunLock(tmp_path / "ws.run.lock").acquire()
+
+    def test_failure_after_owner_publication_does_not_poison_reacquire(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """M-092: a failure AFTER the 'acquired' record was published must
+        retract it, otherwise the still-living process blocks itself."""
+        import mutmut_win.process.run_lock as run_lock
+
+        lock_path = tmp_path / "ws.run.lock"
+        real_write = run_lock.atomic_write_bytes
+        calls = {"count": 0}
+
+        def write_then_fail(path: Path, payload: bytes, **kwargs: object) -> None:
+            calls["count"] += 1
+            real_write(path, payload, **kwargs)
+            if calls["count"] == 1:
+                raise run_lock.RunLockCorruptError(f"simulated post-publication failure at {path}")
+
+        monkeypatch.setattr(run_lock, "atomic_write_bytes", write_then_fail)
+        with pytest.raises(run_lock.RunLockError):
+            run_lock.WorkspaceRunLock(lock_path).acquire()
+        monkeypatch.undo()
+
+        # Without M-092 this raises RunLockHeldError (own PID still ACTIVE).
+        run_lock.WorkspaceRunLock(lock_path).acquire().release()
+
+    def test_priming_write_collision_is_a_domain_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """M-090: a mandatory byte-range lock on byte 0 makes the priming
+        write fail; the resulting OSError used to escape raw."""
+        import mutmut_win.process.run_lock as run_lock
+
+        lock_path = tmp_path / "ws.run.lock"
+
+        real_write = run_lock.os.write
+
+        def locked_write(fd: int, data: bytes) -> int:
+            raise OSError(errno.EACCES, "simulated byte-range lock collision")
+
+        monkeypatch.setattr(run_lock.os, "write", locked_write)
+        with pytest.raises(run_lock.RunLockError):
+            run_lock.WorkspaceRunLock(lock_path).acquire()
+        monkeypatch.undo()
+
+        # Guard was closed: a fresh acquire succeeds (the file already has
+        # a priming byte from a competing scenario or is size 0 again).
+        run_lock.WorkspaceRunLock(lock_path).acquire().release()
