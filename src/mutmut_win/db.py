@@ -958,8 +958,9 @@ def begin_run(
         conn.execute(
             """
             INSERT INTO mutation_run
-                (run_id, status, started_at, basis_fingerprint, basis_config_json, is_full_run)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (run_id, status, started_at, basis_fingerprint, basis_config_json,
+                 is_full_run, plan_finalized)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 run_id,
@@ -1592,6 +1593,10 @@ def load_latest_run_results(
     immutable run snapshot and every still-planned name is represented as
     ``not checked``. Old databases with no run records retain their historical
     display behaviour.
+
+    M-097: the run-existence decision and the legacy fallback read happen
+    over ONE connection with a deferred transaction, so a concurrent run
+    start cannot split the decision from the results snapshot.
     """
     from pydantic import ValidationError
 
@@ -1636,6 +1641,7 @@ def save_result(
     tests_fingerprint: str | None = None,
     *,
     require_planned: bool = False,
+    ensure_schema: bool = True,
 ) -> None:
     """Persist a single mutation result (upsert semantics).
 
@@ -1670,6 +1676,7 @@ def save_result(
             )
         ],
         require_planned=require_planned,
+        ensure_schema=ensure_schema,
     )
 
 
@@ -1688,6 +1695,7 @@ def save_results(
     ],
     *,
     require_planned: bool = False,
+    ensure_schema: bool = True,
 ) -> None:
     """Persist many mutation results over ONE connection (issue #132 / C1).
 
@@ -1700,6 +1708,12 @@ def save_results(
     Args:
         path: Filesystem path to the SQLite database file.
         rows: Result tuples; ``forensics`` is serialised to JSON here.
+        require_planned: Reject rows whose mutant is not in the active plan.
+        ensure_schema: Run :func:`create_db` (schema migration + validation)
+            before writing. The streaming event loop sets this to False
+            after the schema was validated once per run — each verdict
+            used to cost 2 SQLite connections, a full schema walk, and
+            15 filesystem tree validations for zero benefit (M-094).
     """
     prepared: list[_PreparedResult] = []
     for mutant_name, status, exit_code, duration, last_output, forensics, fingerprint in rows:
@@ -1716,7 +1730,8 @@ def save_results(
         )
     if not prepared:
         return
-    create_db(path)
+    if ensure_schema:
+        create_db(path)
     with _write_transaction(path) as conn:
         active_run_id = _active_run_id(conn)
         if require_planned and active_run_id is None:
