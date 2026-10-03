@@ -1722,3 +1722,135 @@ class TestConfiguredLinkPruning:
             for _source, destination in _iter_configured_staging_inputs(config, frozenset())
         ]
         assert not any(destination.name == "linked.py" for destination in planned)
+
+
+# ---------------------------------------------------------------------------
+# M-087: preflight key/resolve economies
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightEconomies:
+    """M-087: the preflight computes each staging key once per role and
+    resolves each walked directory at most twice (candidate + own step)."""
+
+    def test_automatic_key_computation_is_k_invariant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        for index in range(30):
+            (tmp_path / f"root{index:02d}.json").write_text("{}", encoding="utf-8")
+        for name in (
+            "fixtures_a",
+            "fixtures_b",
+            "fixtures_c",
+            "fixtures_d",
+            "fixtures_e",
+            "fixtures_f",
+        ):
+            fixture = tmp_path / name
+            fixture.mkdir()
+            (fixture / "data.txt").write_text("x", encoding="utf-8")
+
+        import mutmut_win.file_setup as file_setup_module
+
+        real_key = file_setup_module._staging_key
+        counts: dict[tuple[str, ...], int] = {}
+
+        def counting_key(path: Path) -> tuple[str, ...]:
+            key = real_key(path)
+            counts[key] = counts.get(key, 0) + 1
+            return key
+
+        def measure(configured: list[str]) -> dict[tuple[str, ...], int]:
+            counts.clear()
+            monkeypatch.setattr(file_setup_module, "_staging_key", counting_key)
+            try:
+                file_setup_module.validate_staging_namespace(
+                    MutmutConfig(paths_to_mutate=["src"], also_copy=list(configured))
+                )
+            finally:
+                monkeypatch.setattr(file_setup_module, "_staging_key", real_key)
+            return dict(counts)
+
+        with_one = measure(["fixtures_a"])
+        with_six = measure(
+            ["fixtures_a", "fixtures_b", "fixtures_c", "fixtures_d", "fixtures_e", "fixtures_f"]
+        )
+        # Before M-087 the automatic inputs were re-keyed once per configured
+        # root (O(N x K)); now every key is computed the same number of times
+        # regardless of how many configured roots exist.
+        automatic_keys = {
+            key for key in with_one if key and key[0] in {"src", "root02.json", "root29.json"}
+        }
+        for key in automatic_keys:
+            assert with_one[key] == with_six.get(key, 0), (
+                f"key {key} recomputed per configured root: {with_one[key]} vs {with_six.get(key)}"
+            )
+
+    def test_automatic_planner_resolves_each_directory_at_most_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        for part in ("a", "a/b", "a/b/c"):
+            directory = tmp_path / part
+            directory.mkdir()
+            (directory / "leaf.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+
+        import mutmut_win.file_setup as file_setup_module
+
+        real_resolve = Path.resolve
+        calls: dict[str, int] = {}
+
+        def counting_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            result = real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+            try:
+                absolute = str(real_resolve(self)).replace("\\", "/")
+                key = absolute.split("pytest-of-")[-1] if "pytest-of-" in absolute else absolute
+                calls[key] = calls.get(key, 0) + 1
+            except OSError:
+                pass
+            return result
+
+        monkeypatch.setattr(Path, "resolve", counting_resolve)
+        try:
+            list(file_setup_module._iter_automatic_staging_inputs(frozenset()))
+        finally:
+            monkeypatch.setattr(Path, "resolve", real_resolve)
+
+        import os.path as osp
+
+        for directory in ("a", "a/b", "a/b/c"):
+            resolved_calls = sum(
+                count
+                for key, count in calls.items()
+                if osp.normcase(key).endswith(osp.normcase(directory).replace("\\", "/"))
+            )
+            assert resolved_calls <= 2, (
+                f"directory {directory} resolved {resolved_calls} times per run (M-087: <= 2)"
+            )
+
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            (Path("tests"), Path("tests"), True),
+            (Path("tests"), Path("tests/deep"), True),
+            (Path("tests/deep"), Path("tests"), True),
+            (Path("tests/a"), Path("tests/b"), False),
+            (Path(), Path(), True),
+            (Path(), Path("src"), False),
+        ],
+    )
+    def test_staging_keys_overlap_matches_target_semantics(
+        self, left: Path, right: Path, expected: bool
+    ) -> None:
+        from mutmut_win.file_setup import (
+            _staging_key,
+            _staging_keys_overlap,
+            _staging_targets_overlap,
+        )
+
+        assert _staging_keys_overlap(_staging_key(left), _staging_key(right)) is expected
+        assert _staging_targets_overlap(left, right) is expected

@@ -273,7 +273,11 @@ def _iter_mirror_walk_entries(
                     )
                     dirs[:] = []
                     continue
-                source_directory.resolve(strict=True).relative_to(project_root)
+                # M-087: one strict resolve per step is the TOCTOU containment
+                # proof AND the workspace-root test — the second, non-strict
+                # resolve of the same directory was pure overhead.
+                resolved_directory = source_directory.resolve(strict=True)
+                resolved_directory.relative_to(project_root)
             except (OSError, ValueError) as exc:
                 skipped(source_directory, f"cannot prove project containment ({exc})")
                 dirs[:] = []
@@ -281,7 +285,7 @@ def _iter_mirror_walk_entries(
             # Skip cache/venv/tooling directories (issue #129 / 360°-C4) and
             # git-ignored subtrees (MBR-2026-09-14-01).
             safe_dirs: list[str] = []
-            at_workspace_root = source_directory.resolve() == project_root
+            at_workspace_root = resolved_directory == project_root
             for directory in dirs:
                 if _is_staging_skip_dir(directory, at_workspace_root=at_workspace_root):
                     continue
@@ -1037,15 +1041,26 @@ def _helper_owner_for_target(
     active_helpers: dict[str, str],
     import_roots: Sequence[Path],
     is_directory: bool = False,
+    target_key: tuple[str, ...] | None = None,
+    import_root_keys: Sequence[tuple[str, ...]] | None = None,
 ) -> str | None:
-    """Return the internal owner shadowed by one planned import target."""
+    """Return the internal owner shadowed by one planned import target.
 
-    key = _staging_key(target)
-    for configured_root in import_roots:
-        import_root = _staging_key(configured_root)
-        if key[: len(import_root)] != import_root or len(key) <= len(import_root):
+    *target_key* / *import_root_keys* (M-087) allow callers inside the
+    namespace preflight to pass the staging keys they already computed;
+    without them the keys are derived here exactly as before.
+    """
+
+    key = _staging_key(target) if target_key is None else target_key
+    root_keys = (
+        [_staging_key(configured_root) for configured_root in import_roots]
+        if import_root_keys is None
+        else list(import_root_keys)
+    )
+    for import_root_key in root_keys:
+        if key[: len(import_root_key)] != import_root_key or len(key) <= len(import_root_key):
             continue
-        remainder = key[len(import_root) :]
+        remainder = key[len(import_root_key) :]
         first = remainder[0]
         for module_name, owner in active_helpers.items():
             # M-084: fold with the same identity function as the key itself
@@ -1209,14 +1224,24 @@ def _iter_missing_configured_staging_roots(
         yield source, destination
 
 
-def _staging_targets_overlap(left: Path, right: Path) -> bool:
-    """Return whether either staging target contains the other on Windows."""
+def _staging_keys_overlap(
+    left_key: tuple[str, ...],
+    right_key: tuple[str, ...],
+) -> bool:
+    """Return whether either staging key contains the other on Windows.
 
-    left_key = _staging_key(left)
-    right_key = _staging_key(right)
+    Key-based twin of the former ``_staging_targets_overlap`` (M-087): the
+    callers precompute the keys once and reuse them across the O(N x K)
+    preflight loops instead of re-deriving them per comparison.
+    """
     if not left_key or not right_key:
         return left_key == right_key
     return left_key[: len(right_key)] == right_key or right_key[: len(left_key)] == left_key
+
+
+def _staging_targets_overlap(left: Path, right: Path) -> bool:
+    """Return whether either staging target contains the other on Windows."""
+    return _staging_keys_overlap(_staging_key(left), _staging_key(right))
 
 
 def _mapped_live_input(root_source: Path, root_target: Path, target: Path) -> Path | None:
@@ -1286,10 +1311,19 @@ def validate_staging_namespace(
         _iter_automatic_staging_inputs(frozen_exclusions, forced_roots=forced_roots)
     )
     configured_inputs = list(_iter_configured_staging_inputs(config, frozen_exclusions))
-    planned_inputs = itertools.chain(automatic_inputs, configured_inputs)
+    # M-087: every staging key below is computed exactly once. The preflight
+    # used to re-derive keys inside the O(N x K) loops (per automatic input
+    # per configured root) and again after _staging_targets_overlap.
+    automatic_keyed = [
+        (source, target, _staging_key(target)) for source, target in automatic_inputs
+    ]
+    configured_input_keyed = [
+        (source, target, _staging_key(target)) for source, target in configured_inputs
+    ]
+    import_root_keys = [_staging_key(root) for root in import_roots]
+    planned_inputs = itertools.chain(automatic_keyed, configured_input_keyed)
     target_owners: dict[tuple[str, ...], tuple[Path, str]] = {}
-    for source, target in planned_inputs:
-        target_key = _staging_key(target)
+    for source, target, target_key in planned_inputs:
         previous = target_owners.get(target_key)
         if previous is not None:
             relation = _live_input_relation(previous[0], source)
@@ -1314,22 +1348,25 @@ def validate_staging_namespace(
                 )
         else:
             target_owners[target_key] = (source, str(source))
-        owner = exact_owners.get(_staging_key(target))
+        owner = exact_owners.get(target_key)
         if owner is None:
             owner = _helper_owner_for_target(
                 target,
                 active_helpers=active_helpers,
                 import_roots=import_roots,
                 is_directory=source.is_dir(),
+                target_key=target_key,
+                import_root_keys=import_root_keys,
             )
         if owner is not None:
             collisions.add((str(target), str(source), owner))
 
     configured_roots = list(_iter_configured_staging_roots(config, frozen_exclusions))
-    for configured_source, configured_target in configured_roots:
-        configured_key = _staging_key(configured_target)
-        for automatic_source, automatic_target in automatic_inputs:
-            automatic_key = _staging_key(automatic_target)
+    configured_root_keyed = [
+        (source, target, _staging_key(target)) for source, target in configured_roots
+    ]
+    for configured_source, configured_target, configured_key in configured_root_keyed:
+        for automatic_source, automatic_target, automatic_key in automatic_keyed:
             if automatic_key[: len(configured_key)] == configured_key:
                 expected_source = _mapped_live_input(
                     configured_source,
@@ -1369,10 +1406,8 @@ def validate_staging_namespace(
                         )
                     )
 
-    for index, (left_source, left_target) in enumerate(configured_roots):
-        left_key = _staging_key(left_target)
-        for right_source, right_target in configured_roots[index + 1 :]:
-            right_key = _staging_key(right_target)
+    for index, (left_source, left_target, left_key) in enumerate(configured_root_keyed):
+        for right_source, right_target, right_key in configured_root_keyed[index + 1 :]:
             if right_key[: len(left_key)] == left_key:
                 mapped_left = _mapped_live_input(left_source, left_target, right_target)
                 if mapped_left is not None and _same_live_input(mapped_left, right_source):
@@ -1399,21 +1434,22 @@ def validate_staging_namespace(
         _iter_missing_configured_staging_roots(config, frozen_exclusions)
     )
     for missing_source, missing_target in missing_configured_roots:
-        owner = exact_owners.get(_staging_key(missing_target))
+        missing_key = _staging_key(missing_target)
+        owner = exact_owners.get(missing_key)
         if owner is None:
             owner = _helper_owner_for_target(
                 missing_target,
                 active_helpers=active_helpers,
                 import_roots=import_roots,
+                target_key=missing_key,
+                import_root_keys=import_root_keys,
             )
         if owner is not None:
             collisions.add((str(missing_target), str(missing_source), owner))
 
-        for automatic_source, automatic_target in automatic_inputs:
-            if not _staging_targets_overlap(missing_target, automatic_target):
+        for automatic_source, automatic_target, automatic_key in automatic_keyed:
+            if not _staging_keys_overlap(missing_key, automatic_key):
                 continue
-            automatic_key = _staging_key(automatic_target)
-            missing_key = _staging_key(missing_target)
             if missing_key[: len(automatic_key)] == automatic_key:
                 mapped_source = _mapped_live_input(
                     automatic_source,
@@ -1431,11 +1467,9 @@ def validate_staging_namespace(
                     f"automatic project input {automatic_source}",
                 )
             )
-        for configured_source, configured_target in configured_roots:
-            if not _staging_targets_overlap(missing_target, configured_target):
+        for configured_source, configured_target, configured_key in configured_root_keyed:
+            if not _staging_keys_overlap(missing_key, configured_key):
                 continue
-            configured_key = _staging_key(configured_target)
-            missing_key = _staging_key(missing_target)
             if missing_key[: len(configured_key)] == configured_key:
                 mapped_source = _mapped_live_input(
                     configured_source,
