@@ -600,145 +600,170 @@ class MutationOrchestrator:
                         finish_run(self._db_path, self._active_run_id, "failed")
             raise
 
-        if self._active_run_id is None:
-            # Every real pipeline path starts a persisted plan.  Treat drift
-            # between that invariant and the implementation as a product bug.
-            raise OrchestratorError("mutation run completed without a persisted run identity")
+        # M-105: the finalization window (terminal-status branching, basis
+        # verification, evidence deauthorization, finish_run) runs AFTER the
+        # pipeline handlers — a Ctrl-C here used to leave the run 'running'
+        # with stale reuse fingerprints. The same revoke-first pattern as
+        # the pipeline interrupt handler closes it as 'interrupted'.
+        try:
+            if self._active_run_id is None:
+                # Every real pipeline path starts a persisted plan.  Treat drift
+                # between that invariant and the implementation as a product bug.
+                raise OrchestratorError("mutation run completed without a persisted run identity")
 
-        # M-003: set degraded_files centrally, right after the pipeline and
-        # before any terminal-status branching (independent of early returns).
-        result.degraded_files = list(self._generation_degradations)
-        surface_complete = not result.degraded_files
+            # M-003: set degraded_files centrally, right after the pipeline and
+            # before any terminal-status branching (independent of early returns).
+            result.degraded_files = list(self._generation_degradations)
+            surface_complete = not result.degraded_files
 
-        if result.was_interrupted:
-            terminal_status = "interrupted"
-        elif result.run_aborted or result.total_mutants == 0:
-            terminal_status = "aborted"
-        else:
-            terminal_status = "completed"
-        if terminal_status == "completed":
-            execution_basis_deauthorized = False
-            try:
-                with _watched_basis_phase(
-                    "Verifying execution basis after the run…",
-                    "Execution basis verified",
-                ):
-                    live_basis = self._stable_run_basis_evidence()
-            except OrchestratorError:
-                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
-                finish_run(self._db_path, self._active_run_id, "failed")
-                raise
-            basis_changed = live_basis != basis_evidence
-            if basis_changed and not _only_ambient_basis_changed(
-                basis_evidence,
-                live_basis,
-            ):
-                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
-                finish_run(self._db_path, self._active_run_id, "failed")
-                if not live_basis.core_complete:
-                    raise OrchestratorError(
-                        "the execution basis could not be completely observed "
-                        "after the mutation run (transiently locked or unreadable "
-                        "inputs); the run was recorded as failed and cannot "
-                        "authorize CI/CD export; rerun with --basis-diagnostics"
-                    )
-                raise OrchestratorError(
-                    "source, test, configuration, or project-contained import "
-                    "inputs changed during the mutation run; "
-                    "the run was recorded as failed and cannot authorize CI/CD export"
-                )
-
-            # A diagnostic-only basis never grants a reusable verdict, even
-            # when its two end snapshots happen to be byte-for-byte equal.
-            # Otherwise freshly executed rows from this run retain their
-            # tests_fingerprint and silently regain authority in a later,
-            # stable run.  Revoke both the current-run and historical
-            # fingerprints atomically before publishing the terminal state.
-            if basis_changed or not basis_evidence.complete:
+            if result.was_interrupted:
+                terminal_status = "interrupted"
+            elif result.run_aborted or result.total_mutants == 0:
+                terminal_status = "aborted"
+            else:
+                terminal_status = "completed"
+            if terminal_status == "completed":
+                execution_basis_deauthorized = False
                 try:
-                    deauthorize_active_run_evidence(
-                        self._db_path,
-                        self._active_run_id,
-                    )
-                except Exception as exc:
-                    reason = (
-                        "ambient execution inputs changed"
-                        if basis_changed
-                        else "the initial execution basis was diagnostic-only"
-                    )
+                    with _watched_basis_phase(
+                        "Verifying execution basis after the run…",
+                        "Execution basis verified",
+                    ):
+                        live_basis = self._stable_run_basis_evidence()
+                except OrchestratorError:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                    finish_run(self._db_path, self._active_run_id, "failed")
+                    raise
+                basis_changed = live_basis != basis_evidence
+                if basis_changed and not _only_ambient_basis_changed(
+                    basis_evidence,
+                    live_basis,
+                ):
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                    finish_run(self._db_path, self._active_run_id, "failed")
+                    if not live_basis.core_complete:
+                        raise OrchestratorError(
+                            "the execution basis could not be completely observed "
+                            "after the mutation run (transiently locked or unreadable "
+                            "inputs); the run was recorded as failed and cannot "
+                            "authorize CI/CD export; rerun with --basis-diagnostics"
+                        )
                     raise OrchestratorError(
-                        f"{reason} and its evidence authority could not be revoked; "
+                        "source, test, configuration, or project-contained import "
+                        "inputs changed during the mutation run; "
+                        "the run was recorded as failed and cannot authorize CI/CD export"
+                    )
+
+                # A diagnostic-only basis never grants a reusable verdict, even
+                # when its two end snapshots happen to be byte-for-byte equal.
+                # Otherwise freshly executed rows from this run retain their
+                # tests_fingerprint and silently regain authority in a later,
+                # stable run.  Revoke both the current-run and historical
+                # fingerprints atomically before publishing the terminal state.
+                if basis_changed or not basis_evidence.complete:
+                    try:
+                        deauthorize_active_run_evidence(
+                            self._db_path,
+                            self._active_run_id,
+                        )
+                    except Exception as exc:
+                        reason = (
+                            "ambient execution inputs changed"
+                            if basis_changed
+                            else "the initial execution basis was diagnostic-only"
+                        )
+                        raise OrchestratorError(
+                            f"{reason} and its evidence authority could not be revoked; "
+                            "the run remains running for revoke-first recovery"
+                        ) from exc
+                    execution_basis_deauthorized = True
+                    if basis_changed:
+                        print(
+                            "The ambient interpreter, dependency, or environment basis "
+                            "changed during this run. Diagnostic results were preserved, "
+                            "but verdict reuse, --min-score, and CI/CD export are disabled."
+                        )
+                    else:
+                        print(
+                            "The initial execution basis remained diagnostic-only. "
+                            "Results were preserved, but every current and historical "
+                            "verdict-reuse capability was revoked."
+                        )
+
+                # M-003: an incomplete mutation surface revokes export/score
+                # authority via the NARROW revocation — verdict reuse stays intact
+                # so follow-up runs do not re-execute every mutant.
+                if not surface_complete and not execution_basis_deauthorized:
+                    try:
+                        revoke_active_run_export_authority(
+                            self._db_path,
+                            self._active_run_id,
+                        )
+                    except Exception as exc:
+                        raise OrchestratorError(
+                            f"the mutation surface was incomplete "
+                            f"({len(result.degraded_files)} file(s) could not be mutated) "
+                            "and its evidence authority could not be revoked; the run "
+                            "remains running for revoke-first recovery"
+                        ) from exc
+                    print(
+                        f"{len(result.degraded_files)} file(s) could not be mutated "
+                        "(mutation surface incomplete); --min-score and CI/CD export "
+                        "are disabled for this run. Exclude them via do_not_mutate "
+                        "to accept the reduced surface."
+                    )
+            else:
+                execution_basis_deauthorized = False
+                try:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                except Exception as exc:
+                    raise OrchestratorError(
+                        "could not revoke cached-verdict reuse after an incomplete run; "
                         "the run remains running for revoke-first recovery"
                     ) from exc
-                execution_basis_deauthorized = True
-                if basis_changed:
-                    print(
-                        "The ambient interpreter, dependency, or environment basis "
-                        "changed during this run. Diagnostic results were preserved, "
-                        "but verdict reuse, --min-score, and CI/CD export are disabled."
+            try:
+                finish_run(self._db_path, self._active_run_id, terminal_status)
+            except Exception as exc:
+                # ``completed`` refuses pending work. Preserve that evidence by
+                # closing the run as failed, then surface a clean domain failure.
+                try:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                except Exception as revoke_exc:
+                    raise OrchestratorError(
+                        f"could not finalize mutation run {self._active_run_id!r}; "
+                        "cached-verdict reuse revocation also failed, so the run remains "
+                        f"running for recovery: {revoke_exc}"
+                    ) from exc
+                with contextlib.suppress(Exception):
+                    finish_run(self._db_path, self._active_run_id, "failed")
+                raise OrchestratorError(
+                    f"could not finalize mutation run {self._active_run_id!r}: {exc}"
+                ) from exc
+            result.execution_basis_complete = (
+                terminal_status == "completed"
+                and basis_evidence.complete
+                and not execution_basis_deauthorized
+                and surface_complete
+            )
+
+        except KeyboardInterrupt as interrupt:
+            # M-105: a Ctrl-C in the finalization window (basis verification,
+            # evidence deauthorization, finish_run) must not leave the run
+            # 'running' with stale fingerprints — the same revoke-first pattern
+            # as the pipeline interrupt handler applies.
+            if self._active_run_id is not None:
+                try:
+                    invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
+                except Exception as exc:
+                    interrupt.add_note(
+                        "cached-verdict reuse revocation failed; the run remains running "
+                        f"for recovery: {exc}"
                     )
                 else:
-                    print(
-                        "The initial execution basis remained diagnostic-only. "
-                        "Results were preserved, but every current and historical "
-                        "verdict-reuse capability was revoked."
-                    )
+                    with contextlib.suppress(Exception):
+                        finish_run(self._db_path, self._active_run_id, "interrupted")
+            raise
 
-            # M-003: an incomplete mutation surface revokes export/score
-            # authority via the NARROW revocation — verdict reuse stays intact
-            # so follow-up runs do not re-execute every mutant.
-            if not surface_complete and not execution_basis_deauthorized:
-                try:
-                    revoke_active_run_export_authority(
-                        self._db_path,
-                        self._active_run_id,
-                    )
-                except Exception as exc:
-                    raise OrchestratorError(
-                        f"the mutation surface was incomplete "
-                        f"({len(result.degraded_files)} file(s) could not be mutated) "
-                        "and its evidence authority could not be revoked; the run "
-                        "remains running for revoke-first recovery"
-                    ) from exc
-                print(
-                    f"{len(result.degraded_files)} file(s) could not be mutated "
-                    "(mutation surface incomplete); --min-score and CI/CD export "
-                    "are disabled for this run. Exclude them via do_not_mutate "
-                    "to accept the reduced surface."
-                )
-        else:
-            execution_basis_deauthorized = False
-            try:
-                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
-            except Exception as exc:
-                raise OrchestratorError(
-                    "could not revoke cached-verdict reuse after an incomplete run; "
-                    "the run remains running for revoke-first recovery"
-                ) from exc
-        try:
-            finish_run(self._db_path, self._active_run_id, terminal_status)
-        except Exception as exc:
-            # ``completed`` refuses pending work. Preserve that evidence by
-            # closing the run as failed, then surface a clean domain failure.
-            try:
-                invalidate_cached_reuse_for_run(self._db_path, self._active_run_id)
-            except Exception as revoke_exc:
-                raise OrchestratorError(
-                    f"could not finalize mutation run {self._active_run_id!r}; "
-                    "cached-verdict reuse revocation also failed, so the run remains "
-                    f"running for recovery: {revoke_exc}"
-                ) from exc
-            with contextlib.suppress(Exception):
-                finish_run(self._db_path, self._active_run_id, "failed")
-            raise OrchestratorError(
-                f"could not finalize mutation run {self._active_run_id!r}: {exc}"
-            ) from exc
-        result.execution_basis_complete = (
-            terminal_status == "completed"
-            and basis_evidence.complete
-            and not execution_basis_deauthorized
-            and surface_complete
-        )
         return result
 
     def _recover_abandoned_run(self) -> None:
@@ -799,8 +824,7 @@ class MutationOrchestrator:
         # in non-interactive contexts (CI/CD, piped output, editors).
         # Without this, print() output accumulates in a buffer and the user
         # sees no progress for minutes.
-        if not sys.stdout.line_buffering:
-            sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+        _ensure_line_buffered_stdout()
         _ensure_tolerant_stdout()
 
         # Announce the active operator profile once per run (operator roadmap).
@@ -2265,6 +2289,29 @@ def _warn_missing_json_flag(type_check_command: list[str]) -> None:
             f"flag — the report parser will abort. Add {hint}.",
             file=sys.stderr,
         )
+
+
+def _ensure_line_buffered_stdout() -> None:
+    """Best-effort line buffering for stdout; never aborts a run (M-106).
+
+    A Python API caller inside ``contextlib.redirect_stdout(io.StringIO())``
+    used to crash the pipeline: ``StringIO.line_buffering`` is False but it
+    has no ``reconfigure`` — the raw ``AttributeError`` escaped before any
+    mutant was generated. Decorative output must never kill a run: streams
+    without the attribute, without ``reconfigure``, ``sys.stdout is None``
+    (pythonw), and failing reconfigure calls are all silently tolerated.
+    """
+    import sys
+
+    stream = sys.stdout
+    if stream is None:
+        return
+    if getattr(stream, "line_buffering", True):
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        with contextlib.suppress(OSError, ValueError):
+            reconfigure(line_buffering=True)
 
 
 def _ensure_tolerant_stdout() -> None:
