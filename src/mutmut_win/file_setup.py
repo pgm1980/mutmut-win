@@ -1761,8 +1761,14 @@ def _mirror_is_stale(source: Path, target: Path, *, retain_generated: bool = Tru
 
 
 def _content_hash(path: Path) -> str:
-    """Return the SHA-256 digest of a file's exact bytes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Return the SHA-256 digest of a file's exact bytes.
+
+    Streams through :func:`hashlib.file_digest` (M-070): the digest needs
+    O(1) memory regardless of file size, so freshness checks on follow-up
+    runs never load the largest file into memory as a whole.
+    """
+    with path.open("rb") as file_handle:
+        return hashlib.file_digest(file_handle, "sha256").hexdigest()
 
 
 def read_verified_generated_bytes(

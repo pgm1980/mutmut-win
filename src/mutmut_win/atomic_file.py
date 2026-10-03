@@ -15,6 +15,10 @@ import secrets
 import stat
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class UnsafeAtomicWriteError(OSError):
@@ -450,17 +454,62 @@ def _fsync_parent(path: Path, expected: FileIdentity) -> None:
 
 
 def _cleanup_owned_temp(path: Path | None, identity: FileIdentity | None) -> None:
+    """Remove the own failed private sibling, lifting read-only when provably safe.
+
+    A read-only source produces a read-only sibling whose ``unlink`` raises
+    ``PermissionError`` on Windows (M-068); every replace retry used to leave
+    another hidden corpse.  The attribute is lifted only on a leaf that
+    provably is still ours — regular, no link/reparse, path-view
+    ``st_nlink == 1``, identity unchanged, and ``S_IWRITE`` missing — because
+    the DOS read-only attribute applies to every hardlink of the file.  The
+    cleanup stays silent: it must never mask the original publication error,
+    and the residual TOCTOU window between ``lstat`` and ``chmod`` is
+    consciously accepted (same precedent as
+    ``file_setup._retry_readonly_removal``).
+    """
     if path is None or identity is None:
         return
     try:
         current = path.lstat()
-    except FileNotFoundError:
-        return
     except OSError:
         return
-    if _identity(current) == identity:
+    if _identity(current) != identity:
+        return
+    try:
+        path.unlink()
+        return
+    except PermissionError:
+        pass
+    except OSError:
+        return
+    # Read-only corpse (M-068): only the provably own, regular, singly
+    # linked, non-reparse, read-only leaf may be made writable again.
+    if not (
+        stat.S_ISREG(current.st_mode)
+        and not stat.S_ISLNK(current.st_mode)
+        and not _is_reparse_point(current)
+        and current.st_nlink == 1
+        and current.st_mode & stat.S_IWRITE == 0
+    ):
+        return
+    try:
+        path.chmod(stat.S_IMODE(current.st_mode) | stat.S_IWRITE, follow_symlinks=False)
+    except OSError:
+        return
+    try:
+        rechecked = path.lstat()
+    except OSError:
+        return
+    if _identity(rechecked) != identity or rechecked.st_nlink != 1:
+        # Swapped or linked in the residual window: restore, give up, stay silent.
         with contextlib.suppress(OSError):
-            path.unlink()
+            path.chmod(stat.S_IMODE(current.st_mode), follow_symlinks=False)
+        return
+    try:
+        path.unlink()
+    except OSError:
+        with contextlib.suppress(OSError):
+            path.chmod(stat.S_IMODE(current.st_mode), follow_symlinks=False)
 
 
 class _ProbeResult(enum.Enum):
@@ -652,12 +701,19 @@ def _regular_file_matches_bytes(path: Path, payload: bytes) -> bool:
 
 def _atomic_write_attempt(
     path: Path,
-    payload: bytes,
+    write_payload: Callable[[int], None],
     parent_identity: FileIdentity,
     mode: int | None,
     timestamps_ns: tuple[int, int] | None,
 ) -> None:
-    """Run one complete publication attempt with a fresh private sibling."""
+    """Run one complete publication attempt with a fresh private sibling.
+
+    The payload reaches the sibling through *write_payload*, which receives
+    the open sibling fd (M-070): byte payloads wrap ``_write_all`` while the
+    streaming copy reads its source in bounded chunks — either way the
+    sibling content is complete before fsync, the source close, and the
+    replace.
+    """
     fd: int | None = None
     temp_path: Path | None = None
     temp_identity: FileIdentity | None = None
@@ -667,7 +723,7 @@ def _atomic_write_attempt(
         if mode is not None:
             temp_path.chmod(mode, follow_symlinks=False)
             _checked_temp(temp_path, temp_identity)
-        _write_all(fd, payload)
+        write_payload(fd)
         if timestamps_ns is not None:
             if os.utime in os.supports_follow_symlinks:
                 os.utime(temp_path, ns=timestamps_ns, follow_symlinks=False)
@@ -770,12 +826,30 @@ def atomic_write_bytes(
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
+    _atomic_write_with_retry(
+        path,
+        lambda fd: _write_all(fd, payload),
+        parent_identity=parent_identity,
+        mode=mode,
+        timestamps_ns=timestamps_ns,
+    )
+
+
+def _atomic_write_with_retry(
+    path: Path,
+    write_payload: Callable[[int], None],
+    *,
+    parent_identity: FileIdentity,
+    mode: int | None,
+    timestamps_ns: tuple[int, int] | None,
+) -> None:
+    """Publish through *write_payload*, retrying only replace races."""
     delays = (0.0, *_REPLACE_RETRY_DELAYS)
     for index, delay in enumerate(delays):
         if delay:
             time.sleep(delay)
         try:
-            _atomic_write_attempt(path, payload, parent_identity, mode, timestamps_ns)
+            _atomic_write_attempt(path, write_payload, parent_identity, mode, timestamps_ns)
             return
         except AtomicReplaceError:
             if index == len(delays) - 1:
@@ -941,34 +1015,55 @@ def create_exclusive_random_bytes(
                 _cleanup_owned_temp(path, identity)
 
 
+_COPY_CHUNK_BYTES = 1 << 20
+
+
 def atomic_copy_file(source: Path, destination: Path) -> None:
     """Copy a regular file through the safe atomic publication path.
 
-    The source is read through one open handle and checked for identity/size/
-    mtime changes before its bytes are published.  Mode and timestamps are
-    applied to the private sibling, never to an existing destination leaf.
+    The copy streams in bounded chunks (M-070): the source is never held in
+    memory as a whole, so the peak requirement is one chunk instead of the
+    largest single file.  Each publication attempt re-opens the source as a
+    plain Python file object and verifies identity, size and mtime against a
+    baseline captured before the attempt; after the last chunk it re-verifies
+    and compares the copied byte count before the sibling is published.  The
+    source is closed before the replace.  Mode and timestamps are applied to
+    the private sibling, never to an existing destination leaf.
     """
     source = Path(source)
-    with source.open("rb") as source_file:
-        before = os.fstat(source_file.fileno())
-        if not stat.S_ISREG(before.st_mode):
+    with source.open("rb") as probe:
+        baseline = os.fstat(probe.fileno())
+        if not stat.S_ISREG(baseline.st_mode):
             raise OSError(f"atomic copy source is not a regular file: {source}")
-        payload = source_file.read()
-        after = os.fstat(source_file.fileno())
 
-    if (
-        _identity(before) != _identity(after)
-        or before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or len(payload) != after.st_size
-    ):
-        raise OSError(f"atomic copy source changed while it was being read: {source}")
+    def write_payload(fd: int) -> None:
+        with source.open("rb") as source_file:
+            before = os.fstat(source_file.fileno())
+            if (
+                _identity(before) != _identity(baseline)
+                or before.st_size != baseline.st_size
+                or before.st_mtime_ns != baseline.st_mtime_ns
+            ):
+                raise OSError(f"atomic copy source changed while it was being read: {source}")
+            copied = 0
+            while chunk := source_file.read(_COPY_CHUNK_BYTES):
+                _write_all(fd, chunk)
+                copied += len(chunk)
+            after = os.fstat(source_file.fileno())
+        if (
+            _identity(after) != _identity(baseline)
+            or after.st_size != baseline.st_size
+            or after.st_mtime_ns != baseline.st_mtime_ns
+            or copied != after.st_size
+        ):
+            raise OSError(f"atomic copy source changed while it was being read: {source}")
 
-    atomic_write_bytes(
-        destination,
-        payload,
-        mode=stat.S_IMODE(after.st_mode),
-        timestamps_ns=(after.st_atime_ns, after.st_mtime_ns),
+    _atomic_write_with_retry(
+        Path(destination),
+        write_payload,
+        parent_identity=_capture_parent_identity(Path(destination)),
+        mode=stat.S_IMODE(baseline.st_mode),
+        timestamps_ns=(baseline.st_atime_ns, baseline.st_mtime_ns),
     )
 
 
