@@ -327,9 +327,7 @@ class TestForcedFailOptionOrder:
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir(exist_ok=True)
-        runner = PytestRunner(
-            MutmutConfig(pytest_add_cli_args=["--tb=no", "-rN"])
-        )
+        runner = PytestRunner(MutmutConfig(pytest_add_cli_args=["--tb=no", "-rN"]))
         captured: dict[str, list[str]] = {}
 
         def fake_run_phase(_name: str, cmd: list[str], *_args: object, **_kwargs: object) -> int:
