@@ -570,7 +570,13 @@ def pytest_runtest_makereport(item, call):
 
         if not excinfo.errisinstance(MutmutProgrammaticFailException):
             return
-        atomic_write_bytes(Path(proof_path), proof_token.encode("utf-8"))
+        # M-130 fix: use a PLAIN file write, not atomic_write_bytes.
+        # atomic_write_bytes is a trampolined function in the staged
+        # module — under MUTANT_UNDER_TEST=fail it raises before writing,
+        # silently swallowing the proof publication. The proof file needs
+        # no atomicity: the consumer reads it once after the process exits.
+        with open(proof_path, "wb") as proof_handle:
+            proof_handle.write(proof_token.encode("utf-8"))
     except Exception:
         pass
 
