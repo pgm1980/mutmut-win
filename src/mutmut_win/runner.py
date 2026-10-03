@@ -703,29 +703,50 @@ class PytestRunner:
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
         env["COLUMNS"] = "200"
-        exit_code = self._run_phase(
-            "forced-fail verification",
-            cmd,
-            env,
-            timeout=self._config.forced_fail_timeout,
-            timeout_hint="forced_fail_timeout",
-        )
-        if exit_code == 36:
-            # A hung suite proves nothing about the trampoline — no verdict.
-            # The captured tail is still published: what the child printed
-            # before hanging is the only lead for diagnosing the stall
-            # (issue #192).
-            timeout_tail = self._last_diagnostic_output
-            if timeout_tail:
-                print(
-                    f"--- forced-fail output before timeout (tail) ---\n{timeout_tail}",
-                    flush=True,
-                )
-            self._forced_fail_attributed = None
-            return exit_code
-        self._forced_fail_attributed = exit_code != 0 and FORCED_FAIL_MARKER in (
-            self._last_diagnostic_output or ""
-        )
+        # M-130: the attribution comes from the structured trampoline proof,
+        # not from a substring in the diagnostic tail. The phase-guard
+        # plugin publishes an unpredictable token to a parent-owned runtime
+        # path exactly once when a FAILED report's exception is the
+        # trampoline's MutmutProgrammaticFailException — a test merely
+        # NAMED after the exception, or an xfail, cannot satisfy it, and
+        # terminal suppression (-p no:terminal, --no-summary) cannot hide
+        # it. The proof is armed inside the phase runtime directory so it
+        # never touches the hashed staging tree.
+        from mutmut_win.process.worker import prepare_forced_fail_proof
+
+        proof_path: Path | None = None
+        proof_token: str | None = None
+        with tempfile.TemporaryDirectory(
+            prefix="mutmut-win-ffproof-", ignore_cleanup_errors=True
+        ) as proof_runtime_name:
+            proof_path, proof_token = prepare_forced_fail_proof(env, Path(proof_runtime_name))
+            exit_code = self._run_phase(
+                "forced-fail verification",
+                cmd,
+                env,
+                timeout=self._config.forced_fail_timeout,
+                timeout_hint="forced_fail_timeout",
+            )
+            if exit_code == 36:
+                # A hung suite proves nothing about the trampoline — no verdict.
+                # The captured tail is still published: what the child printed
+                # before hanging is the only lead for diagnosing the stall
+                # (issue #192).
+                timeout_tail = self._last_diagnostic_output
+                if timeout_tail:
+                    print(
+                        f"--- forced-fail output before timeout (tail) ---\n{timeout_tail}",
+                        flush=True,
+                    )
+                self._forced_fail_attributed = None
+                return exit_code
+            from mutmut_win.process.worker import consume_forced_fail_proof
+
+            if proof_path is None or proof_token is None:  # pragma: no cover - always set above
+                proof_ok = False
+            else:
+                proof_ok = consume_forced_fail_proof(proof_path, proof_token)
+        self._forced_fail_attributed = exit_code != 0 and proof_ok
         return exit_code
 
     # ------------------------------------------------------------------
