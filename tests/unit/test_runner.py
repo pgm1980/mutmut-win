@@ -322,7 +322,7 @@ class TestCollectTests:
         assert cmd.count("-v") == 1
 
     def test_collection_pins_test_case_verbosity_after_user_args(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """M-124: node-ID output is pinned regardless of user verbosity.
 
