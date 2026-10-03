@@ -13,9 +13,13 @@ import logging
 import multiprocessing
 import multiprocessing.queues
 import os
+import shutil
+import stat
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mutmut_win.exceptions import ProcessContainmentError, PytestBoundaryError, WorkerError
@@ -76,6 +80,36 @@ class _EventLoopState:
     progress_observed: bool = False
     last_progress_monotonic: float = field(default_factory=time.monotonic)
     fatal_completion: bool = False
+
+
+def _remove_runtime_root(root: Path) -> None:
+    """Remove one parent-managed run runtime root (M-146).
+
+    ``shutil.rmtree`` on Windows does not traverse directory reparse points
+    (junctions/symlinked directories): they are unlinked like files, so user
+    test code that places a junction inside its runtime directory cannot
+    redirect this deletion at an outside tree.  Read-only files are common in
+    test fixtures; the ``onexc`` handler clears the attribute and retries the
+    failed operation (mirrors :mod:`tempfile` internals).  Windows may briefly
+    lock files of just-terminated processes, so the whole removal runs with a
+    bounded retry.
+    """
+
+    def _reset_readonly(function: Any, path: str, _excinfo: object) -> None:
+        with contextlib.suppress(OSError):
+            Path(path).chmod(stat.S_IWRITE)
+        function(path)
+
+    for attempt in range(3):
+        try:
+            shutil.rmtree(root, onexc=_reset_readonly)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(0.2)
 
 
 class SpawnPoolExecutor:
@@ -149,6 +183,10 @@ class SpawnPoolExecutor:
             self._posix_group_by_task: dict[str, int] = {}
             self._num_tasks: int = 0
             self._shutdown_done: bool = False
+            # M-146: parent-managed run runtime root, created in start() and
+            # removed by shutdown() after the pool Job close. None until the
+            # pool starts (and again after successful removal).
+            self._runtime_root: Path | None = None
             # Pool-collapse declaration (issue #127 / 360°-A7): set by
             # ``get_events`` when every worker died while tasks were never
             # started. The orchestrator maps it onto ``run_aborted`` so the run
@@ -225,8 +263,19 @@ class SpawnPoolExecutor:
         (M-107 — a name-matched live project file is legitimate staging
         content and must survive the run).
 
+        Before the first worker spawns, a parent-managed run runtime root
+        (``mutmut-win-run-*``) is created and published to the workers as
+        ``_worker_runtime_root``; every per-task worker runtime directory
+        lives under it so ``shutdown`` can remove the whole tree — including
+        the directories of workers hard-killed at the shutdown deadline
+        (M-146). The method is one-shot; a second call is refused.
+
         Args:
             tasks: List of mutation tasks to distribute among workers.
+
+        Raises:
+            RuntimeError: When called twice (the existing root would be
+                orphaned).
         """
         raw_boundary = self._config_data.get("_pytest_boundary")
         if raw_boundary is None:
@@ -240,6 +289,19 @@ class SpawnPoolExecutor:
         PytestBoundary.from_dict(raw_boundary).arguments()
 
         self._num_tasks = len(tasks)
+
+        # M-146: the parent-managed run runtime root exists before any worker
+        # spawns, so every per-task worker runtime directory (also those of
+        # workers later hard-killed at the shutdown deadline) lives under one
+        # removable tree. start() is one-shot; a second call would orphan the
+        # first root and is refused.
+        if self._runtime_root is not None:
+            raise RuntimeError(
+                "SpawnPoolExecutor.start() called twice: the run runtime root "
+                "already exists and would be orphaned."
+            )
+        self._runtime_root = Path(tempfile.mkdtemp(prefix="mutmut-win-run-"))
+        self._config_data["_worker_runtime_root"] = str(self._runtime_root)
 
         try:
             # Workers are spawned against an empty queue. On Windows the
@@ -266,6 +328,14 @@ class SpawnPoolExecutor:
                 with contextlib.suppress(Exception):
                     worker.join(timeout=5.0)
             self._workers.clear()
+            # The failed start owns nothing: release the root as well, best
+            # effort — cleanup problems must never mask the original error.
+            root = self._runtime_root
+            self._runtime_root = None
+            self._config_data.pop("_worker_runtime_root", None)
+            if root is not None:
+                with contextlib.suppress(Exception):
+                    _remove_runtime_root(root)
             raise
 
     def _make_worker_process(self) -> multiprocessing.process.BaseProcess:
@@ -625,6 +695,13 @@ class SpawnPoolExecutor:
         at interpreter exit forever (issue #79 / A2-EW-001).  Losing the
         buffered task data is intended at shutdown.  Safe to call repeatedly.
 
+        After a successful pool Job close — and only then — the run runtime
+        root (``mutmut-win-run-*``, M-146) is removed, covering the runtime
+        directories of workers that were hard-killed at the deadline and ran
+        neither ``finally`` blocks nor finalizers.  When the Job close itself
+        fails, the root is left in place for forensics (bounded leak of one
+        directory) because pytest children may still hold files under it.
+
         Args:
             timeout: Shared deadline in seconds for the graceful join of all
                 workers before resorting to ``kill()``.
@@ -694,6 +771,7 @@ class SpawnPoolExecutor:
 
         handle = self._job_handle
         self._job_handle = None
+        pool_job_close_failed = False
         if handle is not None:
 
             def close_pool_job() -> None:
@@ -701,7 +779,11 @@ class SpawnPoolExecutor:
 
                 close_job(handle)
 
-            attempt("close worker-pool Job Object", close_pool_job)
+            try:
+                close_pool_job()
+            except BaseException as exc:
+                pool_job_close_failed = True
+                cleanup_errors.append(("close worker-pool Job Object", exc))
 
         for worker in workers:
             try:
@@ -712,6 +794,27 @@ class SpawnPoolExecutor:
                     )
             except BaseException as exc:
                 cleanup_errors.append(("inspect worker before close", exc))
+
+        # M-146: only after a successful pool Job close are the workers and
+        # their pytest descendants provably terminated, so only then can the
+        # run runtime root be removed safely. With the Job close failed the
+        # root stays for forensics — a bounded, documented leak of exactly
+        # one directory — instead of fighting locks of live children.
+        # getattr: shutdown stays safe on partially constructed executors
+        # (tests bypass __init__; the constructor rollback may have run).
+        runtime_root = getattr(self, "_runtime_root", None)
+        if runtime_root is not None:
+            self._runtime_root = None
+            if pool_job_close_failed:
+                logger.error(
+                    "worker runtime root left in place after failed pool Job close (M-146): %s",
+                    runtime_root,
+                )
+            else:
+                attempt(
+                    "remove worker runtime root",
+                    lambda: _remove_runtime_root(runtime_root),
+                )
 
         for label, cleanup_exc in cleanup_errors:
             logger.error("executor shutdown cleanup failed (%s): %s", label, cleanup_exc)

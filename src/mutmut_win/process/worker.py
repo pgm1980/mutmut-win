@@ -1166,8 +1166,26 @@ def _process_task(
     # so the runtime directory never waits for the finalizer.
     runtime_context: tempfile.TemporaryDirectory[str] | None = None
     try:
+        # M-146: when the executor supplies a parent-managed run runtime root,
+        # every per-task runtime directory lives under it. Hard-killed workers
+        # (TerminateProcess after the shared shutdown deadline) run neither
+        # finally blocks nor finalizers, so per-task directories directly in
+        # the system temp leak; under the root the pool shutdown removes the
+        # whole tree after the Job close. The key is optional: direct
+        # worker_main callers (tests, diagnostics) keep the historical
+        # system-temp behaviour.
+        runtime_root_raw = config_data.get("_worker_runtime_root")
+        runtime_root: Path | None = None
+        if runtime_root_raw is not None:
+            runtime_root = Path(str(runtime_root_raw))
+            if not runtime_root.is_absolute() or not runtime_root.is_dir():
+                raise WorkerEnvironmentError(
+                    "The worker runtime root from the executor configuration is "
+                    f"not an existing absolute directory: {runtime_root_raw!r} (M-146)."
+                )
         runtime_context = tempfile.TemporaryDirectory(
             prefix="mutmut-win-worker-runtime-",
+            dir=runtime_root,
             ignore_cleanup_errors=True,
         )
         runtime_dir = Path(runtime_context.name)

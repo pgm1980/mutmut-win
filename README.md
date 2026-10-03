@@ -658,6 +658,18 @@ uv run --no-sync python -I scripts/semgrep_release_gate.py  # pinned, fail-close
 mutmut-win runs its own mutation testing on itself (dogfooding) as part
 of its release gates.
 
+### Temporary directories
+
+A run creates one parent-managed runtime root (`mutmut-win-run-*`) in the
+system temp; every worker's per-task runtime directory (pytest cache,
+hypothesis storage, phase-guard markers) lives under it, and a normal
+shutdown removes the whole tree after the worker-pool Job close — this
+also covers workers that had to be hard-killed at the shutdown deadline
+(M-146). Two documented exceptions can leave exactly one such root
+behind: a hard abort of the *parent* process itself, and a failed pool
+Job close (kept for forensics). Orphaned `mutmut-win-run-*` directories
+are safe to delete while no mutmut-win run is active.
+
 ### Release policy
 
 Releases are demand-driven — there is no calendar cadence. A release

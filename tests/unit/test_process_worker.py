@@ -1037,3 +1037,83 @@ class TestConsumePhaseGuard:
             marker.write_bytes(payload)
             assert consume_pytest_phase_guard(marker, token) is (payload == token.encode())
             assert not marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# M-146: parent-managed runtime root
+# ---------------------------------------------------------------------------
+
+
+class TestParentManagedRuntimeRoot:
+    """M-146: per-task runtime directories must live under the executor root.
+
+    A hard-killed worker (TerminateProcess after the shared shutdown
+    deadline) runs neither ``finally`` blocks nor finalizers, so per-task
+    directories created directly in the system temp leak. With a
+    parent-managed root the pool shutdown removes the whole tree after the
+    Job close — covering exactly those hard-killed workers.
+    """
+
+    def test_task_runtime_dir_lives_under_parent_runtime_root(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        run_root = tmp_path / "run-root"
+        run_root.mkdir()
+        seen_marker: list[Path] = []
+
+        def fake_popen(*_args: object, **kwargs: object) -> MagicMock:
+            env = kwargs.get("env")
+            assert isinstance(env, dict)
+            marker = env["MUTMUT_PYTEST_PHASE_SENTINEL_PATH"]
+            token = env["MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"]
+            assert isinstance(marker, str)
+            assert isinstance(token, str)
+            Path(marker).write_text(token, encoding="utf-8")
+            seen_marker.append(Path(marker))
+            return _make_popen_mock(0)
+
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        with patch("mutmut_win.process.worker.subprocess.Popen", side_effect=fake_popen):
+            worker_main(
+                task_q,
+                event_q,
+                _make_config(_worker_runtime_root=str(run_root)),  # type: ignore[arg-type]
+            )
+
+        assert seen_marker, "the fake Popen must have observed the runtime dir"
+        marker_parent = seen_marker[0].parent
+        assert marker_parent.is_relative_to(run_root), (
+            f"runtime dir {marker_parent} must live under the run root {run_root}"
+        )
+
+    def test_invalid_runtime_root_is_fatal_environment_error(self) -> None:
+        """M-146: a configured but unusable root is a host misconfiguration.
+
+        It must surface as one fatal WorkerEnvironmentError recovery event
+        (M-065 semantics), never as a per-mutant suspicious row.
+        """
+        task_q: _SimpleQueue = _SimpleQueue()
+        event_q: _SimpleQueue = _SimpleQueue()
+        task_q.put(_simple_task())
+        task_q.put(None)
+
+        with patch(
+            "mutmut_win.process.worker.subprocess.Popen",
+            side_effect=_popen_with_phase_proof(0),
+        ):
+            worker_main(
+                task_q,
+                event_q,
+                _make_config(_worker_runtime_root="Z:/no/such/run-root"),  # type: ignore[arg-type]
+            )
+
+        completed = TaskCompleted.model_validate(event_q.get())
+        assert completed.exit_code == 35
+        assert completed.fatal is True
+        assert "WorkerEnvironmentError" in (completed.last_output or "")
+        assert event_q.empty()
