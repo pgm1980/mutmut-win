@@ -93,6 +93,26 @@ def _with_isolated_pytest_cache(cmd: list[str], cache_dir: str) -> list[str]:
     ]
 
 
+def _with_pinned_collection_verbosity(cmd: list[str]) -> list[str]:
+    """Insert the node-ID verbosity pin before the internal target separator.
+
+    M-124: pytest prints ``--collect-only`` node IDs only when the effective
+    test-case verbosity is exactly ``-1``; any user ``-v``/``-o
+    verbosity_test_cases=...`` (also via ``PYTEST_ADDOPTS`` or the frozen
+    boundary config) silently switched the output to counts or a collector
+    tree, emptying the inventory. The pin sits AFTER every user-controlled
+    argument — a later ``-o`` for the same key wins — and before ``--`` so
+    the argfile separator stays findable.
+    """
+    separator = cmd.index("--") if "--" in cmd else len(cmd)
+    return [
+        *cmd[:separator],
+        "-o",
+        "verbosity_test_cases=-1",
+        *cmd[separator:],
+    ]
+
+
 def _with_pytest_target_argfile(cmd: list[str], runtime_dir: Path) -> list[str]:
     """Move the internal target tail into one invocation-owned argument file.
 
@@ -459,7 +479,11 @@ class PytestRunner:
         cmd.extend(self._configured_pytest_args())
         cmd.extend(self._pytest_target_args())
 
-        env: dict[str, str] | None = None
+        # M-125: both branches build an explicit child environment. The
+        # fallback used to pass env=None, so the child inherited the full
+        # parent environment — PYTEST_ADDOPTS acted a second time next to
+        # its argv expansion, and the ephemeral isolation variables were
+        # missing entirely.
         if staging_exists:
             env = self._mutants_env()
             env[MUTANT_ENV_VAR] = ""
@@ -467,20 +491,21 @@ class PytestRunner:
             # Verify-only guard republication: collection runs after the
             # staging evidence snapshot (M-011).
             prepare_pytest_collection_guard(replace_unverifiable=False)
+        else:
+            env = os.environ.copy()
+            env.pop("PYTEST_ADDOPTS", None)
+            env["PYTHONIOENCODING"] = "utf-8"
 
         with tempfile.TemporaryDirectory(
             prefix="mutmut-win-pytest-runtime-",
             ignore_cleanup_errors=True,
         ) as runtime_name:
             runtime_dir = Path(runtime_name)
-            if env is not None:
-                env = env.copy()
-                cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
-            else:
-                cache_dir = runtime_dir / "pytest-cache"
-                cache_dir.mkdir()
+            env = env.copy()
+            cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
+            isolated_cmd = _with_pinned_collection_verbosity(isolated_cmd)
             isolated_cmd = _with_pytest_target_argfile(isolated_cmd, runtime_dir)
             result = _run_collection_process(
                 isolated_cmd,
@@ -950,6 +975,13 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     """Atomically publish a complete mapping after a successful session."""
     if exitstatus != 0:
         return
+    # M-126: fill the duration map with every collected node ID. Skip and
+    # xfail decisions land in the setup phase, so the call-phase hook never
+    # sees those items; without the fill-up the incremental stats diff
+    # reported them as "new tests" on every run and forced a full
+    # re-collection forever. Measured durations are never overwritten.
+    for nodeid in _collected_test_ids:
+        _duration_by_test.setdefault(nodeid, 0.0)
     for func_name in _collection_hits:
         _tests_by_func[func_name].update(_collected_test_ids)
     payload = {

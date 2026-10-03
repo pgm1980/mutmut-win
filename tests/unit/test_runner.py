@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -287,21 +288,68 @@ class TestCollectTests:
         assert env["PYTHONIOENCODING"] == "utf-8"
         assert env["MUTANT_UNDER_TEST"] == ""
 
-    def test_fallback_passes_inherited_env(
+    def test_fallback_builds_isolated_env_without_addopts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Without staging there is no env override — the subprocess must
-        # inherit the parent environment (env=None), not an empty one.
+        """M-125: the fallback builds an explicit isolated environment.
+
+        Without staging the child used to inherit the full parent
+        environment: PYTEST_ADDOPTS acted twice (argv expansion plus the
+        inherited variable) and the ephemeral isolation variables were
+        missing entirely.
+        """
         isolated = tmp_path / "isolated"
         isolated.mkdir()
         monkeypatch.chdir(isolated)
+        monkeypatch.setenv("PYTEST_ADDOPTS", "-v")
         runner = PytestRunner(_config())
         with patch(
             "mutmut_win.runner._run_collection_process",
-            return_value=_make_completed_process(0, stdout=""),
+            return_value=_make_completed_process(0, stdout="tests/a.py::t\n"),
         ) as mock_run:
             runner.collect_tests()
-        assert mock_run.call_args[1].get("env") is None
+        env = mock_run.call_args[1]["env"]
+        assert env is not None, "fallback must pass an explicit environment"
+        assert "PYTEST_ADDOPTS" not in env
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert "PYTHONPYCACHEPREFIX" in env
+        assert "HYPOTHESIS_STORAGE_DIRECTORY" in env
+        assert "COVERAGE_FILE" in env
+        assert os.environ.get("PYTEST_ADDOPTS") == "-v", "parent env must stay untouched"
+        cmd = mock_run.call_args[0][0]
+        # PYTEST_ADDOPTS acts exactly once: through the validated argv
+        # expansion (the inherited child variable is gone).
+        assert cmd.count("-v") == 1
+
+    def test_collection_pins_test_case_verbosity_after_user_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-124: node-ID output is pinned regardless of user verbosity.
+
+        With any effective test-case verbosity other than -1, pytest's
+        --collect-only prints counts or a collector tree instead of node
+        IDs — silently emptying the inventory and forcing a full stats
+        re-collection on every run. The pin must therefore sit AFTER all
+        user, PYTEST_ADDOPTS, and boundary arguments (later -o wins) and
+        BEFORE the internal target separator.
+        """
+        monkeypatch.setenv("PYTEST_ADDOPTS", "-vv")
+        runner = PytestRunner(_config(pytest_add_cli_args=["-v", "-o", "verbosity_test_cases=2"]))
+        with patch(
+            "mutmut_win.runner._run_collection_process",
+            return_value=_make_completed_process(0, stdout="tests/a.py::t1\n"),
+        ) as mock_run:
+            runner.collect_tests()
+        cmd = mock_run.call_args[0][0]
+        head = cmd[: cmd.index("--")]
+        overrides = [
+            head[i + 1]
+            for i, arg in enumerate(head)
+            if arg == "-o" and head[i + 1].startswith("verbosity_test_cases=")
+        ]
+        assert overrides, "a verbosity_test_cases pin must be present"
+        assert overrides[-1] == "verbosity_test_cases=-1"
+        assert head.index("-v") < len(head) - 2
 
     def test_filter_pins_summary_and_warning_prefixes(self) -> None:
         # Only '='-summaries and UPPERCASE pytest WARNINGs are filtered; a
@@ -505,3 +553,73 @@ class TestRunCoverageCollection:
         with _phase_popen(1):
             rc = runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
         assert rc == 1
+
+
+class TestStatsPluginZeroFill:
+    """M-126: collected but never-called tests publish a 0.0 duration.
+
+    Skip/xfail decisions land in the setup phase, so the call-phase report
+    hook never sees them; without a fill-up the incremental stats diff
+    saw "new tests" on every run and re-collected forever.
+    """
+
+    def _load_plugin(self, tmp_path: Path):
+        import importlib.util
+
+        PytestRunner._write_stats_plugin(tmp_path)
+        plugin_path = tmp_path / "_mutmut_stats_plugin.py"
+        spec = importlib.util.spec_from_file_location("mutmut_stats_plugin_under_test", plugin_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_plugin_publishes_zero_duration_for_collected_but_not_called_tests(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+        from types import SimpleNamespace
+
+        plugin = self._load_plugin(tmp_path)
+        import mutmut_win._state as state_module
+
+        state_module._stats.clear()
+        session = SimpleNamespace(
+            items=[
+                SimpleNamespace(nodeid="t.py::a"),
+                SimpleNamespace(nodeid="t.py::skip"),
+            ]
+        )
+        generator = plugin.pytest_collection_finish(session)
+        next(generator)
+        with pytest.raises(StopIteration):
+            next(generator)
+        plugin.pytest_runtest_makereport(
+            SimpleNamespace(nodeid="t.py::a"),
+            SimpleNamespace(when="call", duration=0.5),
+        )
+        plugin.pytest_runtest_makereport(
+            SimpleNamespace(nodeid="t.py::skip"),
+            SimpleNamespace(when="setup", duration=0.001),
+        )
+        output = tmp_path / "stats-out.json"
+        monkeypatch.setenv("MUTMUT_STATS_OUTPUT_PATH", str(output))
+        plugin.pytest_sessionfinish(session, 0)
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        assert payload["duration_by_test"] == {"t.py::a": 0.5, "t.py::skip": 0.0}
+        assert payload["stats_time"] == pytest.approx(0.5)
+
+    def test_failed_session_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        plugin = self._load_plugin(tmp_path)
+        session = SimpleNamespace(items=[SimpleNamespace(nodeid="t.py::a")])
+        generator = plugin.pytest_collection_finish(session)
+        next(generator)
+        with pytest.raises(StopIteration):
+            next(generator)
+        output = tmp_path / "stats-out.json"
+        monkeypatch.setenv("MUTMUT_STATS_OUTPUT_PATH", str(output))
+        plugin.pytest_sessionfinish(session, 1)
+        assert not output.exists()
