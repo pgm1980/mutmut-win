@@ -625,7 +625,7 @@ class ResultBrowser(App[None]):
                     from rich.syntax import Syntax
 
                     d = _get_diff_for_mutant(request.mutant_name, path=request.path)
-                    content: VisualType = Syntax(d, "diff")  # type: ignore[no-any-return]
+                    content: VisualType = Syntax(d, "diff")
                 except Exception as exc:
                     from rich.text import Text as RichText
 
