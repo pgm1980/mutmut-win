@@ -343,6 +343,30 @@ def _is_staging_skip_dir(name: str, *, at_workspace_root: bool) -> bool:
     )
 
 
+def _is_configured_entry_skipped(path: Path, relative_destination: Path) -> bool:
+    """Return whether one configured entry is subject to the skip lists (M-081).
+
+    The workspace-root-only names (build, dist, html, _docs,
+    bug_reporting, ...) apply only to entries whose staging DESTINATION
+    sits at root level; a nested entry like ``tests/data/build`` is
+    force-included exactly as the also_copy contract declares. Recursive
+    names (.venv, .git, mutants, caches) stay excluded at every depth
+    (Bug #67). The name keeps coming from *path* so 8.3/case aliases of
+    the entry itself behave unchanged, and ``..`` siblings (collapsed to
+    their base name, one destination part) remain root entries.
+
+    Args:
+        path: The configured entry path (name source).
+        relative_destination: The entry's staged relative destination.
+
+    Returns:
+        True when the entry must be skipped by all five configured-entry
+        consumers (planner, roots, missing roots, mirror destinations,
+        copier).
+    """
+    return _is_staging_skip_dir(path.name, at_workspace_root=len(relative_destination.parts) <= 1)
+
+
 def _is_link_or_reparse(path: Path) -> bool:
     metadata = path.lstat()
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -955,6 +979,8 @@ def _iter_configured_staging_inputs(
         if destination is None:
             planned_entries.append((path, destination, None))  # type: ignore[arg-type]
             continue
+        if _is_configured_entry_skipped(path, destination):
+            continue
         planned_entries.append((path, destination, _staging_key(destination)))
     for entry_index, (path, destination, entry_key) in enumerate(planned_entries):
         if entry_key is None:
@@ -970,8 +996,6 @@ def _iter_configured_staging_inputs(
             # Ancestor destinations do not own this entry's subtree.
             and entry_key[: len(other_key)] != other_key
         )
-        if _is_staging_skip_dir(path.name, at_workspace_root=True):
-            continue
         try:
             resolved_path = path.resolve()
             if resolved_path in (project_root, mutants_root):
@@ -1179,7 +1203,7 @@ def _iter_configured_staging_roots(
     for raw in (*config.also_copy, *config.extra_paths):
         path = Path(raw)
         destination = configured_staging_relative_path(path, project_root=project_root)
-        if destination is None or _is_staging_skip_dir(path.name, at_workspace_root=True):
+        if destination is None or _is_configured_entry_skipped(path, destination):
             continue
         try:
             source = path.resolve(strict=True)
@@ -1208,7 +1232,7 @@ def _iter_missing_configured_staging_roots(
     for raw in (*config.also_copy, *config.extra_paths):
         path = Path(raw)
         destination = configured_staging_relative_path(path, project_root=project_root)
-        if destination is None or _is_staging_skip_dir(path.name, at_workspace_root=True):
+        if destination is None or _is_configured_entry_skipped(path, destination):
             continue
         if path.exists():
             continue
@@ -2171,17 +2195,17 @@ def _configured_mirror_destinations(
     project_root = Path.cwd().resolve()
     for raw in (*config.also_copy, *config.extra_paths):
         path = Path(raw)
-        if _is_staging_skip_dir(path.name, at_workspace_root=True):
+        relative_destination = configured_staging_relative_path(
+            path,
+            project_root=project_root,
+        )
+        if relative_destination is None or _is_configured_entry_skipped(path, relative_destination):
             continue
         try:
             if path.resolve() in (Path.cwd().resolve(), mutants_root):
                 continue
         except (OSError, RuntimeError):  # fmt: skip
             continue
-        relative_destination = configured_staging_relative_path(
-            path,
-            project_root=project_root,
-        )
         if relative_destination is None:
             continue
         destination = Path("mutants") / relative_destination
@@ -2387,8 +2411,9 @@ def copy_also_copy_files(
         # The walk filter inside _sync_tree only skips *children*, so a
         # top-level entry like ``also_copy = [".venv"]`` would otherwise be
         # mirrored wholesale — slow at best, broken on Windows because of
-        # symlinked Scripts/python.exe.
-        if _is_staging_skip_dir(path.name, at_workspace_root=True):
+        # symlinked Scripts/python.exe. Root-only names apply to root-level
+        # entries only; a nested ``tests/data/build`` is force-included (M-081).
+        if _is_configured_entry_skipped(path, relative_destination):
             print("     skipping", path_str, "(matches venv/cache skip list)")
             continue
         # Guard 2 (issue #101 / A3-FD-005): "." and mutants/ itself defeat the

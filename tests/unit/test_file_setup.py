@@ -1854,3 +1854,94 @@ class TestPreflightEconomies:
 
         assert _staging_keys_overlap(_staging_key(left), _staging_key(right)) is expected
         assert _staging_targets_overlap(left, right) is expected
+
+
+# ---------------------------------------------------------------------------
+# M-081: depth-aware workspace-root skip for configured entries
+# ---------------------------------------------------------------------------
+
+
+class TestConfiguredEntryDepth:
+    """M-081: root-only skip names apply to configured entries at root depth.
+
+    A nested ``also_copy``/``extra_paths`` entry like ``tests/data/build``
+    used to be discarded by the depth-blind workspace-root guard although
+    configured entries are force-included by declaration; only entries whose
+    STAGING DESTINATION sits at root level (or ``..`` siblings collapsed to
+    their base name) are subject to the root-only names, while the recursive
+    set (.venv, .git, mutants, caches) stays excluded at every depth.
+    """
+
+    @pytest.mark.parametrize("name", ["build", "dist", "html", "bug_reporting", "_docs"])
+    def test_nested_root_named_directory_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fixture = tmp_path / "tests" / "data" / name
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+        config = _config(also_copy=[f"tests/data/{name}"])
+
+        copy_also_copy_files(config)
+
+        assert (tmp_path / "mutants" / "tests" / "data" / name / "fixture.txt").is_file()
+        planned = {
+            str(source) for source, _ in _iter_configured_staging_inputs(config, frozenset())
+        }
+        assert os.path.normcase(f"tests{os.sep}data{os.sep}{name}{os.sep}fixture.txt") in {
+            os.path.normcase(entry) for entry in planned
+        }
+
+    def test_nested_casefold_variant_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fixture = tmp_path / "tests" / "data" / "BUILD"
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["tests/data/BUILD"]))
+
+        assert (tmp_path / "mutants" / "tests" / "data" / "BUILD" / "fixture.txt").is_file()
+
+    def test_root_level_entry_stays_excluded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "artifact.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["build"]))
+
+        assert not (tmp_path / "mutants" / "build").exists()
+
+    def test_recursive_names_stay_excluded_at_any_depth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        venv = tmp_path / "tests" / "data" / ".venv"
+        venv.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["tests/data/.venv"]))
+
+        assert not (tmp_path / "mutants" / "tests" / "data" / ".venv").exists()
+
+    def test_nested_entry_plus_default_tests_overlap_does_not_collide(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The overlap 'tests/' + 'tests/data/build' must preflight cleanly."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        fixture = tmp_path / "tests" / "data" / "build"
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+
+        validate_staging_namespace(
+            _config(also_copy=["tests/data/build", "tests"], paths_to_mutate=["src"])
+        )
