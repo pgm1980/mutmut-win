@@ -309,3 +309,63 @@ class TestWorkerImportMismatchEnv:
             worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]
 
         assert captured_env.get("PY_IGNORE_IMPORTMISMATCH") == "1"
+
+
+class TestForcedFailOptionOrder:
+    """M-129: the proof presentation options must win over user arguments.
+
+    ``-r``/``--tb`` are action='store' — the last one wins. A user
+    ``--tb=no`` plus ``-rN`` used to override ``--tb=line``/``-rfE`` and
+    fail the forced-fail gate with a wrong diagnosis (the marker was
+    simply not printed).
+    """
+
+    def test_mandatory_report_options_follow_user_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.runner import PytestRunner
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(
+            MutmutConfig(pytest_add_cli_args=["--tb=no", "-rN"])
+        )
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_phase(_name: str, cmd: list[str], *_args: object, **_kwargs: object) -> int:
+            captured["cmd"] = list(cmd)
+            return 1
+
+        monkeypatch.setattr(runner, "_run_phase", fake_run_phase)
+        runner.run_forced_fail("some::mutant")
+        cmd = captured["cmd"]
+        head = cmd[: cmd.index("--")]
+        tb_options = [arg for arg in head if arg.startswith("--tb")]
+        r_options = [arg for arg in head if arg.startswith("-r") and not arg.startswith("--")]
+        assert tb_options[-1] == "--tb=line"
+        assert r_options[-1] == "-rfE"
+
+    def test_mandatory_report_options_follow_addopts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.runner import PytestRunner
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        monkeypatch.setenv("PYTEST_ADDOPTS", "--tb no -r N")
+        runner = PytestRunner(MutmutConfig())
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_phase(_name: str, cmd: list[str], *_args: object, **_kwargs: object) -> int:
+            captured["cmd"] = list(cmd)
+            return 1
+
+        monkeypatch.setattr(runner, "_run_phase", fake_run_phase)
+        runner.run_forced_fail("some::mutant")
+        cmd = captured["cmd"]
+        head = cmd[: cmd.index("--")]
+        # The pin must appear AFTER the split PYTEST_ADDOPTS form '--tb no'
+        # (last-one-wins): the LAST --tb-prefixed option is the engine's.
+        tb_options = [arg for arg in head if arg.startswith("--tb")]
+        assert tb_options[-1] == "--tb=line"
+        assert "-rfE" in head[-3:]

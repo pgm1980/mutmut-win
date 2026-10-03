@@ -691,8 +691,14 @@ class PytestRunner:
         # exception name and is never width-truncated; the -rfE summary
         # alone is cut to terminal width and could lose the marker behind
         # a long node id. COLUMNS widens that summary as belt and braces.
-        cmd = [*self._guarded_pytest_cmd(), "--tb=line", "-q", "-x", "-rfE"]
+        # M-129: the presentation options sit deliberately AFTER the user,
+        # PYTEST_ADDOPTS, and boundary arguments and BEFORE the targets —
+        # pytest's -r/--tb are action='store' (last one wins), so a user
+        # '--tb=no'/'-rN' used to override the proof output and fail the
+        # gate with a wrong diagnosis.
+        cmd = [*self._guarded_pytest_cmd(), "-q", "-x"]
         cmd.extend(self._configured_pytest_args())
+        cmd.extend(["--tb=line", "-rfE"])
         cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = MUTANT_FAIL_SENTINEL
