@@ -1542,3 +1542,43 @@ def test_copy_with_retry_does_not_retry_path_length_failures(
 
     assert attempts["count"] == 1
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# M-084: NTFS identity folding
+# ---------------------------------------------------------------------------
+
+
+class TestNtfsIdentityFolding:
+    """M-084: str.casefold() over-folds as the staging identity key.
+
+    Full Unicode case folding merges names that the Windows case
+    normalisation (os.path.normcase / LCMapStringEx) and the ordinal
+    comparison keep apart — ß/ss, the fi ligature, final sigma — producing
+    false StagingNamespaceCollisionError aborts on healthy projects.
+    """
+
+    def test_multichar_casefold_names_are_not_a_staging_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "app.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        (tmp_path / "masse.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "ma\u00dfe.json").write_text("{}", encoding="utf-8")
+
+        names = sorted(entry.name for entry in tmp_path.iterdir())
+        if "masse.json" not in names or "ma\u00dfe.json" not in names:
+            pytest.skip("volume folds \u00df — the two names cannot coexist")
+
+        # Before M-084 this raised StagingNamespaceCollisionError because
+        # casefold() folded \u00df and ss onto the same identity key.
+        copy_src_dir(_config(paths_to_mutate=["src"]))
+
+    def test_staging_key_uses_windows_case_normalisation(self) -> None:
+        from mutmut_win.file_setup import _staging_key
+
+        assert _staging_key(Path("SRC/App.PY")) == _staging_key(Path("src/app.py"))
+        assert _staging_key(Path("Stra\u00dfe.py")) != _staging_key(Path("strasse.py"))
+        assert _staging_key(Path("file.py")) != _staging_key(Path("\ufb01le.py"))

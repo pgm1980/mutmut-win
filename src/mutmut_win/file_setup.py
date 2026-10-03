@@ -879,9 +879,21 @@ def walk_source_files(config: MutmutConfig) -> Iterator[Path]:
 
 
 def _staging_key(path: Path) -> tuple[str, ...]:
-    """Return a Windows-identity key for a staging-relative path."""
+    """Return a Windows-identity key for a staging-relative path.
 
-    return tuple(part.casefold() for part in path.parts if part not in {"", "."})
+    The key folds each path component with :func:`os.path.normcase`
+    (LCMapStringEx/LCMAP_LOWERCASE, invariant) — exactly the class of
+    case normalisation the platform applies to path identities, without
+    multi-character folding.  ``str.casefold`` merged names like
+    ``straße``/``strasse`` or the fi ligature that Windows keeps apart
+    and produced false staging collisions (M-084).  Known fail-closed
+    limit: outside the BMP, normcase merges ~40 case pairs that the
+    ordinal comparison separates — a residual false collision, never a
+    silent overwrite.
+    """
+    return tuple(
+        os.path.normcase(part) for part in path.parts if part not in {"", "."}
+    )
 
 
 def _iter_automatic_staging_inputs(
@@ -1001,7 +1013,9 @@ def _helper_owner_for_target(
         remainder = key[len(import_root) :]
         first = remainder[0]
         for module_name, owner in active_helpers.items():
-            folded_module = module_name.casefold()
+            # M-084: fold with the same identity function as the key itself
+            # (os.path.normcase), so literals and key agree on one folding.
+            folded_module = os.path.normcase(module_name)
             # An empty directory is already a PEP 420 namespace. Publishing
             # the helper would replace its import identity even without any
             # descendant files. A same-named extensionless regular file is
@@ -1009,7 +1023,7 @@ def _helper_owner_for_target(
             if first == folded_module and (len(remainder) > 1 or is_directory):
                 return owner
             if len(remainder) == 1 and any(
-                first == f"{folded_module}{suffix.casefold()}"
+                first == f"{folded_module}{os.path.normcase(suffix)}"
                 for suffix in (".py", *importlib.machinery.EXTENSION_SUFFIXES)
             ):
                 return owner
