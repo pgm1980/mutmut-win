@@ -482,3 +482,55 @@ class TestRunBasisEvidence:
         (project / ".gitignore").write_text(".lake/\nbuild2/\n", encoding="utf-8")
         after = build_run_basis_evidence(self._config(), project)
         assert before.digest != after.digest
+
+
+class TestCopySrcDirIgnoredShells:
+    """M-086: newly ignored live directories must not leave staged shells."""
+
+    def test_newly_ignored_live_directory_leaves_no_staged_shell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "generated_pkg").mkdir()
+        (project / "generated_pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (project / "generated_pkg" / "sub").mkdir()
+        (project / "generated_pkg" / "sub" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+        (project / "mutants").mkdir()
+        monkeypatch.chdir(project)
+        config = MutmutConfig(paths_to_mutate=["src"])
+
+        # First run mirrors everything including generated_pkg.
+        copy_src_dir(config)
+        assert (project / "mutants" / "generated_pkg" / "sub" / "mod.py").is_file()
+
+        # Now gitignore the package and re-run.
+        (project / ".gitignore").write_text("generated_pkg/\n", encoding="utf-8")
+        copy_src_dir(config)
+
+        # The staged shell must be gone; the live directory stays untouched.
+        assert not (project / "mutants" / "generated_pkg").exists()
+        assert (project / "generated_pkg").is_dir()
+
+        # Parity: a fresh build with the same .gitignore must yield the
+        # same set of directories under mutants/.
+        fresh_dirs = {
+            str(p.relative_to(project / "mutants"))
+            for p in (project / "mutants").rglob("*")
+            if p.is_dir()
+        }
+
+        shutil.rmtree(project / "mutants")
+        (project / "mutants").mkdir()
+        copy_src_dir(config)
+        rebuild_dirs = {
+            str(p.relative_to(project / "mutants"))
+            for p in (project / "mutants").rglob("*")
+            if p.is_dir()
+        }
+        assert fresh_dirs == rebuild_dirs, (
+            f"incremental topology {sorted(fresh_dirs)} != fresh {sorted(rebuild_dirs)}"
+        )

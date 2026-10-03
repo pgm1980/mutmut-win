@@ -1686,6 +1686,11 @@ def copy_src_dir(
     """
     validate_staging_namespace(config, excluded_paths=excluded_paths)
     expected_targets: set[Path] = set()
+    # M-086: expected staging directory topology of a FRESH build. The
+    # deletion pass uses this to remove empty shells of directories that
+    # are no longer part of the mirror walk (e.g. newly gitignored), which
+    # would otherwise stay behind as importable PEP 420 namespaces.
+    expected_directories: set[Path] = set()
     # Track every automatic mirror root, including the project-root grab-bag
     # and the forced mutation roots (M-032).  The deletion pass is deliberately
     # limited to Python modules and their metadata, so generated non-source
@@ -1726,6 +1731,7 @@ def copy_src_dir(
                 target_directory, want_directory=True, mutants_root=mutants_root
             )
             target_directory.mkdir(exist_ok=True, parents=True)
+            expected_directories.add(target_directory)
             continue
 
         target_path = Path("mutants") / relative_target
@@ -1748,6 +1754,7 @@ def copy_src_dir(
 
     _sync_deleted_sources(
         expected_targets,
+        expected_directories,
         synced_roots,
         set(_STAGING_RECURSIVE_SKIP_DIRS),
         _configured_mirror_destinations(config, mutants_root),
@@ -2220,6 +2227,7 @@ def _configured_mirror_destinations(
 
 def _sync_deleted_sources(
     expected_targets: set[Path],
+    expected_directories: set[Path],
     synced_roots: list[Path],
     skip_dirs: set[str],
     separately_synced_destinations: set[Path],
@@ -2236,6 +2244,11 @@ def _sync_deleted_sources(
 
     Args:
         expected_targets: Every target path the copy walk produced.
+        expected_directories: Every directory the copy walk materialized
+            (the topology of a fresh build).  Staged directories outside
+            this set are removed when empty (M-086), so a newly
+            gitignored live directory no longer leaves an importable
+            PEP 420 namespace shell behind.
         synced_roots: The source roots that were mirrored this run.
         skip_dirs: Directory names excluded from the copy walk.
         separately_synced_destinations: Staging roots owned by also-copy sync.
@@ -2244,6 +2257,7 @@ def _sync_deleted_sources(
     mutants_root = _validated_mutants_root()
     folded_skip_dirs = {directory.casefold() for directory in skip_dirs}
     expected_absolute = {target.absolute() for target in expected_targets}
+    expected_directories_absolute = {d.absolute() for d in expected_directories}
 
     def owned_elsewhere(path: Path) -> bool:
         absolute = path.absolute()
@@ -2301,12 +2315,13 @@ def _sync_deleted_sources(
                 # or another mirror's independently owned input (CX221-067).
 
         # Files are synchronized first; then remove only directory shells
-        # whose corresponding live directory disappeared.  Leaving one such
-        # shell behind changes Python import semantics by creating a PEP 420
-        # namespace package that does not exist in the live project.  Work
+        # that are no longer part of the mirror walk's expected topology
+        # (M-086). A live directory that is gitignored or pruned by skip
+        # names used to keep its staged shell as an importable PEP 420
+        # namespace; now the topology matches a fresh build.  Work
         # bottom-up so nested stale packages can empty their parents, while
-        # preserving the staging root, live empty directories and every
-        # explicit also-copy/extra-path mirror root.
+        # preserving the staging root and every explicit
+        # also-copy/extra-path mirror root.
         for staged_directory in sorted(
             cleanup_candidates,
             key=lambda candidate: len(candidate.parts),
@@ -2314,15 +2329,7 @@ def _sync_deleted_sources(
         ):
             if owned_elsewhere(staged_directory):
                 continue
-            relative_directory = staged_directory.relative_to(staged_root)
-            source_directory = source_root / relative_directory
-            try:
-                source_directory_is_current = source_directory.is_dir() and not _is_link_or_reparse(
-                    source_directory
-                )
-            except OSError:
-                source_directory_is_current = False
-            if source_directory_is_current:
+            if staged_directory.absolute() in expected_directories_absolute:
                 continue
             try:
                 next(staged_directory.iterdir())
