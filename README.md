@@ -472,6 +472,13 @@ next to it.
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:
 
+- **Module-level statements** (assignments, imports, conditional blocks,
+  class definitions executed at import time) are not mutated and have no
+  mutants: the trampoline rewrites function *bodies*, and module-level
+  code runs exactly once at import — there is no function boundary to
+  wrap. A module whose behavior is defined primarily by module-level
+  constants or side effects will show fewer mutants than its line count
+  suggests (M-141).
 - A **function nested inside a function** (a closure) gets no trampoline
   of its own, but its body *is* mutated — folded into the enclosing
   top-level function's mutant set, so closure logic is covered.

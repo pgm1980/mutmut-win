@@ -186,6 +186,10 @@ class _Collector:
             Path(sys.base_prefix),
             Path(sys.executable).parent,
         ]
+        # M-132: pre-computed membership set — register_input_root used to
+        # do an O(n) list scan per hashed file, making the basis quadratic
+        # in the number of input roots.
+        self.root_keys: set[Path] = set(self.roots)
         self.output = _validate_output(output, self.roots)
         self.key = secrets.token_bytes(32)
         self.session_id = secrets.token_hex(16)
@@ -336,9 +340,16 @@ def diagnostics_session(output_path: Path) -> Iterator[_Collector]:
                     file=sys.stderr,
                 )
         except Exception as error:
+            # M-136: include the recorded causes instead of discarding the
+            # complete diagnostic report and naming only the exception type.
+            causes = "; ".join(
+                f"{entry.get('operation', '?')}={entry.get('exception_type', '?')}"
+                for entry in collector.errors[:5]
+            )
+            suffix = f" Causes: {causes}" if causes else ""
             with contextlib.suppress(Exception):
                 print(
-                    f"Basis diagnostics could not be published ({type(error).__name__}).",
+                    f"Basis diagnostics could not be published ({type(error).__name__}).{suffix}",
                     file=sys.stderr,
                 )
         finally:
@@ -352,7 +363,8 @@ def register_input_root(path: Path) -> None:
         return
     try:
         resolved = path.resolve(strict=False)
-        if resolved not in collector.roots:
+        if resolved not in collector.root_keys:
+            collector.root_keys.add(resolved)
             collector.roots.append(resolved)
         if _within(collector.output, resolved):
             collector.publication_blocked = True
