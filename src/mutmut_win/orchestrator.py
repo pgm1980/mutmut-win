@@ -176,12 +176,22 @@ def _validate_generated_staging(
 def _validate_staging_unchanged(
     expected: RunBasisEvidence,
     source_data_by_file: dict[str, SourceFileMutationData],
+    *,
+    phase: str = "after mutant generation",
 ) -> None:
     """Reject real staging drift; re-observe transient incompleteness.
 
     An incomplete snapshot (transiently locked or unreadable inputs) is
     re-measured once before it is reported as "could not be completely
     observed" — it must never masquerade as executable-staging drift.
+
+    Args:
+        expected: The staging evidence captured before the phase ran.
+        source_data_by_file: Generated-staging expectations (empty = no-op).
+        phase: Human-readable phase label for the drift message; the
+            pre-coverage freeze in ``_generate_mutants`` passes its own
+            phase so the diagnosis names the phase that actually drifted
+            (M-131), not a fixed "after mutant generation".
     """
 
     _validate_generated_staging(source_data_by_file)
@@ -200,7 +210,7 @@ def _validate_staging_unchanged(
             )
     if current != expected:
         raise OrchestratorError(
-            "executable staging files changed after mutant generation; the run cannot "
+            f"executable staging files changed {phase}; the run cannot "
             "authorize cached verdicts, score gates, or CI/CD export"
         )
 
@@ -1395,7 +1405,14 @@ class MutationOrchestrator:
             covered_lines_map = self._gather_coverage(
                 [rel for rel, _ in source_files],
             )
-            _validate_staging_unchanged(precoverage_evidence, {})
+            _validate_staging_unchanged(
+                precoverage_evidence,
+                {},
+                phase=(
+                    "during the unmutated coverage phase "
+                    "(mutate_only_covered_lines), before mutant generation"
+                ),
+            )
 
         all_tasks: list[MutationTask] = []
         source_data: dict[str, SourceFileMutationData] = {}

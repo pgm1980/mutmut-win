@@ -25,7 +25,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
+from mutmut_win.exceptions import (
+    OrchestratorError,
+    StagingNamespaceCollisionError,
+    UnsafeStagingError,
+)
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     copy_also_copy_files,
@@ -1827,3 +1831,35 @@ class TestRetainPolicy:
                         live = (package / f"mod{index}.py").read_bytes()
                         assert staged.read_bytes() == live
                         assert not staged.with_name(staged.name + ".meta").exists()
+
+
+class TestStagingPhaseLabel:
+    """M-131: drift messages name the phase that actually drifted."""
+
+    def test_precoverage_phase_label_replaces_default(self) -> None:
+        from mutmut_win.orchestrator import _validate_staging_unchanged
+
+        class _Evidence:
+            complete = True
+
+            def __eq__(self, other: object) -> bool:
+                return False  # always different -> drift
+
+        with pytest.raises(OrchestratorError, match="coverage phase"):
+            _validate_staging_unchanged(
+                _Evidence(),
+                {},
+                phase="during the unmutated coverage phase",
+            )
+
+    def test_default_phase_label_still_works(self) -> None:
+        from mutmut_win.orchestrator import _validate_staging_unchanged
+
+        class _Evidence:
+            complete = True
+
+            def __eq__(self, other: object) -> bool:
+                return False
+
+        with pytest.raises(OrchestratorError, match="after mutant generation"):
+            _validate_staging_unchanged(_Evidence(), {})
