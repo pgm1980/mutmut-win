@@ -891,9 +891,7 @@ def _staging_key(path: Path) -> tuple[str, ...]:
     ordinal comparison separates — a residual false collision, never a
     silent overwrite.
     """
-    return tuple(
-        os.path.normcase(part) for part in path.parts if part not in {"", "."}
-    )
+    return tuple(os.path.normcase(part) for part in path.parts if part not in {"", "."})
 
 
 def _iter_automatic_staging_inputs(
@@ -936,17 +934,38 @@ def _iter_configured_staging_inputs(
 
     Explicitly configured entries are force-included (``git add -f``
     semantics), but git-ignored subtrees *inside* a configured tree are
-    pruned exactly like Git would prune them.
+    pruned exactly like Git would prune them. Link and reparse children
+    below a configured entry are pruned exactly like the copy pass prunes
+    them (M-089), and subtrees owned by another configured entry are left
+    to that entry, so the preflight plans exactly the set the copier
+    writes.
     """
 
     project_root = Path.cwd().resolve()
     mutants_root = project_root / "mutants"
     project_boundary = GitignoreBoundary.load(project_root)
+    planned_entries: list[tuple[Path, Path, tuple[str, ...] | None]] = []
     for raw in (*config.also_copy, *config.extra_paths):
         path = Path(raw)
         destination = configured_staging_relative_path(path, project_root=project_root)
         if destination is None:
+            planned_entries.append((path, destination, None))  # type: ignore[arg-type]
             continue
+        planned_entries.append((path, destination, _staging_key(destination)))
+    for entry_index, (path, destination, entry_key) in enumerate(planned_entries):
+        if entry_key is None:
+            continue
+        owned_elsewhere_keys = frozenset(
+            other_key
+            for other_index, (_other_path, _other_destination, other_key) in enumerate(
+                planned_entries
+            )
+            if other_index != entry_index
+            and other_key is not None
+            and other_key != entry_key
+            # Ancestor destinations do not own this entry's subtree.
+            and entry_key[: len(other_key)] != other_key
+        )
         if _is_staging_skip_dir(path.name, at_workspace_root=True):
             continue
         try:
@@ -972,28 +991,44 @@ def _iter_configured_staging_inputs(
         for root_str, dirs, files in os.walk(path):
             walk_directory = Path(root_str)
             boundary = boundaries.get(walk_directory)
+            rel_root = walk_directory.relative_to(path)
             safe_dirs: list[str] = []
             for name in dirs:
                 if _is_staging_skip_dir(name, at_workspace_root=False):
                     continue
                 if boundary is not None and boundary.excludes_directory(name):
                     continue
+                child_key = (*entry_key, *_staging_key(rel_root / name))
+                if _staging_child_owned_elsewhere(child_key, owned_elsewhere_keys):
+                    continue
+                try:
+                    if _is_link_or_reparse(walk_directory / name):
+                        continue
+                except OSError:
+                    continue
                 safe_dirs.append(name)
                 if boundary is not None:
                     boundaries[walk_directory / name] = boundary.enter(name)
             dirs[:] = safe_dirs
-            relative_root = Path(root_str).relative_to(path)
-            yield Path(root_str), destination / relative_root
+            yield Path(root_str), destination / rel_root
             for name in files:
                 if boundary is not None and boundary.excludes_file(name):
                     continue
                 source = Path(root_str) / name
+                child_key = (*entry_key, *_staging_key(rel_root / name))
+                if _staging_child_owned_elsewhere(child_key, owned_elsewhere_keys):
+                    continue
+                try:
+                    if _is_link_or_reparse(source):
+                        continue
+                except OSError:
+                    continue
                 try:
                     if source.resolve(strict=True) in excluded_resolved:
                         continue
                 except OSError:
                     continue
-                yield source, destination / relative_root / name
+                yield source, destination / rel_root / name
 
 
 def _helper_owner_for_target(
@@ -1810,6 +1845,20 @@ def read_verified_generated_bytes(
     return payload
 
 
+def _staging_child_owned_elsewhere(
+    child_key: tuple[str, ...],
+    owned_elsewhere_keys: frozenset[tuple[str, ...]],
+) -> bool:
+    """Return whether *child_key* lies at or below another configured entry.
+
+    M-089 counter-correction: with ``also_copy = ["tests/linked", "tests"]``
+    (user entries before the defaults), the parent pass must neither warn
+    about nor prune the nested entry's freshly mirrored subtree — that
+    subtree belongs to the nested entry's own sync pass.
+    """
+    return any(child_key[: len(owner_key)] == owner_key for owner_key in owned_elsewhere_keys)
+
+
 def _sync_tree(
     source_root: Path,
     destination_root: Path,
@@ -1817,6 +1866,7 @@ def _sync_tree(
     excluded_resolved: frozenset[Path] = frozenset(),
     ignore_boundary: GitignoreBoundary | None = None,
     retained_generation_keys: frozenset[tuple[str, ...]] = frozenset(),
+    owned_elsewhere_keys: frozenset[tuple[str, ...]] = frozenset(),
 ) -> None:
     """Mirror *source_root* into *destination_root* (issue #129 / B6b+C2).
 
@@ -1827,8 +1877,15 @@ def _sync_tree(
       backdated restores);
     * DELETE staged files whose source disappeared — under ``copytree`` a
       removed test file kept RUNNING inside the staging forever;
-    * the deletion pass never leaves *destination_root* (containment of the
-      root itself is guard 4's job in :func:`copy_also_copy_files`);
+    * link and reparse children below the configured root are neither
+      walked nor copied (M-089: ``os.walk`` descends into junctions, so the
+      configured path needs the automatic mirror's link defence); the
+      configured root itself may be a link (Bug #69), and subtrees owned by
+      another configured entry are left entirely to that entry's own pass;
+    * the deletion pass purges previously mirrored link content via a
+      per-directory link taint and never leaves *destination_root*
+      (containment of the root itself is guard 4's job in
+      :func:`copy_also_copy_files`);
     * git-ignored subtrees are neither copied nor retained
       (MBR-2026-09-14-01): the deletion pass treats an ignored live source
       like an absent one so pre-fix staged leftovers are purged;
@@ -1851,6 +1908,7 @@ def _sync_tree(
     source_boundaries: dict[Path, GitignoreBoundary | None] = {source_root: ignore_boundary}
     for root_str, dirs, files in os.walk(source_root):
         walk_directory = Path(root_str)
+        rel_root = walk_directory.relative_to(source_root)
         boundary = source_boundaries.get(walk_directory)
         safe_dirs: list[str] = []
         boundary_pruned_content = False
@@ -1860,11 +1918,30 @@ def _sync_tree(
             if boundary is not None and boundary.excludes_directory(name):
                 boundary_pruned_content = True
                 continue
+            # M-089: children of the configured root that are links or
+            # reparse points are skipped with a warning — except subtrees
+            # owned by another configured entry, which this pass must
+            # neither walk nor touch (their own sync owns them).
+            child_key = (*destination_key, *_staging_key(rel_root / name))
+            if _staging_child_owned_elsewhere(child_key, owned_elsewhere_keys):
+                continue
+            candidate = walk_directory / name
+            try:
+                is_link = _is_link_or_reparse(candidate)
+            except OSError:
+                _warn_skipped_source_link(
+                    candidate, "cannot prove the directory child is not a link"
+                )
+                continue
+            if is_link:
+                _warn_skipped_source_link(
+                    candidate, "directory links are not copied into executable staging"
+                )
+                continue
             safe_dirs.append(name)
             if boundary is not None:
                 source_boundaries[walk_directory / name] = boundary.enter(name)
         dirs[:] = safe_dirs
-        rel_root = Path(root_str).relative_to(source_root)
         destination_directory = destination_root / rel_root
         # Q-13: reconcile BEFORE the mkdir condition — a live folder that the
         # boundary fully prunes skips the mkdir, and an old same-named staged
@@ -1878,6 +1955,18 @@ def _sync_tree(
                 boundary_pruned_content = True
                 continue
             src_file = Path(root_str) / name
+            child_key = (*destination_key, *_staging_key(rel_root / name))
+            if _staging_child_owned_elsewhere(child_key, owned_elsewhere_keys):
+                continue
+            try:
+                if _is_link_or_reparse(src_file):
+                    _warn_skipped_source_link(
+                        src_file, "file links are not copied into executable staging"
+                    )
+                    continue
+            except OSError:
+                _warn_skipped_source_link(src_file, "cannot prove the file is not a link")
+                continue
             try:
                 if src_file.resolve(strict=True) in excluded_resolved:
                     continue
@@ -1915,7 +2004,12 @@ def _sync_tree(
     cleanup_candidates: list[tuple[Path, bool]] = []
     # Boundary state is tracked by destination-relative path: the staged tree
     # mirrors the source structure, so staged rel_root == source rel_root.
+    # M-089: the same map carries the link taint — a staged directory is
+    # tainted when its live source path itself is a link/reparse or lies
+    # below one, so previously mirrored junction content is purged instead
+    # of counting as "current".
     staged_boundaries: dict[Path, GitignoreBoundary | None] = {Path(): ignore_boundary}
+    tainted_dirs: dict[Path, bool] = {Path(): False}
 
     def live_is_current(
         live_path: Path,
@@ -1939,6 +2033,7 @@ def _sync_tree(
         staged_root = Path(root_str)
         rel_root = staged_root.relative_to(destination_root)
         boundary = staged_boundaries.get(rel_root)
+        parent_tainted = tainted_dirs.get(rel_root, False)
         staged_safe_dirs: list[str] = []
         for directory in dirs:
             if _is_staging_skip_dir(directory, at_workspace_root=False):
@@ -1946,14 +2041,35 @@ def _sync_tree(
             staged_directory = Path(root_str) / directory
             _validated_staging_destination(staged_directory, mutants_root)
             directory_excluded = boundary is not None and boundary.excludes_directory(directory)
+            dir_rel = rel_root / directory
+            child_key = (*destination_key, *_staging_key(dir_rel))
+            if _staging_child_owned_elsewhere(child_key, owned_elsewhere_keys):
+                # Another configured entry owns this staged subtree: never
+                # delete from it here, and do not walk into it either.
+                continue
+            try:
+                directory_tainted = parent_tainted or _is_link_or_reparse(source_root / dir_rel)
+            except OSError:
+                directory_tainted = True
+            tainted_dirs[dir_rel] = directory_tainted
             staged_safe_dirs.append(directory)
             child_boundary = boundary.enter(directory) if boundary is not None else None
-            staged_boundaries[rel_root / directory] = child_boundary
-            cleanup_candidates.append((staged_directory, directory_excluded))
+            staged_boundaries[dir_rel] = child_boundary
+            cleanup_candidates.append((staged_directory, directory_excluded or directory_tainted))
         dirs[:] = staged_safe_dirs
 
         for name in files:
+            stale_key = (*destination_key, *_staging_key(rel_root / name))
+            if _staging_child_owned_elsewhere(stale_key, owned_elsewhere_keys):
+                continue
             source_is_current = live_is_current(source_root / rel_root / name, name, boundary)
+            if source_is_current:
+                try:
+                    source_is_current = not parent_tainted and not _is_link_or_reparse(
+                        source_root / rel_root / name
+                    )
+                except OSError:
+                    source_is_current = False
             if source_is_current:
                 continue
             stale_path = Path(root_str) / name
@@ -1979,24 +2095,24 @@ def _sync_tree(
     # Keep the configured mirror root itself stable, but do not retain nested
     # package shells after their live directories disappear.  For
     # ``extra_paths`` such a shell is directly import-visible and would create
-    # a false PEP 420 namespace package.
-    for staged_directory, directory_excluded in sorted(
+    # a false PEP 420 namespace package.  A tainted directory (its live
+    # source is or lies below a link, M-089) is never current, so junction
+    # leftovers are removed down to the empty shells.
+    for staged_directory, directory_not_current in sorted(
         cleanup_candidates,
         key=lambda candidate: len(candidate[0].parts),
         reverse=True,
     ):
-        relative_directory = staged_directory.relative_to(destination_root)
-        source_directory = source_root / relative_directory
-        try:
-            source_directory_is_current = (
-                source_directory.is_dir()
-                and not _is_link_or_reparse(source_directory)
-                and not directory_excluded
-            )
-        except OSError:
-            source_directory_is_current = False
-        if source_directory_is_current:
-            continue
+        if directory_not_current:
+            pass  # not current — fall through to the empty-shell removal
+        else:
+            relative_directory = staged_directory.relative_to(destination_root)
+            source_directory = source_root / relative_directory
+            try:
+                if source_directory.is_dir() and not _is_link_or_reparse(source_directory):
+                    continue
+            except OSError:
+                pass
         try:
             next(staged_directory.iterdir())
         except StopIteration:
@@ -2202,7 +2318,32 @@ def copy_also_copy_files(
     mutants_root = _validated_mutants_root()
     project_root = Path.cwd().resolve()
     project_boundary = GitignoreBoundary.load(project_root)
+    # M-089: staging keys of every configured entry's destination. Each
+    # _sync_tree pass receives the OTHER entries' keys so a nested configured
+    # entry (e.g. also_copy=['tests/linked', 'tests']) keeps its subtree: the
+    # parent pass neither warns about nor prunes nor deletes it. Entries that
+    # map to the same destination key as the current entry are not "other".
+    entry_destination_keys: list[tuple[str, ...] | None] = []
     for path_str in paths_to_copy:
+        relative_destination = configured_staging_relative_path(
+            Path(path_str), project_root=project_root
+        )
+        entry_destination_keys.append(
+            _staging_key(relative_destination) if relative_destination is not None else None
+        )
+    for entry_index, path_str in enumerate(paths_to_copy):
+        own_key = entry_destination_keys[entry_index]
+        effective_owner_keys = frozenset(
+            other_key
+            for other_index, other_key in enumerate(entry_destination_keys)
+            if other_index != entry_index
+            and other_key is not None
+            and other_key != own_key
+            # An ancestor destination (e.g. 'tests' for the pass of
+            # 'tests/linked') does not own this pass's content: the most
+            # specific configured entry governs its own subtree.
+            and not (own_key is not None and own_key[: len(other_key)] == other_key)
+        )
         path = Path(path_str)
         relative_destination = configured_staging_relative_path(path, project_root=project_root)
         if relative_destination is None:
@@ -2285,6 +2426,7 @@ def copy_also_copy_files(
                     path,
                 ),
                 retained_generation_keys=retained_generation_keys,
+                owned_elsewhere_keys=effective_owner_keys,
             )
 
     # Sanitise the copied pyproject.toml — remove [tool.uv.sources] entries

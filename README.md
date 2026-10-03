@@ -365,6 +365,15 @@ Notes:
   an inherited ambient `PYTHONPATH` are deliberately ignored. An absolute path
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
+- **Links and junctions below `also_copy`/`extra_paths` are skipped.**
+  Directory junctions, symlinks and other reparse points *below* a configured
+  entry are not walked and not copied into `mutants/` (a `RuntimeWarning`
+  names each skipped path); previously mirrored link content is purged on the
+  next run. The configured entry itself may be a link (issue #161), and a
+  nested configured entry — for example `also_copy = ["tests/linked",
+  "tests"]` — owns its subtree: the parent entry neither warns about nor
+  removes it. Projects that deliberately keep linked test data should list
+  the linked path as its own `also_copy` entry.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   The project's own coverage configuration is honored: `relative_files
   = true` keys are resolved against the staged `mutants/` tree before

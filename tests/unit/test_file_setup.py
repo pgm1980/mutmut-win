@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,6 +19,7 @@ from mutmut_win.constants import configured_staging_relative_path
 from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
     _copy_with_retry,
+    _iter_configured_staging_inputs,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
@@ -1582,3 +1584,141 @@ class TestNtfsIdentityFolding:
         assert _staging_key(Path("SRC/App.PY")) == _staging_key(Path("src/app.py"))
         assert _staging_key(Path("Stra\u00dfe.py")) != _staging_key(Path("strasse.py"))
         assert _staging_key(Path("file.py")) != _staging_key(Path("\ufb01le.py"))
+
+
+# ---------------------------------------------------------------------------
+# M-089: link/reparse pruning in the configured copy path
+# ---------------------------------------------------------------------------
+
+
+def _create_junction(link: Path, target: Path) -> bool:
+    """Create a directory junction; return False when the host refuses."""
+    cmd_executable = Path(os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"))
+    created = subprocess.run(  # noqa: S603 - cmd builtin creates the test Junction
+        [cmd_executable, "/d", "/u", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        encoding="utf-16-le",
+        errors="replace",
+        check=False,
+    )
+    return created.returncode == 0
+
+
+class TestConfiguredLinkPruning:
+    """M-089: the configured copy path needs the automatic path's link defence.
+
+    os.walk descends into junctions (islink is False for them), so a link
+    below an also_copy/extra_paths entry used to be mirrored wholesale into
+    the executable staging — contradicting the automatic mirror's warning
+    in the same run. Children of a configured entry are now skipped with a
+    warning; the configured root itself may still be a link (Bug #69), and
+    a nested configured entry owns its own subtree.
+    """
+
+    def _make_project_with_junction(self, tmp_path: Path) -> Path:
+        project = tmp_path / "project"
+        (project / "tests").mkdir(parents=True)
+        (project / "tests" / "test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "test_ext.py").write_text("def test_ext(): pass\n", encoding="utf-8")
+        (external / "sub").mkdir()
+        (external / "sub" / "test_ext.py").write_text("def test_sub(): pass\n", encoding="utf-8")
+        if not _create_junction(project / "tests" / "linked", external):
+            pytest.skip("could not create Junction on this host")
+        (project / "mutants").mkdir()
+        return project
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_nested_junction_below_also_copy_is_not_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+        config = _config(also_copy=["tests"])
+
+        with pytest.warns(RuntimeWarning, match="directory links are not copied"):
+            copy_also_copy_files(config)
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert not (project / "mutants" / "tests" / "linked").exists()
+        planned = [
+            destination
+            for _source, destination in _iter_configured_staging_inputs(config, frozenset())
+        ]
+        assert not any("linked" in destination.parts for destination in planned)
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_previously_mirrored_junction_content_is_purged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+        stale_root = project / "mutants" / "tests" / "linked"
+        (stale_root / "sub").mkdir(parents=True)
+        (stale_root / "test_ext.py").write_text("stale\n", encoding="utf-8")
+        (stale_root / "sub" / "test_ext.py").write_text("stale\n", encoding="utf-8")
+
+        with pytest.warns(RuntimeWarning, match="directory links are not copied"):
+            copy_also_copy_files(_config(also_copy=["tests"]))
+
+        assert not (stale_root / "test_ext.py").exists()
+        assert not (stale_root / "sub").exists()
+        assert not stale_root.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_configured_root_junction_is_still_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bug #69: the configured entry ITSELF may be a link (issue #161)."""
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+
+        copy_also_copy_files(_config(also_copy=["tests/linked"]))
+
+        assert (project / "mutants" / "tests" / "linked" / "test_ext.py").is_file()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_nested_configured_entry_survives_the_parent_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """also_copy=['tests/linked', 'tests/'] (user entry before defaults):
+        the parent pass must neither warn about nor delete the nested
+        entry's freshly mirrored content."""
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            copy_also_copy_files(_config(also_copy=["tests/linked", "tests"]))
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert (project / "mutants" / "tests" / "linked" / "test_ext.py").is_file()
+        assert (project / "mutants" / "tests" / "linked" / "sub" / "test_ext.py").is_file()
+
+    def test_file_symlink_below_also_copy_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        (project / "tests").mkdir(parents=True)
+        (project / "tests" / "test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        outside = tmp_path / "outside.py"
+        outside.write_text("def test_outside(): pass\n", encoding="utf-8")
+        try:
+            (project / "tests" / "linked.py").symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable on this host: {exc}")
+        (project / "mutants").mkdir()
+        monkeypatch.chdir(project)
+        config = _config(also_copy=["tests"])
+
+        with pytest.warns(RuntimeWarning, match="file links are not copied"):
+            copy_also_copy_files(config)
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert not (project / "mutants" / "tests" / "linked.py").exists()
+        planned = [
+            destination
+            for _source, destination in _iter_configured_staging_inputs(config, frozenset())
+        ]
+        assert not any(destination.name == "linked.py" for destination in planned)
