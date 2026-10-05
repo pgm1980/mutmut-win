@@ -25,7 +25,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
+from mutmut_win.exceptions import (
+    OrchestratorError,
+    StagingNamespaceCollisionError,
+    UnsafeStagingError,
+)
 from mutmut_win.file_setup import (
     config_fingerprint_matches,
     copy_also_copy_files,
@@ -1827,3 +1831,101 @@ class TestRetainPolicy:
                         live = (package / f"mod{index}.py").read_bytes()
                         assert staged.read_bytes() == live
                         assert not staged.with_name(staged.name + ".meta").exists()
+
+
+class TestStagingPhaseLabel:
+    """M-131: drift messages name the phase that actually drifted."""
+
+    def test_precoverage_phase_label_replaces_default(self) -> None:
+        from mutmut_win.orchestrator import _validate_staging_unchanged
+
+        class _Evidence:
+            complete = True
+
+            def __eq__(self, other: object) -> bool:
+                return False  # always different -> drift
+
+        with pytest.raises(OrchestratorError, match="coverage phase"):
+            _validate_staging_unchanged(
+                _Evidence(),
+                {},
+                phase="during the unmutated coverage phase",
+            )
+
+    def test_default_phase_label_still_works(self) -> None:
+        from mutmut_win.orchestrator import _validate_staging_unchanged
+
+        class _Evidence:
+            complete = True
+
+            def __eq__(self, other: object) -> bool:
+                return False
+
+        with pytest.raises(OrchestratorError, match="after mutant generation"):
+            _validate_staging_unchanged(_Evidence(), {})
+
+
+class TestMetaFixtureWalkOrder:
+    """M-085: a schema-valid unselected .meta fixture survives companion
+    refresh regardless of the os.walk file enumeration order."""
+
+    @pytest.mark.parametrize("order", ["meta_first", "py_first"])
+    def test_schema_valid_unselected_meta_fixture_survives_companion_refresh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: str
+    ) -> None:
+        import hashlib
+        import json as json_module
+
+        import mutmut_win.file_setup as file_setup_module
+
+        project = tmp_path / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        (project / "fixtures").mkdir()
+        (project / "mutants").mkdir()
+        monkeypatch.chdir(project)
+
+        data_v1 = b"VALUE = 1\n"
+        (project / "fixtures" / "data.py").write_bytes(data_v1)
+        # Schema-valid engine-style sidecar for the UNSELECTED data.py.
+        meta_payload = json_module.dumps(
+            {
+                "schema": 1,
+                "exit_code_by_key": {},
+                "source_hash": hashlib.sha256(data_v1).hexdigest(),
+                "generation_fingerprint": "0" * 64,
+                "generated_hash": hashlib.sha256(data_v1).hexdigest(),
+            },
+            sort_keys=True,
+        )
+        live_meta = project / "fixtures" / "data.py.meta"
+        live_meta.write_text(meta_payload + "\n", encoding="utf-8")
+
+        config = MutmutConfig(paths_to_mutate=["src"])
+        copy_src_dir(config)
+        assert (project / "mutants" / "fixtures" / "data.py.meta").exists(), (
+            "first run must mirror the fixture"
+        )
+
+        # Change the companion so the mirror becomes stale.
+        (project / "fixtures" / "data.py").write_bytes(b"VALUE = 2\n")
+
+        # Force the walk order inside the fixtures directory.
+        real_walk = file_setup_module.os.walk
+
+        def ordered_walk(top: object, **kwargs: object):
+            for root, dirs, files in real_walk(top, **kwargs):
+                if "data.py" in files and "data.py.meta" in files:
+                    if order == "meta_first":
+                        files.sort(key=lambda n: 0 if n.endswith(".meta") else 1)
+                    else:
+                        files.sort(key=lambda n: 1 if n.endswith(".meta") else 0)
+                yield root, dirs, files
+
+        monkeypatch.setattr(file_setup_module.os, "walk", ordered_walk)
+        copy_src_dir(config)
+        monkeypatch.undo()
+
+        staged_meta = project / "mutants" / "fixtures" / "data.py.meta"
+        assert staged_meta.exists(), f"live meta fixture was deleted during refresh (order={order})"
+        assert staged_meta.read_text(encoding="utf-8").strip() == meta_payload

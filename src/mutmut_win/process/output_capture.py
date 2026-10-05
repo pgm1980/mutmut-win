@@ -26,25 +26,67 @@ class BoundedOutputCapture:
     :meth:`close_writer` immediately after the child is created so EOF reflects
     only handles inherited by the subprocess tree. :meth:`close` is bounded;
     the daemon reader never participates in interpreter shutdown waits.
+
+    Construction is exception-safe: if anything fails after ``os.pipe()``
+    (non-blocking setup, thread start), both descriptors are released before
+    the original exception is re-raised.  Ownership of the read side is
+    decided under the state lock, so a reader that already started observes
+    EOF and closes its own descriptor — a failed construction can never leak
+    or double-close a descriptor.
     """
 
     def __init__(self, *, max_tail_bytes: int = DEFAULT_TAIL_BYTES) -> None:
         if max_tail_bytes <= 0:
             raise ValueError("max_tail_bytes must be positive")
         self._max_tail_bytes = max_tail_bytes
-        self._read_fd, self._write_fd = os.pipe()
-        os.set_blocking(self._read_fd, False)
+        # fd-independent state comes FIRST: nothing below can observe a
+        # half-initialised object, and the constructor/reader ownership
+        # handshake (see _drain/_abort_construction) already owns its lock
+        # before the pipe exists.
         self._state_lock = threading.Lock()
         self._tail = bytearray()
         self._total_bytes = 0
         self._stop = threading.Event()
         self._closed = False
+        self._construction_aborted = False
+        self._reader_owns_fd = False
         self._reader = threading.Thread(
             target=self._drain,
             name="mutmut-output-capture",
             daemon=True,
         )
-        self._reader.start()
+        self._read_fd, self._write_fd = os.pipe()
+        try:
+            os.set_blocking(self._read_fd, False)
+            self._reader.start()
+        except BaseException:
+            self._abort_construction()
+            raise
+
+    def _abort_construction(self) -> None:
+        """Roll back a failed construction without leaking pipe descriptors.
+
+        Runs for every exception between ``os.pipe()`` and a successfully
+        started reader.  Ownership of ``read_fd`` is decided under the state
+        lock: if the reader already took it, it observes EOF after the writer
+        close and closes ``read_fd`` itself in its finally; otherwise this
+        method closes it here — exactly once either way.  Nothing in here may
+        raise: the original constructor exception propagates unchanged
+        (M-109).
+        """
+        self._closed = True
+        with self._state_lock:
+            self._construction_aborted = True
+            reader_owns_fd = self._reader_owns_fd
+        self.close_writer()
+        if not reader_owns_fd:
+            read_fd = self._read_fd
+            self._read_fd = -1
+            with contextlib.suppress(OSError):
+                os.close(read_fd)
+            return
+        self._stop.set()
+        self._reader.join(timeout=1.0)
 
     @property
     def writer_fd(self) -> int:
@@ -100,6 +142,15 @@ class BoundedOutputCapture:
         return "\n".join(lines[-count:]) if lines else None
 
     def _drain(self) -> None:
+        # Construction handshake (M-109): the constructor's abort path and
+        # the reader race for the ownership of read_fd.  Whoever acquires
+        # the state lock first decides — an aborted construction keeps the
+        # fd for the constructor, and the reader must then never touch it,
+        # not even in the finally below.
+        with self._state_lock:
+            if self._construction_aborted:
+                return
+            self._reader_owns_fd = True
         try:
             while True:
                 # Snapshot before reading.  If ``close()`` sets the event

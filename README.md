@@ -101,13 +101,13 @@ external, mutable state: verify that the exact annotated tag and its matching
 GitHub release exist before using either command:
 
 ```bash
-pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.5"
+pip install "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v3.0.0"
 ```
 
 or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v2.21.5" --dev
+uv add "mutmut-win @ git+https://github.com/pgm1980/mutmut-win.git@v3.0.0" --dev
 ```
 
 Do not use the pinned dependency unless that verification succeeds. Published
@@ -365,6 +365,15 @@ Notes:
   an inherited ambient `PYTHONPATH` are deliberately ignored. An absolute path
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
+- **Links and junctions below `also_copy`/`extra_paths` are skipped.**
+  Directory junctions, symlinks and other reparse points *below* a configured
+  entry are not walked and not copied into `mutants/` (a `RuntimeWarning`
+  names each skipped path); previously mirrored link content is purged on the
+  next run. The configured entry itself may be a link (issue #161), and a
+  nested configured entry — for example `also_copy = ["tests/linked",
+  "tests"]` — owns its subtree: the parent entry neither warns about nor
+  removes it. Projects that deliberately keep linked test data should list
+  the linked path as its own `also_copy` entry.
 - `mutate_only_covered_lines` measures coverage via a subprocess bridge.
   The project's own coverage configuration is honored: `relative_files
   = true` keys are resolved against the staged `mutants/` tree before
@@ -463,6 +472,13 @@ next to it.
 **Mutation-surface limits:** the trampoline mechanism rewrites top-level
 functions and top-level-class methods. The two kinds of nesting differ:
 
+- **Module-level statements** (assignments, imports, conditional blocks,
+  class definitions executed at import time) are not mutated and have no
+  mutants: the trampoline rewrites function *bodies*, and module-level
+  code runs exactly once at import — there is no function boundary to
+  wrap. A module whose behavior is defined primarily by module-level
+  constants or side effects will show fewer mutants than its line count
+  suggests (M-141).
 - A **function nested inside a function** (a closure) gets no trampoline
   of its own, but its body *is* mutated — folded into the enclosing
   top-level function's mutant set, so closure logic is covered.
@@ -657,6 +673,18 @@ uv run --no-sync python -I scripts/semgrep_release_gate.py  # pinned, fail-close
 
 mutmut-win runs its own mutation testing on itself (dogfooding) as part
 of its release gates.
+
+### Temporary directories
+
+A run creates one parent-managed runtime root (`mutmut-win-run-*`) in the
+system temp; every worker's per-task runtime directory (pytest cache,
+hypothesis storage, phase-guard markers) lives under it, and a normal
+shutdown removes the whole tree after the worker-pool Job close — this
+also covers workers that had to be hard-killed at the shutdown deadline
+(M-146). Two documented exceptions can leave exactly one such root
+behind: a hard abort of the *parent* process itself, and a failed pool
+Job close (kept for forensics). Orphaned `mutmut-win-run-*` directories
+are safe to delete while no mutmut-win run is active.
 
 ### Release policy
 

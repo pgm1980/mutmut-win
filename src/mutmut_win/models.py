@@ -253,13 +253,12 @@ class SourceFileMutationData(BaseModel):
             self.type_check_error_by_key = dict(raw_tc)
 
             raw_mtime = meta.pop("source_mtime", None)
-            if raw_mtime is not None and (
-                not isinstance(raw_mtime, (int, float))
-                or isinstance(raw_mtime, bool)
-                or not math.isfinite(raw_mtime)
-            ):
-                raise TypeError("source_mtime must be finite or null")
-            self.source_mtime = float(raw_mtime) if raw_mtime is not None else None
+            if raw_mtime is not None:
+                if not _is_finite_real(raw_mtime):
+                    raise TypeError("source_mtime must be finite or null")
+                self.source_mtime = float(raw_mtime)  # type: ignore[arg-type]
+            else:
+                self.source_mtime = None
             raw_size = meta.pop("source_size", None)
             if raw_size is not None and (
                 not isinstance(raw_size, int) or isinstance(raw_size, bool) or raw_size < 0
@@ -355,6 +354,23 @@ class SourceFileMutationData(BaseModel):
         }
 
 
+def _is_finite_real(value: object) -> bool:
+    """Return True for int/float (not bool) that is finite (M-123).
+
+    ``math.isfinite`` raises ``OverflowError`` for integers whose float
+    conversion overflows (e.g. ``10**400``); a hand-edited or adversarial
+    JSON sidecar with such a value used to crash the metadata healing
+    instead of being rejected. The helper is the single overflow-safe
+    finite check used by every numeric metadata validator.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _validated_nonnegative_float_map(raw: object, field_name: str) -> dict[str, float]:
     """Validate a persisted mapping without permissive JSON coercion."""
     if not isinstance(raw, dict):
@@ -362,11 +378,7 @@ def _validated_nonnegative_float_map(raw: object, field_name: str) -> dict[str, 
     validated: dict[str, float] = {}
     for key, value in raw.items():
         if (
-            not isinstance(key, str)
-            or not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or not math.isfinite(value)
-            or value < 0
+            not isinstance(key, str) or not _is_finite_real(value) or value < 0
         ):
             raise TypeError(f"{field_name} must map strings to finite non-negative numbers")
         validated[key] = float(value)
@@ -449,7 +461,17 @@ def read_owned_source_metadata(meta_path: Path) -> dict[str, object] | None:
         return None
     if companion_is_link or not stat.S_ISREG(companion_mode) or companion_hash != generated_hash:
         return None
-    return raw
+    # M-121: return the sidecar with SHA-256 fields normalized to lowercase,
+    # matching what _validated_optional_sha256 (and therefore load()) produces.
+    # The old raw return kept uppercase digests that _mirror_is_stale compared
+    # case-sensitively against hexdigest() output, flagging an unchanged file
+    # as stale and discarding its fast path for exactly one run.
+    return {
+        **raw,
+        "source_hash": source_hash,
+        "generation_fingerprint": generation_fingerprint,
+        "generated_hash": generated_hash,
+    }
 
 
 class MutationRunResult(BaseModel):
@@ -496,11 +518,13 @@ class MutationRunResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]  # documented pydantic v2 pattern for serialized properties
     @property
     def score(self) -> float:
-        """Mutation score as percentage (kill class / (total - skipped - no_tests)).
+        """Mutation score as percentage (kill class / (total - skipped - no_tests - unchecked)).
 
         The kill class is ``killed + type_check_caught + segfault``: a suite
         that crashes under a mutant has detected it just as surely as a
-        failing assertion (issue #91).
+        failing assertion (issue #91). ``unchecked`` keeps the denominator
+        honest for interrupted or aborted runs: a partial run is scored
+        over what it actually checked.
         """
         return self.compute_score(treat_timeout_as_kill=False)
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Any, ClassVar, Final
@@ -34,6 +36,7 @@ from mutmut_win.process.foreground import run_foreground_contained
 
 if TYPE_CHECKING:
     from textual.binding import Binding
+    from textual.visual import VisualType
 
     from mutmut_win.db import MutationRunState
 
@@ -222,6 +225,19 @@ def _load_source_file_data() -> dict[str, tuple[SourceFileMutationData, dict[str
     return result
 
 
+@dataclass(frozen=True)
+class _DiffRequest:
+    """M-119: one pending diff computation for the single daemon worker.
+
+    The latest-wins slot means at most one diff is computed at a time;
+    a newer request silently replaces an older, not-yet-started one.
+    """
+
+    generation: int
+    mutant_name: str
+    path: Path | None
+
+
 class ResultBrowser(App[None]):
     """Textual TUI app for browsing mutation testing results.
 
@@ -251,7 +267,14 @@ class ResultBrowser(App[None]):
         super().__init__(*args, **kwargs)
         self._show_killed = show_killed
         self._db_path = db_path
-        self._loading_id: str | None = None
+        # M-117: monotonic request generation for diff staleness. Only the
+        # app thread writes; workers read. Replaces the old _loading_id.
+        self._diff_generation: int = 0
+        # M-119: single lazy daemon worker with latest-wins slot.
+        self._diff_worker: Thread | None = None
+        self._diff_condition = threading.Condition()
+        self._diff_request: _DiffRequest | None = None
+        self._diff_worker_stop = False
         self._source_data: dict[str, tuple[SourceFileMutationData, dict[str, int]]] = {}
         self._path_by_name: dict[str, str] = {}
         self._db_results: dict[str, MutationResult] = {}
@@ -487,6 +510,20 @@ class ResultBrowser(App[None]):
 
     def _on_file_highlighted(self, file_path: str) -> None:
         """Populate the mutants table for the highlighted file."""
+        # M-120: invalidate in-flight diff requests and neutralize the
+        # detail display — a previous mutant's description and diff must
+        # not survive a file switch or an empty mutants table.
+        self._invalidate_diff_requests()
+        from textual.css.query import NoMatches
+
+        try:
+            description_view: Static = self.query_one("#description", Static)
+            diff_view: Static = self.query_one("#diff_view", Static)
+            description_view.update("")
+            diff_view.update("")
+        except NoMatches:
+            pass
+
         mutants_table: DataTable[str] = self.query_one("#mutants", DataTable)
         mutants_table.clear()
 
@@ -523,12 +560,106 @@ class ResultBrowser(App[None]):
                 emoji = _EMOJI_BY_STATUS.get(status, "?")
                 mutants_table.add_row(mutant_name, emoji, key=mutant_name)
 
+    # ------------------------------------------------------------------
+    # M-117/M-118/M-119/M-120: generation-based, single-worker diff loading
+    # ------------------------------------------------------------------
+
+    def _invalidate_diff_requests(self) -> int:
+        """Invalidate all in-flight diff requests; return the new generation.
+
+        M-117: only called from the app thread. The monotonic counter makes
+        A→B→A highlight sequences distinguishable without comparing mutant
+        names. M-120: also called on file highlight to clear stale detail.
+        """
+        self._diff_generation += 1
+        return self._diff_generation
+
+    def _publish_diff(self, generation: int, content: VisualType) -> None:
+        """Update the diff view only when *generation* is still current.
+
+        M-117: both the success and the error path publish through this
+        method, so a stale error can never overwrite a newer diff.
+        """
+        if generation != self._diff_generation:
+            return
+        from textual.css.query import NoMatches
+
+        try:
+            diff_view: Static = self.query_one("#diff_view", Static)
+        except NoMatches:
+            return  # app is shutting down
+        diff_view.update(content)
+
+    def _post_diff_from_thread(self, generation: int, content: VisualType) -> None:
+        """Marshal a diff publication to the app thread safely (M-118).
+
+        ``call_from_thread`` raises ``RuntimeError`` once the app has
+        stopped — an unhandled exception from the diff thread after app
+        end used to print a traceback.
+        """
+        import contextlib
+
+        with contextlib.suppress(RuntimeError):
+            self.call_from_thread(self._publish_diff, generation, content)
+
+    def _start_diff_worker(self) -> None:
+        """Lazily start the single daemon diff worker (M-119)."""
+        if self._diff_worker is not None and self._diff_worker.is_alive():
+            return
+
+        def _worker_loop() -> None:
+            while True:
+                with self._diff_condition:
+                    while self._diff_request is None and not self._diff_worker_stop:
+                        self._diff_condition.wait()
+                    if self._diff_worker_stop:
+                        return
+                    request = self._diff_request
+                    self._diff_request = None
+                if request is None:
+                    continue
+                # Early exit: a newer request already arrived.
+                if request.generation != self._diff_generation:
+                    continue
+                try:
+                    from rich.syntax import Syntax
+
+                    d = _get_diff_for_mutant(request.mutant_name, path=request.path)
+                    content: VisualType = Syntax(d, "diff")
+                except Exception as exc:
+                    from rich.text import Text as RichText
+
+                    content = RichText(f"<{type(exc).__name__}: {exc}>")
+                self._post_diff_from_thread(request.generation, content)
+
+        self._diff_worker = Thread(target=_worker_loop, daemon=True, name="mutmut-diff-worker")
+        self._diff_worker.start()
+
+    def _submit_diff_request(self, generation: int, mutant_name: str, path: Path | None) -> None:
+        """Submit a diff request to the latest-wins slot (M-119)."""
+        self._start_diff_worker()
+        with self._diff_condition:
+            self._diff_request = _DiffRequest(
+                generation=generation, mutant_name=mutant_name, path=path
+            )
+            self._diff_condition.notify()
+
+    def _stop_diff_worker(self) -> None:
+        """Stop the diff worker (called on unmount)."""
+        with self._diff_condition:
+            self._diff_worker_stop = True
+            self._diff_condition.notify_all()
+
+    def on_unmount(self) -> None:
+        """Clean up the diff worker when the app ends (M-119)."""
+        self._stop_diff_worker()
+
     def _on_mutant_highlighted(self, mutant_name: str) -> None:
-        """Update the description and start loading the diff for the highlighted mutant."""
+        """Update the description and submit the diff to the single worker."""
         description_view: Static = self.query_one("#description", Static)
         diff_view: Static = self.query_one("#diff_view", Static)
 
-        self._loading_id = mutant_name
+        generation = self._invalidate_diff_requests()
 
         # Gather status information
         file_path_str = self._path_by_name.get(mutant_name)
@@ -562,21 +693,10 @@ class ResultBrowser(App[None]):
         description_view.update(f"\n {description}\n")
         diff_view.update("<loading code diff...>")
 
-        # Load diff asynchronously to avoid blocking the UI
+        # M-119: submit to the single daemon worker instead of spawning
+        # an unbounded thread per highlight.
         path_for_diff = Path(file_path_str) if file_path_str else None
-
-        def _load_thread() -> None:
-            try:
-                d = _get_diff_for_mutant(mutant_name, path=path_for_diff)
-                if mutant_name == self._loading_id:
-                    from rich.syntax import Syntax
-
-                    self.call_from_thread(diff_view.update, Syntax(d, "diff"))
-            except Exception as exc:  # show all errors inline
-                self.call_from_thread(diff_view.update, f"<{type(exc).__name__}: {exc}>")
-
-        thread = Thread(target=_load_thread, daemon=True)
-        thread.start()
+        self._submit_diff_request(generation, mutant_name, path_for_diff)
 
     # ------------------------------------------------------------------
     # Actions

@@ -60,7 +60,16 @@ def _close_spawn_resources(api: Any, process_handle: int, bootstrap_file: Binary
 
 
 def _windows_suspended_popen(process_obj: Any, job_handle: int) -> Any:
-    """Return a CPython-compatible Popen after assign-before-resume."""
+    """Return a CPython-compatible Popen after assign-before-resume.
+
+    Raises:
+        ProcessContainmentError: Outside the audited runtime, or when the
+            child could not be created, assigned, and resumed (fail-closed —
+            no unassigned or unresumed process survives).  ``KeyboardInterrupt``
+            and ``SystemExit`` are re-raised unchanged after the inner cleanup:
+            an abort during the Windows start must keep its abort semantics
+            instead of becoming an infrastructure failure (M-112).
+    """
     if sys.platform != "win32":
         raise ProcessContainmentError("suspended Windows spawn requested off Windows")
     _require_supported_runtime()
@@ -176,6 +185,13 @@ def _windows_suspended_popen(process_obj: Any, job_handle: int) -> Any:
     try:
         return SuspendedJobPopen(process_obj)
     except ProcessContainmentError:
+        raise
+    except (KeyboardInterrupt, SystemExit):
+        # M-112: an abort signal is not an infrastructure failure. The inner
+        # cleanup above has already terminated and reaped a partially created
+        # child; propagate the abort unchanged so callers keep their interrupt
+        # semantics (worker start: run status 'interrupted', CLI exit 130)
+        # instead of reporting a containment error.
         raise
     except BaseException as exc:
         raise ProcessContainmentError(

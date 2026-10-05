@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -18,6 +19,7 @@ from mutmut_win.constants import configured_staging_relative_path
 from mutmut_win.exceptions import StagingNamespaceCollisionError, UnsafeStagingError
 from mutmut_win.file_setup import (
     _copy_with_retry,
+    _iter_configured_staging_inputs,
     copy_also_copy_files,
     copy_src_dir,
     create_mutants_for_file,
@@ -1542,3 +1544,404 @@ def test_copy_with_retry_does_not_retry_path_length_failures(
 
     assert attempts["count"] == 1
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# M-084: NTFS identity folding
+# ---------------------------------------------------------------------------
+
+
+class TestNtfsIdentityFolding:
+    """M-084: str.casefold() over-folds as the staging identity key.
+
+    Full Unicode case folding merges names that the Windows case
+    normalisation (os.path.normcase / LCMapStringEx) and the ordinal
+    comparison keep apart — ß/ss, the fi ligature, final sigma — producing
+    false StagingNamespaceCollisionError aborts on healthy projects.
+    """
+
+    def test_multichar_casefold_names_are_not_a_staging_collision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        selected = tmp_path / "src" / "app.py"
+        selected.parent.mkdir()
+        selected.write_text(_SIMPLE_SOURCE, encoding="utf-8")
+        (tmp_path / "masse.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "ma\u00dfe.json").write_text("{}", encoding="utf-8")
+
+        names = sorted(entry.name for entry in tmp_path.iterdir())
+        if "masse.json" not in names or "ma\u00dfe.json" not in names:
+            pytest.skip("volume folds \u00df — the two names cannot coexist")
+
+        # Before M-084 this raised StagingNamespaceCollisionError because
+        # casefold() folded \u00df and ss onto the same identity key.
+        copy_src_dir(_config(paths_to_mutate=["src"]))
+
+    def test_staging_key_uses_windows_case_normalisation(self) -> None:
+        from mutmut_win.file_setup import _staging_key
+
+        assert _staging_key(Path("SRC/App.PY")) == _staging_key(Path("src/app.py"))
+        assert _staging_key(Path("Stra\u00dfe.py")) != _staging_key(Path("strasse.py"))
+        assert _staging_key(Path("file.py")) != _staging_key(Path("\ufb01le.py"))
+
+
+# ---------------------------------------------------------------------------
+# M-089: link/reparse pruning in the configured copy path
+# ---------------------------------------------------------------------------
+
+
+def _create_junction(link: Path, target: Path) -> bool:
+    """Create a directory junction; return False when the host refuses."""
+    cmd_executable = Path(os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"))
+    created = subprocess.run(  # noqa: S603 - cmd builtin creates the test Junction
+        [cmd_executable, "/d", "/u", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        encoding="utf-16-le",
+        errors="replace",
+        check=False,
+    )
+    return created.returncode == 0
+
+
+class TestConfiguredLinkPruning:
+    """M-089: the configured copy path needs the automatic path's link defence.
+
+    os.walk descends into junctions (islink is False for them), so a link
+    below an also_copy/extra_paths entry used to be mirrored wholesale into
+    the executable staging — contradicting the automatic mirror's warning
+    in the same run. Children of a configured entry are now skipped with a
+    warning; the configured root itself may still be a link (Bug #69), and
+    a nested configured entry owns its own subtree.
+    """
+
+    def _make_project_with_junction(self, tmp_path: Path) -> Path:
+        project = tmp_path / "project"
+        (project / "tests").mkdir(parents=True)
+        (project / "tests" / "test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "test_ext.py").write_text("def test_ext(): pass\n", encoding="utf-8")
+        (external / "sub").mkdir()
+        (external / "sub" / "test_ext.py").write_text("def test_sub(): pass\n", encoding="utf-8")
+        if not _create_junction(project / "tests" / "linked", external):
+            pytest.skip("could not create Junction on this host")
+        (project / "mutants").mkdir()
+        return project
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_nested_junction_below_also_copy_is_not_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+        config = _config(also_copy=["tests"])
+
+        with pytest.warns(RuntimeWarning, match="directory links are not copied"):
+            copy_also_copy_files(config)
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert not (project / "mutants" / "tests" / "linked").exists()
+        planned = [
+            destination
+            for _source, destination in _iter_configured_staging_inputs(config, frozenset())
+        ]
+        assert not any("linked" in destination.parts for destination in planned)
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_previously_mirrored_junction_content_is_purged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+        stale_root = project / "mutants" / "tests" / "linked"
+        (stale_root / "sub").mkdir(parents=True)
+        (stale_root / "test_ext.py").write_text("stale\n", encoding="utf-8")
+        (stale_root / "sub" / "test_ext.py").write_text("stale\n", encoding="utf-8")
+
+        with pytest.warns(RuntimeWarning, match="directory links are not copied"):
+            copy_also_copy_files(_config(also_copy=["tests"]))
+
+        assert not (stale_root / "test_ext.py").exists()
+        assert not (stale_root / "sub").exists()
+        assert not stale_root.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_configured_root_junction_is_still_mirrored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bug #69: the configured entry ITSELF may be a link (issue #161)."""
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+
+        copy_also_copy_files(_config(also_copy=["tests/linked"]))
+
+        assert (project / "mutants" / "tests" / "linked" / "test_ext.py").is_file()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows Junction regression")
+    def test_nested_configured_entry_survives_the_parent_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """also_copy=['tests/linked', 'tests/'] (user entry before defaults):
+        the parent pass must neither warn about nor delete the nested
+        entry's freshly mirrored content."""
+        project = self._make_project_with_junction(tmp_path)
+        monkeypatch.chdir(project)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            copy_also_copy_files(_config(also_copy=["tests/linked", "tests"]))
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert (project / "mutants" / "tests" / "linked" / "test_ext.py").is_file()
+        assert (project / "mutants" / "tests" / "linked" / "sub" / "test_ext.py").is_file()
+
+    def test_file_symlink_below_also_copy_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "project"
+        (project / "tests").mkdir(parents=True)
+        (project / "tests" / "test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+        outside = tmp_path / "outside.py"
+        outside.write_text("def test_outside(): pass\n", encoding="utf-8")
+        try:
+            (project / "tests" / "linked.py").symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable on this host: {exc}")
+        (project / "mutants").mkdir()
+        monkeypatch.chdir(project)
+        config = _config(also_copy=["tests"])
+
+        with pytest.warns(RuntimeWarning, match="file links are not copied"):
+            copy_also_copy_files(config)
+
+        assert (project / "mutants" / "tests" / "test_a.py").is_file()
+        assert not (project / "mutants" / "tests" / "linked.py").exists()
+        planned = [
+            destination
+            for _source, destination in _iter_configured_staging_inputs(config, frozenset())
+        ]
+        assert not any(destination.name == "linked.py" for destination in planned)
+
+
+# ---------------------------------------------------------------------------
+# M-087: preflight key/resolve economies
+# ---------------------------------------------------------------------------
+
+
+class TestPreflightEconomies:
+    """M-087: the preflight computes each staging key once per role and
+    resolves each walked directory at most twice (candidate + own step)."""
+
+    def test_automatic_key_computation_is_k_invariant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        for index in range(30):
+            (tmp_path / f"root{index:02d}.json").write_text("{}", encoding="utf-8")
+        for name in (
+            "fixtures_a",
+            "fixtures_b",
+            "fixtures_c",
+            "fixtures_d",
+            "fixtures_e",
+            "fixtures_f",
+        ):
+            fixture = tmp_path / name
+            fixture.mkdir()
+            (fixture / "data.txt").write_text("x", encoding="utf-8")
+
+        import mutmut_win.file_setup as file_setup_module
+
+        real_key = file_setup_module._staging_key
+        counts: dict[tuple[str, ...], int] = {}
+
+        def counting_key(path: Path) -> tuple[str, ...]:
+            key = real_key(path)
+            counts[key] = counts.get(key, 0) + 1
+            return key
+
+        def measure(configured: list[str]) -> dict[tuple[str, ...], int]:
+            counts.clear()
+            monkeypatch.setattr(file_setup_module, "_staging_key", counting_key)
+            try:
+                file_setup_module.validate_staging_namespace(
+                    MutmutConfig(paths_to_mutate=["src"], also_copy=list(configured))
+                )
+            finally:
+                monkeypatch.setattr(file_setup_module, "_staging_key", real_key)
+            return dict(counts)
+
+        with_one = measure(["fixtures_a"])
+        with_six = measure(
+            ["fixtures_a", "fixtures_b", "fixtures_c", "fixtures_d", "fixtures_e", "fixtures_f"]
+        )
+        # Before M-087 the automatic inputs were re-keyed once per configured
+        # root (O(N x K)); now every key is computed the same number of times
+        # regardless of how many configured roots exist.
+        automatic_keys = {
+            key for key in with_one if key and key[0] in {"src", "root02.json", "root29.json"}
+        }
+        for key in automatic_keys:
+            assert with_one[key] == with_six.get(key, 0), (
+                f"key {key} recomputed per configured root: {with_one[key]} vs {with_six.get(key)}"
+            )
+
+    def test_automatic_planner_resolves_each_directory_at_most_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        for part in ("a", "a/b", "a/b/c"):
+            directory = tmp_path / part
+            directory.mkdir()
+            (directory / "leaf.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+
+        import mutmut_win.file_setup as file_setup_module
+
+        real_resolve = Path.resolve
+        calls: dict[str, int] = {}
+
+        def counting_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            result = real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+            try:
+                absolute = str(real_resolve(self)).replace("\\", "/")
+                key = absolute.split("pytest-of-")[-1] if "pytest-of-" in absolute else absolute
+                calls[key] = calls.get(key, 0) + 1
+            except OSError:
+                pass
+            return result
+
+        monkeypatch.setattr(Path, "resolve", counting_resolve)
+        try:
+            list(file_setup_module._iter_automatic_staging_inputs(frozenset()))
+        finally:
+            monkeypatch.setattr(Path, "resolve", real_resolve)
+
+        import os.path as osp
+
+        for directory in ("a", "a/b", "a/b/c"):
+            resolved_calls = sum(
+                count
+                for key, count in calls.items()
+                if osp.normcase(key).endswith(osp.normcase(directory).replace("\\", "/"))
+            )
+            assert resolved_calls <= 2, (
+                f"directory {directory} resolved {resolved_calls} times per run (M-087: <= 2)"
+            )
+
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            (Path("tests"), Path("tests"), True),
+            (Path("tests"), Path("tests/deep"), True),
+            (Path("tests/deep"), Path("tests"), True),
+            (Path("tests/a"), Path("tests/b"), False),
+            (Path(), Path(), True),
+            (Path(), Path("src"), False),
+        ],
+    )
+    def test_staging_keys_overlap_matches_target_semantics(
+        self, left: Path, right: Path, expected: bool
+    ) -> None:
+        from mutmut_win.file_setup import (
+            _staging_key,
+            _staging_keys_overlap,
+            _staging_targets_overlap,
+        )
+
+        assert _staging_keys_overlap(_staging_key(left), _staging_key(right)) is expected
+        assert _staging_targets_overlap(left, right) is expected
+
+
+# ---------------------------------------------------------------------------
+# M-081: depth-aware workspace-root skip for configured entries
+# ---------------------------------------------------------------------------
+
+
+class TestConfiguredEntryDepth:
+    """M-081: root-only skip names apply to configured entries at root depth.
+
+    A nested ``also_copy``/``extra_paths`` entry like ``tests/data/build``
+    used to be discarded by the depth-blind workspace-root guard although
+    configured entries are force-included by declaration; only entries whose
+    STAGING DESTINATION sits at root level (or ``..`` siblings collapsed to
+    their base name) are subject to the root-only names, while the recursive
+    set (.venv, .git, mutants, caches) stays excluded at every depth.
+    """
+
+    @pytest.mark.parametrize("name", ["build", "dist", "html", "bug_reporting", "_docs"])
+    def test_nested_root_named_directory_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fixture = tmp_path / "tests" / "data" / name
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+        config = _config(also_copy=[f"tests/data/{name}"])
+
+        copy_also_copy_files(config)
+
+        assert (tmp_path / "mutants" / "tests" / "data" / name / "fixture.txt").is_file()
+        planned = {
+            str(source) for source, _ in _iter_configured_staging_inputs(config, frozenset())
+        }
+        assert os.path.normcase(f"tests{os.sep}data{os.sep}{name}{os.sep}fixture.txt") in {
+            os.path.normcase(entry) for entry in planned
+        }
+
+    def test_nested_casefold_variant_is_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        fixture = tmp_path / "tests" / "data" / "BUILD"
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["tests/data/BUILD"]))
+
+        assert (tmp_path / "mutants" / "tests" / "data" / "BUILD" / "fixture.txt").is_file()
+
+    def test_root_level_entry_stays_excluded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "artifact.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["build"]))
+
+        assert not (tmp_path / "mutants" / "build").exists()
+
+    def test_recursive_names_stay_excluded_at_any_depth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        venv = tmp_path / "tests" / "data" / ".venv"
+        venv.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+        (tmp_path / "mutants").mkdir()
+
+        copy_also_copy_files(_config(also_copy=["tests/data/.venv"]))
+
+        assert not (tmp_path / "mutants" / "tests" / "data" / ".venv").exists()
+
+    def test_nested_entry_plus_default_tests_overlap_does_not_collide(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The overlap 'tests/' + 'tests/data/build' must preflight cleanly."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        fixture = tmp_path / "tests" / "data" / "build"
+        fixture.mkdir(parents=True)
+        (fixture / "fixture.txt").write_text("x", encoding="utf-8")
+
+        validate_staging_namespace(
+            _config(also_copy=["tests/data/build", "tests"], paths_to_mutate=["src"])
+        )

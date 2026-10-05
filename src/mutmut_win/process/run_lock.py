@@ -82,6 +82,17 @@ class RunLockError(MutmutWinError):
     """Base class for workspace run-lock failures."""
 
 
+class RunLockUnavailableError(RunLockError):
+    """The owner metadata could not be published (environment/OS condition).
+
+    No acquisition took place: the guard was released and the caller may
+    retry.  Raised for transient publication failures (disk full, sharing
+    violations, fsync failures) that are neither corruption nor a held
+    lock — the raw OSError would otherwise escape as a stack trace
+    (M-091).
+    """
+
+
 class RunLockHeldError(RunLockError):
     """Another process currently owns the workspace run lock."""
 
@@ -247,6 +258,29 @@ def _nofollow_flag() -> int:
     return getattr(os, "O_NOFOLLOW", 0) if os.name == "posix" else 0
 
 
+def _rollback_published_owner(path: Path, owner: RunLockOwner) -> None:
+    """Retract an already-published 'acquired' record after acquire failed (M-092).
+
+    Only the provably own record (token match) is retired: a 'released'
+    marker is published first; if that publication fails, the exact inode
+    is removed identity-checked as a fallback.  Every error is suppressed
+    and logged — this runs inside an exception handler and must never
+    mask the original failure.
+    """
+    try:
+        current = _read_owner(path)
+        if current is None or current.token != owner.token or current.state != "acquired":
+            return
+        released = replace(current, state="released")
+        released_identity = _write_owner(path, released)
+        with contextlib.suppress(OSError, RunLockCorruptError):
+            stat = _checked_leaf_lstat(path, label="owner metadata", allow_missing=True)
+            if stat is not None and _file_identity(stat) == released_identity:
+                path.unlink()
+    except (OSError, RunLockError) as exc:
+        logger.warning("Could not roll back published run-lock owner metadata at %s: %s", path, exc)
+
+
 def _open_guard(path: Path) -> int:
     _checked_leaf_lstat(path, label="guard", allow_missing=True)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | _nofollow_flag()
@@ -262,9 +296,16 @@ def _open_guard(path: Path) -> int:
             # ``msvcrt.locking`` needs a concrete byte range.  Identity and
             # link-count checks happen before this first write so an attacker-
             # controlled leaf can never receive the initial byte.
-            os.lseek(fd, 0, os.SEEK_SET)
-            os.write(fd, b"\0")
-            os.fsync(fd)
+            # M-090: a competitor's mandatory byte-range lock on byte 0
+            # makes this write fail with a raw OSError that used to escape
+            # before acquire's cleanup handler — translate it so the CLI
+            # shows the domain error instead of a stack trace.
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, b"\0")
+                os.fsync(fd)
+            except OSError as exc:
+                raise RunLockHeldError(path, None) from exc
         return fd
     except BaseException:
         os.close(fd)
@@ -486,8 +527,24 @@ def _write_owner(path: Path, owner: RunLockOwner) -> tuple[int, int]:
         raise RunLockCorruptError(
             f"unsafe workspace run-lock owner metadata publication at {path}: {exc}"
         ) from exc
+    except OSError as exc:
+        # M-091: AtomicReplaceError (a PermissionError), ENOSPC, fsync
+        # failures and every other publication-level OSError used to escape
+        # acquire() as a raw stack trace because only
+        # UnsafeAtomicWriteError had a translation.  No acquisition took
+        # place; the caller may retry.
+        raise RunLockUnavailableError(
+            f"cannot publish workspace run-lock owner metadata at {path}: {exc}"
+        ) from exc
 
-    published = _checked_leaf_lstat(path, label="owner metadata", allow_missing=False)
+    try:
+        published = _checked_leaf_lstat(path, label="owner metadata", allow_missing=False)
+    except FileNotFoundError as exc:
+        # M-091/M-092 overlap: the leaf vanished between publication and
+        # the post-check — treat as corruption, not as a raw traceback.
+        raise RunLockCorruptError(
+            f"workspace run-lock owner metadata at {path}: published leaf disappeared"
+        ) from exc
     if published is None:  # pragma: no cover - allow_missing=False is exhaustive
         raise RunLockCorruptError(
             f"unsafe workspace run-lock owner metadata at {path}: published leaf disappeared"
@@ -545,6 +602,7 @@ class WorkspaceRunLock:
 
         fd = _open_guard(self.guard_path)
         guard_locked = False
+        owner: RunLockOwner | None = None
         try:
             guard_locked = _try_lock_guard(fd)
             if guard_locked:
@@ -593,6 +651,13 @@ class WorkspaceRunLock:
             self._owner_identity = owner_identity
             return self
         except BaseException:
+            # M-092: if our 'acquired' record was already published before
+            # the failure, retract it while the guard is still held —
+            # otherwise the record blocks every future acquire from this
+            # still-living process (RunLockHeldError on our own PID).
+            if guard_locked and owner is not None:
+                with contextlib.suppress(BaseException):
+                    _rollback_published_owner(self.path, owner)
             if guard_locked and fd >= 0:
                 with contextlib.suppress(OSError):
                     _unlock_guard(fd)

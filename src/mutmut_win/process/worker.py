@@ -535,6 +535,52 @@ def pytest_runtest_logreport(report):
     _proof_published = True
 
 
+_FORCED_FAIL_PROOF_PATH_ENV = "MUTMUT_FORCED_FAIL_PROOF_PATH"
+_FORCED_FAIL_PROOF_TOKEN_ENV = "MUTMUT_FORCED_FAIL_PROOF_TOKEN"
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Publish the structured trampoline proof once (M-130).
+
+    tryfirst makes this the outermost makereport wrapper, so the post-yield
+    part observes the FINAL report — after the skipping plugin converted an
+    xfail into skipped/wasxfail. The proof is published only when the final
+    report failed AND the underlying exception is the trampoline's
+    MutmutProgrammaticFailException (checked on the call's excinfo, any
+    phase: setup, call, teardown — fixtures throw too). Without both env
+    variables this hook is a strict no-op, so every other phase and worker
+    is unaffected. Publication failures are silently swallowed: the
+    forced-fail phase must not turn a diagnostics problem into a pytest
+    INTERNALERROR; the gate then fails closed on the missing proof.
+    """
+    outcome = yield
+    proof_path = os.environ.get(_FORCED_FAIL_PROOF_PATH_ENV)
+    proof_token = os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV)
+    if not (proof_path and proof_token):
+        return
+    try:
+        rep = outcome.get_result()
+        if not rep.failed:
+            return
+        excinfo = call.excinfo
+        if excinfo is None:
+            return
+        from mutmut_win.exceptions import MutmutProgrammaticFailException
+
+        if not excinfo.errisinstance(MutmutProgrammaticFailException):
+            return
+        # M-130 fix: use a PLAIN file write, not atomic_write_bytes.
+        # atomic_write_bytes is a trampolined function in the staged
+        # module — under MUTANT_UNDER_TEST=fail it raises before writing,
+        # silently swallowing the proof publication. The proof file needs
+        # no atomicity: the consumer reads it once after the process exits.
+        with open(proof_path, "wb") as proof_handle:
+            proof_handle.write(proof_token.encode("utf-8"))
+    except Exception:
+        pass
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_unconfigure(config):
     """Repeat a recorded publication failure so it stays in the output tail.
@@ -958,6 +1004,40 @@ def prepare_pytest_phase_guard(
     return marker_path, token
 
 
+_FORCED_FAIL_PROOF_PATH_ENV: str = "MUTMUT_FORCED_FAIL_PROOF_PATH"
+_FORCED_FAIL_PROOF_TOKEN_ENV: str = "MUTMUT_FORCED_FAIL_PROOF_TOKEN"  # noqa: S105 - env var name
+
+
+def prepare_forced_fail_proof(env: dict[str, str], runtime_dir: Path) -> tuple[Path, str]:
+    """Arm the structured trampoline proof for the forced-fail phase (M-130).
+
+    The generated phase-guard plugin publishes an unpredictable token to a
+    parent-owned runtime path exactly once, when a final test report
+    *failed* and the underlying exception is the trampoline's
+    ``MutmutProgrammaticFailException`` (any phase: setup, call, teardown —
+    fixtures throw too). Without the env variables the hook is a strict
+    no-op, so every other phase and worker stays unaffected.
+
+    Returns:
+        ``(proof_path, expected_token)`` for post-process verification via
+        :func:`consume_pytest_phase_guard`.
+    """
+    proof_path = (runtime_dir / f".mutmut_forced_fail_{secrets.token_hex(16)}.proof").absolute()
+    token = secrets.token_hex(32)
+    env[_FORCED_FAIL_PROOF_PATH_ENV] = str(proof_path)
+    env[_FORCED_FAIL_PROOF_TOKEN_ENV] = token
+    return proof_path, token
+
+
+def consume_forced_fail_proof(proof_path: Path, expected_token: str) -> bool:
+    """Verify and remove the structured trampoline proof (M-130).
+
+    Delegates to :func:`consume_pytest_phase_guard`: fail-closed on a
+    missing, wrong, or unreadable proof; the marker is always removed.
+    """
+    return consume_pytest_phase_guard(proof_path, expected_token)
+
+
 def consume_pytest_phase_guard(marker_path: Path, expected_token: str) -> bool:
     """Return whether a matching execution proof exists, then remove it.
 
@@ -1166,8 +1246,26 @@ def _process_task(
     # so the runtime directory never waits for the finalizer.
     runtime_context: tempfile.TemporaryDirectory[str] | None = None
     try:
+        # M-146: when the executor supplies a parent-managed run runtime root,
+        # every per-task runtime directory lives under it. Hard-killed workers
+        # (TerminateProcess after the shared shutdown deadline) run neither
+        # finally blocks nor finalizers, so per-task directories directly in
+        # the system temp leak; under the root the pool shutdown removes the
+        # whole tree after the Job close. The key is optional: direct
+        # worker_main callers (tests, diagnostics) keep the historical
+        # system-temp behaviour.
+        runtime_root_raw = config_data.get("_worker_runtime_root")
+        runtime_root: Path | None = None
+        if runtime_root_raw is not None:
+            runtime_root = Path(str(runtime_root_raw))
+            if not runtime_root.is_absolute() or not runtime_root.is_dir():
+                raise WorkerEnvironmentError(
+                    "The worker runtime root from the executor configuration is "
+                    f"not an existing absolute directory: {runtime_root_raw!r} (M-146)."
+                )
         runtime_context = tempfile.TemporaryDirectory(
             prefix="mutmut-win-worker-runtime-",
+            dir=runtime_root,
             ignore_cleanup_errors=True,
         )
         runtime_dir = Path(runtime_context.name)

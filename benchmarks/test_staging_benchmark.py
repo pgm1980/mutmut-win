@@ -203,3 +203,38 @@ def test_followup_run_plain_retain_copy_src_dir(
         copy_src_dir(config)
 
     benchmark.pedantic(run, rounds=5, iterations=1)
+
+
+def test_streaming_copy_many_small_and_one_large_file(
+    benchmark: BenchmarkFixture, tmp_path: Path
+) -> None:
+    """AP-33 / M-070 streaming scenario: many small files plus one large file.
+
+    Baseline on the full-read path (2026-10-03, this machine): 300 small
+    copies 0.695 s, one 24 MiB copy 0.029 s. The streaming rewrite trades
+    ~16% on small files (extra per-file opens) for O(chunk) peak memory
+    (tracemalloc proof in tests/unit/test_atomic_streaming_copy.py).
+    """
+    from mutmut_win.file_setup import _copy_with_retry
+
+    source_dir = tmp_path / "src"
+    target_dir = tmp_path / "dst"
+    source_dir.mkdir()
+    target_dir.mkdir()
+    small_files = []
+    for index in range(300):
+        source = source_dir / f"mod_{index:04d}.py"
+        source.write_bytes(b"x = 1\n" * 50)
+        small_files.append((source, target_dir / source.name))
+    large_source = source_dir / "large.bin"
+    large_source.write_bytes(b"\0" * (24 * 1024 * 1024))
+    large_target = target_dir / "large.bin"
+    for source, target in small_files[:20]:  # warm-up
+        _copy_with_retry(source, target)
+
+    def run() -> None:
+        for source, target in small_files:
+            _copy_with_retry(source, target)
+        _copy_with_retry(large_source, large_target)
+
+    benchmark.pedantic(run, rounds=3, iterations=1)

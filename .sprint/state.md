@@ -1,31 +1,31 @@
 ---
-current_sprint: "45"
-sprint_goal: "v2.21.5: released"
-branch: "main"
-started_at: "2026-09-28"
-phase: "released"
-candidate_commit: "b47209c714c1dc44f83534239b63eda6328020d3"
-candidate_tree: "ee30234547d3a66d63e9ef0c30d5e2486fca8c3a"
-integrated_commit: "9e3bec8855c0002b517dc0c972783d882e70dca8"
-integrated_tree: "ee30234547d3a66d63e9ef0c30d5e2486fca8c3a"
-release_tag: "v2.21.5"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "46"
+sprint_goal: "v3.0.0: in progress"
+branch: "fix/v3.0.0-remediation-r3"
+started_at: "2026-10-02"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State - Sanierung v2.21.5: R2-Nachbesserung abgeschlossen (Review-Roadmap R0-R4)
+# Sprint State - Sanierung v3.0.0: R3-Welle (AP-33 bis AP-46)
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v2.21.5 -->
-<!-- RELEASE_BRANCH: `main` -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v3.0.0 -->
+<!-- RELEASE_BRANCH: `fix/v3.0.0-remediation-r3` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->

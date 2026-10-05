@@ -192,21 +192,27 @@ def load_stats(mutants_dir: Path = DEFAULT_STATS_DIR) -> MutmutStats | None:
     for key, value in raw_durations.items():
         if (
             not isinstance(key, str)
-            or not isinstance(value, (int, float))
             or isinstance(value, bool)
-            or not math.isfinite(value)
-            or value < 0
+            or not isinstance(value, (int, float))
         ):
+            return None
+        # M-137: math.isfinite raises OverflowError for integers beyond
+        # float range; a hand-edited stats cache with such a value must be
+        # rejected, not crash the loader.
+        try:
+            if not math.isfinite(value) or value < 0:
+                return None
+        except OverflowError:
             return None
         duration_by_test[key] = float(value)
 
     raw_time = data.pop("stats_time", 0.0)
-    if (
-        not isinstance(raw_time, (int, float))
-        or isinstance(raw_time, bool)
-        or not math.isfinite(raw_time)
-        or raw_time < 0
-    ):
+    if not isinstance(raw_time, (int, float)) or isinstance(raw_time, bool):
+        return None
+    try:
+        if not math.isfinite(raw_time) or raw_time < 0:
+            return None
+    except OverflowError:
         return None
     stats_time = float(raw_time)
 
@@ -1627,7 +1633,10 @@ def _build_stats_context_evidence(
         seen,
         excluded=excluded_resolved,
         core_hasher=core_hasher,
-        core_seen=set(),
+        # M-133: seed with the already-seen set so project files hashed by
+        # the project-tree pass are not re-read and re-hashed by the
+        # distribution pass (quadratic I/O + doubled race window).
+        core_seen=set(seen),
     )
     hasher.update(b"installed-distributions\0")
     hasher.update(dependency_basis.digest.encode("ascii"))
@@ -1765,14 +1774,17 @@ def collect_or_load_stats(
 ) -> MutmutStats:
     """Load cached stats or collect fresh ones via *runner*.
 
-    If cached stats exist, checks for new tests and re-collects only for those
-    (incremental update). Otherwise, runs a full stats collection.
+    Loads the cache; any detected change (no cache, diagnostic-only basis,
+    changed test set, changed context fingerprint, changed test files)
+    triggers a FULL re-collection — the former "incremental update for new
+    tests only" never existed in the implementation (M-135: the docstring
+    promised it; the code has always re-run the complete suite).
 
-    This mirrors mutmut 3.5.0's ``collect_or_load_stats()`` behavior:
-    1. Try to load cached stats from JSON.
-    2. If loaded, list current tests and compare against cached test names.
-    3. If new tests found, re-run stats collection for those tests only.
-    4. If no cached stats, run full collection.
+    Behavior:
+    1. Try to load cached stats from JSON (with context fingerprint check).
+    2. List current tests and compare against cached test names.
+    3. Any difference (new, removed, or no cache) triggers a full re-collection.
+    4. A diagnostic-only execution basis disables cache reuse entirely.
 
     Args:
         runner: ``PytestRunner`` instance.
@@ -1888,10 +1900,13 @@ def _run_stats_collection(
     survives the re-save.
 
     On a FAILED run (issue #99 / A3-OS-006 + A2-RN-003): the freshly
-    written JSON may be partial — it is neither loaded nor trusted; the
-    pre-run *cached* copy is restored to disk (healing a partial write) and
-    returned. Without any cache, the full-suite fallback is announced
-    loudly instead of silently degrading every mutant run.
+    written JSON may be partial — it is neither loaded nor trusted; a
+    fresh empty ``MutmutStats`` is returned (M-134: the former docstring
+    claimed the pre-run cache is "restored and returned", but the code
+    has always returned empty stats on failure; the pre-run cache FILE
+    is untouched, so the next run can still load it). Without any cache,
+    the full-suite fallback is announced loudly instead of silently
+    degrading every mutant run.
 
     Args:
         runner: ``PytestRunner`` used to execute the stats run.

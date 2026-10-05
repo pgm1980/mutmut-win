@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from queue import Queue
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,11 +32,6 @@ from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.process.worker import worker_main
 from mutmut_win.runner import FORCED_FAIL_MARKER, PytestRunner
 from tests.unit.phase_mock_util import frozen_worker_config, phase_popen
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-from queue import Queue
 
 
 @pytest.fixture(autouse=True)
@@ -127,10 +124,46 @@ class TestForcedFailTimeout:
 
 
 class TestForcedFailAttribution:
-    def test_marker_in_output_attributes_the_failure(self) -> None:
+    def test_trampoline_proof_attributes_the_failure(self) -> None:
+        """M-130: attribution comes from the structured trampoline proof.
+
+        The fake Popen writes the proof token to the proof path from the
+        child environment, exactly like the phase-guard plugin hook does
+        for a real failed MutmutProgrammaticFailException report.
+        """
         out = (
             "FAILED tests/test_a.py::test_x - "
             "mutmut_win.exceptions.MutmutProgrammaticFailException: Forced fail\n"
+        )
+
+        def fake_popen(*_args: object, **kwargs: object) -> object:
+            from mutmut_win.process.worker import (
+                _FORCED_FAIL_PROOF_PATH_ENV,
+                _FORCED_FAIL_PROOF_TOKEN_ENV,
+            )
+
+            env = kwargs.get("env") or {}
+            proof_path = env.get(_FORCED_FAIL_PROOF_PATH_ENV)
+            proof_token = env.get(_FORCED_FAIL_PROOF_TOKEN_ENV)
+            if proof_path and proof_token:
+                Path(proof_path).write_text(proof_token, encoding="utf-8")
+            return _fake_popen_writing(out, 1)(*_args, **kwargs)
+
+        runner = PytestRunner(MutmutConfig())
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("mutmut_win.process.worker._create_task_job", return_value=None),
+        ):
+            rc = runner.run_forced_fail("m1")
+        assert rc == 1
+        assert runner.last_forced_fail_attributed is True
+
+    def test_marker_text_without_trampoline_proof_is_not_attributed(self) -> None:
+        """M-130 RED case: the exception name in the output alone never
+        attributes — a test merely NAMED after the exception used to pass
+        the gate on a substring match."""
+        out = (
+            "FAILED tests/test_a.py::test_MutmutProgrammaticFailException - AssertionError: boom\n"
         )
         runner = PytestRunner(MutmutConfig())
         with (
@@ -139,7 +172,7 @@ class TestForcedFailAttribution:
         ):
             rc = runner.run_forced_fail("m1")
         assert rc == 1
-        assert runner.last_forced_fail_attributed is True
+        assert runner.last_forced_fail_attributed is False
 
     def test_foreign_failure_is_not_attributed(self) -> None:
         out = "FAILED tests/test_a.py::test_x - AssertionError: boom\n"
@@ -309,3 +342,61 @@ class TestWorkerImportMismatchEnv:
             worker_main(task_q, event_q, config_data)  # type: ignore[arg-type]
 
         assert captured_env.get("PY_IGNORE_IMPORTMISMATCH") == "1"
+
+
+class TestForcedFailOptionOrder:
+    """M-129: the proof presentation options must win over user arguments.
+
+    ``-r``/``--tb`` are action='store' — the last one wins. A user
+    ``--tb=no`` plus ``-rN`` used to override ``--tb=line``/``-rfE`` and
+    fail the forced-fail gate with a wrong diagnosis (the marker was
+    simply not printed).
+    """
+
+    def test_mandatory_report_options_follow_user_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.runner import PytestRunner
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        runner = PytestRunner(MutmutConfig(pytest_add_cli_args=["--tb=no", "-rN"]))
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_phase(_name: str, cmd: list[str], *_args: object, **_kwargs: object) -> int:
+            captured["cmd"] = list(cmd)
+            return 1
+
+        monkeypatch.setattr(runner, "_run_phase", fake_run_phase)
+        runner.run_forced_fail("some::mutant")
+        cmd = captured["cmd"]
+        head = cmd[: cmd.index("--")]
+        tb_options = [arg for arg in head if arg.startswith("--tb")]
+        r_options = [arg for arg in head if arg.startswith("-r") and not arg.startswith("--")]
+        assert tb_options[-1] == "--tb=line"
+        assert r_options[-1] == "-rfE"
+
+    def test_mandatory_report_options_follow_addopts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mutmut_win.runner import PytestRunner
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "mutants").mkdir(exist_ok=True)
+        monkeypatch.setenv("PYTEST_ADDOPTS", "--tb no -r N")
+        runner = PytestRunner(MutmutConfig())
+        captured: dict[str, list[str]] = {}
+
+        def fake_run_phase(_name: str, cmd: list[str], *_args: object, **_kwargs: object) -> int:
+            captured["cmd"] = list(cmd)
+            return 1
+
+        monkeypatch.setattr(runner, "_run_phase", fake_run_phase)
+        runner.run_forced_fail("some::mutant")
+        cmd = captured["cmd"]
+        head = cmd[: cmd.index("--")]
+        # The pin must appear AFTER the split PYTEST_ADDOPTS form '--tb no'
+        # (last-one-wins): the LAST --tb-prefixed option is the engine's.
+        tb_options = [arg for arg in head if arg.startswith("--tb")]
+        assert tb_options[-1] == "--tb=line"
+        assert "-rfE" in head[-3:]
