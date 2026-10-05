@@ -1,36 +1,55 @@
 ---
 current_sprint: "46"
-sprint_goal: "v3.0.0: in progress"
-branch: "fix/v3.0.0-remediation-r3"
+sprint_goal: "v3.0.0: released"
+branch: "main"
 started_at: "2026-10-02"
-phase: "in_progress"
-candidate_commit: ""
-candidate_tree: ""
-integrated_commit: ""
-integrated_tree: ""
-release_tag: ""
-housekeeping_done: false
-memory_updated: false
-github_issues_closed: false
+phase: "released"
+candidate_commit: "d291ee53e529692063dee2f55ad9ac9087003472"
+candidate_tree: "5457315eb374776c230e13946a18df126bee97d2"
+integrated_commit: "99db317609d120f2f269824ea56f67636580d0fb"
+integrated_tree: "5457315eb374776c230e13946a18df126bee97d2"
+release_tag: "v3.0.0"
+housekeeping_done: true
+memory_updated: true
+github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
-# Sprint State - Sanierung v3.0.0: R3-Welle (AP-33 bis AP-46)
+# Sprint State - Sanierung v3.0.0: R3-Welle und Release abgeschlossen (AP-33 bis AP-47)
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: in_progress -->
-<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_PHASE: released -->
+<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
 <!-- RELEASE_TARGET: v3.0.0 -->
-<!-- RELEASE_BRANCH: `fix/v3.0.0-remediation-r3` -->
+<!-- RELEASE_BRANCH: `main` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
 
 <!-- ARCHIVE_START -->
+
+## Archiv: Sprint 46 - v3.0.0
+
+Release-Sprint der R3-Welle (AP-33 bis AP-46) und des Release-Abschlusses
+(AP-47): Kandidat `d291ee5` (Tree `5457315e`), integriert als `99db317`
+(Merge PR #197, Baum byte-identisch), annotierter Tag `v3.0.0`,
+GitHub-Release mit Gate-Evidenz. Release-Vollsuite 3.668 passed / 1 failed /
+44 skipped; Root Cause des Fails: PEP-758-Multi-Except aus `95341e11`
+(M-112) ausserhalb des Semgrep-1.175-Parser-Subsets — Fix `ea0069c`
+[M-112-fix] plus gezielter Grün-Nachweis (88 passed: Semgrep-Gate-Suite und
+suspended_spawn-Tests). Modul-Gate-Kampagne nach Auftraggeberentscheidung
+abgebrochen und als dokumentierte Abweichung vom Ledger-Kriterium
+freigegeben: 3 PASS (output_capture 57,3 %, suspended_spawn 34,8 %,
+trampoline 66,7 % + Adjudizierung ~93,6 %), 2 BLOCKED (models/browser:
+Trampolin-Grenze klassenlastiger Module; Produkt-Bug widerlegt),
+db-Teilevidenz 288/2.622 (24,3 % Kill), Rest NOT_EXECUTED — Matrix
+AR27-GATE-MATRIX.md Sektion 7. Offen: #193, #194, #195; M-097 deferred;
+Übergabe an externen adversarialen Multi-Agenten-Review (GPT-6 Astra /
+Fable 5.1) mit Prüfaufträgen H1-H4 und E-A bis E-F.
 
 ## Archiv: Sprint 45 - v2.21.5
 

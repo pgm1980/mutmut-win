@@ -1,6 +1,6 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-10-02 (v2.21.5 released).
+> Last refresh: 2026-10-05 (v3.0.0 released).
 
 ## Sanierung v2.21.4 → **Programmziel: v3.0.0** (Sprints 43–47, R0–R4)
 
@@ -70,6 +70,21 @@
   Gate-Infrastruktur-Regel: Regex-/Node-Gate-Receipts laufen über den
   Release-Body nach (regex-Wiederholung + Cross-File-Adjudizierung offen;
   config dokumentiert abgebrochen).
+- **v3.0.0 RELEASED (2026-10-05):** Kandidat `d291ee5` (Tree `5457315e`),
+  integriert als `99db317` (Merge PR #197, Baum byte-identisch), annotierter
+  Tag `v3.0.0`, GitHub-Release mit Gate-Evidenz. R3-Welle: 43 Gruppen
+  implementiert und rot/grün verifiziert (38 Fixes, 4 nach Gegenbeweis
+  widerlegt/gepinnt, M-097 deferred); Testspezifikation in
+  `_docs/testmanagement/test_specification.md`. Release-Vollsuite 3.668/1/44 —
+  Root Cause des Fails: PEP-758-Multi-Except aus `95341e11` (M-112); Fix
+  `ea0069c` [M-112-fix] plus gezielter Grün-Nachweis (88 passed).
+  Modul-Gate-Kampagne nach Auftraggeberentscheidung abgebrochen und als
+  dokumentierte Abweichung freigegeben (AR27-GATE-MATRIX.md §7): 3 PASS,
+  2 BLOCKED (models/browser — Trampolin-Grenze klassenlastiger Module,
+  Produkt-Bug durch Spiegelvergleich widerlegt), db-Teilevidenz 288/2.622
+  (24,3 % Kill), Rest NOT_EXECUTED. Offen: #193, #194, #195; Übergabe an
+  externen adversarialen Multi-Agenten-Review (GPT-6 Astra / Fable 5.1)
+  mit Prüfaufträgen H1-H4 und E-A bis E-F.
 - **Betriebsregel für Gate-Läufe (harte Lehre 2026-10-02):** Während ein
   Mutation-Gate läuft, darf sich im Worktree **nichts** ändern — weder Commits
   noch Dateien. Der Fingerprint- und der Staging-Integritätswächter invalidieren
