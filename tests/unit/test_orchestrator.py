@@ -1183,10 +1183,10 @@ class TestLineBufferedStdoutTolerance:
             _ensure_line_buffered_stdout()  # must not raise
 
     def test_none_stdout_is_tolerated(self) -> None:
-        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
-
         import sys
         import unittest.mock
+
+        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
 
         with unittest.mock.patch.object(sys, "stdout", None):
             _ensure_line_buffered_stdout()
@@ -1204,9 +1204,9 @@ class TestLineBufferedStdoutTolerance:
             _ensure_line_buffered_stdout()
 
     def test_closed_text_io_wrapper_reconfigure_error_is_suppressed(self) -> None:
-        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
-
         import io
+
+        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
 
         stream = io.TextIOWrapper(io.BytesIO(), line_buffering=False)
         stream.close()
@@ -1217,9 +1217,9 @@ class TestLineBufferedStdoutTolerance:
             _ensure_line_buffered_stdout()  # ValueError suppressed
 
     def test_real_text_io_wrapper_gets_line_buffered(self) -> None:
-        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
-
         import io
+
+        from mutmut_win.orchestrator import _ensure_line_buffered_stdout
 
         stream = io.TextIOWrapper(io.BytesIO(), line_buffering=False)
         import sys
