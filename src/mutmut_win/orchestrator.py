@@ -329,6 +329,9 @@ class MutationOrchestrator:
             self._runner = _PytestRunner(config)
 
         self._executor_override: SpawnPoolExecutor | None = executor
+        # M-149b: run-scoped shared pycache path (set at run start, injected
+        # into the executor's config_data by _get_executor).
+        self._shared_pycache_path: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -511,6 +514,9 @@ class MutationOrchestrator:
             prefix="mutmut-win-run-pycache-", ignore_cleanup_errors=True
         )
         self._runner.shared_pycache = Path(pycache_ctx.name)
+        # M-149b: store for _get_executor to inject into the executor's
+        # config_data — dispatch workers reuse the shared bytecode cache.
+        self._shared_pycache_path = pycache_ctx.name
         try:
             if debug:
                 print("[debug] validating staging root…", file=sys.stderr)
@@ -575,6 +581,7 @@ class MutationOrchestrator:
                 sys.path[:] = original_sys_path
                 # M-149: release the run-scoped shared pycache.
                 self._runner.shared_pycache = None
+                self._shared_pycache_path = None
                 pycache_ctx.cleanup()
         except KeyboardInterrupt as interrupt:
             # Ctrl-C is an interrupted proof regardless of the pipeline
@@ -1622,13 +1629,21 @@ class MutationOrchestrator:
     def _get_executor(self) -> SpawnPoolExecutor:
         """Return the executor to use, creating a default one if needed."""
         if self._executor_override is not None:
-            return self._executor_override
-        from mutmut_win.process.executor import SpawnPoolExecutor as _SpawnPoolExecutor
+            executor = self._executor_override
+        else:
+            from mutmut_win.process.executor import SpawnPoolExecutor as _SpawnPoolExecutor
 
-        return _SpawnPoolExecutor(
-            max_workers=self._config.max_children,
-            config=self._config,
-        )
+            executor = _SpawnPoolExecutor(
+                max_workers=self._config.max_children,
+                config=self._config,
+            )
+        # M-149b: inject the shared pycache into the executor's config_data
+        # so dispatch workers reuse the bytecode cache.
+        if self._shared_pycache_path is not None:
+            executor._config_data["_worker_shared_pycache"] = str(
+                self._shared_pycache_path
+            )
+        return executor
 
 
 # ---------------------------------------------------------------------------

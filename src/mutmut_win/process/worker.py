@@ -1408,7 +1408,18 @@ def _process_task(
         # pytest's import-mismatch check would reject them via stale
         # __pycache__.
         env["PY_IGNORE_IMPORTMISMATCH"] = "1"
-        cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+        # M-149b: when the executor forwards a shared run-scoped pycache,
+        # the mutant's pytest child reuses the bytecode cache compiled by
+        # the first phase instead of recompiling ~80 MB per mutant.
+        shared_pycache_raw = config_data.get("_worker_shared_pycache")
+        shared_pycache: Path | None = None
+        if shared_pycache_raw is not None:
+            shared_pycache = Path(str(shared_pycache_raw))
+            if not shared_pycache.is_dir():
+                shared_pycache = None  # fall back to ephemeral if invalid
+        cache_dir = configure_ephemeral_pytest_environment(
+            env, runtime_dir, shared_pycache=shared_pycache
+        )
         cmd = redirect_pytest_output_args(cmd, runtime_dir)
         phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
             env,
