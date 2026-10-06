@@ -30,7 +30,7 @@ class TestWheelInstallBoundary:
         """Build the wheel once for all tests in this class."""
 
         dist_dir = tmp_path_factory.mktemp("dist")
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -52,7 +52,7 @@ class TestWheelInstallBoundary:
         venv_dir = tmp_path_factory.mktemp("wheel-venv")
         venv.create(venv_dir, with_pip=True)
         pip = venv_dir / "Scripts" / "pip"
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             [str(pip), "install", str(wheel_path), "pytest"],
             capture_output=True,
             text=True,
@@ -68,7 +68,7 @@ class TestWheelInstallBoundary:
         """The wheel-installed engine imports and reports its version."""
 
         python = isolated_venv / "Scripts" / "python"
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             [
                 str(python),
                 "-c",
@@ -90,9 +90,10 @@ class TestWheelInstallBoundary:
         probe = (
             "import mutmut_win, mutmut_win.cli, mutmut_win.db, mutmut_win.stats; "
             "import json, sys; "
-            "print(json.dumps([str(m.__file__) for m in [mutmut_win, mutmut_win.cli, mutmut_win.db, mutmut_win.stats]]))"
+            "mods = [mutmut_win, mutmut_win.cli, mutmut_win.db, mutmut_win.stats]; "
+            "print(json.dumps([str(m.__file__) for m in mods]))"
         )
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             [str(python), "-c", probe],
             capture_output=True,
             text=True,
@@ -114,7 +115,7 @@ class TestWheelInstallBoundary:
 
         project = copy_project(SIMPLE_LIB, tmp_path)
         python = isolated_venv / "Scripts" / "python"
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             [str(python), "-m", "mutmut_win", "run", "--no-progress"],
             cwd=project,
             capture_output=True,
