@@ -767,16 +767,30 @@ class MutationOrchestrator:
         return result
 
     def _recover_abandoned_run(self) -> None:
-        """Close a prior crash-orphan after exclusive workspace acquisition."""
+        """Close a prior crash-orphan after exclusive workspace acquisition.
+
+        TM-09 / issue #195 (W1 decision, PO-approved goal): a hard process
+        kill mid-dispatch must NOT destroy the reusability of the verdicts
+        the abandoned run already wrote.  The historical blanket revocation
+        (v2.21.1 hardening: "execution basis was never authorized") is
+        deliberately NOT applied here because the finer-grained protections
+        now carry that contract exactly:
+
+        * worker verdicts stream through atomic writes — a killed run can
+          only leave complete rows, never half-written ones;
+        * every persisted verdict is bound to its tests_fingerprint, and
+          the fingerprint is stable across restarts since M-147 — a later
+          run reuses a verdict ONLY when its test basis is byte-identical;
+        * REUSABLE_STATUSES already excludes environment-sensitive
+          verdicts (timeout/suspicious) from reuse.
+
+        The M-105 finalization-interrupt path keeps its revocation: that
+        window has additional in-flight state worth failing closed on.
+        """
+
         current = load_current_run(self._db_path)
         if current is None or current.status != "running":
             return
-        try:
-            invalidate_cached_reuse_for_run(self._db_path, current.run_id)
-        except Exception as exc:
-            raise OrchestratorError(
-                "could not revoke cached-verdict reuse from an abandoned prior run"
-            ) from exc
         finish_run(self._db_path, current.run_id, "aborted")
         print(
             "Recovered an unfinished prior mutation run as aborted "

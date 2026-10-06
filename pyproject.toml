@@ -176,6 +176,7 @@ disallow_untyped_defs = false
 markers = [
     "slow: long-running tests",
     "integration: integration tests",
+    "e2e: product end-to-end tests (public CLI entry to persisted result)",
 ]
 testpaths = ["tests"]
 python_functions = ["test_*"]
