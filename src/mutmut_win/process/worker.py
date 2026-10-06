@@ -172,6 +172,9 @@ _PYTEST_PHASE_SENTINEL_PROOF_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
 _PYTEST_ALLOWED_DIRS_ENV: str = "MUTMUT_PYTEST_ALLOWED_DIRS"
 _PYTEST_ALLOWED_FILES_ENV: str = "MUTMUT_PYTEST_ALLOWED_FILES"
 _PYTEST_RUNTIME_DIR_ENV: str = "MUTMUT_PYTEST_RUNTIME_DIR"
+#: Issue #194 (TM-10): seconds until the phase child dumps all thread
+#: tracebacks, naming a hang frame before the parent's wall-clock kill.
+_PYTEST_HANG_DUMP_ENV: str = "MUTMUT_PYTEST_HANG_DUMP_SECONDS"
 _PYTEST_PHASE_GUARD_SOURCE: str = '''\
 """Auto-generated mutmut-win pytest phase-execution guard."""
 
@@ -248,6 +251,32 @@ def _boundary_paths():
 # Authenticate the exact roots at module import so a replaced external
 # conftest cannot execute before a later lifecycle hook notices the swap.
 _BOUNDARY_PATHS_AT_IMPORT = _boundary_paths()
+
+# Issue #194 (TM-10): arm a diagnostic dump deadline so a hang anywhere
+# after plugin load (collection, conftest import, test body) is named
+# before the parent's wall-clock kill.  The dump targets a file in the
+# parent-owned runtime directory: pytest's fd-level capture would swallow
+# a stderr dump during a collection hang.  Purely diagnostic: arming must
+# never break the child, whatever the value.
+_hang_deadline_raw = os.environ.get("MUTMUT_PYTEST_HANG_DUMP_SECONDS")
+_hang_dump_file = None
+if _hang_deadline_raw is not None:
+    try:
+        _hang_deadline_seconds = float(_hang_deadline_raw)
+    except ValueError:
+        _hang_deadline_seconds = 0.0
+    if _hang_deadline_seconds > 0:
+        import faulthandler
+
+        try:
+            _hang_dump_path = Path(os.environ[_RUNTIME_DIR_ENV]) / "hang-dump.txt"
+            _hang_dump_file = open(_hang_dump_path, "ab")
+        except Exception:
+            _hang_dump_file = None
+        if _hang_dump_file is not None:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds, file=_hang_dump_file)
+        else:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -588,6 +617,17 @@ def pytest_unconfigure(config):
     Fully guarded: an exception here would surface as an ordinary pytest
     failure (exit 1, counted as killed), so this hook must never raise.
     """
+    try:
+        import faulthandler
+
+        faulthandler.cancel_dump_traceback_later()
+    except Exception:
+        pass
+    if _hang_dump_file is not None:
+        try:
+            _hang_dump_file.close()
+        except Exception:
+            pass
     _emit_publication_diagnostic()
 '''
 

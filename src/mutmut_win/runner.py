@@ -316,6 +316,14 @@ class PytestRunner:
         ) as runtime_name:
             runtime_dir = Path(runtime_name)
             isolated_env = env.copy()
+            if timeout is not None and timeout > 0:
+                # Issue #194 (TM-10): arm the phase guard's diagnostic dump
+                # shortly before the wall-clock kill so a hang's frame lands
+                # in the captured tail; healthy phases finish long before.
+                from mutmut_win.process.worker import _PYTEST_HANG_DUMP_ENV
+
+                margin = max(5, min(30, timeout // 4))
+                isolated_env[_PYTEST_HANG_DUMP_ENV] = str(max(1, timeout - margin))
             cache_dir = configure_ephemeral_pytest_environment(isolated_env, runtime_dir)
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
@@ -456,6 +464,24 @@ class PytestRunner:
             raise OrchestratorError(self._last_diagnostic_output)
         if exit_code != 0:
             self._last_diagnostic_output = capture.last_lines(_MAX_DIAGNOSTIC_LINES)
+            if exit_code == 36 and runtime_dir is not None:
+                # Issue #194 (TM-10): merge the phase guard's faulthandler
+                # dump into the published tail so a hang is diagnosed by
+                # frame instead of an empty timeout.
+                try:
+                    hang_dump = (
+                        (runtime_dir / "hang-dump.txt")
+                        .read_text(encoding="utf-8", errors="replace")
+                        .strip()
+                    )
+                except OSError:
+                    hang_dump = ""
+                if hang_dump:
+                    separator = "\n" if self._last_diagnostic_output else ""
+                    self._last_diagnostic_output = (
+                        f"{self._last_diagnostic_output or ''}"
+                        f"{separator}--- hang dump (faulthandler) ---\n{hang_dump}"
+                    )
         return exit_code
 
     def collect_tests(self) -> list[str]:
