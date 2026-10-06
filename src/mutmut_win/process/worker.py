@@ -966,7 +966,9 @@ def prepare_pytest_collection_guard(
     _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
 
-def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Path) -> Path:
+def configure_ephemeral_pytest_environment(
+    env: dict[str, str], runtime_dir: Path, *, shared_pycache: Path | None = None
+) -> Path:
     """Redirect Python/pytest/Hypothesis state to one fresh process directory.
 
     ``PYTHONDONTWRITEBYTECODE`` alone does not stop CPython from consuming an
@@ -975,18 +977,33 @@ def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Pat
     never be shared across phases: explicit ``py_compile`` can still populate
     it despite the no-write flag.
 
+    M-149: when *shared_pycache* is provided (run-scoped, not phase-scoped),
+    the pycache directory is reused across all phases of one run.  The first
+    phase compiles the trampolined staging tree and writes bytecode;
+    subsequent phases get cache hits instead of recompiling ~80 MB.
+    Bytecode writing is enabled in this mode because the staging tree is
+    frozen after generation (verified by _validate_staging_unchanged).
+
     Returns:
         The isolated pytest cache directory to use in ``-o cache_dir=...``.
     """
 
     runtime_dir = runtime_dir.absolute()
     cache_dir = runtime_dir / "pytest-cache"
-    pycache_dir = runtime_dir / "python-cache"
     hypothesis_dir = runtime_dir / "hypothesis"
-    for directory in (cache_dir, pycache_dir, hypothesis_dir):
-        directory.mkdir(parents=True, exist_ok=False)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    if shared_pycache is not None:
+        # M-149: run-scoped shared pycache — allow bytecode writing.
+        shared_pycache.mkdir(parents=True, exist_ok=True)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env["PYTHONPYCACHEPREFIX"] = str(shared_pycache)
+    else:
+        # Ephemeral (phase-scoped) pycache — no bytecode writing.
+        pycache_dir = runtime_dir / "python-cache"
+        for directory in (cache_dir, pycache_dir, hypothesis_dir):
+            directory.mkdir(parents=True, exist_ok=False)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    hypothesis_dir.mkdir(parents=True, exist_ok=True)
     env["HYPOTHESIS_STORAGE_DIRECTORY"] = str(hypothesis_dir)
     env["COVERAGE_FILE"] = str(runtime_dir / ".coverage")
     env[_PYTEST_RUNTIME_DIR_ENV] = str(runtime_dir)

@@ -219,6 +219,10 @@ class PytestRunner:
         self._project_root = Path.cwd().resolve()
         self._pytest_boundary: PytestBoundary | None = None
         self._last_diagnostic_output: str | None = None
+        # M-149: run-scoped shared pycache (set by the orchestrator at run
+        # start; the first phase compiles + writes bytecode, subsequent
+        # phases get cache hits instead of recompiling ~80 MB trampolined source).
+        self.shared_pycache: Path | None = None
         self._forced_fail_attributed: bool | None = None
 
     # ------------------------------------------------------------------
@@ -307,8 +311,14 @@ class PytestRunner:
         env: dict[str, str],
         timeout: int | None = None,
         timeout_hint: str = "clean_run_timeout",
+        shared_pycache: Path | None = None,
     ) -> int:
-        """Run one pytest phase with a fresh process-local cache directory."""
+        """Run one pytest phase with a fresh process-local cache directory.
+
+        M-149: when *shared_pycache* is provided, the pycache directory is
+        reused across all phases of one run (first phase compiles + writes
+        bytecode, subsequent phases get cache hits).
+        """
 
         with tempfile.TemporaryDirectory(
             prefix="mutmut-win-pytest-runtime-",
@@ -324,7 +334,10 @@ class PytestRunner:
 
                 margin = max(5, min(30, timeout // 4))
                 isolated_env[_PYTEST_HANG_DUMP_ENV] = str(max(1, timeout - margin))
-            cache_dir = configure_ephemeral_pytest_environment(isolated_env, runtime_dir)
+            effective_pycache = shared_pycache or self.shared_pycache
+            cache_dir = configure_ephemeral_pytest_environment(
+                isolated_env, runtime_dir, shared_pycache=effective_pycache
+            )
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
             isolated_cmd = _with_pytest_target_argfile(isolated_cmd, runtime_dir)

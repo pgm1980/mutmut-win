@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -503,6 +504,13 @@ class MutationOrchestrator:
         debug = bool(self._config.debug)
         watchdog = StallWatchdog()
         watchdog.arm()
+        # M-149: run-scoped shared pycache — the first pytest phase compiles
+        # the trampolined staging tree and writes bytecode; subsequent phases
+        # get cache hits instead of recompiling ~80 MB per phase.
+        pycache_ctx = tempfile.TemporaryDirectory(
+            prefix="mutmut-win-run-pycache-", ignore_cleanup_errors=True
+        )
+        self._runner.shared_pycache = Path(pycache_ctx.name)
         try:
             if debug:
                 print("[debug] validating staging root…", file=sys.stderr)
@@ -565,6 +573,9 @@ class MutationOrchestrator:
                 # restore so neither generation nor a future helper can leak
                 # staging into the long-lived orchestration interpreter.
                 sys.path[:] = original_sys_path
+                # M-149: release the run-scoped shared pycache.
+                self._runner.shared_pycache = None
+                pycache_ctx.cleanup()
         except KeyboardInterrupt as interrupt:
             # Ctrl-C is an interrupted proof regardless of the pipeline
             # phase in which it lands. Preserve the original interrupt while
