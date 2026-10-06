@@ -1,31 +1,31 @@
 ---
-current_sprint: "46"
-sprint_goal: "v3.0.0: released"
-branch: "main"
-started_at: "2026-10-02"
-phase: "released"
-candidate_commit: "d291ee53e529692063dee2f55ad9ac9087003472"
-candidate_tree: "5457315eb374776c230e13946a18df126bee97d2"
-integrated_commit: "99db317609d120f2f269824ea56f67636580d0fb"
-integrated_tree: "5457315eb374776c230e13946a18df126bee97d2"
-release_tag: "v3.0.0"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "47"
+sprint_goal: "v3.1.0: in progress"
+branch: "fix/v3.1.0-testsanierung"
+started_at: "2026-10-06"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State - Sanierung v3.0.0: R3-Welle und Release abgeschlossen (AP-33 bis AP-47)
+# Sprint State - Testsanierung 3.1.0: Testpyramide W0 bis W5
 
 <!-- LIVE_STATE_START -->
 
-<!-- RELEASE_PHASE: released -->
-<!-- RELEASE_PHASE_STATUS: tagged-release-housekeeping-complete -->
-<!-- RELEASE_TARGET: v3.0.0 -->
-<!-- RELEASE_BRANCH: `main` -->
+<!-- RELEASE_PHASE: in_progress -->
+<!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
+<!-- RELEASE_TARGET: v3.1.0 -->
+<!-- RELEASE_BRANCH: `fix/v3.1.0-testsanierung` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
