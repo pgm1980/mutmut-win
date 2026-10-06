@@ -1,14 +1,16 @@
 """Issue #194 (TM-10): a hanging phase child must be diagnosable, fast.
 
-The original forced-fail hang (import-phase retry loop swallowing the fail
-sentinel) is healed at the current stand — the sentinel propagates through
-the trampolines (manual receipt, glm-followup).  What remains of #194 is the
-liveness contract: a phase child that hangs anywhere (collection, conftest
-import, test body) burns the full wall-clock budget with an empty or
-frame-less tail.  The phase guard therefore arms a faulthandler dump
-deadline shortly before the wall-clock kill, so the captured tail names the
-hang frame; the verdict stays timeout (36) — a hang is never attributed as
-a kill.
+The #194 root cause turned out to be a compile explosion of the fully
+trampolined staging tree (every phase recompiles ~80 MB of trampoline
+source under an ephemeral pycache; orchestrator.py alone compiles for
+~350 s — see M-149 and evidence/w0-194-engine-receipt.log).  The liveness
+contract under test: a phase child that hangs anywhere (plugin dependency
+compile, collection, conftest import, test body) burns the full wall-clock
+budget with an empty or frame-less tail unless diagnosed.  The phase guard
+therefore arms a faulthandler dump deadline BEFORE its trampolined
+dependency imports, and the dump file is merged into the published timeout
+tail; the verdict stays timeout (36) — a hang is never attributed as a
+kill.
 """
 
 from __future__ import annotations
@@ -108,6 +110,21 @@ def test_hanging_import_is_diagnosed_as_timeout_with_named_frame(
         "the faulthandler dump header must reach the captured tail (issue #194: hang diagnosis)"
     )
     assert "test_phase.py" in tail, "the dump must name the hanging frame's file (issue #194)"
+
+
+def test_hang_arming_precedes_trampolined_dependency_imports() -> None:
+    """The dump must cover the dependency-compile window (M-149 case).
+
+    The #194 compile explosion hangs INSIDE ``import mutmut_win.atomic_file``
+    at the top of the generated guard; arming that happens after that import
+    can never diagnose it.
+    """
+
+    from mutmut_win.process.worker import _PYTEST_PHASE_GUARD_SOURCE
+
+    arming = _PYTEST_PHASE_GUARD_SOURCE.index("MUTMUT_PYTEST_HANG_DUMP_SECONDS")
+    dependency = _PYTEST_PHASE_GUARD_SOURCE.index("from mutmut_win.atomic_file import")
+    assert arming < dependency
 
 
 def test_healthy_phase_finishes_without_dump_noise(

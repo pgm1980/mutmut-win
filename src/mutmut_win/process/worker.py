@@ -185,6 +185,34 @@ from pathlib import Path
 
 import pytest
 
+# Issue #194 (TM-10): arm the diagnostic hang dump BEFORE importing the
+# trampolined engine dependency below - compiling it can itself take
+# minutes on fully trampolined staging trees (M-149), and a hang in that
+# window must be diagnosable too.  The dump targets a file in the
+# parent-owned runtime directory: pytest fd-level capture would swallow a
+# stderr dump.  Purely diagnostic: arming must never break the child.
+_hang_deadline_raw = os.environ.get("MUTMUT_PYTEST_HANG_DUMP_SECONDS")
+_hang_dump_file = None
+if _hang_deadline_raw is not None:
+    try:
+        _hang_deadline_seconds = float(_hang_deadline_raw)
+    except ValueError:
+        _hang_deadline_seconds = 0.0
+    if _hang_deadline_seconds > 0:
+        import faulthandler
+
+        try:
+            _hang_dump_path = Path(
+                os.environ["MUTMUT_PYTEST_RUNTIME_DIR"]
+            ) / "hang-dump.txt"
+            _hang_dump_file = open(_hang_dump_path, "ab")
+        except Exception:
+            _hang_dump_file = None
+        if _hang_dump_file is not None:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds, file=_hang_dump_file)
+        else:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds)
+
 from mutmut_win.atomic_file import atomic_write_bytes
 
 _PATH_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
@@ -251,32 +279,6 @@ def _boundary_paths():
 # Authenticate the exact roots at module import so a replaced external
 # conftest cannot execute before a later lifecycle hook notices the swap.
 _BOUNDARY_PATHS_AT_IMPORT = _boundary_paths()
-
-# Issue #194 (TM-10): arm a diagnostic dump deadline so a hang anywhere
-# after plugin load (collection, conftest import, test body) is named
-# before the parent's wall-clock kill.  The dump targets a file in the
-# parent-owned runtime directory: pytest's fd-level capture would swallow
-# a stderr dump during a collection hang.  Purely diagnostic: arming must
-# never break the child, whatever the value.
-_hang_deadline_raw = os.environ.get("MUTMUT_PYTEST_HANG_DUMP_SECONDS")
-_hang_dump_file = None
-if _hang_deadline_raw is not None:
-    try:
-        _hang_deadline_seconds = float(_hang_deadline_raw)
-    except ValueError:
-        _hang_deadline_seconds = 0.0
-    if _hang_deadline_seconds > 0:
-        import faulthandler
-
-        try:
-            _hang_dump_path = Path(os.environ[_RUNTIME_DIR_ENV]) / "hang-dump.txt"
-            _hang_dump_file = open(_hang_dump_path, "ab")
-        except Exception:
-            _hang_dump_file = None
-        if _hang_dump_file is not None:
-            faulthandler.dump_traceback_later(_hang_deadline_seconds, file=_hang_dump_file)
-        else:
-            faulthandler.dump_traceback_later(_hang_deadline_seconds)
 
 
 @pytest.hookimpl(tryfirst=True)
