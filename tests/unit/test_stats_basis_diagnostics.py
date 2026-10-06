@@ -21,7 +21,12 @@ if TYPE_CHECKING:
 @snapshot
 def _tree_basis(root: Path) -> stats.RunBasisEvidence:
     hasher = observed_sha256(stream="tree-probe")
-    complete = stats._hash_context_tree(hasher, root, label_prefix="fixture", seen=set())
+    # Timestamp binding stays an opt-in metadata capability (issue #195 made
+    # the default timestamp-free so reuse survives content-identical churn);
+    # this probe exercises the observation layer, which needs it on.
+    complete = stats._hash_context_tree(
+        hasher, root, label_prefix="fixture", seen=set(), hash_file_timestamps=True
+    )
     return stats.RunBasisEvidence(hasher.hexdigest(), complete)
 
 
