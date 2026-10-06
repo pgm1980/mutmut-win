@@ -25,8 +25,7 @@ from mutmut_win.db import (
     RunBasisIncompleteness,
     invalidate_latest_run_evidence,
     known_run_basis_incompleteness,
-    load_current_run,
-    load_results,
+    load_latest_run_results,
     validate_cache_path,
 )
 from mutmut_win.exceptions import (
@@ -295,35 +294,18 @@ def _load_results_or_exit(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
 def _load_result_snapshot_or_exit(
     path: Path = DEFAULT_DB_PATH,
 ) -> tuple[MutationRunState | None, list[MutationResult]]:
-    """Load the current run population, falling back only for legacy DBs."""
+    """Load the current run population, falling back only for legacy DBs.
+
+    Delegates to :func:`mutmut_win.db.load_latest_run_results` (M-097:
+    one snapshot for the run decision and the legacy fallback).  The CLI
+    keeps workspace-root safety and the MutmutWinError-to-exit-1 channel;
+    corruption now fails closed as CorruptCacheError instead of leaking
+    raw TypeError/ValidationError tracebacks.
+    """
     try:
         if _uses_default_cache_root(path):
             _require_safe_workspace_roots(".mutmut-cache")
-        current = load_current_run(path)
-        if current is None:
-            return None, load_results(path)
-
-        from mutmut_win.models import MutationResult
-
-        completed_by_name = {result.mutant_name: result for result in current.completed_results}
-        results: list[MutationResult] = []
-        for mutant_name in current.planned_names:
-            completed = completed_by_name.get(mutant_name)
-            if completed is None:
-                results.append(MutationResult(mutant_name=mutant_name, status="not checked"))
-                continue
-            results.append(
-                MutationResult(
-                    mutant_name=completed.mutant_name,
-                    status=completed.status,
-                    exit_code=completed.exit_code,
-                    duration=completed.duration,
-                    last_output=completed.last_output,
-                    forensics=completed.forensics,
-                    tests_fingerprint=completed.tests_fingerprint,
-                )
-            )
-        return current, results
+        return load_latest_run_results(path)
     except MutmutWinError as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)

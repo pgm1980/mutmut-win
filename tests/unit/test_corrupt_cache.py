@@ -112,7 +112,7 @@ class TestCliRendersCleanly:
     ) -> None:
         runner = CliRunner()
         monkeypatch.chdir(tmp_path)
-        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
+        with patch("mutmut_win.cli.load_latest_run_results", side_effect=self._ERR):
             result = runner.invoke(cli, ["results"])
         assert result.exit_code == 1
         # the message goes to STDERR (errors must not pollute stdout pipelines)
@@ -125,7 +125,7 @@ class TestCliRendersCleanly:
         runner = CliRunner()
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
-        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
+        with patch("mutmut_win.cli.load_latest_run_results", side_effect=self._ERR):
             result = runner.invoke(cli, ["export-cicd-stats"])
         assert result.exit_code == 1
         assert "corrupt or unreadable" in result.stderr
@@ -249,7 +249,7 @@ class TestCliRendersEnvironmentErrorsCleanly:
     ) -> None:
         runner = CliRunner()
         monkeypatch.chdir(tmp_path)
-        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
+        with patch("mutmut_win.cli.load_latest_run_results", side_effect=self._ERR):
             result = runner.invoke(cli, ["results"])
         assert result.exit_code == 1
         # the message goes to STDERR with guidance, never with delete advice
@@ -264,7 +264,7 @@ class TestCliRendersEnvironmentErrorsCleanly:
         runner = CliRunner()
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
-        with patch("mutmut_win.cli.load_current_run", side_effect=self._ERR):
+        with patch("mutmut_win.cli.load_latest_run_results", side_effect=self._ERR):
             result = runner.invoke(cli, ["export-cicd-stats"])
         assert result.exit_code == 1
         assert "environment problem" in result.stderr

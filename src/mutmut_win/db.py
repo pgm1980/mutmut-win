@@ -18,8 +18,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict
 
 from mutmut_win.exceptions import (
     CacheEnvironmentError,
@@ -1385,45 +1387,96 @@ def load_current_run(path: Path = DEFAULT_DB_PATH) -> MutationRunState | None:
         # the same SQLite snapshot while workers stream completions.
         _verify_database_identity(absolute, identity)
         conn.execute("BEGIN")
-        run_row = conn.execute(
-            """
-            SELECT sequence, run_id, status, started_at, finished_at,
-                   plan_finalized, universe_fingerprint, plan_digest,
-                   basis_fingerprint, basis_config_json, evidence_invalidated,
-                   is_full_run
-            FROM mutation_run
-            ORDER BY sequence DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        high_water_row = conn.execute(
-            "SELECT seq FROM sqlite_sequence WHERE name = 'mutation_run'"
-        ).fetchone()
-        orphan_row = conn.execute(
-            """
-            SELECT 1
-            FROM mutation_run_mutant AS planned
-            LEFT JOIN mutation_run AS run ON run.run_id = planned.run_id
-            WHERE run.run_id IS NULL
-            LIMIT 1
-            """
-        ).fetchone()
-        plan_rows: list[tuple[object, ...]] = []
-        if run_row is not None:
-            plan_rows = conn.execute(
-                """
-                SELECT ordinal, mutant_name, completed, reused, result_status, exit_code,
-                       duration, last_output, forensics, tests_fingerprint, completed_at
-                FROM mutation_run_mutant
-                WHERE run_id = ?
-                ORDER BY ordinal
-                """,
-                (run_row[1],),
-            ).fetchall()
+        snapshot = _fetch_current_run_rows(conn, absolute=absolute, identity=identity)
         _verify_database_identity(absolute, identity)
 
     # Parsing is deliberately outside the connection lifetime, but the
     # pathname must still identify the file whose snapshot was read.
+    _verify_database_identity(absolute, identity)
+    return _parse_current_run(path, snapshot)
+
+
+class _RunSnapshotRows(BaseModel):
+    """Raw row bundle of one run-snapshot read (M-097).
+
+    Captured inside a single read transaction so the run-existence
+    decision and a legacy fallback read share one snapshot; parsing and
+    validation happen outside the connection lifetime.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    absolute: Path
+    identity: Any
+    run_row: Any
+    high_water_row: Any
+    orphan_row: Any
+    plan_rows: tuple[Any, ...]
+
+
+def _fetch_current_run_rows(
+    conn: sqlite3.Connection, *, absolute: Path, identity: Any
+) -> _RunSnapshotRows:
+    """Fetch header, guard marks and plan rows in the caller's snapshot."""
+
+    run_row = conn.execute(
+        """
+        SELECT sequence, run_id, status, started_at, finished_at,
+               plan_finalized, universe_fingerprint, plan_digest,
+               basis_fingerprint, basis_config_json, evidence_invalidated,
+               is_full_run
+        FROM mutation_run
+        ORDER BY sequence DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    high_water_row = conn.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'mutation_run'"
+    ).fetchone()
+    orphan_row = conn.execute(
+        """
+        SELECT 1
+        FROM mutation_run_mutant AS planned
+        LEFT JOIN mutation_run AS run ON run.run_id = planned.run_id
+        WHERE run.run_id IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    plan_rows: list[tuple[object, ...]] = []
+    if run_row is not None:
+        plan_rows = conn.execute(
+            """
+            SELECT ordinal, mutant_name, completed, reused, result_status, exit_code,
+                   duration, last_output, forensics, tests_fingerprint, completed_at
+            FROM mutation_run_mutant
+            WHERE run_id = ?
+            ORDER BY ordinal
+            """,
+            (run_row[1],),
+        ).fetchall()
+    return _RunSnapshotRows(
+        absolute=absolute,
+        identity=identity,
+        run_row=run_row,
+        high_water_row=high_water_row,
+        orphan_row=orphan_row,
+        plan_rows=tuple(plan_rows),
+    )
+
+
+def _parse_current_run(path: Path, snapshot: _RunSnapshotRows) -> MutationRunState | None:
+    """Validate and assemble the current run state from one row bundle.
+
+    Behavior and corruption checks are exactly those of the former
+    inline parsing in :func:`load_current_run` (M-097 extraction).
+    """
+
+    absolute = snapshot.absolute
+    identity = snapshot.identity
+    run_row = snapshot.run_row
+    high_water_row = snapshot.high_water_row
+    orphan_row = snapshot.orphan_row
+    plan_rows = snapshot.plan_rows
     _verify_database_identity(absolute, identity)
     if orphan_row is not None:
         _corrupt_cache(path, "mutation plan contains rows without a matching run header")
@@ -1602,9 +1655,27 @@ def load_latest_run_results(
 
     from mutmut_win.models import MutationResult
 
-    current = load_current_run(path)
+    validate_cache_path(path)
+    if not path.exists():
+        return None, []
+    create_db(path)  # idempotent; one schema pass for both read paths
+
+    legacy_rows: list[tuple[object, ...]] = []
+    with _verified_connection(path, create=False) as (conn, identity, absolute):
+        # M-097: the run-existence decision and the legacy fallback read
+        # share ONE deferred read transaction, so a concurrent first run
+        # cannot split the decision from the results snapshot.
+        _verify_database_identity(absolute, identity)
+        conn.execute("BEGIN")
+        snapshot = _fetch_current_run_rows(conn, absolute=absolute, identity=identity)
+        if snapshot.run_row is None:
+            legacy_rows = conn.execute(_SELECT_ALL_SQL).fetchall()
+        _verify_database_identity(absolute, identity)
+    _verify_database_identity(absolute, identity)
+
+    current = _parse_current_run(path, snapshot)
     if current is None:
-        return None, load_results(path)
+        return None, _parse_legacy_rows(path, legacy_rows)
 
     completed_by_name = {result.mutant_name: result for result in current.completed_results}
     results: list[MutationResult] = []
@@ -1929,10 +2000,6 @@ def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
     Returns:
         List of ``MutationResult`` instances, one per persisted mutant.
     """
-    from pydantic import ValidationError
-
-    from mutmut_win.models import MutationResult
-
     validate_cache_path(path)
     if not path.exists():
         return []
@@ -1940,8 +2007,21 @@ def load_results(path: Path = DEFAULT_DB_PATH) -> list[MutationResult]:
 
     with _verified_connection(path, create=False) as (conn, identity, absolute):
         _verify_database_identity(absolute, identity)
-        cursor = conn.execute(_SELECT_ALL_SQL)
-        rows = cursor.fetchall()
+        rows = conn.execute(_SELECT_ALL_SQL).fetchall()
+
+    return _parse_legacy_rows(path, rows)
+
+
+def _parse_legacy_rows(path: Path, rows: list[tuple[object, ...]]) -> list[MutationResult]:
+    """Validate and assemble legacy-cache results from fetched rows.
+
+    Behavior and corruption checks are exactly those of the former
+    inline parsing in :func:`load_results` (M-097 extraction).
+    """
+
+    from pydantic import ValidationError
+
+    from mutmut_win.models import MutationResult
 
     out: list[MutationResult] = []
     try:

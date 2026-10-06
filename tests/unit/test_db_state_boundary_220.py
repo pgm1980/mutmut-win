@@ -673,7 +673,11 @@ def test_load_latest_run_results_wraps_pydantic_validation_failure(
         completed_names=("m1",),
         pending_names=(),
     )
-    monkeypatch.setattr("mutmut_win.db.load_current_run", lambda _path: current)
+    # M-097 seam migration: load_latest_run_results no longer routes through
+    # load_current_run; the crafted state enters at the parse seam while a
+    # minimal schema keeps the single-connection path executable.
+    create_db(tmp_path / "cache.db")
+    monkeypatch.setattr("mutmut_win.db._parse_current_run", lambda _path, _snapshot: current)
 
     with pytest.raises(CorruptCacheError, match="failed validation"):
         load_latest_run_results(tmp_path / "cache.db")
