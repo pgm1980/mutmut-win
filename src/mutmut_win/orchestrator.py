@@ -513,7 +513,10 @@ class MutationOrchestrator:
         pycache_ctx = tempfile.TemporaryDirectory(
             prefix="mutmut-win-run-pycache-", ignore_cleanup_errors=True
         )
-        self._runner.shared_pycache = Path(pycache_ctx.name)
+        # M-149/M-149b: set on the runner when it supports it (mock
+        # runners in unit tests may not have __dict__).
+        with contextlib.suppress(AttributeError):
+            self._runner.shared_pycache = Path(pycache_ctx.name)
         # M-149b: store for _get_executor to inject into the executor's
         # config_data — dispatch workers reuse the shared bytecode cache.
         self._shared_pycache_path = pycache_ctx.name
@@ -580,7 +583,8 @@ class MutationOrchestrator:
                 # staging into the long-lived orchestration interpreter.
                 sys.path[:] = original_sys_path
                 # M-149: release the run-scoped shared pycache.
-                self._runner.shared_pycache = None
+                with contextlib.suppress(AttributeError):
+                    self._runner.shared_pycache = None
                 self._shared_pycache_path = None
                 pycache_ctx.cleanup()
         except KeyboardInterrupt as interrupt:
