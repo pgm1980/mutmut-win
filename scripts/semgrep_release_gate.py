@@ -133,10 +133,11 @@ class FindingSignature:
 
 
 _POPEN_RULE: Final = "python.lang.compatibility.python36.python36-compatibility-Popen2"
+_POPEN1_RULE: Final = "python.lang.compatibility.python36.python36-compatibility-Popen1"
 _IMPORT_RULE: Final = "python.lang.security.audit.non-literal-import.non-literal-import"
 _EXEC_RULE: Final = "python.lang.security.audit.exec-detected.exec-detected"
 _PICKLE_RULE: Final = "python.lang.security.deserialization.pickle.avoid-pickle"
-_KILL_PROC_FILE_SHA: Final = "aff81671be553a2da9ef0a006baec1bdc8b01133601d3834da9a90fa72a2cb32"
+_KILL_PROC_FILE_SHA: Final = "b830510300d6a2b2ad872cad65a80e022106aacbb6c2dd166a9a31cf41c46ac3"
 _ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
 _CLASS_BODY_FILE_SHA: Final = "cfa26e6a173f08327891116c1604256d92bcef7ea17ce1534e31f8c725c51dc5"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
@@ -162,6 +163,23 @@ _ATOMIC_FAULT_UTIL_FILE_SHA: Final = (
 _MUTANT_SAFETY_NET_FILE_SHA: Final = (
     "cbc582b22ec6a876e742563ac1af7638d76bf5b232409bbe8c312a8546f15dd3"
 )
+# Testsanierung v3.1.0 (W1-W5, GAP-1..7): file hashes of the new test
+# harness files whose adjudicated subprocess findings are pinned below.
+_E2E_UTIL_FILE_SHA: Final = "79cb61f09ec355be85ea44c3c800b6afe9d03c2d16fd80e7b046574ea92e4335"
+_INTERRUPT_FINALIZATION_FILE_SHA: Final = (
+    "e6b959c98602850bfd218db8af13bc09a0d8083699966d5d35265754c14afb05"
+)
+_PYCACHE_INTEGRATION_FILE_SHA: Final = (
+    "1422ca37e524da1bf1eab18392a54fb45bcadef4ac97d70dcb78d657bab7da6c"
+)
+_ATOMIC_CRASH_RECOVERY_FILE_SHA: Final = (
+    "2122fde11b0d18d5c6d8d2202fc02a9cf4f34924434bfb50082c39dabc10c907"
+)
+_PROCESS_LIFECYCLE_FILE_SHA: Final = (
+    "b3e5da55812025fdba1b2d0c12f4e895ad7acc282911890537e9afdd9977442f"
+)
+_STAGING_DRIFT_FILE_SHA: Final = "acc67449b28bcf09d8f32c1e34ac92f5e2820f51d39bc072ae2d1a6a74395afc"
+_WORKSPACE_LOCK_FILE_SHA: Final = "5adb1a04e5b8951723f4bb75de6e0812b3c7f0294b13fefd8f883b8b044f8787"
 
 
 DEFAULT_FINDING_ALLOWLIST: Final = (
@@ -184,6 +202,139 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         10,
         "5702c9eb93300dd4f618af4c583c67973c7e775c3ffa98aa4b9069377c04fd72",
         _KILL_PROC_FILE_SHA,
+    ),
+    # Adjudication (Testsanierung v3.1.0): the W1-W5 and GAP-1..7 test
+    # harnesses spawn the engine/pytest via subprocess with fully controlled
+    # argument lists (sys.executable + constants); no product or untrusted
+    # input reaches the command line.  The project pins exactly CPython
+    # 3.14.7 on Windows, so the python36-compatibility Popen rules do not
+    # apply — same adjudication family as test_kill_proc_tree above.
+    FindingSignature(
+        "tests/e2e/e2e_util.py",
+        _POPEN1_RULE,
+        56,
+        12,
+        63,
+        6,
+        "b8603eeb859c00d5b84cb5c10b22cbf700795c8fcd5ba43ab2b5b29fdac2e42e",
+        _E2E_UTIL_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/e2e/e2e_util.py",
+        _POPEN_RULE,
+        56,
+        12,
+        63,
+        6,
+        "b8603eeb859c00d5b84cb5c10b22cbf700795c8fcd5ba43ab2b5b29fdac2e42e",
+        _E2E_UTIL_FILE_SHA,
+    ),
+    # GAP-7 interrupt harness: the engine subprocess gets its own console
+    # and process group so a genuine console Ctrl+C can be delivered.
+    FindingSignature(
+        "tests/e2e/test_interrupt_finalization.py",
+        _POPEN1_RULE,
+        40,
+        12,
+        49,
+        6,
+        "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
+        _INTERRUPT_FINALIZATION_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/e2e/test_interrupt_finalization.py",
+        _POPEN_RULE,
+        40,
+        12,
+        49,
+        6,
+        "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
+        _INTERRUPT_FINALIZATION_FILE_SHA,
+    ),
+    # M-149b pycache forwarding integration harness.
+    FindingSignature(
+        "tests/e2e/test_pycache_integration.py",
+        _POPEN1_RULE,
+        97,
+        19,
+        105,
+        10,
+        "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
+        _PYCACHE_INTEGRATION_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/e2e/test_pycache_integration.py",
+        _POPEN_RULE,
+        97,
+        19,
+        105,
+        10,
+        "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
+        _PYCACHE_INTEGRATION_FILE_SHA,
+    ),
+    # GAP-2 atomic crash recovery: kills a writer subprocess mid-write.
+    FindingSignature(
+        "tests/integration/test_atomic_crash_recovery.py",
+        _POPEN_RULE,
+        41,
+        12,
+        47,
+        6,
+        "3554dfa1bbb10c77c4e5305007c4c09a42949a7f6e942354023178ad16624152",
+        _ATOMIC_CRASH_RECOVERY_FILE_SHA,
+    ),
+    # W2 process lifecycle corridors (tree kill, runtime root, pool collapse).
+    FindingSignature(
+        "tests/integration/test_process_lifecycle.py",
+        _POPEN1_RULE,
+        29,
+        12,
+        38,
+        6,
+        "f2fbfa699fc880dcaf8347aeb839bfd283632333002d913a4d257f7e91d3102c",
+        _PROCESS_LIFECYCLE_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/integration/test_process_lifecycle.py",
+        _POPEN_RULE,
+        29,
+        12,
+        38,
+        6,
+        "f2fbfa699fc880dcaf8347aeb839bfd283632333002d913a4d257f7e91d3102c",
+        _PROCESS_LIFECYCLE_FILE_SHA,
+    ),
+    # GAP-4 staging drift: engine run whose source changes mid-dispatch.
+    FindingSignature(
+        "tests/integration/test_staging_drift_detection.py",
+        _POPEN_RULE,
+        50,
+        16,
+        57,
+        10,
+        "c7740e79533ba62579f932ad262efa631a9d921632da6baae82f5f5bdf452201",
+        _STAGING_DRIFT_FILE_SHA,
+    ),
+    # GAP-6 workspace lock contention: two engines racing for one workspace.
+    FindingSignature(
+        "tests/integration/test_workspace_lock_contention.py",
+        _POPEN1_RULE,
+        31,
+        12,
+        39,
+        6,
+        "3a6ea5a16741f1ac7be60ff348ffb2a8a180cee238f9cc44b7d1d25479f6405c",
+        _WORKSPACE_LOCK_FILE_SHA,
+    ),
+    FindingSignature(
+        "tests/integration/test_workspace_lock_contention.py",
+        _POPEN_RULE,
+        31,
+        12,
+        39,
+        6,
+        "3a6ea5a16741f1ac7be60ff348ffb2a8a180cee238f9cc44b7d1d25479f6405c",
+        _WORKSPACE_LOCK_FILE_SHA,
     ),
     FindingSignature(
         "tests/test_architecture.py",
@@ -333,15 +484,18 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "b9531179ddec5d36108a0b76b13811e43929d7302780880bdd417e44ff25a989",
         _MODELS_FILE_SHA,
     ),
+    # M-149b position refresh: the shared-pycache work inserted code above
+    # the deferred import; the finding content is unchanged (identical
+    # lines_sha256), only position and file hash were re-recorded.
     FindingSignature(
         "src/mutmut_win/file_setup.py",
         _IMPORT_RULE,
-        2654,
+        2882,
         22,
-        2654,
+        2882,
         58,
         "d9d54c69ac7a744f05cf0b035cebb2c6c3f6adffb21898d0845c6898b82ced8f",
-        "8262f1e4985fe33699bc7e7898b940af5f9a7f0bd51d30116ac8ba866a8222aa",
+        "6d6888efc29ba75913dd2694896d86b1335b9a48c42d8b8ecf6c85aec59e919e",
     ),
     FindingSignature(
         "tests/unit/test_models.py",
