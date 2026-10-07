@@ -210,8 +210,8 @@ jobs:
       # pyjwt 2.13.x (transitive via the pinned semgrep==1.175.0 security
       # gate, constraint ~=2.13.0) carries 14 PYSEC advisories. Adjudicated
       # UNREACHABLE: pyjwt serves semgrep cloud-auth telemetry only; the
-      # release gate runs `semgrep scan --oss-only --metrics off
-      # --disable-version-check` offline against the pinned local rule
+      # release gate wrapper runs semgrep --oss-only --metrics off
+      # --disable-version-check offline against the pinned local rule
       # bundle - no cloud-auth path executes with project input. A uv
       # override to 2.15.x was tested and rejected: pip-audit resolves the
       # exported set through pip, which refuses {semgrep==1.175.0,
