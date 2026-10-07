@@ -377,9 +377,7 @@ def _validated_nonnegative_float_map(raw: object, field_name: str) -> dict[str, 
         raise TypeError(f"{field_name} must be an object")
     validated: dict[str, float] = {}
     for key, value in raw.items():
-        if (
-            not isinstance(key, str) or not _is_finite_real(value) or value < 0
-        ):
+        if not isinstance(key, str) or not _is_finite_real(value) or value < 0:
             raise TypeError(f"{field_name} must map strings to finite non-negative numbers")
         validated[key] = float(value)
     return validated

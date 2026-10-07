@@ -1,6 +1,32 @@
 # mutmut-win — Project Memory
 
-> Last refresh: 2026-10-05 (v3.0.0 released).
+> Last refresh: 2026-10-07 (v3.1.0 released).
+
+## Testsanierung v3.0.0 → **Programmziel: v3.1.0** (Sprint 47, Issue #198, PR #199) — ABGESCHLOSSEN
+
+- **Ziel erreicht:** Testpyramide von 97 % Unit auf getragene Struktur
+  (E2E 0→~27 Fälle, Integration ~15→~45, Property 0→60 @given, Architektur 35→87);
+  Vollsuite Finalstand **3861 passed / 0 failed / 45 skipped / 1 xfailed** in 2:25:02
+  (Run 4, `c0492c7`; Runs 5/6 = Release-Härtung, Receipts im Evidence-Verzeichnis).
+- **Engine-Ökonomie:** M-149/M-149b shared pycache (Phasen + Worker, ~50×);
+  db-Kampagne 2.989 Mutanten ~35 min; Isolation bewiesen (simple_lib 14/14 killed).
+- **Kill-Raten-Korridore:** trampoline 66,7 % (93,6 % adjudiziert),
+  suspended_spawn 34,8 %, db 16,4 % — Äquivalenzmutanten dokumentiert.
+- **GAP-1..7 (26 Fälle):** Config-Fail-Closed, Atomic-Crash, Mutation-Operator,
+  Staging-Drift, Browser-Diff, Lock-Konkurrenz, Interrupt (AttachConsole-Hilfsprozess:
+  CTRL_C_EVENT von konsolenlosem Runner ist ein No-Op — Engine-Vertrag
+  AR-24/M-076 E2E bestätigt: exit 130 + Status interrupted + Recovery).
+- **Release-Härtung 2026-10-07:** repo-weite Ruff-Schuld (11 Funde) + 4 Format-Dateien,
+  PEP758/Semgrep-Parser-Konflikt (except-Split), pyjwt-14×PYSEC adjudiziert
+  UNREACHABLE (ignore-vuln in ci.yml, Override-Variante widerlegt),
+  Governance-String-Kollision. Semgrep-Allowlist 31→43 (`bd45065`).
+- **Externes Review vorbereitet:** `_docs/reviews/external-review-v3.1.0/`
+  (Handover-MD mit 146-Gruppen-Bilanz + Testpyramide, Prompts Fable 5.1 /
+  GPT-6 Astra mit Serena-Oberdirektive + Zwei-Läufe-Struktur
+  [Roadmap-Umsetzung + 360°-Regressionsscan], 5-Stufen-Pipeline-README).
+  Ursprungs-Reviews archiviert in `_docs/reviews/external-review-v2.21.4/`.
+- **Offen:** H1–H4 Trampolin-Grenze (externes Review), Issue #193
+  (Generation-Fingerprint ohne Engine-Version).
 
 ## Sanierung v2.21.4 → **Programmziel: v3.0.0** (Sprints 43–47, R0–R4)
 

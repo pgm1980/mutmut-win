@@ -186,12 +186,17 @@ def _windows_suspended_popen(process_obj: Any, job_handle: int) -> Any:
         return SuspendedJobPopen(process_obj)
     except ProcessContainmentError:
         raise
-    except (KeyboardInterrupt, SystemExit):
-        # M-112: an abort signal is not an infrastructure failure. The inner
-        # cleanup above has already terminated and reaped a partially created
-        # child; propagate the abort unchanged so callers keep their interrupt
-        # semantics (worker start: run status 'interrupted', CLI exit 130)
-        # instead of reporting a containment error.
+    # M-112: an abort signal is not an infrastructure failure. The inner
+    # cleanup above has already terminated and reaped a partially created
+    # child; propagate the abort unchanged so callers keep their interrupt
+    # semantics (worker start: run status 'interrupted', CLI exit 130)
+    # instead of reporting a containment error.  Separate clauses instead
+    # of a tuple: ruff 0.15.8 formats a py3.14 multi-except into PEP 758
+    # syntax (`except A, B:`) which the pinned Semgrep 1.175 parser
+    # cannot read.
+    except KeyboardInterrupt:
+        raise
+    except SystemExit:
         raise
     except BaseException as exc:
         raise ProcessContainmentError(

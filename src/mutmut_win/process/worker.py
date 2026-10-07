@@ -172,6 +172,9 @@ _PYTEST_PHASE_SENTINEL_PROOF_ENV: str = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
 _PYTEST_ALLOWED_DIRS_ENV: str = "MUTMUT_PYTEST_ALLOWED_DIRS"
 _PYTEST_ALLOWED_FILES_ENV: str = "MUTMUT_PYTEST_ALLOWED_FILES"
 _PYTEST_RUNTIME_DIR_ENV: str = "MUTMUT_PYTEST_RUNTIME_DIR"
+#: Issue #194 (TM-10): seconds until the phase child dumps all thread
+#: tracebacks, naming a hang frame before the parent's wall-clock kill.
+_PYTEST_HANG_DUMP_ENV: str = "MUTMUT_PYTEST_HANG_DUMP_SECONDS"
 _PYTEST_PHASE_GUARD_SOURCE: str = '''\
 """Auto-generated mutmut-win pytest phase-execution guard."""
 
@@ -181,6 +184,34 @@ import stat
 from pathlib import Path
 
 import pytest
+
+# Issue #194 (TM-10): arm the diagnostic hang dump BEFORE importing the
+# trampolined engine dependency below - compiling it can itself take
+# minutes on fully trampolined staging trees (M-149), and a hang in that
+# window must be diagnosable too.  The dump targets a file in the
+# parent-owned runtime directory: pytest fd-level capture would swallow a
+# stderr dump.  Purely diagnostic: arming must never break the child.
+_hang_deadline_raw = os.environ.get("MUTMUT_PYTEST_HANG_DUMP_SECONDS")
+_hang_dump_file = None
+if _hang_deadline_raw is not None:
+    try:
+        _hang_deadline_seconds = float(_hang_deadline_raw)
+    except ValueError:
+        _hang_deadline_seconds = 0.0
+    if _hang_deadline_seconds > 0:
+        import faulthandler
+
+        try:
+            _hang_dump_path = Path(
+                os.environ["MUTMUT_PYTEST_RUNTIME_DIR"]
+            ) / "hang-dump.txt"
+            _hang_dump_file = open(_hang_dump_path, "ab")
+        except Exception:
+            _hang_dump_file = None
+        if _hang_dump_file is not None:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds, file=_hang_dump_file)
+        else:
+            faulthandler.dump_traceback_later(_hang_deadline_seconds)
 
 from mutmut_win.atomic_file import atomic_write_bytes
 
@@ -588,6 +619,17 @@ def pytest_unconfigure(config):
     Fully guarded: an exception here would surface as an ordinary pytest
     failure (exit 1, counted as killed), so this hook must never raise.
     """
+    try:
+        import faulthandler
+
+        faulthandler.cancel_dump_traceback_later()
+    except Exception:
+        pass
+    if _hang_dump_file is not None:
+        try:
+            _hang_dump_file.close()
+        except Exception:
+            pass
     _emit_publication_diagnostic()
 '''
 
@@ -924,7 +966,9 @@ def prepare_pytest_collection_guard(
     _publish_pytest_guard(plugin_path, replace_unverifiable=replace_unverifiable)
 
 
-def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Path) -> Path:
+def configure_ephemeral_pytest_environment(
+    env: dict[str, str], runtime_dir: Path, *, shared_pycache: Path | None = None
+) -> Path:
     """Redirect Python/pytest/Hypothesis state to one fresh process directory.
 
     ``PYTHONDONTWRITEBYTECODE`` alone does not stop CPython from consuming an
@@ -933,18 +977,33 @@ def configure_ephemeral_pytest_environment(env: dict[str, str], runtime_dir: Pat
     never be shared across phases: explicit ``py_compile`` can still populate
     it despite the no-write flag.
 
+    M-149: when *shared_pycache* is provided (run-scoped, not phase-scoped),
+    the pycache directory is reused across all phases of one run.  The first
+    phase compiles the trampolined staging tree and writes bytecode;
+    subsequent phases get cache hits instead of recompiling ~80 MB.
+    Bytecode writing is enabled in this mode because the staging tree is
+    frozen after generation (verified by _validate_staging_unchanged).
+
     Returns:
         The isolated pytest cache directory to use in ``-o cache_dir=...``.
     """
 
     runtime_dir = runtime_dir.absolute()
     cache_dir = runtime_dir / "pytest-cache"
-    pycache_dir = runtime_dir / "python-cache"
     hypothesis_dir = runtime_dir / "hypothesis"
-    for directory in (cache_dir, pycache_dir, hypothesis_dir):
-        directory.mkdir(parents=True, exist_ok=False)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    if shared_pycache is not None:
+        # M-149: run-scoped shared pycache — allow bytecode writing.
+        shared_pycache.mkdir(parents=True, exist_ok=True)
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env["PYTHONPYCACHEPREFIX"] = str(shared_pycache)
+    else:
+        # Ephemeral (phase-scoped) pycache — no bytecode writing.
+        pycache_dir = runtime_dir / "python-cache"
+        for directory in (cache_dir, pycache_dir, hypothesis_dir):
+            directory.mkdir(parents=True, exist_ok=False)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
+    hypothesis_dir.mkdir(parents=True, exist_ok=True)
     env["HYPOTHESIS_STORAGE_DIRECTORY"] = str(hypothesis_dir)
     env["COVERAGE_FILE"] = str(runtime_dir / ".coverage")
     env[_PYTEST_RUNTIME_DIR_ENV] = str(runtime_dir)
@@ -1349,7 +1408,18 @@ def _process_task(
         # pytest's import-mismatch check would reject them via stale
         # __pycache__.
         env["PY_IGNORE_IMPORTMISMATCH"] = "1"
-        cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+        # M-149b: when the executor forwards a shared run-scoped pycache,
+        # the mutant's pytest child reuses the bytecode cache compiled by
+        # the first phase instead of recompiling ~80 MB per mutant.
+        shared_pycache_raw = config_data.get("_worker_shared_pycache")
+        shared_pycache: Path | None = None
+        if shared_pycache_raw is not None:
+            shared_pycache = Path(str(shared_pycache_raw))
+            if not shared_pycache.is_dir():
+                shared_pycache = None  # fall back to ephemeral if invalid
+        cache_dir = configure_ephemeral_pytest_environment(
+            env, runtime_dir, shared_pycache=shared_pycache
+        )
         cmd = redirect_pytest_output_args(cmd, runtime_dir)
         phase_marker_path, phase_marker_token = prepare_pytest_phase_guard(
             env,

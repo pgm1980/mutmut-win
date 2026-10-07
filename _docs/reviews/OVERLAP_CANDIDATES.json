@@ -1,0 +1,2514 @@
+{
+  "hinweis": "Rein mechanischer Join ueber Datei und Zeilennaehe (+/-40). KEINE Aussage darueber, ob zwei Eintraege denselben Defekt meinen - das ist genau die Frage des Kreuzreviews.",
+  "claude_gesamt": 143,
+  "astra_gesamt": 118,
+  "claude_mit_astra_kandidat": 67,
+  "claude_ohne_astra_kandidat": 76,
+  "astra_ohne_claude_paarung": 43,
+  "paarungen": [
+    {
+      "claude": {
+        "bc_id": "BC-003",
+        "id": "WRK-02",
+        "severity": "critical",
+        "line": 478,
+        "title": "Proof-Publikation im generierten Guard-Plugin ist nicht fehlerbehandelt: transiente Publikationsstoerung wird zu Exit 3 und damit zu einem falschen 'killed'"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "WORK-01",
+          "severity": "high",
+          "line": 478,
+          "title": "Fehlgeschlagene Proof-Publikation wird als getöteter Mutant gespeichert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-005",
+        "id": "ORCH-02",
+        "severity": "critical",
+        "line": 458,
+        "title": "Staging-Validierung meldet voruebergehend unlesbare Dateien als Byte-Aenderung"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "STATS-01",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Quellpfade werden doppelt URL-dekodiert"
+        },
+        {
+          "id": "WIN-05",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Datei-URLs werden doppelt dekodiert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-007",
+        "id": "ATOM-03",
+        "severity": "high",
+        "line": 172,
+        "title": "Publikations-Siblings liegen unter einem im Staging-Fingerprint nicht gefilterten Namen im gemessenen Baum"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "ATOM-02",
+          "severity": "medium",
+          "line": 155,
+          "title": "Fehlerdiagnostik folgt vorbereiteten Links auf andere Dateien"
+        },
+        {
+          "id": "ATOM-04",
+          "severity": "medium",
+          "line": 172,
+          "title": "Gültige lange Dateinamen werden durch Siblingnamen unveröffentlichbar"
+        },
+        {
+          "id": "WIN-01",
+          "severity": "medium",
+          "line": 172,
+          "title": "Atomare Temporärnamen überschreiten NTFS-Komponentenlimit für gültige Dateinamen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-008",
+        "id": "ATOM-01",
+        "severity": "high",
+        "line": 295,
+        "title": "ensure_atomic_bytes-Vorprüfung ohne Retry bricht den gesamten Lauf bei transientem Windows-Filterdriver-Fehler ab"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "STAGE-01",
+          "severity": "medium",
+          "line": 302,
+          "title": "Transienter Lesefehler kann eingefrorene Guard-Dateien bytegleich ersetzen und den eigenen Staging-Abbruch auslösen"
+        },
+        {
+          "id": "ATOM-03",
+          "severity": "low",
+          "line": 282,
+          "title": "Fehlgeschlagene Veröffentlichung lässt schreibgeschützte Tempdateien zurück"
+        },
+        {
+          "id": "WIN-04",
+          "severity": "low",
+          "line": 282,
+          "title": "Fehlgeschlagene Readonly-Veröffentlichung hinterlässt eigene Tempdateien"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-012",
+        "id": "PROC-01",
+        "severity": "high",
+        "line": 597,
+        "title": "TUI-Browser startet einen kompletten Mutationslauf als uneingehegten Kindprozess ohne Job Object"
+      },
+      "file": "src/mutmut_win/browser.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-04",
+          "severity": "medium",
+          "line": 564,
+          "title": "Verspätete Diff-Ergebnisse überschreiben aktuelle Auswahl"
+        },
+        {
+          "id": "RACE-03",
+          "severity": "medium",
+          "line": 559,
+          "title": "Veralteter Browser-Thread überschreibt Diff neuerer Auswahl"
+        },
+        {
+          "id": "RES-09",
+          "severity": "medium",
+          "line": 566,
+          "title": "Browser startet Diff-Threads ohne anwendungsseitige Parallelitätsgrenze"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-013",
+        "id": "CLI-01",
+        "severity": "high",
+        "line": 151,
+        "title": "--force-Cleanup ignoriert Readonly-Attribute und scheitert dauerhaft mit falscher Diagnose"
+      },
+      "file": "src/mutmut_win/cli.py",
+      "astra_candidates": [
+        {
+          "id": "WIN-02",
+          "severity": "medium",
+          "line": 151,
+          "title": "--force kann regulär erzeugte schreibgeschützte Staging-Fixtures nicht entfernen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-015",
+        "id": "CLI-02",
+        "severity": "high",
+        "line": 604,
+        "title": "--since-commit vergleicht repo-root-relative git-Pfade gegen das CWD und endet still mit Exit 0"
+      },
+      "file": "src/mutmut_win/cli.py",
+      "astra_candidates": [
+        {
+          "id": "CLI-01",
+          "severity": "medium",
+          "line": 578,
+          "title": "--since-commit behandelt Eingaben als Git-Optionen oder Pfadspezifikationen"
+        },
+        {
+          "id": "CLI-02",
+          "severity": "medium",
+          "line": 604,
+          "title": "Inkrementelle Läufe aus Git-Unterprojekten verlieren geänderte Quelldateien"
+        },
+        {
+          "id": "CLI-03",
+          "severity": "medium",
+          "line": 598,
+          "title": "Absolute Testpfade und '..'-Aliase umgehen den inkrementellen Testausschluss"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-016",
+        "id": "ORCH-ORD-02",
+        "severity": "high",
+        "line": 438,
+        "title": "also_copy erhaelt Default-Eintraege aus unsortiertem glob() und wird woertlich in den Run-Basis-Digest gehasht"
+      },
+      "file": "src/mutmut_win/config.py",
+      "astra_candidates": [
+        {
+          "id": "ORDER-03",
+          "severity": "low",
+          "line": 438,
+          "title": "Unsortierte automatisch ergänzte Testdateien verändern den Kontextfingerprint"
+        },
+        {
+          "id": "FAIL-01",
+          "severity": "medium",
+          "line": 462,
+          "title": "Lesefehler vorhandener setup.cfg werden zu Standardkonfiguration"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-017",
+        "id": "CFG-01",
+        "severity": "high",
+        "line": 539,
+        "title": "Wertfehler in setup.cfg [mutmut] umgehen die ConfigError-Vertragsschicht und erscheinen als roher pydantic-Traceback"
+      },
+      "file": "src/mutmut_win/config.py",
+      "astra_candidates": [
+        {
+          "id": "DATA-01",
+          "severity": "low",
+          "line": 539,
+          "title": "Ungültige setup.cfg-Werte umgehen Konfigurationsfehlerbehandlung"
+        },
+        {
+          "id": "DATA-04",
+          "severity": "low",
+          "line": 576,
+          "title": "Falscher TOML-Typ von tool führt zu unbehandeltem AttributeError"
+        },
+        {
+          "id": "DATA-05",
+          "severity": "low",
+          "line": 572,
+          "title": "Nicht decodierbare Konfiguration entkommt ConfigError-Vertrag"
+        },
+        {
+          "id": "FAIL-02",
+          "severity": "medium",
+          "line": 577,
+          "title": "Vorhandener TOML-Abschnitt mit falschem Typ wird still ignoriert"
+        },
+        {
+          "id": "CONTRACT-02",
+          "severity": "low",
+          "line": 539,
+          "title": "Ungültige setup.cfg-Werte umgehen den zugesagten Konfigurationsfehlerkanal"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-023",
+        "id": "GIT-01",
+        "severity": "high",
+        "line": 92,
+        "title": ".gitignore mit UTF-8-BOM verliert ihr erstes Muster"
+      },
+      "file": "src/mutmut_win/gitignore_boundary.py",
+      "astra_candidates": [
+        {
+          "id": "REST-05",
+          "severity": "medium",
+          "line": 95,
+          "title": "Unlesbare untergeordnete Ignore-Datei verliert einschließende Ausnahmen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-024",
+        "id": "MUT-01",
+        "severity": "high",
+        "line": 304,
+        "title": "Klassen-Stack laeuft aus dem Tritt: qualifizierte do_not_mutate_patterns greifen falsch oder gar nicht"
+      },
+      "file": "src/mutmut_win/mutation.py",
+      "astra_candidates": [
+        {
+          "id": "MUT-04",
+          "severity": "medium",
+          "line": 304,
+          "title": "Übersprungene innere Klasse entfernt Klassenstack des Elternknotens"
+        },
+        {
+          "id": "CONTRACT-01",
+          "severity": "medium",
+          "line": 304,
+          "title": "Übersprungene verschachtelte Klassen beschädigen den Ausschlusskontext äußerer Methoden"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-025",
+        "id": "MUT-02",
+        "severity": "high",
+        "line": 973,
+        "title": "Mutiertes Modul scheitert mit NameError beim Import, wenn eine Methode im eigenen Klassenkoerper aufgerufen wird"
+      },
+      "file": "src/mutmut_win/mutation.py",
+      "astra_candidates": [
+        {
+          "id": "MUT-02",
+          "severity": "medium",
+          "line": 955,
+          "title": "Private Keyword-only-Parameter werden mit falschem Schlüssel weitergereicht"
+        },
+        {
+          "id": "EDGE-01",
+          "severity": "medium",
+          "line": 955,
+          "title": "Unicode-normalisierte Keyword-only-Parameter brechen den unveränderten Funktionsaufruf"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-026",
+        "id": "NUM-01",
+        "severity": "high",
+        "line": 46,
+        "title": "Integer-Literal mit >4300 Dezimalstellen bricht den gesamten Lauf ab (int->str-Limit)"
+      },
+      "file": "src/mutmut_win/node_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-01",
+          "severity": "medium",
+          "line": 72,
+          "title": "CRCR verliert erforderliche Klammern und verändert falschen Ausdruck"
+        },
+        {
+          "id": "OP-05",
+          "severity": "low",
+          "line": 40,
+          "title": "Float-Inkrementierung veröffentlicht durch Rundung unveränderte Literale"
+        },
+        {
+          "id": "EDGE-03",
+          "severity": "medium",
+          "line": 46,
+          "title": "Große gültige Hexliterale überschreiten bei der Dezimalserialisierung CPythons Ziffernlimit"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-027",
+        "id": "NM-01",
+        "severity": "high",
+        "line": 69,
+        "title": "CRCR verliert die Klammern des Originalliterals und erzeugt einen SyntaxError-Mutanten — die ganze Datei faellt aus der Mutation"
+      },
+      "file": "src/mutmut_win/node_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-01",
+          "severity": "medium",
+          "line": 72,
+          "title": "CRCR verliert erforderliche Klammern und verändert falschen Ausdruck"
+        },
+        {
+          "id": "OP-05",
+          "severity": "low",
+          "line": 40,
+          "title": "Float-Inkrementierung veröffentlicht durch Rundung unveränderte Literale"
+        },
+        {
+          "id": "EDGE-03",
+          "severity": "medium",
+          "line": 46,
+          "title": "Große gültige Hexliterale überschreiten bei der Dezimalserialisierung CPythons Ziffernlimit"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-031",
+        "id": "ORCH-03",
+        "severity": "high",
+        "line": 453,
+        "title": "Transienter Lesefehler am Laufende verwirft einen vollstaendig gerechneten Lauf als 'failed'"
+      },
+      "file": "src/mutmut_win/orchestrator.py",
+      "astra_candidates": [
+        {
+          "id": "ORCH-02",
+          "severity": "medium",
+          "line": 438,
+          "title": "Ctrl-C während abschließender Basisprüfung hinterlässt laufenden Run"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-037",
+        "id": "EXEC-02",
+        "severity": "high",
+        "line": 366,
+        "title": "Liveness-Sweep erklaert sauber beendete Worker fuer abgestuerzt und ersetzt ein korrektes Mutantenverdikt durch exit 35"
+      },
+      "file": "src/mutmut_win/process/executor.py",
+      "astra_candidates": [
+        {
+          "id": "SPAWN-01",
+          "severity": "high",
+          "line": 366,
+          "title": "Verspätetes TaskStarted eines erfassten toten Workers kann Pool dauerhaft blockieren"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-039",
+        "id": "RL-03",
+        "severity": "high",
+        "line": 717,
+        "title": "Datenbank-Lock-Domaene haengt an tempfile.gettempdir() und ist damit nicht global"
+      },
+      "file": "src/mutmut_win/process/run_lock.py",
+      "astra_candidates": [
+        {
+          "id": "LOCK-01",
+          "severity": "high",
+          "line": 717,
+          "title": "Abweichende Temp-Verzeichnisse entkoppeln Sperren derselben Datenbank"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-040",
+        "id": "ORCH-ORD-03",
+        "severity": "high",
+        "line": 1072,
+        "title": "PYTHONHASHSEED wird fuer keine pytest-Phase gepinnt und ist nicht Teil der Run-Basis"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "RES-08",
+          "severity": "low",
+          "line": 1032,
+          "title": "Erzwungener Worker-Abbruch hinterlässt externe Runtime-Verzeichnisse"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-041",
+        "id": "WRK-03",
+        "severity": "high",
+        "line": 1196,
+        "title": "Das Task-Wallclock-Budget deckt das komplette Worker-Setup mit ab; pytest bekommt keine garantierte Mindestlaufzeit"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "PROC-01",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Fehler beim Lesen des pytest-Nachweises überspringt die Prozessbereinigung"
+        },
+        {
+          "id": "WORK-02",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Ungültiger UTF-8-Proof überspringt Job- und Monitor-Bereinigung"
+        },
+        {
+          "id": "RES-01",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Fehler beim Phasenmarkerlesen überspringt die explizite Worker-Bereinigung"
+        },
+        {
+          "id": "CONTRACT-07",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Ungültige UTF-8-Ausführungsmarke überspringt Task-Cleanup"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-042",
+        "id": "RX-01",
+        "severity": "high",
+        "line": 66,
+        "title": "Feste Erzeugungsreihenfolge plus 12er-Cap verhungert Anker-, Klassen- und Gruppen-Mutatoren bei typischen Patterns"
+      },
+      "file": "src/mutmut_win/regex_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-08",
+          "severity": "medium",
+          "line": 66,
+          "title": "Regex-Mutantenlimit begrenzt vorgelagerte quadratische Materialisierung nicht"
+        },
+        {
+          "id": "EDGE-07",
+          "severity": "medium",
+          "line": 66,
+          "title": "Regex-Limit greift erst nach quadratischem Speicherverbrauch"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-046",
+        "id": "STAGE-01",
+        "severity": "high",
+        "line": 448,
+        "title": "In-Run-Staging-Snapshot behandelt die unter Windows nachweislich instabile st_nlink-Beobachtung als Beweis fuer Staging-Drift und bricht den Lauf hart ab"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "STATS-01",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Quellpfade werden doppelt URL-dekodiert"
+        },
+        {
+          "id": "WIN-05",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Datei-URLs werden doppelt dekodiert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-047",
+        "id": "BASIS-01",
+        "severity": "high",
+        "line": 457,
+        "title": "Transiente I/O-Fehler werden in den Fingerprint einkodiert und als 'Eingaben haben sich geändert' fehlinterpretiert"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "STATS-01",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Quellpfade werden doppelt URL-dekodiert"
+        },
+        {
+          "id": "WIN-05",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Datei-URLs werden doppelt dekodiert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-048",
+        "id": "STATS-03",
+        "severity": "high",
+        "line": 671,
+        "title": "Staging-Evidenz bindet Verzeichnis-Zeitstempel und ALLE Dateien in mutants/ — legitime Test-Nebeneffekte im Arbeitsverzeichnis brechen den Lauf ab"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "EDGE-08",
+          "severity": "low",
+          "line": 702,
+          "title": "Windows-Umgebungswerte mit unpaarigen Surrogaten brechen die Basisberechnung"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-049",
+        "id": "STAG-01",
+        "severity": "high",
+        "line": 680,
+        "title": "Staging-Fingerprint bindet st_nlink, obwohl das Projekt transiente Windows-Fehlmeldungen selbst dokumentiert"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "EDGE-08",
+          "severity": "low",
+          "line": 702,
+          "title": "Windows-Umgebungswerte mit unpaarigen Surrogaten brechen die Basisberechnung"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-050",
+        "id": "BASIS-01",
+        "severity": "high",
+        "line": 846,
+        "title": "core-Digest bindet globale sys.path-Indizes und Fehler fremder Eintraege - ambiente Aenderungen werden als Projektaenderung fehlklassifiziert"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "BASIS-01",
+          "severity": "medium",
+          "line": 874,
+          "title": "Core-Fingerprinting führt gitignorierte Laufartefakte über Import- und Editable-Bäume wieder ein"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-051",
+        "id": "BASIS-02",
+        "severity": "high",
+        "line": 874,
+        "title": "_hash_project_import_core laeuft als einziger Baumlauf ohne GitignoreBoundary - git-ignorierte, volatile Dateien landen im harten core-Digest"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "BASIS-01",
+          "severity": "medium",
+          "line": 874,
+          "title": "Core-Fingerprinting führt gitignorierte Laufartefakte über Import- und Editable-Bäume wieder ein"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-054",
+        "id": "TC-01",
+        "severity": "high",
+        "line": 388,
+        "title": "mypy-Report-Parser scheitert an mypys Summary-Zeile — Typpruefer-Filter bricht jeden Lauf ab"
+      },
+      "file": "src/mutmut_win/type_checking.py",
+      "astra_candidates": [
+        {
+          "id": "CONTRACT-03",
+          "severity": "medium",
+          "line": 422,
+          "title": "Defekte Checker-Reports verlassen trotz gültigem JSON den Domain-Fehlerkanal"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-057",
+        "id": "ATOM-06",
+        "severity": "medium",
+        "line": 155,
+        "title": "_dump_sibling_diagnostics schreibt symlinkfolgend an einen vorhersagbaren Namen im gemeinsamen Temp-Verzeichnis"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "ATOM-02",
+          "severity": "medium",
+          "line": 155,
+          "title": "Fehlerdiagnostik folgt vorbereiteten Links auf andere Dateien"
+        },
+        {
+          "id": "ATOM-04",
+          "severity": "medium",
+          "line": 172,
+          "title": "Gültige lange Dateinamen werden durch Siblingnamen unveröffentlichbar"
+        },
+        {
+          "id": "WIN-01",
+          "severity": "medium",
+          "line": 172,
+          "title": "Atomare Temporärnamen überschreiten NTFS-Komponentenlimit für gültige Dateinamen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-058",
+        "id": "WIN-07",
+        "severity": "medium",
+        "line": 172,
+        "title": "Atomare Publikation verbraucht 52 Zeichen MAX_PATH-Budget ohne jede Langpfad-Behandlung"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "ATOM-02",
+          "severity": "medium",
+          "line": 155,
+          "title": "Fehlerdiagnostik folgt vorbereiteten Links auf andere Dateien"
+        },
+        {
+          "id": "ATOM-04",
+          "severity": "medium",
+          "line": 172,
+          "title": "Gültige lange Dateinamen werden durch Siblingnamen unveröffentlichbar"
+        },
+        {
+          "id": "WIN-01",
+          "severity": "medium",
+          "line": 172,
+          "title": "Atomare Temporärnamen überschreiten NTFS-Komponentenlimit für gültige Dateinamen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-059",
+        "id": "ATOM-01",
+        "severity": "medium",
+        "line": 204,
+        "title": "_open_random_sibling schliesst denselben fd-Wert zweimal, wenn die Sibling-Validierung erschoepft; dazwischen wird eine Diagnosedatei geoeffnet"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "ATOM-01",
+          "severity": "medium",
+          "line": 222,
+          "title": "Doppeltes Schließen kann wiederverwendeten Dateideskriptor schließen"
+        },
+        {
+          "id": "ATOM-04",
+          "severity": "medium",
+          "line": 172,
+          "title": "Gültige lange Dateinamen werden durch Siblingnamen unveröffentlichbar"
+        },
+        {
+          "id": "WIN-01",
+          "severity": "medium",
+          "line": 172,
+          "title": "Atomare Temporärnamen überschreiten NTFS-Komponentenlimit für gültige Dateinamen"
+        },
+        {
+          "id": "RES-02",
+          "severity": "medium",
+          "line": 222,
+          "title": "Validierungsfehler kann bereits wiederverwendeten Dateideskriptor schließen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-060",
+        "id": "ATOM-05",
+        "severity": "medium",
+        "line": 221,
+        "title": "Doppeltes os.close(fd) auf dem Erschoepfungspfad von _open_random_sibling kann einen fremden Deskriptor schliessen"
+      },
+      "file": "src/mutmut_win/atomic_file.py",
+      "astra_candidates": [
+        {
+          "id": "ATOM-01",
+          "severity": "medium",
+          "line": 222,
+          "title": "Doppeltes Schließen kann wiederverwendeten Dateideskriptor schließen"
+        },
+        {
+          "id": "RES-02",
+          "severity": "medium",
+          "line": 222,
+          "title": "Validierungsfehler kann bereits wiederverwendeten Dateideskriptor schließen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-064",
+        "id": "ORCH-ORD-04",
+        "severity": "medium",
+        "line": 161,
+        "title": "DB-only-Diff-Fallback nimmt den ersten rglob-Treffer und kann den Mutanten der falschen Datei rendern"
+      },
+      "file": "src/mutmut_win/browser.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-03",
+          "severity": "medium",
+          "line": 166,
+          "title": "Fallback kann den Diff eines anderen Moduls anzeigen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-066",
+        "id": "CLI-01",
+        "severity": "medium",
+        "line": 611,
+        "title": "--since-commit macht Testdateien ausserhalb der konfigurierten tests_dir-Unterbaeume zu Mutationszielen"
+      },
+      "file": "src/mutmut_win/cli.py",
+      "astra_candidates": [
+        {
+          "id": "CLI-01",
+          "severity": "medium",
+          "line": 578,
+          "title": "--since-commit behandelt Eingaben als Git-Optionen oder Pfadspezifikationen"
+        },
+        {
+          "id": "CLI-02",
+          "severity": "medium",
+          "line": 604,
+          "title": "Inkrementelle Läufe aus Git-Unterprojekten verlieren geänderte Quelldateien"
+        },
+        {
+          "id": "CLI-03",
+          "severity": "medium",
+          "line": 598,
+          "title": "Absolute Testpfade und '..'-Aliase umgehen den inkrementellen Testausschluss"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-068",
+        "id": "CFG-02",
+        "severity": "medium",
+        "line": 469,
+        "title": "ConfigParser-[DEFAULT]-Eintraege werden still als [mutmut]-Konfiguration uebernommen und erzeugen falsche Unknown-Option-Warnungen"
+      },
+      "file": "src/mutmut_win/config.py",
+      "astra_candidates": [
+        {
+          "id": "ORDER-03",
+          "severity": "low",
+          "line": 438,
+          "title": "Unsortierte automatisch ergänzte Testdateien verändern den Kontextfingerprint"
+        },
+        {
+          "id": "DATA-02",
+          "severity": "medium",
+          "line": 479,
+          "title": "Einzeilige setup.cfg-Regexe werden an Quantifizierer-Kommas zerlegt"
+        },
+        {
+          "id": "FAIL-01",
+          "severity": "medium",
+          "line": 462,
+          "title": "Lesefehler vorhandener setup.cfg werden zu Standardkonfiguration"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-072",
+        "id": "WIN-06",
+        "severity": "medium",
+        "line": 519,
+        "title": "str.casefold() als NTFS-Identitaetsschluessel erzeugt falsche Staging-Kollisionen"
+      },
+      "file": "src/mutmut_win/file_setup.py",
+      "astra_candidates": [
+        {
+          "id": "WIN-03",
+          "severity": "medium",
+          "line": 520,
+          "title": "Unicode-casefold meldet für verschiedene NTFS-Dateien falsche Kollision"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-079",
+        "id": "GITIGN-01",
+        "severity": "medium",
+        "line": 70,
+        "title": "Unlesbare oder von pathspec abgelehnte .gitignore-Regeln erweitern still den gehashten und gestageten Baum, ohne die Vollstaendigkeitsmeldung zu senken"
+      },
+      "file": "src/mutmut_win/gitignore_boundary.py",
+      "astra_candidates": [
+        {
+          "id": "REST-05",
+          "severity": "medium",
+          "line": 95,
+          "title": "Unlesbare untergeordnete Ignore-Datei verliert einschließende Ausnahmen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-080",
+        "id": "WIN-05",
+        "severity": "medium",
+        "line": 91,
+        "title": "UTF-8-BOM in .gitignore entwertet stillschweigend die erste Regel"
+      },
+      "file": "src/mutmut_win/gitignore_boundary.py",
+      "astra_candidates": [
+        {
+          "id": "REST-05",
+          "severity": "medium",
+          "line": 95,
+          "title": "Unlesbare untergeordnete Ignore-Datei verliert einschließende Ausnahmen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-081",
+        "id": "WIN-04",
+        "severity": "medium",
+        "line": 107,
+        "title": "gitignore-Matching ist case-sensitiv, Git unter Windows nicht - ignorierte Baeume landen im Basis-Hash"
+      },
+      "file": "src/mutmut_win/gitignore_boundary.py",
+      "astra_candidates": [
+        {
+          "id": "REST-05",
+          "severity": "medium",
+          "line": 95,
+          "title": "Unlesbare untergeordnete Ignore-Datei verliert einschließende Ausnahmen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-082",
+        "id": "GI-01",
+        "severity": "medium",
+        "line": 228,
+        "title": "GitignoreBoundary._excludes verliert Gits Verzeichnismarker-Praezedenz — ignorierte Teilbaeume werden gelaufen, gestaged und gehasht"
+      },
+      "file": "src/mutmut_win/gitignore_boundary.py",
+      "astra_candidates": [
+        {
+          "id": "REST-04",
+          "severity": "high",
+          "line": 229,
+          "title": "Gitignore-Pruning lässt bereits getrackte Quellen aus der Mutationsauswahl"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-084",
+        "id": "MD-01",
+        "severity": "medium",
+        "line": 126,
+        "title": "resolve_mutant ist unter Windows case-insensitiv: falsche Mehrdeutigkeit bzw. stilles Anwenden eines nicht benannten Mutanten"
+      },
+      "file": "src/mutmut_win/mutant_diff.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-01",
+          "severity": "medium",
+          "line": 125,
+          "title": "Lesende Mutantenauflösung kann Sidecars außerhalb des Workspace löschen"
+        },
+        {
+          "id": "VIEW-06",
+          "severity": "medium",
+          "line": 126,
+          "title": "Überlappende Mutationspfade machen eindeutige Namen künstlich mehrdeutig"
+        },
+        {
+          "id": "EDGE-06",
+          "severity": "medium",
+          "line": 126,
+          "title": "Doppelte Quellwurzel macht einen exakten Mutantennamen für show/apply mehrdeutig"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-086",
+        "id": "NM-02",
+        "severity": "medium",
+        "line": 72,
+        "title": "CRCR-Mutant unter ** traegt nicht den beabsichtigten Konstantenwert (-1 ** 2 parst als -(1 ** 2))"
+      },
+      "file": "src/mutmut_win/node_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-01",
+          "severity": "medium",
+          "line": 72,
+          "title": "CRCR verliert erforderliche Klammern und verändert falschen Ausdruck"
+        },
+        {
+          "id": "OP-05",
+          "severity": "low",
+          "line": 40,
+          "title": "Float-Inkrementierung veröffentlicht durch Rundung unveränderte Literale"
+        },
+        {
+          "id": "EDGE-03",
+          "severity": "medium",
+          "line": 46,
+          "title": "Große gültige Hexliterale überschreiten bei der Dezimalserialisierung CPythons Ziffernlimit"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-087",
+        "id": "NM-03",
+        "severity": "medium",
+        "line": 506,
+        "title": "operator_regex prueft nicht, ob args[0] positional ist — Keyword-Argumente werden als Regex mutiert, der echte pattern= bleibt unmutiert"
+      },
+      "file": "src/mutmut_win/node_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-06",
+          "severity": "medium",
+          "line": 506,
+          "title": "Regex-Operator mutiert bei Keyword-Aufrufen falsches Argument"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-090",
+        "id": "EXEC-01",
+        "severity": "medium",
+        "line": 99,
+        "title": "SpawnPoolExecutor belegt Job-Object-Handle und drei Multiprocessing-Queues in __init__, ohne dass ein finally, __exit__ oder __del__ sie auf dem Fehlerpfad freigibt"
+      },
+      "file": "src/mutmut_win/process/executor.py",
+      "astra_candidates": [
+        {
+          "id": "PROC-03",
+          "severity": "low",
+          "line": 107,
+          "title": "Executor-Konstruktor verliert Jobhandle bei nachfolgendem Initialisierungsfehler"
+        },
+        {
+          "id": "SPAWN-04",
+          "severity": "low",
+          "line": 107,
+          "title": "Queue-Aufbaufehler im Pool-Konstruktor verliert Windows-Jobhandle"
+        },
+        {
+          "id": "RES-04",
+          "severity": "low",
+          "line": 108,
+          "title": "Queue-Initialisierungsfehler verliert zuvor erzeugten Pool-Job"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-093",
+        "id": "EXEC-02",
+        "severity": "medium",
+        "line": 326,
+        "title": "TOCTOU zwischen queue.Empty und worker.is_alive(): ein echtes, kurz danach eintreffendes Verdikt wird zugunsten des fabrizierten verworfen"
+      },
+      "file": "src/mutmut_win/process/executor.py",
+      "astra_candidates": [
+        {
+          "id": "SPAWN-01",
+          "severity": "high",
+          "line": 366,
+          "title": "Verspätetes TaskStarted eines erfassten toten Workers kann Pool dauerhaft blockieren"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-095",
+        "id": "OC-01",
+        "severity": "medium",
+        "line": 89,
+        "title": "BoundedOutputCapture.close() laesst bei einem ueberlebenden Writer Deskriptor und Drain-Thread dauerhaft zurueck"
+      },
+      "file": "src/mutmut_win/process/output_capture.py",
+      "astra_candidates": [
+        {
+          "id": "TIME-02",
+          "severity": "medium",
+          "line": 89,
+          "title": "Abgelaufenes Drain-Thread-Join wird ungeprüft als vollständige Ausgabe behandelt"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-096",
+        "id": "RL-02",
+        "severity": "medium",
+        "line": 267,
+        "title": "Priming-Schreibzugriff in _open_guard kollidiert mit dem mandatorischen Byte-Range-Lock eines Konkurrenten"
+      },
+      "file": "src/mutmut_win/process/run_lock.py",
+      "astra_candidates": [
+        {
+          "id": "LOCK-04",
+          "severity": "low",
+          "line": 267,
+          "title": "Gleichzeitige Erstinitialisierung des Guards liefert rohen Windows-Zugriffsfehler"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-098",
+        "id": "WRK-04",
+        "severity": "medium",
+        "line": 470,
+        "title": "xfail- und Laufzeit-Skip-Reports publizieren keinen Ausfuehrungs-Proof, obwohl der Testkoerper lief"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "WORK-01",
+          "severity": "high",
+          "line": 478,
+          "title": "Fehlgeschlagene Proof-Publikation wird als getöteter Mutant gespeichert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-100",
+        "id": "POPEN-01",
+        "severity": "medium",
+        "line": 1557,
+        "title": "_popen_contained uebergibt den synthetischen PID eines Popen-Test-Doubles an OpenProcess/AssignProcessToJobObject - genau die Invariante, die _kill_proc_tree schuetzt"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "PROC-02",
+          "severity": "medium",
+          "line": 1555,
+          "title": "Popen-Wrapper aktiviert den nichtatomaren Kompatibilitätspfad für echte Prozesse"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-102",
+        "id": "RUN-03",
+        "severity": "medium",
+        "line": 450,
+        "title": "collect_tests ohne Staging vererbt die Elternumgebung: PYTEST_ADDOPTS wirkt doppelt und die Cache-Isolation entfaellt komplett"
+      },
+      "file": "src/mutmut_win/runner.py",
+      "astra_candidates": [
+        {
+          "id": "RUNNER-01",
+          "severity": "medium",
+          "line": 446,
+          "title": "Erlaubte Verbosity-Optionen verfälschen gesammelte Testliste"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-104",
+        "id": "ORCH-ORD-05",
+        "severity": "medium",
+        "line": 942,
+        "title": "Generiertes sitecustomize.py enthaelt repr() einer Menge — hashseed-abhaengige Bytes in der ausfuehrbaren Staging-Evidenz"
+      },
+      "file": "src/mutmut_win/runner.py",
+      "astra_candidates": [
+        {
+          "id": "ORDER-02",
+          "severity": "low",
+          "line": 942,
+          "title": "Generierter sitecustomize-Quelltext hängt vom zufälligen Python-Hashseed ab"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-108",
+        "id": "STATS-04",
+        "severity": "medium",
+        "line": 487,
+        "title": "_editable_source_path dekodiert die PEP-610-URL doppelt und liefert fuer Pfade mit literalem Prozentzeichen den falschen Quellbaum"
+      },
+      "file": "src/mutmut_win/stats.py",
+      "astra_candidates": [
+        {
+          "id": "STATS-01",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Quellpfade werden doppelt URL-dekodiert"
+        },
+        {
+          "id": "WIN-05",
+          "severity": "medium",
+          "line": 487,
+          "title": "Editable-Datei-URLs werden doppelt dekodiert"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-112",
+        "id": "NAME-01",
+        "severity": "medium",
+        "line": 84,
+        "title": "Mutantenauswahl ist unter Windows case-insensitiv - apply kann den falschen Mutanten schreiben"
+      },
+      "file": "src/mutmut_win/test_mapping.py",
+      "astra_candidates": [
+        {
+          "id": "REST-01",
+          "severity": "medium",
+          "line": 84,
+          "title": "Mutantenauswahl ignoriert unter Windows die Groß- und Kleinschreibung"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-116",
+        "id": "BROW-04",
+        "severity": "low",
+        "line": 164,
+        "title": "Fallback-Scan bricht bei nicht-UTF-8-kodierten Dateien im Staging-Baum ab (UnicodeDecodeError ist kein OSError)"
+      },
+      "file": "src/mutmut_win/browser.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-03",
+          "severity": "medium",
+          "line": 166,
+          "title": "Fallback kann den Diff eines anderen Moduls anzeigen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-117",
+        "id": "BROW-02",
+        "severity": "low",
+        "line": 563,
+        "title": "Fehlerpfad des Diff-Ladethreads prüft _loading_id nicht — veralteter Fehler überschreibt den Diff des aktuell markierten Mutanten"
+      },
+      "file": "src/mutmut_win/browser.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-04",
+          "severity": "medium",
+          "line": 564,
+          "title": "Verspätete Diff-Ergebnisse überschreiben aktuelle Auswahl"
+        },
+        {
+          "id": "RACE-03",
+          "severity": "medium",
+          "line": 559,
+          "title": "Veralteter Browser-Thread überschreibt Diff neuerer Auswahl"
+        },
+        {
+          "id": "RES-09",
+          "severity": "medium",
+          "line": 566,
+          "title": "Browser startet Diff-Threads ohne anwendungsseitige Parallelitätsgrenze"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-118",
+        "id": "BROW-03",
+        "severity": "low",
+        "line": 564,
+        "title": "Diff-Ladethread wirft nach App-Ende eine unbehandelte RuntimeError aus call_from_thread"
+      },
+      "file": "src/mutmut_win/browser.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-04",
+          "severity": "medium",
+          "line": 564,
+          "title": "Verspätete Diff-Ergebnisse überschreiben aktuelle Auswahl"
+        },
+        {
+          "id": "RACE-03",
+          "severity": "medium",
+          "line": 559,
+          "title": "Veralteter Browser-Thread überschreibt Diff neuerer Auswahl"
+        },
+        {
+          "id": "RES-09",
+          "severity": "medium",
+          "line": 566,
+          "title": "Browser startet Diff-Threads ohne anwendungsseitige Parallelitätsgrenze"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-120",
+        "id": "CLI-05",
+        "severity": "low",
+        "line": 1045,
+        "title": "show schreibt die Nichttreffer-Prosa auf stdout und verletzt damit den eigenen Patch-Stream-Vertrag"
+      },
+      "file": "src/mutmut_win/cli.py",
+      "astra_candidates": [
+        {
+          "id": "CLI-07",
+          "severity": "medium",
+          "line": 1036,
+          "title": "show kann über umgeleitete mutants-Wurzel externe Metadaten löschen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-123",
+        "id": "CCOV-01",
+        "severity": "low",
+        "line": 103,
+        "title": "`code_coverage`-Moduldocstring beschreibt den Coverage-Datenpfad innerhalb von `mutants/`, die Implementierung schreibt bewusst ausserhalb"
+      },
+      "file": "src/mutmut_win/code_coverage.py",
+      "astra_candidates": [
+        {
+          "id": "REST-02",
+          "severity": "medium",
+          "line": 120,
+          "title": "Coverage mit relative_files wird als ungemessen abgewiesen"
+        },
+        {
+          "id": "REST-03",
+          "severity": "medium",
+          "line": 111,
+          "title": "Coverage-Parallelkonfiguration lässt vorhandene Messdaten übersehen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-131",
+        "id": "MDIF-01",
+        "severity": "low",
+        "line": 577,
+        "title": "`apply_mutant`: Raises-Docstring nennt mtime als Stale-Kriterium, der Code vergleicht SHA-256"
+      },
+      "file": "src/mutmut_win/mutant_diff.py",
+      "astra_candidates": [
+        {
+          "id": "VIEW-02",
+          "severity": "high",
+          "line": 617,
+          "title": "apply überschreibt zwischenzeitliche Quelländerungen ohne Sicherung"
+        },
+        {
+          "id": "RACE-04",
+          "severity": "high",
+          "line": 617,
+          "title": "Apply überschreibt während der CST-Verarbeitung gespeicherte Quelländerungen"
+        },
+        {
+          "id": "CONTRACT-04",
+          "severity": "high",
+          "line": 617,
+          "title": "apply überschreibt Quelländerungen zwischen Staleness-Prüfung und Veröffentlichung"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-133",
+        "id": "MUT-05",
+        "severity": "low",
+        "line": 1061,
+        "title": "Pragma no mutate wird stumm ignoriert, wenn direkt Satzzeichen folgen"
+      },
+      "file": "src/mutmut_win/mutation.py",
+      "astra_candidates": [
+        {
+          "id": "MUT-05",
+          "severity": "medium",
+          "line": 1087,
+          "title": "Block-Pragmas enden vorzeitig an Kommentaren und Mehrzeilenstring-Inhalten"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-134",
+        "id": "ORCH-02",
+        "severity": "low",
+        "line": 1577,
+        "title": "`_apply_timeouts`/`_print_timeout_model`: dokumentierter \"selected test time\"-Budgetzweig ist unerreichbar, jede Task bekommt das Full-Suite-Budget"
+      },
+      "file": "src/mutmut_win/orchestrator.py",
+      "astra_candidates": [
+        {
+          "id": "EDGE-05",
+          "severity": "low",
+          "line": 1587,
+          "title": "Endlicher Timeout-Multiplikator kann unbrauchbare unendliche Budgets erzeugen"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-135",
+        "id": "CAP-01",
+        "severity": "low",
+        "line": 89,
+        "title": "BoundedOutputCapture.close() markiert sich auch nach abgelaufenem join als geschlossen; ein weiterschreibender entkommener Nachfahre laesst Thread und Lese-fd dauerhaft zurueck"
+      },
+      "file": "src/mutmut_win/process/output_capture.py",
+      "astra_candidates": [
+        {
+          "id": "TIME-02",
+          "severity": "medium",
+          "line": 89,
+          "title": "Abgelaufenes Drain-Thread-Join wird ungeprüft als vollständige Ausgabe behandelt"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-137",
+        "id": "WRK-07",
+        "severity": "low",
+        "line": 1236,
+        "title": "Der Neutralisierungspfad ueberschreibt die aufgezeichnete pytest-Ausgabe und macht den Befund undiagnostizierbar"
+      },
+      "file": "src/mutmut_win/process/worker.py",
+      "astra_candidates": [
+        {
+          "id": "PROC-01",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Fehler beim Lesen des pytest-Nachweises überspringt die Prozessbereinigung"
+        },
+        {
+          "id": "WORK-02",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Ungültiger UTF-8-Proof überspringt Job- und Monitor-Bereinigung"
+        },
+        {
+          "id": "RES-01",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Fehler beim Phasenmarkerlesen überspringt die explizite Worker-Bereinigung"
+        },
+        {
+          "id": "CONTRACT-07",
+          "severity": "medium",
+          "line": 1233,
+          "title": "Ungültige UTF-8-Ausführungsmarke überspringt Task-Cleanup"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-138",
+        "id": "RX-03",
+        "severity": "low",
+        "line": 153,
+        "title": "Jede Mutation eines bereits lazy Quantifiers verwirft den ?-Marker; {n,m}? verliert die Greedy/Lazy-Dimension vollstaendig"
+      },
+      "file": "src/mutmut_win/regex_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-09",
+          "severity": "medium",
+          "line": 129,
+          "title": "Regex-Kommentare erzeugen wirkungslose Operator-Mutanten"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-139",
+        "id": "RX-01",
+        "severity": "low",
+        "line": 271,
+        "title": "chr()-Grenzwerte in der Zeichenklassen-Mutation ungeschuetzt"
+      },
+      "file": "src/mutmut_win/regex_mutation.py",
+      "astra_candidates": [
+        {
+          "id": "OP-07",
+          "severity": "medium",
+          "line": 271,
+          "title": "Unicode-Grenzbereiche brechen Regex-Generierung mit ValueError ab"
+        },
+        {
+          "id": "EDGE-02",
+          "severity": "medium",
+          "line": 271,
+          "title": "Regex-Einzelzeichenbereiche an Unicode-Grenzen brechen die Generierung ab"
+        },
+        {
+          "id": "CONTRACT-06",
+          "severity": "medium",
+          "line": 271,
+          "title": "Regex-Bereichsmutationen an Unicode-Grenzen brechen Generierung ab"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-141",
+        "id": "TM-01",
+        "severity": "low",
+        "line": 84,
+        "title": "match_mutant_names matcht Mutantennamen unter Windows case-insensitiv (fnmatch statt fnmatchcase)"
+      },
+      "file": "src/mutmut_win/test_mapping.py",
+      "astra_candidates": [
+        {
+          "id": "REST-01",
+          "severity": "medium",
+          "line": 84,
+          "title": "Mutantenauswahl ignoriert unter Windows die Groß- und Kleinschreibung"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-142",
+        "id": "TC-01",
+        "severity": "low",
+        "line": 414,
+        "title": "`run_type_checker`: dokumentierte Fehler-Taxonomie deckt strukturell abweichende, aber gueltige JSON-Reports nicht ab"
+      },
+      "file": "src/mutmut_win/type_checking.py",
+      "astra_candidates": [
+        {
+          "id": "CONTRACT-03",
+          "severity": "medium",
+          "line": 422,
+          "title": "Defekte Checker-Reports verlassen trotz gültigem JSON den Domain-Fehlerkanal"
+        }
+      ]
+    },
+    {
+      "claude": {
+        "bc_id": "BC-143",
+        "id": "TC-02",
+        "severity": "low",
+        "line": 417,
+        "title": "parse_pyright_report stuerzt mit AttributeError ab, wenn ein unbekannter Checker ein JSON-Array liefert"
+      },
+      "file": "src/mutmut_win/type_checking.py",
+      "astra_candidates": [
+        {
+          "id": "CONTRACT-03",
+          "severity": "medium",
+          "line": 422,
+          "title": "Defekte Checker-Reports verlassen trotz gültigem JSON den Domain-Fehlerkanal"
+        }
+      ]
+    }
+  ],
+  "nur_claude": [
+    {
+      "bc_id": "BC-001",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 302,
+      "severity": "critical",
+      "title": "Doppelter Basis-Snapshot macht einen einseitigen transienten Lesefehler zum harten Laufabbruch",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-002",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 173,
+      "severity": "critical",
+      "title": "start() veraendert den bereits fingerprinteten mutants/-Baum und laesst den kompletten Lauf nachtraeglich als Stagingdrift durchfallen",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-004",
+      "file": "src/mutmut_win/process/worker.py",
+      "line": 846,
+      "severity": "critical",
+      "title": "Republikation des unveraenderlichen Phase-Guard-Plugins in den eingefrorenen Staging-Baum bei jeder einzelnen Task",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-006",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 53,
+      "severity": "high",
+      "title": "Identitaets-Tripwire ohne Null-Guard: Windows liefert st_dev=0/st_ino=0 fuer nicht oeffenbare Pfade",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-009",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 483,
+      "severity": "high",
+      "title": "ensure_atomic_bytes umgeht die Parent-Capture-Retrykette und faellt bei transientem resolve-Fehler sofort durch",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-010",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 483,
+      "severity": "high",
+      "title": "Idempotenter Guard-Publish schreibt bei transientem Vorprüfungs-False neu und zerstört den Staging-Fingerprint",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-011",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 546,
+      "severity": "high",
+      "title": "create_exclusive_random_bytes prueft die als unzuverlaessig dokumentierte handle-abgeleitete st_nlink - ohne Retry",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-014",
+      "file": "src/mutmut_win/cli.py",
+      "line": 517,
+      "severity": "high",
+      "title": "--do-not-mutate verengt das Mutantenuniversum, umgeht aber die --min-score-Subset-Sperre und die is_full_run-Kennzeichnung",
+      "same_file_astra_findings": 9
+    },
+    {
+      "bc_id": "BC-018",
+      "file": "src/mutmut_win/db.py",
+      "line": 534,
+      "severity": "high",
+      "title": "_raise_database_error stuft Umgebungsfehler (readonly, I/O-Fehler, Platte voll, cantopen) als Cache-Korruption ein und fordert zum Loeschen des Ergebnisverzeichnisses auf",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-019",
+      "file": "src/mutmut_win/db.py",
+      "line": 1647,
+      "severity": "high",
+      "title": "Jedes persistierte Verdict kostet 2 SQLite-Verbindungen, einen kompletten Schemadurchlauf und 15 vollstaendige Dateisystem-Baumvalidierungen (gemessen 35-112 ms, serialisiert in der Orchestrator-Event-Loop)",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-020",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 154,
+      "severity": "high",
+      "title": "Jeder Reparse-Punkt gilt als Link - Deduplizierungs- und Cloud-Volumes verlieren den kompletten Quellbaum",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-021",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1201,
+      "severity": "high",
+      "title": "Automatischer Spiegel prueft .gitignore mit descend(), die Mutationssuche mit descend_forced() — git-ignorierte Mutationswurzeln werden mutiert, aber nie gestagt",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-022",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1487,
+      "severity": "high",
+      "title": "_sync_tree loescht bei jedem Lauf alle *.meta-Sidecars unterhalb konfigurierter Spiegel",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-028",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 302,
+      "severity": "high",
+      "title": "Basis-Fingerprint ist die einzige Phase ohne Zeitbudget; sein doppelter Durchlauf oeffnet ein TOCTOU-Fenster, das mit der Umgebungsgroesse waechst",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-029",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 302,
+      "severity": "high",
+      "title": "Nicht lesbare Datei wird als geaenderte Datei gewertet: einmaliger OSError im Prelude bricht den Lauf hart ab",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-030",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 350,
+      "severity": "high",
+      "title": "Die Ausfuehrungsbasis wird pro Lauf fuenfmal vollstaendig ueber Projektbaum und alle installierten Distributionen berechnet",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-032",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 1492,
+      "severity": "high",
+      "title": "Gemessener Startup-Floor wird bei 60 s absolut gedeckelt und einprozessig gemessen, aber auf cpu_count() parallele Worker angewandt",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-033",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 1689,
+      "severity": "high",
+      "title": "Type-Checker laeuft mit cwd=mutants/ ohne Cache-Umleitung und zerstoert damit die eigene Staging-Evidenz",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-034",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 1689,
+      "severity": "high",
+      "title": "os.chdir in mutants/ lässt den Type-Checker seinen Cache in das eingefrorene Staging schreiben",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-035",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 173,
+      "severity": "high",
+      "title": "Executor loescht nach dem Staging-Snapshot Dateien aus dem gehashten Satz",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-036",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 173,
+      "severity": "high",
+      "title": "executor.start loescht Dateien in mutants/, nachdem der Staging-Fingerabdruck inklusive Verzeichnis-Zeitstempeln genommen wurde",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-038",
+      "file": "src/mutmut_win/process/generation_supervisor.py",
+      "line": 501,
+      "severity": "high",
+      "title": "Fester 15-s-Join verwirft eine vollstaendig erfolgreiche Mutantengenerierung",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-043",
+      "file": "src/mutmut_win/regex_mutation.py",
+      "line": 396,
+      "severity": "high",
+      "title": "re.VERBOSE ist der Regex-Engine unbekannt: Kommentartext wird mutiert (garantierte Aequivalente) und eine Klammer im Kommentar loescht die gesamte Mutationsflaeche",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-044",
+      "file": "src/mutmut_win/runner.py",
+      "line": 368,
+      "severity": "high",
+      "title": "Der byte- und metadatengenau gehashte Staging-Baum ist zugleich das Arbeitsverzeichnis beliebiger Nutzertests",
+      "same_file_astra_findings": 4
+    },
+    {
+      "bc_id": "BC-045",
+      "file": "src/mutmut_win/runner.py",
+      "line": 495,
+      "severity": "high",
+      "title": "collect_tests liefert still eine leere Testliste, sobald die effektive Test-Case-Verbosity nicht exakt -1 ist",
+      "same_file_astra_findings": 4
+    },
+    {
+      "bc_id": "BC-052",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1048,
+      "severity": "high",
+      "title": "Projektinternes .venv wird durch die Gitignore-Grenze vollstaendig aus dem Kontext-Digest gestrichen - sitecustomize.py und verwaiste .pth-Dateien invalidieren die Basis nie",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-053",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1219,
+      "severity": "high",
+      "title": "Core-Digest bindet git-ignorierte Bytes des editierbaren Quellbaums, die der kombinierte Digest bewusst prunt",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-055",
+      "file": "tests/integration/test_e2e_pipeline_validation.py",
+      "line": 57,
+      "severity": "high",
+      "title": "180-s-Subprozesslimit der E2E-Pipeline widerspricht der dokumentierten Coverage-Verdopplung der Schwesterdatei (300 s)",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-056",
+      "file": "tests/integration/test_e2e_pipeline_validation.py",
+      "line": 211,
+      "severity": "high",
+      "title": "E2E-Snapshot-Test macht sich rot an genau den Verdikten, die der Produktionscode als umgebungsabhaengig deklariert",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-061",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 428,
+      "severity": "medium",
+      "title": "_capture_parent_identity wiederholt auch permanente Ablehnungen und stallt 16,1 s pro Schreibvorgang",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-062",
+      "file": "src/mutmut_win/atomic_file.py",
+      "line": 585,
+      "severity": "medium",
+      "title": "Jede Staging-Datei wird vollstaendig in den Speicher gelesen",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-063",
+      "file": "src/mutmut_win/basis_diagnostics.py",
+      "line": 355,
+      "severity": "medium",
+      "title": "register_input_root ist pro gehashter Datei quadratisch in der Zahl der Eingabeverzeichnisse",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-065",
+      "file": "src/mutmut_win/browser.py",
+      "line": 621,
+      "severity": "medium",
+      "title": "action_retest_module testet bei Mutanten aus einer Paket-__init__.py den gesamten Paketbaum nach",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-067",
+      "file": "src/mutmut_win/code_coverage.py",
+      "line": 57,
+      "severity": "medium",
+      "title": "Coverage-Gating vergleicht nicht aufgeloeste Pfade gegen coverage.py-Schluessel (realpath) — Fehlabbruch mit irrefuehrender Meldung",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-069",
+      "file": "src/mutmut_win/constants.py",
+      "line": 159,
+      "severity": "medium",
+      "title": "WORKSPACE_EXCLUDED_DIR_NAMES enthaelt hartcodierte Verzeichnisnamen des mutmut-win-Repos und schliesst gleichnamige Fremdprojektverzeichnisse unwiderruflich aus",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-070",
+      "file": "src/mutmut_win/db.py",
+      "line": 384,
+      "severity": "medium",
+      "title": "_inspect_cache_leaf toleriert transiente Windows-Zustaende nur fuer Sidecars; fuer das Datenbank-Leaf fuehrt derselbe Zustand ohne Wiederholung zur Fehldiagnose 'is a hardlink (0 links)'",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-071",
+      "file": "src/mutmut_win/db.py",
+      "line": 554,
+      "severity": "medium",
+      "title": "Kein busy_timeout, kein WAL und kein Retry: jede SQLite-Sperrkonkurrenz beendet nach 5 Sekunden den gesamten Lauf",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-073",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 716,
+      "severity": "medium",
+      "title": "_same_live_input verwechselt 'nicht ermittelbar' mit 'verschieden' und macht aus einer geloeschten Datei einen Laufabbruch",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-074",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 891,
+      "severity": "medium",
+      "title": "validate_staging_namespace laeuft dreimal pro Lauf ueber den gesamten Projektbaum und ist O(automatische Eingaben x konfigurierte Wurzeln)",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-075",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1071,
+      "severity": "medium",
+      "title": "Staging-Kopie gibt nach 1,5 s Gesamtbackoff auf, obwohl der eigene Docstring Defender als Ursache benennt",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-076",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1417,
+      "severity": "medium",
+      "title": "Konfigurierter Kopierpfad besitzt die Junction-/Reparse-Abwehr des automatischen Pfads nicht; os.walk laeuft unter Windows in Junctions hinein",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-077",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1454,
+      "severity": "medium",
+      "title": "Typwechsel Datei<->Verzeichnis an einem konfigurierten Staging-Ziel wird nie versoehnt und bricht den Lauf mit FileExistsError bzw. OSError ab",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-078",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 2232,
+      "severity": "medium",
+      "title": "Nicht kompilierbarer oder nicht parsebarer Mutantensatz verschwindet still aus dem Nenner, ohne dem Lauf die Autoritaet zu entziehen",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-083",
+      "file": "src/mutmut_win/hit_recording.py",
+      "line": 68,
+      "severity": "medium",
+      "title": "max_stack_depth verbraucht das Budget mit mutmut-eigenen Frames — Werte 1..4 verwerfen stillschweigend jeden Stats-Hit",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-085",
+      "file": "src/mutmut_win/mutation.py",
+      "line": 378,
+      "severity": "medium",
+      "title": "len/isinstance werden nur nach Namen erkannt und loeschen den kompletten Argument-Teilbaum",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-088",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 122,
+      "severity": "medium",
+      "title": "_validate_staging_unchanged faltet 'Snapshot unvollstaendig' und 'echte Drift' in eine einzige, falsch attribuierende Fehlermeldung",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-089",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 750,
+      "severity": "medium",
+      "title": "Forced-Fail-Gate prueft nur den globalen fail-Sentinel, nicht die namensbasierte Mutantenauswahl",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-091",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 172,
+      "severity": "medium",
+      "title": "Der Pool-Start loescht Worker-Altlasten aus mutants/ nachdem der Staging-Evidenz-Snapshot genommen wurde",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-092",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 173,
+      "severity": "medium",
+      "title": "Executor loescht Altartefakte innerhalb des bereits eingefrorenen Staging-Baums",
+      "same_file_astra_findings": 5
+    },
+    {
+      "bc_id": "BC-094",
+      "file": "src/mutmut_win/process/generation_supervisor.py",
+      "line": 295,
+      "severity": "medium",
+      "title": "Der No-Progress-Deadline begrenzt nur wait(), nicht das nachfolgende recv() - der Parent kann unbegrenzt blockieren",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-097",
+      "file": "src/mutmut_win/process/run_lock.py",
+      "line": 486,
+      "severity": "medium",
+      "title": "AtomicReplaceError entkommt WorkspaceRunLock.acquire() als roher PermissionError und umgeht die Domaenen-Fehlerbehandlung",
+      "same_file_astra_findings": 4
+    },
+    {
+      "bc_id": "BC-099",
+      "file": "src/mutmut_win/process/worker.py",
+      "line": 988,
+      "severity": "medium",
+      "title": "Nur Containment- und Boundary-Fehler gelten als fatal; jede andere Umgebungsstoerung im Worker wird zum persistierten Mutantenurteil 'suspicious'",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-101",
+      "file": "src/mutmut_win/pytest_boundary.py",
+      "line": 178,
+      "severity": "medium",
+      "title": "Absolute, projektinterne tests_dir-Eintraege verschieben die pytest-Konfigurationsgrenze in den Staging-Spiegel, waehrend pytest den Live-Baum sammelt",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-103",
+      "file": "src/mutmut_win/runner.py",
+      "line": 884,
+      "severity": "medium",
+      "title": "Stats-Plugin erfasst Dauern nur fuer die call-Phase; niemals ausgefuehrte Tests erzwingen bei jedem Lauf eine vollstaendige Stats-Neuerhebung",
+      "same_file_astra_findings": 4
+    },
+    {
+      "bc_id": "BC-105",
+      "file": "src/mutmut_win/stats.py",
+      "line": 296,
+      "severity": "medium",
+      "title": "Skip-Mengen decken nur Verzeichnisse ab - volatile Werkzeug-DATEIEN wie .coverage.<host>.<pid>.<rand> bleiben Basis-Eingabe",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-106",
+      "file": "src/mutmut_win/stats.py",
+      "line": 339,
+      "severity": "medium",
+      "title": "Projektbasis bindet st_mtime_ns/st_ctime_ns jeder Datei - bytegleiches Neuschreiben invalidiert einen abgeschlossenen Lauf",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-107",
+      "file": "src/mutmut_win/stats.py",
+      "line": 343,
+      "severity": "medium",
+      "title": "Cross-Run-Basis bindet volatile Windows-Dateiattribute; das Hashen selbst kann sie veraendern",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-109",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1150,
+      "severity": "medium",
+      "title": "Distributionsbasis hasht jede Datei jeder Distribution ohne Groessen- oder Relevanzgrenze, und der Orchestrator fuehrt das pro Lauf zweimal aus",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-110",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1419,
+      "severity": "medium",
+      "title": "core_seen startet leer - der gesamte Projektbaum wird pro Snapshot ein zweites Mal vollstaendig gelesen und vergroessert das Race-Fenster",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-111",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1713,
+      "severity": "medium",
+      "title": "`_run_stats_collection`: Docstring verspricht Rueckgabe des Caches bei Fehlschlag, Code liefert leere Stats - und die Meldung suggeriert das Gegenteil",
+      "same_file_astra_findings": 6
+    },
+    {
+      "bc_id": "BC-113",
+      "file": "src/mutmut_win/type_checking.py",
+      "line": 27,
+      "severity": "medium",
+      "title": "Typpruefer-Budget ist als einziges Phasenbudget hartkodiert und nicht konfigurierbar",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-114",
+      "file": "tests/integration/test_generation_supervisor.py",
+      "line": 253,
+      "severity": "medium",
+      "title": "Lastempfindliche Wanduhr-Assertions um zwei verschachtelte kalte Windows-spawns im Generation-Supervisor-Test",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-115",
+      "file": "src/mutmut_win/basis_diagnostics.py",
+      "line": 338,
+      "severity": "low",
+      "title": "Jeder Publikationsfehler verwirft den kompletten Diagnosereport und meldet nur den Exception-Typnamen",
+      "same_file_astra_findings": 0
+    },
+    {
+      "bc_id": "BC-119",
+      "file": "src/mutmut_win/cli.py",
+      "line": 800,
+      "severity": "low",
+      "title": "--dry-run --min-score scheitert mit der Fehlmeldung 'Execution basis incomplete' statt als Optionskonflikt abgelehnt zu werden",
+      "same_file_astra_findings": 9
+    },
+    {
+      "bc_id": "BC-121",
+      "file": "src/mutmut_win/cli.py",
+      "line": 1107,
+      "severity": "low",
+      "title": "apply meldet das Glob-Muster statt des tatsaechlich angewandten Mutanten",
+      "same_file_astra_findings": 9
+    },
+    {
+      "bc_id": "BC-122",
+      "file": "src/mutmut_win/cli.py",
+      "line": 1357,
+      "severity": "low",
+      "title": "export-cicd-stats wirft einen rohen OSError, wenn mutants/ fehlt",
+      "same_file_astra_findings": 9
+    },
+    {
+      "bc_id": "BC-124",
+      "file": "src/mutmut_win/config.py",
+      "line": 88,
+      "severity": "low",
+      "title": "guess_paths_to_mutate kann den leeren Pfad als Mutationswurzel zurueckgeben",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-125",
+      "file": "src/mutmut_win/config.py",
+      "line": 297,
+      "severity": "low",
+      "title": "mutation_profile akzeptiert einen TOML-Boolean still als Profile.ADVANCED",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-126",
+      "file": "src/mutmut_win/db.py",
+      "line": 626,
+      "severity": "low",
+      "title": "Die Schreibgrenze ist permissiver als die Lesegrenze: _prepare_result validiert mutant_name ueberhaupt nicht, waehrend load_results jeden leeren oder surrogatbehafteten Namen als Cache-Korruption meldet",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-127",
+      "file": "src/mutmut_win/db.py",
+      "line": 1785,
+      "severity": "low",
+      "title": "delete_results_not_in ruft als einzige Funktion kein create_db und meldet auf einer schemalosen Datenbankdatei Korruption statt zu migrieren",
+      "same_file_astra_findings": 2
+    },
+    {
+      "bc_id": "BC-128",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1064,
+      "severity": "low",
+      "title": "`_copy_with_retry`: 6 statt `max_attempts` Versuche, letzter ohne Backoff, und der Docstring nennt eine Kopierfunktion, die nicht mehr benutzt wird",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-129",
+      "file": "src/mutmut_win/models.py",
+      "line": 430,
+      "severity": "low",
+      "title": "read_owned_source_metadata gibt nicht normalisierte Hex-Digests zurueck, obwohl derselbe Validator sie im Schwesterpfad lowercased",
+      "same_file_astra_findings": 1
+    },
+    {
+      "bc_id": "BC-130",
+      "file": "src/mutmut_win/models.py",
+      "line": 490,
+      "severity": "low",
+      "title": "`MutationRunResult.score`: dokumentierter Nenner enthaelt `unchecked` nicht, die Implementierung zieht ihn ab",
+      "same_file_astra_findings": 1
+    },
+    {
+      "bc_id": "BC-132",
+      "file": "src/mutmut_win/mutation.py",
+      "line": 449,
+      "severity": "low",
+      "title": "Dekorierte Klassen werden vollstaendig von der Mutation ausgenommen, obwohl die Begruendung nur Funktionsdekoratoren betrifft",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-136",
+      "file": "src/mutmut_win/process/worker.py",
+      "line": 853,
+      "severity": "low",
+      "title": "Default-Argumente schreiben Koordinationsdateien in den eigenen Hashsatz",
+      "same_file_astra_findings": 8
+    },
+    {
+      "bc_id": "BC-140",
+      "file": "src/mutmut_win/stats.py",
+      "line": 1646,
+      "severity": "low",
+      "title": "`collect_or_load_stats`: Docstring verspricht inkrementelle Neuerhebung \"nur fuer neue Tests\", Code erhebt immer die volle Suite",
+      "same_file_astra_findings": 6
+    }
+  ],
+  "nur_astra": [
+    {
+      "id": "ORDER-01",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1307,
+      "severity": "medium",
+      "title": "Legitime Metadaten-Fixture wird abhängig von os.walk-Reihenfolge gelöscht",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "TIME-03",
+      "file": "tests/integration/test_il_detection.py",
+      "line": 131,
+      "severity": "low",
+      "title": "Windows-Integrationstest setzt nicht abgesicherte CPU-Zuteilung für IL-Erkennung voraus",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "TIME-04",
+      "file": "tests/unit/test_job_object.py",
+      "line": 107,
+      "severity": "low",
+      "title": "Grandchild-Test ersetzt bestätigten Prozessstart durch sleep(1) und kann falsch grün werden",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "ORCH-01",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 937,
+      "severity": "low",
+      "title": "Vorzeitig erzeugte Executor verlieren bei frühen Pipeline-Enden ihren Jobhandle",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "ORCH-03",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 587,
+      "severity": "medium",
+      "title": "Umgeleitete Textausgabe kann Lauf vor Mutantenerzeugung abbrechen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "DB-01",
+      "file": "src/mutmut_win/db.py",
+      "line": 889,
+      "severity": "low",
+      "title": "Implementierte Altschema-Migration hinterlässt falschen Default für neue Runs",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "DB-02",
+      "file": "src/mutmut_win/db.py",
+      "line": 1528,
+      "severity": "medium",
+      "title": "Legacy-Fallback kombiniert Runentscheidung und Ergebnisse aus verschiedenen Snapshots",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "STATS-02",
+      "file": "src/mutmut_win/stats.py",
+      "line": 161,
+      "severity": "low",
+      "title": "Große JSON-Ganzzahlen lassen Stats-Cache-Lader abstürzen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "STATS-03",
+      "file": "src/mutmut_win/stats.py",
+      "line": 986,
+      "severity": "high",
+      "title": "ZIP-Unterpfade können aus einer als vollständig ausgewiesenen Basis fehlen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-01",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1349,
+      "severity": "high",
+      "title": "Wiederholte Coverage-Läufe messen Generatorcode statt Originalzeilen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-02",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 842,
+      "severity": "medium",
+      "title": "Relative ..-Pfade umgehen Metadatenreservierung und erzeugen falsche Mutantnamen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-03",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1639,
+      "severity": "medium",
+      "title": "Inzwischen abgewählte Quelldateien behalten frühere Instrumentierung",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-04",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1267,
+      "severity": "medium",
+      "title": "Datei-Verzeichnis-Typwechsel blockieren inkrementellen Mirror",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-05",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1670,
+      "severity": "medium",
+      "title": "Automatisch ignorierte Verzeichnisse bleiben als importierbare Hüllen zurück",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "FILE-06",
+      "file": "src/mutmut_win/file_setup.py",
+      "line": 1905,
+      "severity": "medium",
+      "title": "Pyproject-Bereinigung löscht Tabellenmuster innerhalb gültiger TOML-Strings",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "CLI-04",
+      "file": "src/mutmut_win/cli.py",
+      "line": 725,
+      "severity": "low",
+      "title": "Früh erzeugter Executor bleibt bei Läufen ohne Workerphase ungeschlossen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "CLI-05",
+      "file": "src/mutmut_win/cli.py",
+      "line": 738,
+      "severity": "medium",
+      "title": "Ctrl-C vor Workerphase verletzt dokumentierten Exit-130-Vertrag",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "CLI-06",
+      "file": "src/mutmut_win/cli.py",
+      "line": 756,
+      "severity": "medium",
+      "title": "--treat-timeout-as-kill verändert Gate, aber nicht ausgegebenen Run-Score",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "MUT-01",
+      "file": "src/mutmut_win/mutation.py",
+      "line": 631,
+      "severity": "high",
+      "title": "Methodenaufrufe während Klassenerzeugung treffen auf ungebundene Trampoline-Referenzen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "MUT-03",
+      "file": "src/mutmut_win/mutation.py",
+      "line": 1199,
+      "severity": "medium",
+      "title": "Generator-Lambdas verändern fälschlich Identität umgebender Funktion",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "MUT-06",
+      "file": "src/mutmut_win/mutation.py",
+      "line": 556,
+      "severity": "medium",
+      "title": "NFKC-äquivalente Funktionsnamen kollidieren trotz unterschiedlicher Mutanten-IDs",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "MUT-07",
+      "file": "README.md",
+      "line": 372,
+      "severity": "low",
+      "title": "Modulstatements fehlen als ausdrückliche Mutation-surface-Grenze",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "OP-02",
+      "file": "src/mutmut_win/node_mutation.py",
+      "line": 300,
+      "severity": "medium",
+      "title": "_safe_unwrap behandelt nackte Dezimal-Integer als überall sichere Atome",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "OP-03",
+      "file": "src/mutmut_win/node_mutation.py",
+      "line": 349,
+      "severity": "medium",
+      "title": "Unary-Mutation erzeugt ungültige positive Vorzeichen in Match-Literalen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "OP-04",
+      "file": "src/mutmut_win/node_mutation.py",
+      "line": 141,
+      "severity": "medium",
+      "title": "String-Case-Mutationen verändern Hex-Escape-Schreibweise ohne Laufzeitänderung",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RUNNER-02",
+      "file": "src/mutmut_win/runner.py",
+      "line": 630,
+      "severity": "medium",
+      "title": "Benutzeroptionen können notwendigen Forced-Fail-Nachweis unterdrücken",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RUNNER-03",
+      "file": "src/mutmut_win/runner.py",
+      "line": 647,
+      "severity": "medium",
+      "title": "Exceptionname im Testnamen genügt als falscher Trampoline-Nachweis",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "LOCK-02",
+      "file": "src/mutmut_win/process/generation_supervisor.py",
+      "line": 652,
+      "severity": "medium",
+      "title": "Synchrones Pickling im Hauptprozess umgeht Generation-Timeout",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "LOCK-03",
+      "file": "src/mutmut_win/process/run_lock.py",
+      "line": 591,
+      "severity": "medium",
+      "title": "Fehler nach Owner-Publikation vergiftet weitere Lock-Erwerbe",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "SPAWN-02",
+      "file": "src/mutmut_win/process/loop_monitor.py",
+      "line": 491,
+      "severity": "high",
+      "title": "Ausscheidende Kindprozesse können Timeouts fälschlich zu Infinite-Loop-Kills machen",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "SPAWN-03",
+      "file": "src/mutmut_win/process/output_capture.py",
+      "line": 35,
+      "severity": "medium",
+      "title": "Fehlgeschlagene Capture-Initialisierung verliert beide Pipe-Deskriptoren",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "DATA-03",
+      "file": "src/mutmut_win/models.py",
+      "line": 346,
+      "severity": "low",
+      "title": "Große JSON-Integer durchbrechen Metadaten-Heilung",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "VIEW-05",
+      "file": "src/mutmut_win/browser.py",
+      "line": 479,
+      "severity": "low",
+      "title": "Leere Mutantentabelle behält Beschreibung und Diff vorheriger Datei",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RACE-01",
+      "file": "src/mutmut_win/process/worker.py",
+      "line": 1621,
+      "severity": "high",
+      "title": "PPID-Bereinigung kann nach PID-Wiederverwendung fremde Prozesse beenden",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RACE-02",
+      "file": "src/mutmut_win/process/executor.py",
+      "line": 282,
+      "severity": "medium",
+      "title": "Regulärer Workerabschluss kann als Absturz gewertet werden",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RACE-05",
+      "file": "src/mutmut_win/process/suspended_spawn.py",
+      "line": 180,
+      "severity": "low",
+      "title": "Ctrl-C während Windows-Start wird zu Infrastrukturfehler",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "FAIL-03",
+      "file": "src/mutmut_win/process/loop_monitor.py",
+      "line": 307,
+      "severity": "low",
+      "title": "Ein einzelner messbarer Ausgabestand wird als nachgewiesener Stillstand gewertet",
+      "claude_has_same_file": false
+    },
+    {
+      "id": "RES-03",
+      "file": "src/mutmut_win/process/output_capture.py",
+      "line": 35,
+      "severity": "medium",
+      "title": "Fehlgeschlagener Capture-Konstruktor verliert beide Pipe-Deskriptoren",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RES-05",
+      "file": "src/mutmut_win/cli.py",
+      "line": 725,
+      "severity": "low",
+      "title": "Früh angelegter CLI-Executor bleibt bei vorzeitigem Pipeline-Ende offen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RES-06",
+      "file": "src/mutmut_win/type_checking.py",
+      "line": 249,
+      "severity": "low",
+      "title": "Typechecker-Setup kann Jobhandle vor geschütztem Launch verlieren",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "RES-07",
+      "file": "src/mutmut_win/process/run_lock.py",
+      "line": 817,
+      "severity": "medium",
+      "title": "Interrupt bei der Freigabe kann weitere Datenbank-Locks offenlassen",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "EDGE-04",
+      "file": "src/mutmut_win/process/generation_supervisor.py",
+      "line": 245,
+      "severity": "medium",
+      "title": "Akzeptierte Workerzahlen über 61 verhindern unter Windows die Generierung",
+      "claude_has_same_file": true
+    },
+    {
+      "id": "CONTRACT-05",
+      "file": "src/mutmut_win/orchestrator.py",
+      "line": 940,
+      "severity": "low",
+      "title": "Fehlgeschlagene Boundary-Prüfung lässt neu erzeugten Pool-Job offen",
+      "claude_has_same_file": true
+    }
+  ]
+}

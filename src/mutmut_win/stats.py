@@ -448,10 +448,15 @@ def _hash_context_file(
     *,
     label: str,
     seen: set[Path],
-    hash_timestamps: bool = True,
+    hash_timestamps: bool = False,
     hash_link_count: bool = False,
 ) -> bool:
-    """Hash one regular file and verify its path/identity stayed stable."""
+    """Hash one regular file and verify its path/identity stayed stable.
+
+    Timestamps stay out of the digest by default (issue #195 RC-3): a
+    content-identical ``touch`` must not invalidate the reuse basis.  The
+    during-hash identity checks below are independent of what is hashed.
+    """
 
     register_input_root(path.parent)
     hasher.update(label.encode("utf-8", errors="surrogateescape"))
@@ -661,7 +666,7 @@ def _hash_context_tree(
     skip_dirs: frozenset[str] = _CONTEXT_SKIP_DIRS,
     root_skip_dirs: frozenset[str] = _CONTEXT_ROOT_SKIP_DIRS,
     skip_file: Callable[[Path], bool] | None = None,
-    hash_file_timestamps: bool = True,
+    hash_file_timestamps: bool = False,
     hash_directory_timestamps: bool = False,
     hash_link_counts: bool = False,
     ignore_boundary: GitignoreBoundary | None = None,
@@ -819,6 +824,63 @@ def build_staging_context_evidence(
         hash_link_counts=True,
     )
     return RunBasisEvidence(hasher.hexdigest(), complete)
+
+
+# Issue #195: cross-run verdict reuse must survive a restart.  Hashing the
+# complete inherited environment invalidated every cached verdict whenever a
+# session- or wrapper-specific variable differed between two launches of the
+# same unchanged project.  The reuse basis therefore binds only the curated
+# names below that can change what a pytest child observes;
+# ``_hash_inherited_environment`` remains as a diagnostics primitive for
+# observation sessions.
+_VERDICT_RELEVANT_ENV_PREFIXES = ("python", "pytest", "mutmut_", "mutant_")
+_VERDICT_RELEVANT_ENV_NAMES = frozenset(
+    {
+        "py_ignore_importmismatch",
+        "path",
+        "pathext",
+        "systemroot",
+        "comspec",
+        "temp",
+        "tmp",
+        "hypothesis_storage_directory",
+    }
+)
+
+
+def _verdict_relevant_environment_entries() -> list[tuple[str, str]]:
+    """Return the curated (name, value) pairs that can reach child verdicts."""
+
+    return sorted(
+        (
+            (name, value)
+            for name, value in os.environ.items()
+            if name.casefold().startswith(_VERDICT_RELEVANT_ENV_PREFIXES)
+            or name.casefold() in _VERDICT_RELEVANT_ENV_NAMES
+        ),
+        key=lambda item: (item[0].casefold(), item[0]),
+    )
+
+
+def _hash_verdict_relevant_environment(hasher: Any) -> None:
+    """Bind only environment names that can change child verdicts (#195).
+
+    ``PYTHON*``/``PYTEST*`` names and the process-creation/temp variables
+    above can change what an executed child observes.  Everything else
+    (shell wrappers, session identifiers, terminal hints) cannot reach
+    verdict semantics and must not invalidate cross-run reuse.
+    """
+
+    hasher.update(b"verdict-environment:v1\0")
+    for name, value in _verdict_relevant_environment_entries():
+        encoded_name = name.encode("utf-8", errors="surrogateescape")
+        encoded_value = value.encode("utf-8", errors="surrogateescape")
+        with component_scope("environment-entry", name=name):
+            hasher.update(len(encoded_name).to_bytes(8, "big"))
+            hasher.update(encoded_name)
+            hasher.update(len(encoded_value).to_bytes(8, "big"))
+            hasher.update(encoded_value)
+    hasher.update(b"\0")
 
 
 @component("environment")
@@ -1281,7 +1343,7 @@ def _installed_distribution_basis(
     core_seen = core_seen if core_seen is not None else set()
     core_reuse_safe = True
     hasher = observed_sha256(stream="distributions")
-    _hash_inherited_environment(hasher)
+    _hash_verdict_relevant_environment(hasher)
     reuse_safe = _hash_runtime_identity(hasher, seen)
     try:
         resolved_project_root = project_root.resolve(strict=True)
@@ -1357,6 +1419,20 @@ def _installed_distribution_basis(
                         resolved_path = _absolute_lexical_path(path)
                     if resolved_path in excluded:
                         hasher.update(f"{identity}:{entry}:excluded\0".encode())
+                        continue
+                    entry_normalized = str(entry).replace("\\", "/")
+                    if "__pycache__" in entry_normalized.split(
+                        "/"
+                    ) or entry_normalized.casefold().endswith(".pyc"):
+                        # Derived bytecode is a function of the interpreter
+                        # identity and the source bytes, both bound
+                        # separately; its drift must not invalidate reuse
+                        # (issue #195).
+                        hasher.update(
+                            f"{identity}:{entry}:derived-bytecode-skipped\0".encode(
+                                "utf-8", errors="surrogateescape"
+                            )
+                        )
                         continue
                     if not _hash_context_file(
                         hasher,

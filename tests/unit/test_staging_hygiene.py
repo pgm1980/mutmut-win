@@ -1836,6 +1836,22 @@ class TestRetainPolicy:
 class TestStagingPhaseLabel:
     """M-131: drift messages name the phase that actually drifted."""
 
+    @pytest.fixture(autouse=True)
+    def _observable_staging(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make the one-shot re-measure observe a complete tree.
+
+        ``_validate_staging_unchanged`` re-measures the real staging once
+        before reporting drift; without a readable ``mutants/`` tree the
+        re-measure is incomplete and the drift label never surfaces.  The
+        tests used to lean on an incidental repo-worktree staging (W0
+        finding 2026-10-06: they failed whenever the worktree had no
+        ``mutants/``); a minimal tree keeps them hermetic.
+        """
+
+        (tmp_path / "mutants").mkdir()
+        (tmp_path / "mutants" / "staged.py").write_text("x = 1\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
     def test_precoverage_phase_label_replaces_default(self) -> None:
         from mutmut_win.orchestrator import _validate_staging_unchanged
 

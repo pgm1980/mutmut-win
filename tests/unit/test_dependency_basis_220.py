@@ -530,9 +530,17 @@ def test_generic_type_checker_command_fails_closed_for_reuse_and_run_basis(
     assert evidence.complete is False
 
 
-def test_arbitrary_inherited_environment_drift_changes_dependency_basis(
+def test_arbitrary_inherited_environment_drift_keeps_dependency_basis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Issue #195: benign inherited environment drift must not kill reuse.
+
+    A session- or wrapper-specific variable cannot reach a pytest child
+    verdict, so it must not invalidate the cross-run dependency basis.
+    Verdict-relevant names (``PYTHON*``/``PYTEST*``/``MUTMUT_*``/...) stay
+    bound and are covered separately below and in test_result_reuse_195.py.
+    """
+
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(stats_module.sys, "path", [str(project)])
@@ -545,19 +553,26 @@ def test_arbitrary_inherited_environment_drift_changes_dependency_basis(
 
     assert before.reuse_safe is True
     assert after.reuse_safe is True
-    assert after.digest != before.digest
+    assert after.digest == before.digest
 
 
-def test_run_basis_classifies_environment_drift_as_ambient(
+def test_run_basis_classifies_verdict_relevant_environment_drift_as_ambient(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Issue #195: semantic environment drift stays ambient-classified.
+
+    The drift trigger is a verdict-relevant curated name (PYTHONPATH):
+    ambient drift must keep invalidating cross-run reuse without touching
+    the export-authorizing core digest.
+    """
+
     project, config = _project(tmp_path, monkeypatch)
     monkeypatch.setattr(stats_module.importlib.metadata, "distributions", list)
     monkeypatch.setattr(stats_module.sys, "path", [str(project)])
-    monkeypatch.setenv("DEMO_AMBIENT_INPUT", "before")
+    monkeypatch.setenv("PYTHONPATH", "C:\\ambient-before")
 
     before = build_run_basis_evidence(config, project_root=project)
-    monkeypatch.setenv("DEMO_AMBIENT_INPUT", "after")
+    monkeypatch.setenv("PYTHONPATH", "C:\\ambient-after")
     after = build_run_basis_evidence(config, project_root=project)
 
     assert before.complete is True
@@ -772,10 +787,15 @@ def test_generated_publication_timestamps_are_in_run_drift_not_cross_run_context
     assert drift_after.digest != drift_before.digest
 
 
-def test_project_file_timestamp_is_part_of_cross_run_context(
+def test_project_file_timestamp_is_not_part_of_cross_run_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """User-controlled file metadata remains an observable test input."""
+    """Issue #195 RC-3: content-identical metadata churn must not kill reuse.
+
+    A pure timestamp bump leaves every byte a child can observe unchanged,
+    so the cross-run context must stay stable; content edits keep
+    invalidating (covered by test_result_reuse_195.py and the core tests).
+    """
 
     project, config = _project(tmp_path, monkeypatch)
     monkeypatch.setattr(
@@ -788,7 +808,7 @@ def test_project_file_timestamp_is_part_of_cross_run_context(
     original = source.stat()
     os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000))
 
-    assert build_stats_context_fingerprint(config) != before
+    assert build_stats_context_fingerprint(config) == before
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows uv hardlink-count regression")

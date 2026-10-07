@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pydantic-heavy"
+version = "0.1.0"
+description = "Class-heavy fixture (pydantic BaseModel, computed fields, validators) for TM-11"
+requires-python = ">=3.12"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydantic_heavy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mutmut]
+paths-to-mutate = ["src/pydantic_heavy/"]
+tests-dir = ["tests/"]
+max-children = 2
+timeout-multiplier = 5.0

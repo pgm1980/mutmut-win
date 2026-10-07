@@ -276,7 +276,10 @@ def test_exclusive_takeover_closes_prior_hard_crash_before_new_plan(
     assert rows[0] == (old_run_id, "aborted")
     assert rows[1][1] == "aborted"
     [historical] = load_results(db_path)
-    assert historical.tests_fingerprint is None
+    # TM-09 / issue #195 (W1, PO-approved goal): a hard-crash recovery
+    # preserves the crashed run's verdict fingerprints — reuse is decided
+    # by the successor's fingerprint comparison (M-147), not revoked.
+    assert historical.tests_fingerprint == "f" * 64
 
 
 def test_force_cannot_delete_shared_state_while_workspace_lock_is_held(
@@ -1135,7 +1138,10 @@ def test_revocation_failure_leaves_run_recoverable_instead_of_terminal_poison(
     successor.run()
 
     [recovered] = load_results(orchestrator._db_path)
-    assert recovered.tests_fingerprint is None
+    # TM-09 / issue #195 (W1, PO-approved goal): the successor's recovery
+    # keeps the fingerprint — the revoked-then-reused sequence became a
+    # preserved-then-reused sequence.
+    assert recovered.tests_fingerprint == "f" * 64
 
 
 def test_successful_apply_invalidates_latest_run_and_removes_export_artifact(

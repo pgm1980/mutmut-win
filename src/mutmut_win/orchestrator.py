@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -328,6 +329,9 @@ class MutationOrchestrator:
             self._runner = _PytestRunner(config)
 
         self._executor_override: SpawnPoolExecutor | None = executor
+        # M-149b: run-scoped shared pycache path (set at run start, injected
+        # into the executor's config_data by _get_executor).
+        self._shared_pycache_path: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -503,6 +507,19 @@ class MutationOrchestrator:
         debug = bool(self._config.debug)
         watchdog = StallWatchdog()
         watchdog.arm()
+        # M-149: run-scoped shared pycache — the first pytest phase compiles
+        # the trampolined staging tree and writes bytecode; subsequent phases
+        # get cache hits instead of recompiling ~80 MB per phase.
+        pycache_ctx = tempfile.TemporaryDirectory(
+            prefix="mutmut-win-run-pycache-", ignore_cleanup_errors=True
+        )
+        # M-149/M-149b: set on the runner when it supports it (mock
+        # runners in unit tests may not have __dict__).
+        with contextlib.suppress(AttributeError):
+            self._runner.shared_pycache = Path(pycache_ctx.name)
+        # M-149b: store for _get_executor to inject into the executor's
+        # config_data — dispatch workers reuse the shared bytecode cache.
+        self._shared_pycache_path = pycache_ctx.name
         try:
             if debug:
                 print("[debug] validating staging root…", file=sys.stderr)
@@ -565,6 +582,11 @@ class MutationOrchestrator:
                 # restore so neither generation nor a future helper can leak
                 # staging into the long-lived orchestration interpreter.
                 sys.path[:] = original_sys_path
+                # M-149: release the run-scoped shared pycache.
+                with contextlib.suppress(AttributeError):
+                    self._runner.shared_pycache = None
+                self._shared_pycache_path = None
+                pycache_ctx.cleanup()
         except KeyboardInterrupt as interrupt:
             # Ctrl-C is an interrupted proof regardless of the pipeline
             # phase in which it lands. Preserve the original interrupt while
@@ -767,16 +789,30 @@ class MutationOrchestrator:
         return result
 
     def _recover_abandoned_run(self) -> None:
-        """Close a prior crash-orphan after exclusive workspace acquisition."""
+        """Close a prior crash-orphan after exclusive workspace acquisition.
+
+        TM-09 / issue #195 (W1 decision, PO-approved goal): a hard process
+        kill mid-dispatch must NOT destroy the reusability of the verdicts
+        the abandoned run already wrote.  The historical blanket revocation
+        (v2.21.1 hardening: "execution basis was never authorized") is
+        deliberately NOT applied here because the finer-grained protections
+        now carry that contract exactly:
+
+        * worker verdicts stream through atomic writes — a killed run can
+          only leave complete rows, never half-written ones;
+        * every persisted verdict is bound to its tests_fingerprint, and
+          the fingerprint is stable across restarts since M-147 — a later
+          run reuses a verdict ONLY when its test basis is byte-identical;
+        * REUSABLE_STATUSES already excludes environment-sensitive
+          verdicts (timeout/suspicious) from reuse.
+
+        The M-105 finalization-interrupt path keeps its revocation: that
+        window has additional in-flight state worth failing closed on.
+        """
+
         current = load_current_run(self._db_path)
         if current is None or current.status != "running":
             return
-        try:
-            invalidate_cached_reuse_for_run(self._db_path, current.run_id)
-        except Exception as exc:
-            raise OrchestratorError(
-                "could not revoke cached-verdict reuse from an abandoned prior run"
-            ) from exc
         finish_run(self._db_path, current.run_id, "aborted")
         print(
             "Recovered an unfinished prior mutation run as aborted "
@@ -1597,13 +1633,23 @@ class MutationOrchestrator:
     def _get_executor(self) -> SpawnPoolExecutor:
         """Return the executor to use, creating a default one if needed."""
         if self._executor_override is not None:
-            return self._executor_override
-        from mutmut_win.process.executor import SpawnPoolExecutor as _SpawnPoolExecutor
+            executor = self._executor_override
+        else:
+            from mutmut_win.process.executor import SpawnPoolExecutor as _SpawnPoolExecutor
 
-        return _SpawnPoolExecutor(
-            max_workers=self._config.max_children,
-            config=self._config,
-        )
+            executor = _SpawnPoolExecutor(
+                max_workers=self._config.max_children,
+                config=self._config,
+            )
+        # M-149b: inject the shared pycache into the executor's config_data
+        # so dispatch workers reuse the bytecode cache.  Guarded like the
+        # runner injection: unit tests may override the executor with fakes
+        # that have no _config_data dict (M-149b follow-up).
+        if self._shared_pycache_path is not None:
+            config_data = getattr(executor, "_config_data", None)
+            if isinstance(config_data, dict):
+                config_data["_worker_shared_pycache"] = str(self._shared_pycache_path)
+        return executor
 
 
 # ---------------------------------------------------------------------------
