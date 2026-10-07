@@ -1,21 +1,21 @@
 ---
 current_sprint: "47"
-sprint_goal: "v3.1.0: in progress"
+sprint_goal: "v3.1.0: released"
 branch: "fix/v3.1.0-testsanierung"
 started_at: "2026-10-06"
-phase: "in_progress"
-candidate_commit: ""
-candidate_tree: ""
-integrated_commit: ""
-integrated_tree: ""
-release_tag: ""
-housekeeping_done: false
-memory_updated: false
-github_issues_closed: false
+phase: "released"
+candidate_commit: "e9544f0"
+candidate_tree: "0f903ce8f3b0357b56cddbfc4938f779550aaee5"
+integrated_commit: "9426088"
+integrated_tree: "0f903ce8f3b0357b56cddbfc4938f779550aaee5"
+release_tag: "v3.1.0"
+housekeeping_done: true
+memory_updated: true
+github_issues_closed: true
 sprint_backlog_written: true
-semgrep_passed: false
-tests_passed: false
-documentation_updated: false
+semgrep_passed: true
+tests_passed: true
+documentation_updated: true
 ---
 
 # Sprint State - Testsanierung 3.1.0: Testpyramide W0 bis W5
