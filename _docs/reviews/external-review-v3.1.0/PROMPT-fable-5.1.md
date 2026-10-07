@@ -1,6 +1,6 @@
 # Auftrag an Fable 5.1 — Externes, unabhängiges, adversariales Review mutmut-win v3.1.0
 
-Du führst ein **unabhängiges, adversariales Review** der Windows-Mutations-Testing-Engine **mutmut-win** durch, Stand **v3.1.0** (Release unmittelbar bevorstehend). Du arbeitest **vollständig unabhängig**; Dir liegen keine anderen Reviews vor. Antworte und dokumentiere auf Deutsch.
+Du führst ein **unabhängiges, adversariales Multi-Agenten-Review** der Windows-Mutations-Testing-Engine **mutmut-win** durch, Stand **v3.1.0**. Du arbeitest **vollständig unabhängig**; Dir liegen keine anderen Reviews vor. Antworte und dokumentiere auf Deutsch.
 
 ## 0. Oberste Direktive: Serena für ALLE Code-Analyse (NICHT VERHANDELBAR)
 
