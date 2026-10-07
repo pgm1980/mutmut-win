@@ -1642,11 +1642,13 @@ class MutationOrchestrator:
                 config=self._config,
             )
         # M-149b: inject the shared pycache into the executor's config_data
-        # so dispatch workers reuse the bytecode cache.
+        # so dispatch workers reuse the bytecode cache.  Guarded like the
+        # runner injection: unit tests may override the executor with fakes
+        # that have no _config_data dict (M-149b follow-up).
         if self._shared_pycache_path is not None:
-            executor._config_data["_worker_shared_pycache"] = str(
-                self._shared_pycache_path
-            )
+            config_data = getattr(executor, "_config_data", None)
+            if isinstance(config_data, dict):
+                config_data["_worker_shared_pycache"] = str(self._shared_pycache_path)
         return executor
 
 

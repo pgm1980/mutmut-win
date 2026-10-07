@@ -16,10 +16,7 @@ behavior), which would show as 0% kill rate — not the expected ~25-35%.
 from __future__ import annotations
 
 import sqlite3
-import subprocess
-import sys
 from contextlib import closing
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -27,7 +24,7 @@ import pytest
 from tests.e2e.e2e_util import SIMPLE_LIB, copy_project, run_cli
 
 if TYPE_CHECKING:
-    pass
+    from pathlib import Path
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
@@ -125,9 +122,9 @@ class TestSharedPycacheDoesNotBreakMutants:
         # the proof of correctness: mutants run mutant code and get killed.
         # If any mutant SURVIVED, THAT would be the red flag (suggesting
         # the original code ran instead of the mutant).
-        all_killed = all(s == "killed" for _, s in rows)
+        all_killed = all(s == "killed" for _, s, _exit, _dur in rows)
         assert all_killed, (
             f"Some mutants survived simple_lib's complete test suite — "
             f"this could indicate shared pycache breaking mutant isolation: "
-            f"{[(n, s) for n, s in rows[:10]]}"
+            f"{[(n, s) for n, s, _e, _d in rows[:10]]}"
         )
