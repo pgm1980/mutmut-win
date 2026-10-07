@@ -167,7 +167,7 @@ _MUTANT_SAFETY_NET_FILE_SHA: Final = (
 # harness files whose adjudicated subprocess findings are pinned below.
 _E2E_UTIL_FILE_SHA: Final = "79cb61f09ec355be85ea44c3c800b6afe9d03c2d16fd80e7b046574ea92e4335"
 _INTERRUPT_FINALIZATION_FILE_SHA: Final = (
-    "e6b959c98602850bfd218db8af13bc09a0d8083699966d5d35265754c14afb05"
+    "57e311fcbfbe831fc933451152d6fbbf3c27cb4875696e80fe43209c38a8fb98"
 )
 _PYCACHE_INTEGRATION_FILE_SHA: Final = (
     "1422ca37e524da1bf1eab18392a54fb45bcadef4ac97d70dcb78d657bab7da6c"
@@ -230,13 +230,14 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         _E2E_UTIL_FILE_SHA,
     ),
     # GAP-7 interrupt harness: the engine subprocess gets its own console
-    # and process group so a genuine console Ctrl+C can be delivered.
+    # and process group; a helper subprocess delivers the genuine console
+    # Ctrl+C (the runner never touches console state).
     FindingSignature(
         "tests/e2e/test_interrupt_finalization.py",
         _POPEN1_RULE,
-        40,
+        39,
         12,
-        49,
+        48,
         6,
         "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
         _INTERRUPT_FINALIZATION_FILE_SHA,
@@ -244,9 +245,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/e2e/test_interrupt_finalization.py",
         _POPEN_RULE,
-        40,
+        39,
         12,
-        49,
+        48,
         6,
         "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
         _INTERRUPT_FINALIZATION_FILE_SHA,

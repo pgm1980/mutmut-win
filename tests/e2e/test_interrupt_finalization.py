@@ -12,7 +12,6 @@ the event, and detaches immediately so pytest itself never receives it.
 from __future__ import annotations
 
 import ctypes
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -52,23 +51,31 @@ def _start_engine(project: Path) -> subprocess.Popen[str]:
 def _send_ctrl_c(proc: subprocess.Popen[str]) -> bool:
     """Deliver a genuine console Ctrl+C to the engine's group.
 
-    Returns True when the event could be delivered.  The sender temporarily
-    attaches to the engine's console (the only reliable source console when
-    pytest itself runs console-less) and detaches right after.
+    Returns True when the event could be delivered.  Delivery runs in a
+    short-lived helper subprocess that attaches to the engine's console and
+    fires the event: the test runner itself never attaches to or detaches
+    from any console (a runner that touched console state could disturb
+    unrelated processes on the same machine — seen once as a stray
+    STATUS_CONTROL_C_EXIT in an unrelated later test).
     """
 
-    _KERNEL32.FreeConsole()
-    try:
-        if not _KERNEL32.AttachConsole(proc.pid):
-            return False
-        try:
-            proc.send_signal(signal.CTRL_C_EVENT)
-            return True
-        finally:
-            _KERNEL32.FreeConsole()
-    except OSError:
-        _KERNEL32.FreeConsole()
-        return False
+    helper_code = (
+        "import ctypes, sys\n"
+        "kernel32 = ctypes.windll.kernel32\n"
+        "pid = int(sys.argv[1])\n"
+        "kernel32.FreeConsole()\n"
+        "ok = kernel32.AttachConsole(pid)\n"
+        "if ok:\n"
+        "    kernel32.GenerateConsoleCtrlEvent(0, pid)\n"
+        "sys.exit(0 if ok else 3)\n"
+    )
+    helper = subprocess.run(  # noqa: S603 - helper source is a literal above
+        [sys.executable, "-c", helper_code, str(proc.pid)],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    return helper.returncode == 0
 
 
 def _wait_for_staging(project: Path, proc: subprocess.Popen[str], timeout: float = 120.0) -> bool:
