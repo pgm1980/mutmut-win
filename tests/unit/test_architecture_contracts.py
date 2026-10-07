@@ -67,7 +67,6 @@ class TestJsonExportContract:
 
     def test_cicd_export_has_required_fields(self) -> None:
         """The export payload must contain the core gate fields."""
-        required_fields = {"total", "killed", "survived", "score"}
         # Verify against the module's actual export function signature
         from mutmut_win.stats import compute_cicd_stats
 

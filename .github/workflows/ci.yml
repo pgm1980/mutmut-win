@@ -207,10 +207,27 @@ jobs:
         run: >-
           uv export --frozen --all-extras --all-groups --no-hashes
           --no-emit-project --output-file audit-requirements.txt
+      # pyjwt 2.13.x (transitive via the pinned semgrep==1.175.0 security
+      # gate, constraint ~=2.13.0) carries 14 PYSEC advisories. Adjudicated
+      # UNREACHABLE: pyjwt serves semgrep cloud-auth telemetry only; the
+      # release gate runs `semgrep scan --oss-only --metrics off
+      # --disable-version-check` offline against the pinned local rule
+      # bundle - no cloud-auth path executes with project input. A uv
+      # override to 2.15.x was tested and rejected: pip-audit resolves the
+      # exported set through pip, which refuses {semgrep==1.175.0,
+      # pyjwt>=2.14} (ResolutionImpossible). Revisit when the semgrep pin
+      # moves past 1.175.0.
       - name: Query current vulnerability advisories
         run: >-
           uv run --no-sync pip-audit --requirement audit-requirements.txt
           --progress-spinner off
+          --ignore-vuln PYSEC-2026-4140 --ignore-vuln PYSEC-2026-4141
+          --ignore-vuln PYSEC-2026-4142 --ignore-vuln PYSEC-2026-4143
+          --ignore-vuln PYSEC-2026-4144 --ignore-vuln PYSEC-2026-4145
+          --ignore-vuln PYSEC-2026-4146 --ignore-vuln PYSEC-2026-4147
+          --ignore-vuln PYSEC-2026-4148 --ignore-vuln PYSEC-2026-4149
+          --ignore-vuln PYSEC-2026-4150 --ignore-vuln PYSEC-2026-4151
+          --ignore-vuln PYSEC-2026-4152 --ignore-vuln PYSEC-2026-4183
 
   build:
     name: Build distributions

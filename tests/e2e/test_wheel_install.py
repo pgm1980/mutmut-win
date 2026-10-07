@@ -72,8 +72,7 @@ class TestWheelInstallBoundary:
             [
                 str(python),
                 "-c",
-                "import mutmut_win; "
-                "print(getattr(mutmut_win, '__version__', 'ok'))",
+                "import mutmut_win; print(getattr(mutmut_win, '__version__', 'ok'))",
             ],
             capture_output=True,
             text=True,

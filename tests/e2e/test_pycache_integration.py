@@ -12,13 +12,15 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
-import time
 from contextlib import closing
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from tests.e2e.e2e_util import SIMPLE_LIB, copy_project, run_cli
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
@@ -28,14 +30,12 @@ class TestDispatchWorkerSharedPycache:
 
     def test_workers_share_pycache_and_speed_up(self, tmp_path: Path) -> None:
         """Full campaign with shared pycache: total time significantly less
-        than first-mutant compile time × mutant count."""
+        than first-mutant compile time x mutant count."""
 
         project = copy_project(SIMPLE_LIB, tmp_path)
 
         # Run the full campaign
-        t0 = time.monotonic()
         result = run_cli(project, "run", "--no-progress", timeout=900)
-        total_elapsed = time.monotonic() - t0
 
         assert result.returncode == 0, (
             f"Campaign failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -78,14 +78,8 @@ class TestDispatchWorkerSharedPycache:
             f"Durations: {values}"
         )
 
-        # Verify the pycache directory has bytecode files
-        pycache_dirs = list(
-            (project / ".mutmut-cache").rglob("*.pyc")
-        ) + list(
-            project.rglob("mutmut-win-run-pycache*")
-        )
-        # The shared pycache temp dir may be cleaned up after the run,
-        # so we check the durations as the primary oracle.
+        # NOTE: the shared pycache temp dir may be cleaned up after the run,
+        # so the durations above are the primary oracle.
 
     def test_worker_env_has_shared_pycache_during_run(self, tmp_path: Path) -> None:
         """During a campaign, worker pytest children see PYTHONPYCACHEPREFIX
@@ -119,7 +113,7 @@ class TestDispatchWorkerSharedPycache:
         # and should complete significantly faster than without sharing
         assert "Score" in stdout, "campaign summary must be present"
 
-        # The total duration should be reasonable (not 14 × 450s = 6300s
+        # The total duration should be reasonable (not 14 x 450s = 6300s
         # which would be the case without shared pycache)
         db_path = project / ".mutmut-cache" / "mutmut-cache.db"
         with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
@@ -137,9 +131,9 @@ class TestDispatchWorkerSharedPycache:
                 ).fetchall()
             )
 
-        # Without shared pycache: ~450s per mutant × N mutants
+        # Without shared pycache: ~450s per mutant x N mutants
         # With shared pycache: only the first mutant pays the compile cost
-        # For simple_lib (~14 mutants), total should be well under 14 × 450s
+        # For simple_lib (~14 mutants), total should be well under 14 x 450s
         if total_duration and mutant_count > 0:
             avg_per_mutant = total_duration / mutant_count
             # Conservative: average should be under 300s (without sharing

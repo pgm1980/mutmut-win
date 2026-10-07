@@ -1032,9 +1032,7 @@ class TestAcquireErrorTaxonomy:
 
         lock_path = tmp_path / "ws.run.lock"
 
-        real_write = run_lock.os.write
-
-        def locked_write(fd: int, data: bytes) -> int:
+        def locked_write(_fd: int, _data: bytes) -> int:
             raise OSError(errno.EACCES, "simulated byte-range lock collision")
 
         monkeypatch.setattr(run_lock.os, "write", locked_write)

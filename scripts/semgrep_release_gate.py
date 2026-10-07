@@ -170,7 +170,7 @@ _INTERRUPT_FINALIZATION_FILE_SHA: Final = (
     "57e311fcbfbe831fc933451152d6fbbf3c27cb4875696e80fe43209c38a8fb98"
 )
 _PYCACHE_INTEGRATION_FILE_SHA: Final = (
-    "1422ca37e524da1bf1eab18392a54fb45bcadef4ac97d70dcb78d657bab7da6c"
+    "3d4afdd7e584435238552da4d8f4dc8aab87e35ad09401424e72fdc4afb71251"
 )
 _ATOMIC_CRASH_RECOVERY_FILE_SHA: Final = (
     "2122fde11b0d18d5c6d8d2202fc02a9cf4f34924434bfb50082c39dabc10c907"
@@ -256,9 +256,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/e2e/test_pycache_integration.py",
         _POPEN1_RULE,
-        97,
+        91,
         19,
-        105,
+        99,
         10,
         "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
         _PYCACHE_INTEGRATION_FILE_SHA,
@@ -266,9 +266,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/e2e/test_pycache_integration.py",
         _POPEN_RULE,
-        97,
+        91,
         19,
-        105,
+        99,
         10,
         "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
         _PYCACHE_INTEGRATION_FILE_SHA,

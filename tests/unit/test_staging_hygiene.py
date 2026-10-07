@@ -1837,9 +1837,7 @@ class TestStagingPhaseLabel:
     """M-131: drift messages name the phase that actually drifted."""
 
     @pytest.fixture(autouse=True)
-    def _observable_staging(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def _observable_staging(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Make the one-shot re-measure observe a complete tree.
 
         ``_validate_staging_unchanged`` re-measures the real staging once
