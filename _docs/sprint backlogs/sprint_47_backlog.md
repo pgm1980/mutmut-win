@@ -27,12 +27,12 @@ Kill-Rate-Abnahme.
 
 ## Arbeitsumfang (Wellen W0 bis W5)
 
-- [ ] W0 Enabler-TDD: #194 (Forced-Fail-Liveness, TM-10), #195 (Cross-Run-Verdikt-Cache, TM-09), M-097 (load_current_run/load_results-Refactor) — rot/grün; Pflicht-Gegenprobe Cache-Invalidierung
-- [ ] W1 E2E-Rückgrat: test_full_run.py, test_error_paths.py gegen e2e_projects; test_class_heavy_projects.py mit xfail(strict=True)-Dokumentation der Trampolin-Grenze (TM-01/06/08/11); Campaign-E2E mit Resume
-- [ ] W2 Windows-FS- und Prozesskorridore: junctions/hardlinks/sharing-violation/readonly/normcase; Jobhandle/Pipe/Runtime-Root über echten Prozessbaum; Ctrl-C je Phase (TM-02/03/04)
-- [ ] W3 Property-Ausbau: strategies.py plus mindestens 60 neue @given-Tests (Serialisierung, Fingerprint-Stabilität, Pfade, Stat-Ergebnisse, Timeout-Modell)
-- [ ] W4 Architekturverträge: CLI-Exit-Code-Tabelle, JSON-Export-Schema, Konfigurations-Schema fail-closed, Schreibpfad-Vertrag mit dokumentierter M-130-Ausnahme
-- [ ] W5 Wheel-Install-Grenze (TM-12) und Kill-Rate-Kampagnen: suspended_spawn verpflichtend (≥ 80 %), db nachrangig als detached Overnight-Kampagne
-- [ ] Querschnitt je Welle: Fallinventar nach Zählregeln, echte Laufbelege, offene Grenzen, Produktfehler als neue M-IDs mit rot/grün-Receipts; keine Löschung bestehender Tests
-- [ ] Gesamtabnahme: Szenario-Matrix TM-01 bis TM-12 vollständig, Pilot-Kill-Raten, Vollsuite grün auf Finalstand
-- [ ] Release 3.1.0 nach gewohntem Muster (PR, annotierter Tag, GitHub-Release, Housekeeping, Vollsuite-Receipt) und Übergabe-Basis für das externe Review (H1–H4, E-A bis E-F)
+- [x] W0 Enabler-TDD: #194 (Forced-Fail-Liveness, TM-10), #195 (Cross-Run-Verdikt-Cache, TM-09), M-097 (load_current_run/load_results-Refactor) — rot/grün; Pflicht-Gegenprobe Cache-Invalidierung
+- [x] W1 E2E-Rückgrat: test_full_run.py, test_error_paths.py gegen e2e_projects; test_class_heavy_projects.py mit xfail(strict=True)-Dokumentation der Trampolin-Grenze (TM-01/06/08/11); Campaign-E2E mit Resume
+- [x] W2 Windows-FS- und Prozesskorridore: junctions/hardlinks/sharing-violation/readonly/normcase; Jobhandle/Pipe/Runtime-Root über echten Prozessbaum; Ctrl-C je Phase (TM-02/03/04)
+- [x] W3 Property-Ausbau: strategies.py plus mindestens 60 neue @given-Tests (Serialisierung, Fingerprint-Stabilität, Pfade, Stat-Ergebnisse, Timeout-Modell)
+- [x] W4 Architekturverträge: CLI-Exit-Code-Tabelle, JSON-Export-Schema, Konfigurations-Schema fail-closed, Schreibpfad-Vertrag mit dokumentierter M-130-Ausnahme
+- [x] W5 Wheel-Install-Grenze (TM-12) und Kill-Rate-Kampagnen: suspended_spawn verpflichtend (≥ 80 %), db nachrangig als detached Overnight-Kampagne
+- [x] Querschnitt je Welle: Fallinventar nach Zählregeln, echte Laufbelege, offene Grenzen, Produktfehler als neue M-IDs mit rot/grün-Receipts; keine Löschung bestehender Tests
+- [x] Gesamtabnahme: Szenario-Matrix TM-01 bis TM-12 vollständig, Pilot-Kill-Raten, Vollsuite grün auf Finalstand
+- [x] Release 3.1.0 nach gewohntem Muster (PR, annotierter Tag, GitHub-Release, Housekeeping, Vollsuite-Receipt) und Übergabe-Basis für das externe Review (H1–H4, E-A bis E-F)
