@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration]
 
 
-_SOURCE = '''\
+_SOURCE = """\
 def add(a, b):
     return a + b
 
 def subtract(a, b):
     return a - b
-'''
+"""
 
 
 def _load_module(source: str, name: str = "testmod") -> ModuleType:
@@ -107,13 +107,13 @@ class TestDoNotMutate:
     def test_do_not_mutate_pattern_excludes_functions(self) -> None:
         """Functions matching do_not_mutate pattern get NO mutants."""
 
-        source = '''\
+        source = """\
 def normal_func(x):
     return x + 1
 
 def ignore_me(x):
     return x * 2
-'''
+"""
         _, names = mutate_file_contents(
             "m.py", source, active_profile=Profile.BASIC, do_not_mutate_patterns=("ignore*",)
         )
@@ -128,12 +128,12 @@ class TestMaxStackDepth:
     def test_max_stack_depth_skips_deep_functions(self) -> None:
         """max_stack_depth=1: nested function at depth 2 is skipped."""
 
-        source = '''\
+        source = """\
 def outer():
     def inner():
         return 1 + 2
     return inner() + 3
-'''
+"""
         _, names = mutate_file_contents("m.py", source, active_profile=Profile.BASIC)
         # With default max_stack_depth, both outer and inner get mutants
         # We verify that outer gets mutants (it's at depth 0/1)
