@@ -1,6 +1,6 @@
 """E2E: Config fail-closed chain — invalid configs MUST abort before staging (GAP-1).
 
-Covers M-032–M-045: absolute paths, dot-dot aliases, unknown fields,
+Covers M-032-M-045: absolute paths, dot-dot aliases, unknown fields,
 cross-field conflicts, and type_check_command blocking CI/CD export.
 Every case drives the real CLI (`python -m mutmut_win run`) against a
 real pyproject.toml in an isolated tmp workspace — no mocks.
@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
@@ -30,7 +33,7 @@ def _make_project(tmp: Path) -> Path:
 
 
 def _run_cli(project: Path, *args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603
         [sys.executable, "-m", "mutmut_win", *args],
         cwd=project,
         capture_output=True,
@@ -51,7 +54,8 @@ class TestAbsolutePathsRejected:
         )
         result = _run_cli(project, "run", "--no-progress")
         assert result.returncode == 2, (
-            f"Absolute path must be rejected with exit 2.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"Absolute path must be rejected with exit 2.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
         assert not (project / "mutants").exists(), "NO mutants/ directory may be created"
 
@@ -120,7 +124,8 @@ class TestTypeCheckCommandBlocksExport:
         export_result = _run_cli(project, "export-cicd-stats")
         assert export_result.returncode == 1, (
             f"export-cicd-stats must fail (exit 1) when type_check_command is set "
-            f"(unbounded external closure).\nstdout:\n{export_result.stdout}\nstderr:\n{export_result.stderr}"
+            f"(unbounded external closure).\n"
+            f"stdout:\n{export_result.stdout}\nstderr:\n{export_result.stderr}"
         )
 
 

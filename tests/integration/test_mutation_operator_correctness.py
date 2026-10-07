@@ -1,18 +1,23 @@
 """Integration: mutation operator correctness — generate, apply, verify behavior (GAP-3).
 
-Covers M-069–M-099: operators produce expected mutants, mutants are importable
+Covers M-069-M-099: operators produce expected mutants, mutants are importable
 and measurably different, do_not_mutate and max_stack_depth are respected.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from mutmut_win.constants import Profile
 from mutmut_win.mutation import mutate_file_contents
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 pytestmark = [pytest.mark.integration]
 
@@ -26,7 +31,7 @@ def subtract(a, b):
 '''
 
 
-def _load_module(source: str, name: str = "testmod"):
+def _load_module(source: str, name: str = "testmod") -> ModuleType:
     """Import a source string as a module and return it."""
     import tempfile
 
@@ -34,6 +39,8 @@ def _load_module(source: str, name: str = "testmod"):
         f.write(source)
         path = f.name
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None, f"could not create module spec from {path}"
+    assert spec.loader is not None, f"module spec has no loader: {path}"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     Path(path).unlink(missing_ok=True)
@@ -45,7 +52,7 @@ class TestMutantGeneration:
         """A simple add/subtract source produces x_add__mutmut_N and
         x_subtract__mutmut_N mutants with N starting at 1."""
 
-        generated, names = mutate_file_contents("m.py", _SOURCE, active_profile=Profile.BASIC)
+        _, names = mutate_file_contents("m.py", _SOURCE, active_profile=Profile.BASIC)
         add_mutants = [n for n in names if "x_add__mutmut_" in n]
         sub_mutants = [n for n in names if "x_subtract__mutmut_" in n]
 
@@ -107,7 +114,7 @@ def normal_func(x):
 def ignore_me(x):
     return x * 2
 '''
-        generated, names = mutate_file_contents(
+        _, names = mutate_file_contents(
             "m.py", source, active_profile=Profile.BASIC, do_not_mutate_patterns=("ignore*",)
         )
         ignore_mutants = [n for n in names if "ignore_me" in n]
@@ -127,11 +134,8 @@ def outer():
         return 1 + 2
     return inner() + 3
 '''
-        generated, names = mutate_file_contents("m.py", source, active_profile=Profile.BASIC)
+        _, names = mutate_file_contents("m.py", source, active_profile=Profile.BASIC)
         # With default max_stack_depth, both outer and inner get mutants
         # We verify that outer gets mutants (it's at depth 0/1)
         outer_mutants = [n for n in names if "outer" in n]
         assert outer_mutants, f"outer should have mutants: {names}"
-
-
-import os  # noqa: E402 — needed for MUTANT_UNDER_TEST env manipulation

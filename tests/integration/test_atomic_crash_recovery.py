@@ -1,6 +1,6 @@
 """Integration: atomic write crash-recovery — kill mid-write, verify integrity (GAP-2).
 
-Covers M-005–M-067: the atomic_write_bytes contract guarantees a file is
+Covers M-005-M-067: the atomic_write_bytes contract guarantees a file is
 either GANZ old or GANZ new after any crash — never partially written.
 """
 
@@ -11,11 +11,14 @@ import stat
 import subprocess
 import sys
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from mutmut_win.atomic_file import atomic_write_bytes
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -35,7 +38,7 @@ def _kill_subprocess_during_write(target: Path, payload: bytes) -> bool:
         f"atomic_write_bytes({str(target)!r}, {payload!r})\n"
         "print('DONE')\n"
     )
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -78,8 +81,6 @@ class TestAtomicIntegrity:
 
         for i in range(1, 5):
             _kill_subprocess_during_write(target, payloads[i])
-            current = _sha(target)
-            expected = {_sha(Path(tmp_path) / "cyclic.bin") for _ in [0]}  # current state
             # The file must always be readable and a valid full payload
             content = target.read_bytes()
             assert len(content) in {5000}, f"Unexpected partial write: {len(content)} bytes"
