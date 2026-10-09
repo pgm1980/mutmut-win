@@ -1,13 +1,17 @@
 """The type-filter shortcut must preserve native clean-suite validation."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.db import load_results
-from mutmut_win.models import MutationTask, SourceFileMutationData
 from mutmut_win.orchestrator import CleanTestFailedError, MutationOrchestrator
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from mutmut_win.models import MutationTask, SourceFileMutationData
 
 
 @pytest.mark.parametrize("catch_all", [True, False], ids=["all-caught", "remaining"])
