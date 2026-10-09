@@ -18,6 +18,7 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from mutmut_win.stats import compute_cicd_stats
 from tests.unit.properties.strategies import (
     iso_timestamps,
     node_ids,
@@ -251,13 +252,16 @@ class TestScoreArithmetic:
         survived=st.integers(min_value=0, max_value=100),
     )
     def test_score_formula(self, killed: int, survived: int) -> None:
-        """score = killed / (killed + survived) when total > 0."""
-        total = killed + survived
-        if total > 0:
-            score = killed / total
-            assert 0.0 <= score <= 1.0
-        else:
-            pass  # division by zero correctly undefined
+        """Excluded verdicts cannot change the score of an observed population."""
+        population = [(f"kill{i}", "killed") for i in range(killed)] + [
+            (f"live{i}", "survived") for i in range(survived)
+        ]
+        baseline = compute_cicd_stats(population)
+        extended = compute_cicd_stats([*population, ("skip", "skipped"), ("uncovered", "no tests")])
+        assert extended.total == baseline.total + 2
+        assert extended.scoreable == baseline.scoreable
+        assert extended.score == baseline.score
+        assert 0.0 <= baseline.score <= 100.0
 
     @given(
         killed=st.integers(min_value=0, max_value=100),
@@ -270,30 +274,46 @@ class TestScoreArithmetic:
         self, killed: int, survived: int, timeout: int, suspicious: int, skipped: int
     ) -> None:
         """The sum of all verdict categories equals the total."""
-        total = killed + survived + timeout + suspicious + skipped
-        assert total == killed + survived + timeout + suspicious + skipped
+        statuses = (
+            ["killed"] * killed
+            + ["survived"] * survived
+            + ["timeout"] * timeout
+            + ["suspicious"] * suspicious
+            + ["skipped"] * skipped
+        )
+        actual = compute_cicd_stats([(str(i), status) for i, status in enumerate(statuses)])
+        assert actual.total == len(statuses)
+        assert (
+            actual.killed,
+            actual.survived,
+            actual.timeout,
+            actual.suspicious,
+            actual.skipped,
+        ) == (killed, survived, timeout, suspicious, skipped)
 
     @given(
         killed=st.integers(min_value=0, max_value=1000),
         total=st.integers(min_value=1, max_value=1000),
     )
     def test_killed_rate_bounded(self, killed: int, total: int) -> None:
-        """killed_rate is always in [0, 1] when killed <= total."""
+        """The exported score stays bounded for an actual verdict population."""
         assume(killed <= total)
-        rate = killed / total
-        assert 0.0 <= rate <= 1.0
+        actual = compute_cicd_stats(
+            [(str(i), "killed" if i < killed else "survived") for i in range(total)]
+        )
+        assert 0.0 <= actual.score <= 100.0
 
     @given(total=st.integers(min_value=1, max_value=1000))
     def test_perfect_score_when_all_killed(self, total: int) -> None:
-        """killed == total → score == 1.0."""
-        score = total / total
-        assert score == 1.0
+        """An entirely detected population exports a perfect percentage."""
+        actual = compute_cicd_stats([(str(i), "killed") for i in range(total)])
+        assert actual.score == 100.0
 
     @given(total=st.integers(min_value=1, max_value=1000))
     def test_zero_score_when_none_killed(self, total: int) -> None:
-        """killed == 0 → score == 0.0."""
-        score = 0 / total
-        assert score == 0.0
+        """An entirely surviving population exports zero percent."""
+        actual = compute_cicd_stats([(str(i), "survived") for i in range(total)])
+        assert actual.score == 0.0
 
 
 # =========================================================================

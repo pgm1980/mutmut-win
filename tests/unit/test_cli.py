@@ -15,6 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from mutmut_win.cli import cli
+from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import Profile
 from mutmut_win.db import MutationRunState
 from mutmut_win.exceptions import StaleStagingError
@@ -249,19 +250,23 @@ class TestRunCommand:
         runner = CliRunner()
         mock_orchestrator = MagicMock()
         mock_orchestrator.run.return_value = MutationRunResult(total_mutants=1, killed=1)
-        mock_config = MagicMock()
-        mock_config.max_children = 2
+        config = MutmutConfig()
+        expected_children = config.max_children
 
         with (
-            patch("mutmut_win.cli.load_config", return_value=mock_config),
-            patch("mutmut_win.cli.MutationOrchestrator", return_value=mock_orchestrator),
+            patch("mutmut_win.cli.load_config", return_value=config),
+            patch("mutmut_win.cli.MutationOrchestrator", return_value=mock_orchestrator) as factory,
             patch("mutmut_win.cli.PytestRunner"),
-            patch("mutmut_win.cli.SpawnPoolExecutor"),
+            patch("mutmut_win.cli.SpawnPoolExecutor") as executor,
+            patch.object(MutmutConfig, "model_copy", autospec=True) as copy,
         ):
             result = runner.invoke(cli, ["run"])
 
         # model_copy should NOT be called when --max-children is not passed
-        mock_config.model_copy.assert_not_called()
+        copy.assert_not_called()
+        assert config.max_children == expected_children
+        executor.assert_called_once_with(max_workers=expected_children, config=config)
+        assert factory.call_args.args[0] is config
         assert result.exit_code == 0
 
 
