@@ -1059,8 +1059,8 @@ class MutationOrchestrator:
             raise ForcedFailError(msg)
         if not self._runner.last_forced_fail_attributed:
             msg = (
-                f"Tests failed under the forced-fail run (exit {ff_exit}), but no failed "
-                "pytest report was structurally attributed to "
+                f"Tests failed under the forced-fail run (exit {ff_exit}), but the phase "
+                "was not fully attributable to "
                 "MutmutProgrammaticFailException — the mutant switch could not be verified."
             )
             tail = self._runner.last_diagnostic_output
