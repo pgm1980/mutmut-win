@@ -7,7 +7,6 @@ and measurably different, do_not_mutate and max_stack_depth are respected.
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,39 +67,33 @@ class TestMutantGeneration:
         generated, _ = mutate_file_contents("m.py", _SOURCE, active_profile=Profile.BASIC)
         compile(generated, "m.py", "exec")
 
-    def test_mutant_changes_behavior_measurably(self) -> None:
+    def test_mutant_changes_behavior_measurably(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A known + → - mutant produces add(1,1) == 0 instead of 2."""
-
+        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
         generated, names = mutate_file_contents("m.py", _SOURCE, active_profile=Profile.BASIC)
-        # Find the + → - mutant (BASIC profile mutates arithmetic operators)
-        # The trampolined code dispatches via MUTANT_UNDER_TEST
-        # We verify the mutant function exists and behaves differently
         mod = _load_module(generated, "mutant_mod")
+        assert mod.add(1, 1) == 2
+        assert mod.add(7, 3) == 10
+        assert mod.subtract(5, 3) == 2
 
-        # Without MUTANT_UNDER_TEST: original behavior
-        assert mod.add(1, 1) == 2, "original add(1,1) should be 2"
-        assert mod.subtract(5, 3) == 2, "original subtract(5,3) should be 2"
+        # Select by the direct mutant's known subtraction behavior, independently
+        # of wrapper dispatch. Generated ordinal positions are not a contract.
+        subtraction_names = [
+            name
+            for name in names
+            if name.startswith("x_add__mutmut_")
+            and getattr(mod, name)(1, 1) == 0
+            and getattr(mod, name)(7, 3) == 4
+        ]
+        assert subtraction_names, "No non-equivalent addition-to-subtraction mutant generated"
+        with monkeypatch.context() as active:
+            active.setenv("MUTANT_UNDER_TEST", f"{mod.__name__}.{subtraction_names[0]}")
+            assert mod.add(1, 1) == 0
+            assert mod.add(7, 3) == 4
+            assert mod.subtract(5, 3) == 2
 
-        # With MUTANT_UNDER_TEST set to a + → - mutant of add:
-        # The exact mutant name varies, but there should be at least one
-        # mutant that changes add's behavior
-        add_mutant_names = [n for n in names if "x_add__mutmut_" in n]
-        assert add_mutant_names, f"No add mutants found: {names}"
-
-        for mutant_name in add_mutant_names:
-            os.environ["MUTANT_UNDER_TEST"] = mutant_name
-            try:
-                # Reload module with mutant active
-                mod2 = _load_module(generated, "mutant_mod2")
-                result = mod2.add(1, 1)
-                # The mutant should produce a different result than 2
-                # (could be 0 for + → -, or something else for other operators)
-                # We just verify it's callable and produces a number
-                assert isinstance(result, (int, float)), (
-                    f"Mutant {mutant_name} produced non-numeric result: {result}"
-                )
-            finally:
-                os.environ.pop("MUTANT_UNDER_TEST", None)
+        assert mod.add(1, 1) == 2
+        assert mod.add(7, 3) == 10
 
 
 class TestDoNotMutate:
