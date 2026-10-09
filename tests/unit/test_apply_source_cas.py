@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel, Field
 
+import mutmut_win.atomic_file as atomic_module
 from mutmut_win.atomic_file import (
     AtomicPreconditionError,
     UnsafeAtomicWriteError,
@@ -64,6 +67,33 @@ _FILE_SHARE_DELETE = 0x4
 _OPEN_EXISTING = 3
 _FILE_BEGIN = 0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _LeafSnapshot(BaseModel):
+    """Bind bytes, identity and Windows attributes without changing the leaf."""
+
+    content: bytes
+    device: int
+    inode: int
+    mode: int
+    attributes: int
+
+
+def _snapshot_leaf(path: Path) -> _LeafSnapshot:
+    current = path.lstat()
+    return _LeafSnapshot(
+        content=path.read_bytes(),
+        device=current.st_dev,
+        inode=current.st_ino,
+        mode=current.st_mode,
+        attributes=current.st_file_attributes,
+    )
+
+
+class _RetryCalls(BaseModel):
+    """Record requested delays independently of wall-clock scheduling."""
+
+    delays: list[float] = Field(default_factory=list)
 
 
 def _open_share_delete_writer(path: Path) -> int:
@@ -469,6 +499,92 @@ class TestCasInterruptRecovery:
             assert displaced[0].read_bytes() == b"ORIGINAL"
             assert str(displaced[0]) in " ".join(getattr(caught.value, "__notes__", []))
             assert set(tmp_path.iterdir()) == {*displaced}
+
+
+class TestReadonlyApplyAndPromotion:
+    """S3-014: early readonly rejection and bounded backup promotion."""
+
+    @pytest.mark.parametrize("cli_mode", [False, True])
+    @pytest.mark.parametrize("readonly_leaf", ["source-no-backup", "source", "backup"])
+    def test_readonly_rejection_preserves_source_and_backup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        readonly_leaf: str,
+        cli_mode: bool,
+    ) -> None:
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+        from mutmut_win.exceptions import MutmutWinError
+
+        name, config, source = _setup_apply_project(tmp_path, monkeypatch)
+        backup = source.with_name(source.name + ".mutmut-orig.bak")
+        if readonly_leaf != "source-no-backup":
+            backup.write_bytes(b"OLDER BACKUP MUST STAY")
+        readonly = backup if readonly_leaf == "backup" else source
+        readonly.chmod(stat.S_IREAD)
+        source_before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup) if backup.exists() else None
+        try:
+            if cli_mode:
+                result = CliRunner().invoke(cli, ["apply", name])
+                assert result.exit_code == 1
+                assert "Applied mutant" not in result.output
+                diagnostic = result.stderr
+            else:
+                with pytest.raises((OSError, MutmutWinError)) as caught:
+                    apply_mutant(name, config)
+                diagnostic = str(caught.value)
+            assert _snapshot_leaf(source) == source_before
+            assert (_snapshot_leaf(backup) if backup.exists() else None) == backup_before
+            assert "read-only" in diagnostic
+            assert str(readonly) in diagnostic
+            assert list(source.parent.glob(".*.mutmut-*")) == []
+        finally:
+            for owned in (source, backup):
+                if owned.exists():
+                    owned.chmod(stat.S_IWRITE)
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_real_backup_handle_has_bounded_promotion_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        calls = _RetryCalls()
+        with backup.open("rb") as held:
+
+            def release_during_wait(seconds: float) -> None:
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module.time, "sleep", release_during_wait)
+            if release:
+                assert atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            else:
+                with pytest.raises(atomic_module.AtomicBackupPromotionError) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+                assert len(displaced) == 1
+                assert _snapshot_leaf(displaced[0]) == before
+                assert _snapshot_leaf(backup) == backup_before
+                assert str(displaced[0]) in str(caught.value)
+                assert isinstance(caught.value.__cause__, PermissionError)
+        assert source.read_bytes() == b"MUTATED"
+        assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+        if release:
+            assert _snapshot_leaf(backup) == before
+            assert set(tmp_path.iterdir()) == {source, backup}
 
 
 class TestDisplacementRaceWindow:
