@@ -1,7 +1,11 @@
-"""E2E: browser/results/show/apply after a real campaign (GAP-5)."""
+"""E2E: results/show/apply CLI after a real campaign.
+
+Textual lifecycle coverage is separate in test_browser_lifecycle_s3.py.
+"""
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -62,8 +66,8 @@ class TestApplyAfterCampaign:
 
 class TestNoSurvivorsNoCrash:
     def test_results_with_zero_survivors_no_crash(self, completed_campaign: Path) -> None:
-        """simple_lib kills all mutants → results/browse must not crash."""
+        """The results CLI reports exactly zero survivors; this does not open a UI."""
 
         result = run_cli(completed_campaign, "results")
         assert result.returncode == 0
-        assert "survived" not in result.stdout.lower() or "0" in result.stdout
+        assert re.search(r"^Survived:\s+0\s*$", result.stdout, re.MULTILINE)
