@@ -386,6 +386,20 @@ class MutmutConfig(BaseModel):
         safe: list[str] = []
         for entry in v:
             path = Path(entry)
+            # S3-030: resolving an absolute alias first erases the Junction
+            # that discovery would follow but executable staging would skip.
+            # This restriction belongs only to mutation inputs; configured
+            # also_copy/extra_paths data roots keep their separate link policy.
+            lexical = path if path.is_absolute() else project_root / path
+            for component in (lexical, *lexical.parents):
+                if component == project_root:
+                    break
+                if component.is_junction():
+                    raise ValueError(
+                        f"Junction {component} is not a supported mutation input "
+                        f"in paths_to_mutate entry {entry!r}; configure the ordinary "
+                        "project-relative source path instead"
+                    )
             resolved = path.resolve() if path.is_absolute() else (project_root / path).resolve()
             try:
                 relative = resolved.relative_to(project_root)
