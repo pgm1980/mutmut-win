@@ -1304,8 +1304,10 @@ class MutationOrchestrator:
         the preview count matches what the real run would generate.
 
         Returns:
-            ``MutationRunResult`` with only ``total_mutants`` set.
+            Preview counts and syntax degradations, without an execution basis.
         """
+        from libcst import ParserSyntaxError
+
         from mutmut_win.file_setup import (
             _decode_python_source,
             validate_staging_namespace,
@@ -1318,6 +1320,7 @@ class MutationOrchestrator:
             excluded_paths=self._basis_excluded_paths(),
         )
         total = 0
+        degradations: list[GenerationDegradation] = []
         walked: list[str] = []
         seen_sources: set[Path] = set()
         for src_file in walk_source_files(self._config):
@@ -1343,10 +1346,18 @@ class MutationOrchestrator:
                 # (encoding errors, unparseable syntax); the dry-run preview
                 # must do the same so its count is not a silent under-count.
                 print(f"Warning: could not mutate {rel_path}: {exc}")
+                if isinstance(exc, ParserSyntaxError):
+                    degradations.append(
+                        GenerationDegradation(
+                            path=rel_path,
+                            reason="unsupported_source_syntax",
+                            detail=str(exc),
+                        )
+                    )
                 continue
 
         self._warn_unmatched_exclusions(walked)
-        result = MutationRunResult(total_mutants=total)
+        result = MutationRunResult(total_mutants=total, degraded_files=degradations)
         print(f"Dry run: {total} mutants would be generated.")
         return result
 
