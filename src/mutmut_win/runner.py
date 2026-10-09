@@ -34,6 +34,7 @@ from mutmut_win.process.worker import (
     validated_pytest_targets,
 )
 from mutmut_win.pytest_boundary import PytestBoundary, prepare_pytest_boundary
+from mutmut_win.runtime_names import collect_runtime_names
 
 if TYPE_CHECKING:
     from mutmut_win.config import MutmutConfig
@@ -226,6 +227,8 @@ class PytestRunner:
         self.shared_pycache: Path | None = None
         self._forced_fail_attributed: bool | None = None
         self.coverage_uses_multiprocessing = False
+        self._clean_runtime_names: frozenset[str] | None = None
+        self._clean_runtime_names_diagnostic: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -288,6 +291,16 @@ class PytestRunner:
         """
         return self._forced_fail_attributed
 
+    @property
+    def clean_runtime_names(self) -> frozenset[str] | None:
+        """Return authenticated clean-call names, or None when proof is unavailable."""
+        return self._clean_runtime_names
+
+    @property
+    def clean_runtime_names_diagnostic(self) -> str | None:
+        """Return a proof-specific failure without rewriting phase output."""
+        return self._clean_runtime_names_diagnostic
+
     def run_clean_test(self) -> int:
         """Run pytest without any mutations active (in mutants/ directory).
 
@@ -304,7 +317,22 @@ class PytestRunner:
         cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
-        return self._run_phase("clean test suite", cmd, env)
+        self._clean_runtime_names = None
+        self._clean_runtime_names_diagnostic = None
+        with tempfile.TemporaryDirectory(prefix="mutmut-win-clean-names-") as directory:
+            proof_path = Path(directory)
+            proof_token = secrets.token_hex(32)
+            env["MUTMUT_CLEAN_NAMES_PATH"] = str(proof_path)
+            env["MUTMUT_CLEAN_NAMES_TOKEN"] = proof_token
+            result = self._run_phase("clean test suite", cmd, env)
+            if result == 0:
+                try:
+                    self._clean_runtime_names = collect_runtime_names(proof_path, proof_token)
+                except (OSError, ValueError) as exc:
+                    self._clean_runtime_names_diagnostic = (
+                        f"Missing or invalid clean runtime-name proof: {exc}"
+                    )
+            return result
 
     def _run_phase(
         self,
@@ -914,6 +942,8 @@ class PytestRunner:
         import os
 
         env = os.environ.copy()
+        env.pop("MUTMUT_CLEAN_NAMES_PATH", None)
+        env.pop("MUTMUT_CLEAN_NAMES_TOKEN", None)
         # PYTEST_ADDOPTS is parsed into the validated argv exactly once. Letting
         # pytest prepend it again could place ``--`` or a config override ahead
         # of the internal staged boundary.

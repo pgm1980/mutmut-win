@@ -301,6 +301,25 @@ def _boundary_paths():
 # conftest cannot execute before a later lifecycle hook notices the swap.
 _BOUNDARY_PATHS_AT_IMPORT = _boundary_paths()
 
+# The explicit phase plugin loads before initial conftest imports. Only the
+# fresh clean invocation requests this independent name observation.
+_clean_names_path = os.environ.get("MUTMUT_CLEAN_NAMES_PATH")
+_clean_names_token = os.environ.get("MUTMUT_CLEAN_NAMES_TOKEN")
+if _clean_names_path:
+    if os.environ.get("MUTANT_UNDER_TEST") != "" or not _clean_names_token:
+        raise pytest.UsageError("invalid clean runtime-name proof request")
+    from mutmut_win.runtime_names import start_pytest
+    start_pytest()
+
+
+@pytest.hookimpl(specname="pytest_sessionfinish", trylast=True)
+def pytest_clean_runtime_names_finish(exitstatus):
+    """Publish actual clean calls separately from optional timing statistics."""
+    if not _clean_names_path:
+        return
+    from mutmut_win.runtime_names import finish_pytest
+    finish_pytest(int(exitstatus))
+
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):

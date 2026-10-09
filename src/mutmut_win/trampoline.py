@@ -187,6 +187,9 @@ def _mutmut_trampoline(orig, mutants, call_args, call_kwargs): # type: ignore
         record_trampoline_hit(orig.__module__ + '.' + orig.__name__) # type: ignore
         result = orig(*call_args, **call_kwargs) # type: ignore
         return result # type: ignore
+    if mutant_under_test == '' and os.environ.get('MUTMUT_CLEAN_NAMES_PATH'):
+        from mutmut_win.runtime_names import record_runtime_name
+        record_runtime_name(orig.__module__ + '.' + orig.__name__)
     prefix = orig.__module__ + '.' + orig.__name__ + '__mutmut_' # type: ignore
     if not mutant_under_test.startswith(prefix): # type: ignore
         result = orig(*call_args, **call_kwargs) # type: ignore

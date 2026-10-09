@@ -144,8 +144,9 @@ def test_clean_spawn_transports_actual_child_calls(
         assert runner.clean_runtime_names is None
     elif kind == "terminated":
         assert children[0]["value"] == 2
-        assert runner.clean_runtime_names is None
-        assert ".complete.json" in (runner.clean_runtime_names_diagnostic or "")
+        # The completed call was published before the owner terminated the
+        # child. Normal atexit is unnecessary for cumulative call evidence.
+        assert runner.clean_runtime_names == {f"{import_name}.x_value"}
     else:
         assert all(child["value"] == 2 for child in children)
         assert runner.clean_runtime_names == {f"{import_name}.x_value"}, (
