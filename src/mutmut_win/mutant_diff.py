@@ -23,6 +23,7 @@ from mutmut_win.atomic_file import (
     AtomicCleanupError,
     AtomicPreconditionError,
     AtomicPublicationRaceError,
+    AtomicReplaceError,
     atomic_replace_if_unchanged,
     atomic_write_bytes,
 )
@@ -764,6 +765,8 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
         )
     except AtomicCleanupError as exc:
         raise MutmutWinError(f"Could not finish applying mutant {mutant_name}; {exc}") from exc
+    except AtomicReplaceError as exc:
+        raise MutmutWinError(f"Could not apply mutant {mutant_name}; {exc}") from exc
     except AtomicPreconditionError as exc:
         msg = (
             f"source {source_path} changed while applying mutant {mutant_name}; "

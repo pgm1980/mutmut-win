@@ -1141,6 +1141,30 @@ def _existing_leaf_identity(path: Path) -> FileIdentity | None:
         return None
 
 
+def _displace_expected_source(
+    path: Path,
+    displaced: Path,
+    expected: bytes,
+    identity: FileIdentity,
+    parent_identity: FileIdentity,
+) -> None:
+    """Retry a locked source without accepting changed bytes or a new identity."""
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        _checked_parent(path, parent_identity)
+        if attempt and (not _original_is_at(path, identity) or path.read_bytes() != expected):
+            raise AtomicPreconditionError(f"source changed before displacement: {path}")
+        try:
+            path.rename(displaced)
+        except PermissionError as exc:
+            if attempt == len(_REPLACE_RETRY_DELAYS):
+                raise AtomicReplaceError(
+                    f"cannot displace compare-and-swap target {path} after bounded retries: {exc}"
+                ) from exc
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+        else:
+            return
+
+
 def _promote_displaced_original(
     displaced: Path,
     backup: Path,
@@ -1269,6 +1293,8 @@ def atomic_replace_if_unchanged(
             *expected*, or a foreign writer interfered.  Nothing is
             overwritten; foreign content stays at *path* or under a
             displacement path named in the error.
+        AtomicReplaceError: A source sharing restriction persisted through the
+            bounded displacement retry budget; the source was not displaced.
         UnsafeAtomicWriteError: The parent contains unsafe indirection.
         AtomicPublicationRaceError: Post-publication identity mismatch;
             the original stays under a displacement path named in the error.
@@ -1334,7 +1360,11 @@ def atomic_replace_if_unchanged(
         # Step 3: displace the target (os.rename, NOT replace).
         displaced_path = _displacement_sibling(path)
         try:
-            path.rename(displaced_path)
+            _displace_expected_source(
+                path, displaced_path, expected, target_identity, parent_identity
+            )
+        except AtomicReplaceError:
+            raise
         except OSError as exc:
             msg = f"cannot displace compare-and-swap target {path}: {exc}"
             raise AtomicPreconditionError(msg) from exc
