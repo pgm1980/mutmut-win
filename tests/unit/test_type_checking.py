@@ -397,7 +397,9 @@ class TestMypyJsonlBlankLineTolerance:
 
         with patch(
             "mutmut_win.type_checking._run_type_check_process",
-            return_value=_completed("\n".join(lines), returncode=1),
+            # A successful empty report exits 0. Exit 1 requires at least
+            # one diagnostic (including notes); empty Exit 1 is a failure.
+            return_value=_completed("\n".join(lines), returncode=int(bool(json_lines))),
         ):
             errors = run_type_checker(["mypy", "--output=json", "."])
 

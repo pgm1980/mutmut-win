@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import BaseModel, Field
 
 import mutmut_win.atomic_file as atomic_module
 from mutmut_win.atomic_file import UnsafeAtomicWriteError, create_exclusive_random_bytes
@@ -50,21 +51,32 @@ def _doctored_nlink(result: os.stat_result, nlink: int) -> os.stat_result:
     return os.stat_result(tuple(values), extras)
 
 
+class _ValidationState(BaseModel):
+    """Count rejected creation attempts independently of cleanup observations."""
+
+    flaps_left: int
+    observed_names: set[Path] = Field(default_factory=set)
+    rejected_names: set[Path] = Field(default_factory=set)
+
+
 def _flap_prefix_lstat(
     monkeypatch: pytest.MonkeyPatch,
     *,
     flaps: int = 10_000,
-) -> dict[str, int]:
-    """Report an extra path-view link for the first *flaps* prefix-name lstats."""
+) -> _ValidationState:
+    """Reject the first *flaps* distinct creations, including their cleanup reads."""
     real_lstat = Path.lstat
-    state = {"flaps_left": flaps, "prefix_lstats": 0}
+    state = _ValidationState(flaps_left=flaps)
 
     def flapping(self: Path) -> os.stat_result:
         result = real_lstat(self)
         if self.name.startswith(PREFIX):
-            state["prefix_lstats"] += 1
-            if state["flaps_left"] > 0:
-                state["flaps_left"] -= 1
+            if self not in state.observed_names:
+                state.observed_names.add(self)
+                if state.flaps_left > 0:
+                    state.flaps_left -= 1
+                    state.rejected_names.add(self)
+            if self in state.rejected_names:
                 return _doctored_nlink(result, nlink=2)
         return result
 
@@ -110,9 +122,8 @@ class TestValidationRetry:
         monkeypatch.undo()
 
         assert path.read_bytes() == b"cfg"
-        # lstat calls on prefix names: failed first validation, second
-        # validation, and the post-write _checked_temp revalidation.
-        assert state["prefix_lstats"] == 3
+        # Cleanup and post-write observations cannot consume creation retries.
+        assert len(state.observed_names) == 2
         assert list(tmp_path.iterdir()) == [path]
 
     def test_persistent_path_view_extra_link_fails_closed_without_leftovers(
@@ -226,4 +237,4 @@ class TestValidationRetryProperty:
             # attempts from the validation retries.
             files = list(directory.iterdir())
             assert len(files) == (0 if flaps >= budget else 1)
-            assert state["prefix_lstats"] >= min(flaps, budget)
+            assert len(state.observed_names) == min(flaps + 1, budget)

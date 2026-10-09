@@ -547,7 +547,9 @@ class PytestRunner:
         ) as runtime_name:
             runtime_dir = Path(runtime_name)
             env = env.copy()
-            cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+            cache_dir = configure_ephemeral_pytest_environment(
+                env, runtime_dir, shared_pycache=self.shared_pycache
+            )
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
             isolated_cmd = _with_pinned_collection_verbosity(isolated_cmd)
@@ -693,6 +695,8 @@ class PytestRunner:
         """
         cmd = [
             sys.executable,
+            "--check-hash-based-pycs",
+            "always",
             "-m",
             "coverage",
             "run",
@@ -822,9 +826,9 @@ class PytestRunner:
         """Build the base pytest command using the current Python interpreter.
 
         Returns:
-            Base command list: ``[sys.executable, '-m', 'pytest']``.
+            Interpreter command with hash-based bytecode validation enabled.
         """
-        return [sys.executable, "-m", "pytest"]
+        return [sys.executable, "--check-hash-based-pycs", "always", "-m", "pytest"]
 
     def _guarded_pytest_cmd(self) -> list[str]:
         """Build a pytest command that publishes proof of real test calls."""

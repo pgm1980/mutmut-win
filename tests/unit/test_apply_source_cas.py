@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel, Field
 
+import mutmut_win.atomic_file as atomic_module
 from mutmut_win.atomic_file import (
     AtomicPreconditionError,
     UnsafeAtomicWriteError,
@@ -64,6 +67,40 @@ _FILE_SHARE_DELETE = 0x4
 _OPEN_EXISTING = 3
 _FILE_BEGIN = 0
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _LeafSnapshot(BaseModel):
+    """Bind bytes, identity and Windows attributes without changing the leaf."""
+
+    content: bytes
+    device: int
+    inode: int
+    mode: int
+    attributes: int
+
+
+def _snapshot_leaf(path: Path) -> _LeafSnapshot:
+    current = path.lstat()
+    return _LeafSnapshot(
+        content=path.read_bytes(),
+        device=current.st_dev,
+        inode=current.st_ino,
+        mode=current.st_mode,
+        attributes=current.st_file_attributes,
+    )
+
+
+class _RetryCalls(BaseModel):
+    """Record requested delays independently of wall-clock scheduling."""
+
+    delays: list[float] = Field(default_factory=list)
+
+
+class _HeldSibling(BaseModel):
+    """Bind the actual private sibling observed before insertion."""
+
+    path: Path | None = None
+    identity: tuple[int, int] | None = None
 
 
 def _open_share_delete_writer(path: Path) -> int:
@@ -223,6 +260,683 @@ class TestAtomicReplaceIfUnchanged:
         atomic_replace_if_unchanged(target, b"replaced", expected=b"original", backup_path=backup)
         siblings = [p for p in tmp_path.iterdir() if p != target and p != backup]
         assert siblings == [], f"unexpected siblings: {siblings}"
+
+
+class TestCasInterruptRecovery:
+    """S3-013: cancellation preserves source ownership and reports recovery."""
+
+    @pytest.mark.parametrize("phase", ["verification", "insertion"])
+    @pytest.mark.parametrize("interrupt_type", [KeyboardInterrupt, SystemExit])
+    def test_interrupt_restores_source_before_publication(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        phase: str,
+        interrupt_type: type[BaseException],
+    ) -> None:
+        """Cancellation at either pre-publication phase restores the original leaf."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        interrupted = interrupt_type("controlled cancellation")
+        real_read = Path.read_bytes
+        real_rename = Path.rename
+
+        def read_at_phase(path: Path) -> bytes:
+            if phase == "verification" and path.name.endswith(".mutmut-displaced"):
+                raise interrupted
+            return real_read(path)
+
+        def rename_at_phase(path: Path, destination: Path) -> Path:
+            if phase == "insertion" and ".mutmut-atomic-" in path.name and destination == source:
+                raise interrupted
+            return real_rename(path, destination)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", read_at_phase)
+            patcher.setattr(Path, "rename", rename_at_phase)
+            with pytest.raises(interrupt_type) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        assert caught.value is interrupted
+        assert source.exists(), "interruption left the normal source path absent"
+        assert source.read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert (source.stat().st_dev, source.stat().st_ino) == original_identity
+        assert set(tmp_path.iterdir()) == {source, backup}
+        assert str(source) in " ".join(getattr(caught.value, "__notes__", []))
+
+    @pytest.mark.parametrize("foreign_source", [False, True])
+    def test_interrupted_restore_names_actual_surviving_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_source: bool
+    ) -> None:
+        """A blocked restoration retains the original and any foreign recreated source."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+
+        def read_then_interrupt(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                if foreign_source:
+                    source.write_bytes(b"FOREIGN")
+                raise KeyboardInterrupt("controlled cancellation")
+            return real_read(path)
+
+        real_rename = Path.rename
+
+        def prevent_restore(path: Path, destination: Path) -> Path:
+            if not foreign_source and path.name.endswith(".mutmut-displaced"):
+                raise PermissionError("controlled restoration denial")
+            return real_rename(path, destination)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", read_then_interrupt)
+            patcher.setattr(Path, "rename", prevent_restore)
+            with pytest.raises(KeyboardInterrupt) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        assert len(displaced) == 1
+        assert displaced[0].read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert source.exists() is foreign_source
+        if foreign_source:
+            assert source.read_bytes() == b"FOREIGN"
+        assert list(tmp_path.glob(".*.mutmut-atomic-*.tmp")) == []
+        notes = " ".join(getattr(caught.value, "__notes__", []))
+        assert str(displaced[0]) in notes
+
+    def test_cli_interrupt_reports_actual_recovery_without_applied_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The public apply command must expose recovery information on cancellation."""
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = source.read_bytes()
+        real_read = Path.read_bytes
+
+        def interrupt_displaced_read(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                raise KeyboardInterrupt("controlled cancellation")
+            return real_read(path)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", interrupt_displaced_read)
+            outcome = CliRunner().invoke(cli, ["apply", name])
+
+        assert outcome.exit_code != 0
+        assert "Applied mutant" not in outcome.output
+        assert source.exists(), "CLI cancellation left the source absent"
+        assert source.read_bytes() == before
+        assert "restored" in outcome.stderr
+        assert "src" in outcome.stderr
+        assert "mod.py" in outcome.stderr
+
+    @pytest.mark.parametrize("phase", ["displacement", "insertion", "promotion"])
+    @pytest.mark.parametrize("late_write", [False, True])
+    def test_interrupt_after_rename_effect_preserves_original_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, late_write: bool
+    ) -> None:
+        """Real rename effects and retained-handle writes determine recovery state."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        handle = _open_share_delete_writer(source)
+        interrupted = KeyboardInterrupt("cancel after actual rename")
+        real_rename = Path.rename
+        real_replace = Path.replace
+
+        def cancel_after_effect() -> None:
+            if late_write:
+                _write_via_handle(handle, b"LATE-WRITER")
+            raise interrupted
+
+        def rename_then_interrupt(path: Path, destination: Path) -> Path:
+            result = real_rename(path, destination)
+            if (phase == "displacement" and destination.name.endswith(".mutmut-displaced")) or (
+                phase == "insertion" and ".mutmut-atomic-" in path.name and destination == source
+            ):
+                cancel_after_effect()
+            return result
+
+        def promote_then_interrupt(path: Path, destination: Path) -> Path:
+            result = real_replace(path, destination)
+            if phase == "promotion" and path.name.endswith(".mutmut-displaced"):
+                cancel_after_effect()
+            return result
+
+        try:
+            with monkeypatch.context() as patcher:
+                patcher.setattr(Path, "rename", rename_then_interrupt)
+                patcher.setattr(Path, "replace", promote_then_interrupt)
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+        finally:
+            _KERNEL32.CloseHandle(handle)
+
+        assert caught.value is interrupted
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        if phase == "displacement":
+            recovery = source
+            assert displaced == []
+        elif phase == "insertion":
+            assert len(displaced) == 1
+            recovery = displaced[0]
+            assert source.read_bytes() == b"MUTATED"
+        else:
+            recovery = backup
+            assert displaced == []
+            assert source.read_bytes() == b"MUTATED"
+        assert recovery.read_bytes() == (b"LATE-WRITER" if late_write else b"ORIGINAL")
+        assert (recovery.stat().st_dev, recovery.stat().st_ino) == original_identity
+        assert str(recovery) in " ".join(getattr(interrupted, "__notes__", []))
+        assert set(tmp_path.iterdir()) == {source, backup, *displaced}
+
+    def test_interrupt_does_not_restore_foreign_displacement_leaf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real displaced-name replacement is not granted original ownership."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        saved = tmp_path / "saved-original"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+
+        def swap_then_interrupt(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                path.rename(saved)
+                path.write_bytes(b"FOREIGN")
+                raise KeyboardInterrupt("cancel after foreign replacement")
+            return real_read(path)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", swap_then_interrupt)
+            with pytest.raises(KeyboardInterrupt) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        assert len(displaced) == 1
+        assert displaced[0].read_bytes() == b"FOREIGN"
+        assert not source.exists()
+        assert saved.read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert "could not be verified" in " ".join(getattr(caught.value, "__notes__", []))
+        assert set(tmp_path.iterdir()) == {backup, saved, *displaced}
+
+    def test_real_nonsharing_handle_blocks_restore_and_keeps_recovery_visible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real open CRT handle denies rename until after the cancellation returns."""
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        source.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+        with ExitStack() as held_files:
+
+            def hold_then_interrupt(path: Path) -> bytes:
+                if path.name.endswith(".mutmut-displaced"):
+                    held_files.enter_context(path.open("rb"))
+                    raise KeyboardInterrupt("cancel with retained nonsharing handle")
+                return real_read(path)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(Path, "read_bytes", hold_then_interrupt)
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+
+            displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+            assert len(displaced) == 1
+            assert not source.exists()
+            assert displaced[0].read_bytes() == b"ORIGINAL"
+            assert str(displaced[0]) in " ".join(getattr(caught.value, "__notes__", []))
+            assert set(tmp_path.iterdir()) == {*displaced}
+
+
+class TestReadonlyApplyAndPromotion:
+    """S3-014: early readonly rejection and bounded backup promotion."""
+
+    @pytest.mark.parametrize("cli_mode", [False, True])
+    @pytest.mark.parametrize("readonly_leaf", ["source-no-backup", "source", "backup"])
+    def test_readonly_rejection_preserves_source_and_backup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        readonly_leaf: str,
+        cli_mode: bool,
+    ) -> None:
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+        from mutmut_win.exceptions import MutmutWinError
+
+        name, config, source = _setup_apply_project(tmp_path, monkeypatch)
+        backup = source.with_name(source.name + ".mutmut-orig.bak")
+        if readonly_leaf != "source-no-backup":
+            backup.write_bytes(b"OLDER BACKUP MUST STAY")
+        readonly = backup if readonly_leaf == "backup" else source
+        readonly.chmod(stat.S_IREAD)
+        source_before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup) if backup.exists() else None
+        try:
+            if cli_mode:
+                result = CliRunner().invoke(cli, ["apply", name])
+                assert result.exit_code == 1
+                assert "Applied mutant" not in result.output
+                diagnostic = result.stderr
+            else:
+                with pytest.raises((OSError, MutmutWinError)) as caught:
+                    apply_mutant(name, config)
+                diagnostic = str(caught.value)
+            assert _snapshot_leaf(source) == source_before
+            assert (_snapshot_leaf(backup) if backup.exists() else None) == backup_before
+            assert "read-only" in diagnostic
+            assert str(readonly) in diagnostic
+            assert list(source.parent.glob(".*.mutmut-*")) == []
+        finally:
+            for owned in (source, backup):
+                if owned.exists():
+                    owned.chmod(stat.S_IWRITE)
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_real_backup_handle_has_bounded_promotion_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        calls = _RetryCalls()
+        with backup.open("rb") as held:
+
+            def release_during_wait(seconds: float) -> None:
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module.time, "sleep", release_during_wait)
+            if release:
+                assert atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            else:
+                with pytest.raises(atomic_module.AtomicBackupPromotionError) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+                assert len(displaced) == 1
+                assert _snapshot_leaf(displaced[0]) == before
+                assert _snapshot_leaf(backup) == backup_before
+                assert str(displaced[0]) in str(caught.value)
+                assert isinstance(caught.value.__cause__, PermissionError)
+        assert source.read_bytes() == b"MUTATED"
+        assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+        if release:
+            assert _snapshot_leaf(backup) == before
+            assert set(tmp_path.iterdir()) == {source, backup}
+
+    def test_real_backup_handle_released_by_timer(self, tmp_path: Path) -> None:
+        """A real sharing violation is retried until an independently timed release."""
+        from threading import Timer
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        real_replace = Path.replace
+        with backup.open("rb") as held:
+            timer = Timer(0.05, held.close)
+
+            def start_timer_after_failure(path: Path, destination: Path) -> Path:
+                try:
+                    return real_replace(path, destination)
+                except PermissionError:
+                    if timer.ident is None:
+                        timer.start()
+                    raise
+
+            try:
+                with patch.object(
+                    Path, "replace", autospec=True, side_effect=start_timer_after_failure
+                ):
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert timer.ident is not None
+            finally:
+                timer.cancel()
+                if timer.ident is not None:
+                    timer.join(timeout=2)
+                assert not timer.is_alive()
+        assert source.read_bytes() == b"MUTATED"
+        assert backup.read_bytes() == b"ORIGINAL"
+        assert set(tmp_path.iterdir()) == {source, backup}
+
+    @pytest.mark.parametrize("foreign_backup", [False, True])
+    def test_promotion_wait_keeps_late_writer_and_foreign_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_backup: bool
+    ) -> None:
+        """Waiting cannot replace a new backup owner or lose late original-handle bytes."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        saved_backup = tmp_path / "saved-backup"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        writer = _open_share_delete_writer(source)
+        calls = _RetryCalls()
+        try:
+            with backup.open("rb") as held:
+
+                def change_during_wait(seconds: float) -> None:
+                    calls.delays.append(seconds)
+                    held.close()
+                    _write_via_handle(writer, b"LATE ORIGINAL")
+                    if foreign_backup:
+                        backup.rename(saved_backup)
+                        backup.write_bytes(b"FOREIGN BACKUP")
+
+                monkeypatch.setattr(atomic_module.time, "sleep", change_during_wait)
+                if foreign_backup:
+                    with pytest.raises(
+                        atomic_module.AtomicBackupPromotionError, match="backup changed"
+                    ):
+                        atomic_replace_if_unchanged(
+                            source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                        )
+                else:
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+        finally:
+            _KERNEL32.CloseHandle(writer)
+        assert calls.delays == [0.01]
+        assert source.read_bytes() == b"MUTATED"
+        recovery = next(tmp_path.glob(".*.mutmut-displaced")) if foreign_backup else backup
+        assert recovery.read_bytes() == b"LATE ORIGINAL"
+        assert (recovery.stat().st_dev, recovery.stat().st_ino) == original_identity
+        if foreign_backup:
+            assert backup.read_bytes() == b"FOREIGN BACKUP"
+            assert saved_backup.read_bytes() == b"STABLE BACKUP"
+        else:
+            assert set(tmp_path.iterdir()) == {source, backup}
+
+
+class TestCasFailedInsertionCleanup:
+    """S3-018: report actual restoration and clean only a verified own temp."""
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_failed_insertion_retries_cleanup_and_reports_real_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        source_before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        state = _HeldSibling()
+        calls = _RetryCalls()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                state.path, state.identity = path, identity
+                held.enter_context(path.open("rb"))
+
+            def release_after_insertion_failed(seconds: float) -> None:
+                # Cleanup must start only after insertion failed and restoration ran.
+                assert _snapshot_leaf(source) == source_before
+                assert list(tmp_path.glob(".*.mutmut-displaced")) == []
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
+            monkeypatch.setattr(atomic_module.time, "sleep", release_after_insertion_failed)
+            with pytest.raises(OSError, match="cannot insert replacement") as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            assert _snapshot_leaf(source) == source_before
+            assert _snapshot_leaf(backup) == backup_before
+            diagnostic = str(caught.value)
+            assert f"restored to {source}" in diagnostic
+            assert "cannot insert replacement" in diagnostic
+            assert "WinError 32" in diagnostic
+            cause: BaseException = caught.value
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            assert isinstance(cause, PermissionError)
+            assert cause.winerror == 32
+            assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+            assert state.path is not None
+            if release:
+                assert set(tmp_path.iterdir()) == {source, backup}
+            else:
+                assert state.path.read_bytes() == b"MUTATED"
+                assert (state.path.stat().st_dev, state.path.stat().st_ino) == state.identity
+                assert f"owned temporary file remains at {state.path}" in diagnostic
+
+    def test_cleanup_retry_preserves_readonly_foreign_recreate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        saved = tmp_path / "saved-owned-temp"
+        source.write_bytes(b"ORIGINAL")
+        state = _HeldSibling()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                state.path, state.identity = path, identity
+                held.enter_context(path.open("rb"))
+
+            def replace_with_foreign(_seconds: float) -> None:
+                assert source.read_bytes() == b"ORIGINAL"
+                held.close()
+                assert state.path is not None
+                state.path.rename(saved)
+                state.path.write_bytes(b"FOREIGN")
+                state.path.chmod(stat.S_IREAD)
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
+            monkeypatch.setattr(atomic_module.time, "sleep", replace_with_foreign)
+            with pytest.raises(OSError, match="cannot insert replacement"):
+                atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+        assert state.path is not None
+        try:
+            assert state.path.read_bytes() == b"FOREIGN"
+            assert state.path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+            assert saved.read_bytes() == b"MUTATED"
+            assert source.read_bytes() == b"ORIGINAL"
+        finally:
+            state.path.chmod(stat.S_IWRITE)
+
+    def test_cli_reports_persistent_owned_temp_and_restored_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import ExitStack
+
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = _snapshot_leaf(source)
+        state = _HeldSibling()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_source_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                if path.name.startswith(f".{source.name}.mutmut-atomic-"):
+                    state.path, state.identity = path, identity
+                    held.enter_context(path.open("rb"))
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_source_temp)
+            result = CliRunner().invoke(cli, ["apply", name])
+            assert result.exit_code == 1
+            assert "Applied mutant" not in result.output
+            assert _snapshot_leaf(source) == before
+            assert state.path is not None
+            assert state.path.exists()
+            assert "restored to" in result.stderr
+            assert f"owned temporary file remains at {state.path}" in result.stderr
+            assert "cannot insert replacement" in result.stderr
+
+
+class TestSourceDisplacementRetry:
+    """S3-029: retain CAS binding while waiting for a real Windows read handle."""
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_source_read_handle_has_bounded_displacement_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        calls = _RetryCalls()
+        with source.open("rb") as held:
+
+            def release_during_wait(seconds: float) -> None:
+                assert _snapshot_leaf(source) == before
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module.time, "sleep", release_during_wait)
+            if release:
+                assert atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            else:
+                with pytest.raises(
+                    atomic_module.AtomicReplaceError, match="cannot displace"
+                ) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert isinstance(caught.value.__cause__, PermissionError)
+                assert _snapshot_leaf(source) == before
+                assert _snapshot_leaf(backup) == backup_before
+        assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+        assert set(tmp_path.iterdir()) == {source, backup}
+        if release:
+            assert source.read_bytes() == b"MUTATED"
+            assert _snapshot_leaf(backup) == before
+
+    @pytest.mark.parametrize("change", ["bytes", "same-bytes-new-inode"])
+    def test_displacement_retry_rejects_changed_source_immediately(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+    ) -> None:
+        source = tmp_path / "source.py"
+        saved = tmp_path / "saved-original"
+        source.write_bytes(b"ORIGINAL")
+        calls = _RetryCalls()
+        with source.open("rb") as held:
+
+            def change_after_failed_attempt(seconds: float) -> None:
+                calls.delays.append(seconds)
+                held.close()
+                if change == "same-bytes-new-inode":
+                    source.rename(saved)
+                    source.write_bytes(b"ORIGINAL")
+                else:
+                    source.write_bytes(b"FOREIGN")
+
+            monkeypatch.setattr(atomic_module.time, "sleep", change_after_failed_attempt)
+            with pytest.raises(AtomicPreconditionError, match="changed"):
+                atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+        assert calls.delays == [0.01]
+        assert source.read_bytes() == (
+            b"ORIGINAL" if change == "same-bytes-new-inode" else b"FOREIGN"
+        )
+        assert list(tmp_path.glob(".*.mutmut-*")) == []
+        if change == "same-bytes-new-inode":
+            assert saved.read_bytes() == b"ORIGINAL"
+
+    def test_real_source_handle_released_by_timer(self, tmp_path: Path) -> None:
+        """A real failed rename starts a timer; subsequent attempts may succeed."""
+        from threading import Timer
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        real_rename = Path.rename
+        with source.open("rb") as held:
+            timer = Timer(0.05, held.close)
+
+            def start_timer_after_failure(path: Path, destination: Path) -> Path:
+                try:
+                    return real_rename(path, destination)
+                except PermissionError:
+                    if path == source and timer.ident is None:
+                        timer.start()
+                    raise
+
+            try:
+                with patch.object(
+                    Path, "rename", autospec=True, side_effect=start_timer_after_failure
+                ):
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert timer.ident is not None
+            finally:
+                timer.cancel()
+                if timer.ident is not None:
+                    timer.join(timeout=2)
+                assert not timer.is_alive()
+        assert source.read_bytes() == b"MUTATED"
+        assert backup.read_bytes() == b"ORIGINAL"
+        assert set(tmp_path.iterdir()) == {source, backup}
+
+    def test_cli_does_not_misreport_persistent_source_lock_as_changed_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = _snapshot_leaf(source)
+        monkeypatch.setattr(atomic_module.time, "sleep", lambda _seconds: None)
+        with source.open("rb"):
+            result = CliRunner().invoke(cli, ["apply", name])
+        assert result.exit_code == 1
+        assert "Applied mutant" not in result.output
+        assert "cannot displace" in result.stderr
+        assert "changed while applying" not in result.stderr
+        assert _snapshot_leaf(source) == before
+        assert list(source.parent.glob(".*.mutmut-*")) == []
 
 
 class TestDisplacementRaceWindow:

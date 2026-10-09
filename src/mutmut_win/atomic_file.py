@@ -45,6 +45,10 @@ class AtomicReplaceError(PermissionError):
     """The destination entry could not be replaced during atomic publication."""
 
 
+class AtomicCleanupError(UnsafeAtomicWriteError):
+    """A failed CAS left a verified owned temp or an unverifiable cleanup state."""
+
+
 class AtomicPublicationRaceError(UnsafeAtomicWriteError):
     """A competing publisher replaced the destination before post-validation."""
 
@@ -130,6 +134,24 @@ FileIdentity = tuple[int, int]
 
 def _identity(file_stat: os.stat_result) -> FileIdentity:
     return file_stat.st_dev, file_stat.st_ino
+
+
+def _capture_cleanup_identity(fd: int) -> FileIdentity | None:
+    """Refresh ownership from a still-owned descriptor after rejected validation.
+
+    A transient handle/path observation mismatch must not force cleanup by name.
+    Capture a fresh handle identity before close; the cleanup helper separately
+    checks whether the current leaf still has that identity. An unavailable or
+    invalid observation cannot authorize deletion.
+    """
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        return None
+    identity = _identity(opened)
+    if not stat.S_ISREG(opened.st_mode) or identity[0] < 0 or identity[1] <= 0:
+        return None
+    return identity
 
 
 def _is_reparse_point(file_stat: os.stat_result) -> bool:
@@ -353,6 +375,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             raise
 
         fd_owned = True
+        cleanup_identity: FileIdentity | None = None
         try:
             opened_stat = os.fstat(fd)
             leaf_stat = temp_path.lstat()
@@ -365,8 +388,8 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             # filter-driver enumeration in child processes).  Exclusive
             # creation, handle/path identity equality, regular-file shape
             # and the path-view link count carry the private-sibling
-            # contract; a hardlink attack on this fresh random name would
-            # already have failed the ``O_EXCL`` creation above.
+            # contract. ``O_EXCL`` proves initial ownership only: a later
+            # hardlink or name change still requires rejection and safe cleanup.
             if (
                 not stat.S_ISREG(opened_stat.st_mode)
                 or stat.S_ISLNK(leaf_stat.st_mode)
@@ -374,10 +397,10 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 or opened_identity != _identity(leaf_stat)
                 or leaf_stat.st_nlink != 1
             ):
+                cleanup_identity = _capture_cleanup_identity(fd)
                 fd_owned = False
                 os.close(fd)
-                with contextlib.suppress(OSError):
-                    temp_path.unlink()
+                _cleanup_owned_temp(temp_path, cleanup_identity)
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
                     # One-line field diagnosis in the error itself: the
@@ -394,17 +417,16 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             return fd, temp_path, opened_identity
         except BaseException:
             # Ownership rule (M-066): the validation-failure branch already
-            # closed — and unlinked — its own fd before deciding to retry or
+            # closed its own fd before deciding to retry or
             # fail, and Windows recycles descriptor numbers immediately, so
             # only a still-owned fd may be closed here; a second close could
-            # hit a descriptor a concurrent thread just received.  The second
-            # unlink attempt stays unconditional: after a failed first
-            # unlink the entry may still need cleaning up.
+            # hit a descriptor a concurrent thread just received. Cleanup may
+            # be retried, but the name may now belong to a foreign writer.
             if fd_owned:
+                cleanup_identity = _capture_cleanup_identity(fd)
                 with contextlib.suppress(OSError):
                     os.close(fd)
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
+            _cleanup_owned_temp(temp_path, cleanup_identity)
             raise
 
 
@@ -510,6 +532,26 @@ def _cleanup_owned_temp(path: Path | None, identity: FileIdentity | None) -> Non
     except OSError:
         with contextlib.suppress(OSError):
             path.chmod(stat.S_IMODE(current.st_mode), follow_symlinks=False)
+
+
+def _cleanup_cas_temp(path: Path, identity: FileIdentity) -> str | None:
+    """Retry CAS cleanup within the replace budget and report an owned remainder."""
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        _cleanup_owned_temp(path, identity)
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return f"temporary cleanup could not be verified at {path}: {exc}"
+        if _identity(current) != identity or not stat.S_ISREG(current.st_mode):
+            return None
+        if _is_reparse_point(current):
+            return None
+        if attempt == len(_REPLACE_RETRY_DELAYS):
+            return f"owned temporary file remains at {path} after bounded cleanup retries"
+        time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+    return None
 
 
 class _ProbeResult(enum.Enum):
@@ -964,9 +1006,8 @@ def create_exclusive_random_bytes(
             # (CX221-071; MBR-2026-09-14-01 follow-up field data) while the
             # path view stays at one.  Exclusive creation, handle/path
             # identity equality, regular-file shape and the path-view link
-            # count carry the private-file contract; a hardlink attack on
-            # this fresh random name would already have failed the
-            # ``O_EXCL`` creation above (M-013).
+            # count carry the private-file contract. ``O_EXCL`` proves initial
+            # ownership only; later link/name changes still need safe cleanup.
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or stat.S_ISLNK(leaf.st_mode)
@@ -978,15 +1019,14 @@ def create_exclusive_random_bytes(
             ):
                 # Ownership is released before the close so an OSError from
                 # the close itself never triggers a second close in the
-                # finally.  The own fresh ``O_EXCL`` entry is unlinked BY
-                # NAME — a name nobody else can have created — because a
-                # handle/path identity flap would defeat an
-                # identity-checked cleanup and leave the entry behind.
+                # finally. Refresh a possibly flapping handle observation while
+                # the descriptor is still ours, then revalidate path ownership
+                # during cleanup: another writer can reuse the name after close.
+                identity = _capture_cleanup_identity(fd)
                 owned_fd = fd
                 fd = None
                 os.close(owned_fd)
-                with contextlib.suppress(OSError):
-                    path.unlink()
+                _cleanup_owned_temp(path, identity)
                 identity = None
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
@@ -1080,6 +1120,129 @@ def _displacement_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{suffix}.mutmut-displaced")
 
 
+def _original_is_at(path: Path, identity: FileIdentity) -> bool:
+    """Check a recovery leaf without following a foreign link or reparse point."""
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(current.st_mode)
+        and not _is_reparse_point(current)
+        and _identity(current) == identity
+    )
+
+
+def _existing_leaf_identity(path: Path) -> FileIdentity | None:
+    """Capture an existing entry without following it; absence has no identity."""
+    try:
+        return _identity(path.lstat())
+    except FileNotFoundError:
+        return None
+
+
+def _displace_expected_source(
+    path: Path,
+    displaced: Path,
+    expected: bytes,
+    identity: FileIdentity,
+    parent_identity: FileIdentity,
+) -> None:
+    """Retry a locked source without accepting changed bytes or a new identity."""
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        _checked_parent(path, parent_identity)
+        if attempt and (not _original_is_at(path, identity) or path.read_bytes() != expected):
+            raise AtomicPreconditionError(f"source changed before displacement: {path}")
+        try:
+            path.rename(displaced)
+        except PermissionError as exc:
+            if attempt == len(_REPLACE_RETRY_DELAYS):
+                raise AtomicReplaceError(
+                    f"cannot displace compare-and-swap target {path} after bounded retries: {exc}"
+                ) from exc
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+        else:
+            return
+
+
+def _promote_displaced_original(
+    displaced: Path,
+    backup: Path,
+    identity: FileIdentity,
+    parent_identity: FileIdentity,
+) -> None:
+    """Retry transient promotion locks without accepting a changed backup owner."""
+    backup_identity = _existing_leaf_identity(backup)
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        if not _original_is_at(displaced, identity):
+            raise UnsafeAtomicWriteError(
+                f"displaced original was replaced before backup promotion: {displaced}"
+            )
+        _checked_parent(displaced, parent_identity)
+        if _existing_leaf_identity(backup) != backup_identity:
+            raise UnsafeAtomicWriteError(f"backup changed during promotion: {backup}")
+        try:
+            displaced.replace(backup)
+        except PermissionError:
+            if attempt == len(_REPLACE_RETRY_DELAYS):
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+        else:
+            return
+
+
+def _recover_displaced_cas(
+    path: Path,
+    displaced_path: Path,
+    target_identity: FileIdentity,
+    parent_identity: FileIdentity,
+    backup_path: Path | None,
+) -> str:
+    """Restore a failed displacement without overwriting an existing leaf.
+
+    Recovery follows the original inode, including writes made through a
+    still-open handle.  Actual identities, rather than a flag assigned after
+    rename, also cover cancellation immediately after a rename took effect.
+    """
+    try:
+        _checked_parent(path, parent_identity)
+        if _original_is_at(path, target_identity):
+            return f"Apply recovery: the original is present at {path}"
+        if not _original_is_at(displaced_path, target_identity):
+            if backup_path is not None and _original_is_at(backup_path, target_identity):
+                return f"Apply recovery: the original is preserved at {backup_path}"
+            return (
+                f"Apply recovery: the original recovery location could not be verified; "
+                f"inspect {path}, {displaced_path} and backup {backup_path}"
+            )
+
+        try:
+            # Windows rename refuses to overwrite either a published replacement
+            # or a foreign recreate.  Never restore bytes from the stale backup.
+            displaced_path.rename(path)
+        except OSError as restore_exc:
+            if _original_is_at(displaced_path, target_identity):
+                return (
+                    f"Apply recovery: restoration failed ({restore_exc}); "
+                    f"the original is preserved at {displaced_path}"
+                )
+            return (
+                f"Apply recovery: restoration failed ({restore_exc}) and the recovery "
+                f"location could not be verified; inspect {path} and {displaced_path}"
+            )
+        if _original_is_at(path, target_identity):
+            return f"Apply recovery: the original was restored to {path}"
+        return (
+            f"Apply recovery: restoration identity could not be verified; "
+            f"inspect {path} and {displaced_path}"
+        )
+    except OSError as recovery_exc:
+        return (
+            f"Apply recovery: recovery could not be verified ({recovery_exc}); "
+            f"inspect {path}, {displaced_path} and backup {backup_path}"
+        )
+
+
 def atomic_replace_if_unchanged(
     path: Path,
     payload: bytes,
@@ -1116,6 +1279,11 @@ def atomic_replace_if_unchanged(
        backup path the displaced file stays at the displacement path — it
        is NEVER deleted.
 
+    Cancellation restores the displaced inode with a non-overwriting rename
+    when possible.  If publication already occurred or restoration is blocked,
+    an exception note identifies the verified original location.  Unverifiable
+    recovery state is reported explicitly; the original cancellation propagates.
+
     Returns:
         ``True`` on success, ``False`` if the current bytes already equal
         *payload* (no write needed).
@@ -1125,6 +1293,8 @@ def atomic_replace_if_unchanged(
             *expected*, or a foreign writer interfered.  Nothing is
             overwritten; foreign content stays at *path* or under a
             displacement path named in the error.
+        AtomicReplaceError: A source sharing restriction persisted through the
+            bounded displacement retry budget; the source was not displaced.
         UnsafeAtomicWriteError: The parent contains unsafe indirection.
         AtomicPublicationRaceError: Post-publication identity mismatch;
             the original stays under a displacement path named in the error.
@@ -1132,6 +1302,9 @@ def atomic_replace_if_unchanged(
             displaced original could not be promoted onto *backup_path*;
             the original is preserved at the displacement path named in
             the error message (never silently stranded).
+        AtomicCleanupError: A failed operation left a verified owned temporary
+            sibling after bounded cleanup retries, or cleanup could not be verified.
+            The original operation remains the cause and its diagnosis is preserved.
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
@@ -1162,6 +1335,9 @@ def atomic_replace_if_unchanged(
     # survives, and the displaced original / promoted backup live at
     # different paths, so the recovery side is never touched.
     fd, temp_path, temp_identity = _open_random_sibling(path)
+    displaced_path: Path | None = None
+    target_identity: FileIdentity | None = None
+    cleanup_finished = False
     try:
         try:
             if mode is not None:
@@ -1184,7 +1360,11 @@ def atomic_replace_if_unchanged(
         # Step 3: displace the target (os.rename, NOT replace).
         displaced_path = _displacement_sibling(path)
         try:
-            path.rename(displaced_path)
+            _displace_expected_source(
+                path, displaced_path, expected, target_identity, parent_identity
+            )
+        except AtomicReplaceError:
+            raise
         except OSError as exc:
             msg = f"cannot displace compare-and-swap target {path}: {exc}"
             raise AtomicPreconditionError(msg) from exc
@@ -1196,9 +1376,10 @@ def atomic_replace_if_unchanged(
         except OSError as exc:
             # The displacement succeeded but we cannot verify it — attempt
             # restoration, then fail closed.
-            with contextlib.suppress(OSError):
-                displaced_path.rename(path)
-            msg = f"cannot verify displaced file {displaced_path}: {exc}; restoration attempted"
+            recovery = _recover_displaced_cas(
+                path, displaced_path, target_identity, parent_identity, backup_path
+            )
+            msg = f"cannot verify displaced file {displaced_path}: {exc}; {recovery}"
             raise AtomicPreconditionError(msg) from exc
 
         if _identity(displaced_stat) != target_identity or displaced_content != expected:
@@ -1234,12 +1415,10 @@ def atomic_replace_if_unchanged(
             raise AtomicPreconditionError(msg) from None
         except OSError as exc:
             # Attempt restoration of the displaced file.
-            with contextlib.suppress(OSError):
-                displaced_path.rename(path)
-            msg = (
-                f"cannot insert replacement at {path}: {exc}; "
-                f"original content preserved at {displaced_path}"
+            recovery = _recover_displaced_cas(
+                path, displaced_path, target_identity, parent_identity, backup_path
             )
+            msg = f"cannot insert replacement at {path}: {exc}; {recovery}"
             raise AtomicPreconditionError(msg) from exc
 
         # Step 6: post-publication identity check.  The displaced original is
@@ -1272,13 +1451,9 @@ def atomic_replace_if_unchanged(
         if backup_path is not None:
             backup_path = Path(backup_path)
             try:
-                displaced_now = displaced_path.lstat()
-                if _identity(displaced_now) != target_identity:
-                    raise UnsafeAtomicWriteError(
-                        f"displaced original was replaced before backup promotion: {displaced_path}"
-                    )
-                _checked_parent(displaced_path, parent_identity)
-                displaced_path.replace(backup_path)
+                _promote_displaced_original(
+                    displaced_path, backup_path, target_identity, parent_identity
+                )
                 promoted = backup_path.lstat()
                 if _identity(promoted) != target_identity:
                     raise UnsafeAtomicWriteError(
@@ -1293,10 +1468,31 @@ def atomic_replace_if_unchanged(
 
         _fsync_parent(path, parent_identity)
         return True
+    except BaseException as exc:
+        # Cancellation must retain its identity and exit semantics.  Ordinary
+        # publication errors keep their existing, phase-specific handling.
+        if (
+            not isinstance(exc, Exception)
+            and displaced_path is not None
+            and target_identity is not None
+        ):
+            exc.add_note(
+                _recover_displaced_cas(
+                    path, displaced_path, target_identity, parent_identity, backup_path
+                )
+            )
+        cleanup_finished = True
+        cleanup_note = _cleanup_cas_temp(temp_path, temp_identity)
+        if cleanup_note is not None:
+            if isinstance(exc, Exception):
+                raise AtomicCleanupError(f"{exc}; {cleanup_note}") from exc
+            exc.add_note(cleanup_note)
+        raise
     finally:
         # Identity-bound ownership guard (AR-07): after a successful
         # insertion the temp entry no longer exists (or holds a foreign
         # inode), so this is a no-op; on every failure path it releases the
         # still-owned private sibling.  Swallowed unlinks keep the original
         # error primary.
-        _cleanup_owned_temp(temp_path, temp_identity)
+        if not cleanup_finished:
+            _cleanup_owned_temp(temp_path, temp_identity)
