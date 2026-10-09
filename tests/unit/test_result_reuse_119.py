@@ -13,14 +13,14 @@ from __future__ import annotations
 import contextlib
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mutmut_win.config import MutmutConfig
 from mutmut_win.db import create_db, load_results, save_result
-from mutmut_win.models import MutationResult, MutationTask
+from mutmut_win.models import MutationResult, MutationTask, TaskCompleted
 from mutmut_win.orchestrator import (
     REUSABLE_STATUSES,
     MutationOrchestrator,
@@ -29,6 +29,9 @@ from mutmut_win.orchestrator import (
     _tests_fingerprint,
 )
 from mutmut_win.stats import MutmutStats, RunBasisEvidence
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # ---------------------------------------------------------------------------
 # The reusable-verdict set is a conscious decision
@@ -421,6 +424,81 @@ class TestReuseEndToEnd:
         _summary, executor = _orchestrate(tmp_path)
         assert executor.start.call_count == 1
         assert len(executor.captured) > 0
+
+    def test_mixed_reuse_and_new_verdicts_preserve_buckets_total_and_score(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Count reused kills and newly executed survivors from distinct files."""
+        (tmp_path / "src" / "unchanged.py").write_text(_SRC, encoding="utf-8")
+
+        def two_file_stats(_runner: object, **kwargs: object) -> MutmutStats:
+            return MutmutStats(
+                tests_by_mangled_function_name={
+                    "target.x_add": {"tests/test_target.py::test_add"},
+                    "unchanged.x_add": {"tests/test_target.py::test_add"},
+                },
+                duration_by_test={"tests/test_target.py::test_add": 0.05},
+                stats_time=0.05,
+                mapping_is_authoritative=True,
+                context_fingerprint=str(kwargs["context_fingerprint"]),
+            )
+
+        monkeypatch.setattr("mutmut_win.orchestrator.collect_or_load_stats", two_file_stats)
+        first, first_executor = _orchestrate(tmp_path)
+        original_names = {task.mutant_name for task in first_executor.captured}
+        reused_names = {name for name in original_names if name.startswith("unchanged.")}
+        rerun_names = original_names - reused_names
+        assert reused_names
+        assert rerun_names
+        assert all(name.startswith("target.") for name in rerun_names)
+        assert first.total_mutants == first.killed == len(original_names)
+        assert first.survived == 0
+        assert first.score == 100.0
+
+        # A source edit can invalidate the whole execution context. Exercise a
+        # genuinely mixed cache by revoking only one file's verdict authority.
+        for row in load_results(tmp_path / "reuse.sqlite"):
+            assert row.tests_fingerprint is not None
+            if row.mutant_name in rerun_names:
+                save_result(
+                    tmp_path / "reuse.sqlite",
+                    row.mutant_name,
+                    row.status,
+                    row.exit_code,
+                    row.duration,
+                    tests_fingerprint=None,
+                )
+        survivor_executor = _killing_executor()
+
+        def survivor_events() -> Iterator[TaskCompleted]:
+            for task in survivor_executor.captured:
+                yield TaskCompleted(
+                    mutant_name=task.mutant_name, worker_pid=1, exit_code=0, duration=0.05
+                )
+
+        survivor_executor.get_events.side_effect = survivor_events
+        with patch(f"{__name__}._killing_executor", return_value=survivor_executor):
+            mixed, mixed_executor = _orchestrate(tmp_path)
+
+        assert {task.mutant_name for task in mixed_executor.captured} == rerun_names
+        assert mixed.killed == len(reused_names)
+        assert mixed.survived == len(rerun_names)
+        assert mixed.total_mutants == len(original_names)
+        assert mixed.killed + mixed.survived == mixed.total_mutants
+        assert mixed.score == pytest.approx(100.0 * len(reused_names) / len(original_names))
+        persisted = {
+            result.mutant_name: result for result in load_results(tmp_path / "reuse.sqlite")
+        }
+        assert set(persisted) == original_names
+        assert all(persisted[name].exit_code == 1 for name in reused_names)
+        assert all(persisted[name].exit_code == 0 for name in rerun_names)
+
+        reused, reused_executor = _orchestrate(tmp_path)
+        assert reused_executor.start.call_count == 0
+        assert reused.killed == mixed.killed
+        assert reused.survived == mixed.survived
+        assert reused.total_mutants == mixed.total_mutants
+        assert reused.score == mixed.score
 
     def test_test_change_invalidates_reuse(self, tmp_path: Path) -> None:
         _orchestrate(tmp_path)
