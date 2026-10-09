@@ -530,15 +530,14 @@ def test_generic_type_checker_command_fails_closed_for_reuse_and_run_basis(
     assert evidence.complete is False
 
 
-def test_arbitrary_inherited_environment_drift_keeps_dependency_basis(
+def test_arbitrary_inherited_environment_drift_invalidates_dependency_basis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Issue #195: benign inherited environment drift must not kill reuse.
+    """S3-001: unknown inherited inputs invalidate the dependency digest.
 
-    A session- or wrapper-specific variable cannot reach a pytest child
-    verdict, so it must not invalidate the cross-run dependency basis.
-    Verdict-relevant names (``PYTHON*``/``PYTEST*``/``MUTMUT_*``/...) stay
-    bound and are covered separately below and in test_result_reuse_195.py.
+    The original #195 assertion incorrectly assumed arbitrary variables
+    could not affect child verdicts. Preserve the same real basis test and
+    require the corrected conservative contract plus a healthy repeat arm.
     """
 
     project = tmp_path / "project"
@@ -553,7 +552,8 @@ def test_arbitrary_inherited_environment_drift_keeps_dependency_basis(
 
     assert before.reuse_safe is True
     assert after.reuse_safe is True
-    assert after.digest == before.digest
+    assert after.digest != before.digest
+    assert _installed_distribution_basis(project, set()).digest == after.digest
 
 
 def test_run_basis_classifies_verdict_relevant_environment_drift_as_ambient(

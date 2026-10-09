@@ -2,12 +2,11 @@
 
 A restart of ``mutmut-win run`` with the same tests-dir, the same HEAD and a
 warm, unchanged virtual environment must not lose every prior verdict.  The
-context fingerprint backing ``tests_fingerprint`` currently changes for
-reasons that cannot alter any child verdict (issue #195):
+context fingerprint backing ``tests_fingerprint`` binds every input that
+can alter a child verdict. S3-001 corrects the original RC-1 assumption:
 
-* RC-1: the complete inherited ``os.environ`` is hashed inside the
-  distribution basis, so a benign launch difference between two runs (shell
-  wrapper, session variable) invalidates every cached verdict.
+* RC-1: unknown inherited variables can be read by project tests. A changed
+  application or shell variable invalidates reuse; unchanged input is stable.
 * RC-2: distribution hashing covers derived ``__pycache__`` artifacts whose
   bytes and presence drift while the venv warms up.
 * RC-3: per-file timestamps are hashed, so even a content-identical ``touch``
@@ -15,8 +14,8 @@ reasons that cannot alter any child verdict (issue #195):
 
 The contract under test (roadmap W0 fix note): the reuse basis is bound to
 the verdict-relevant inputs — tests-dir content, project source, config,
-interpreter identity, installed source distributions and the curated set of
-environment variables that reach pytest children.  Counter-probes pin the
+interpreter identity, installed source distributions and every inherited
+environment variable that can reach pytest children. Counter-probes pin the
 conservative side: semantic deltas (PYTHONPATH, PYTEST_ADDOPTS, source
 edits) must keep invalidating.
 
@@ -46,7 +45,7 @@ from mutmut_win.stats import (
 # Deliberately outside every curated namespace (python*/pytest*/mutmut_*/
 # mutant_*): the kind of session- or wrapper-specific variable that differs
 # between two launches of the same unchanged project (issue #195).
-BENIGN_VARIABLE = "OPENCODE_SHELL_GENERATION"
+APPLICATION_VARIABLE = "OPENCODE_SHELL_GENERATION"
 
 
 class _FakeDistribution:
@@ -131,22 +130,23 @@ def hermetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MutmutConfig:
 
 
 class TestFingerprintStability:
-    """RC-1 and RC-3: irrelevant differences must not change the basis."""
+    """S3-001/RC-3: bind observable inputs and retain content-stable reuse."""
 
-    def test_benign_env_delta_keeps_fingerprint(
+    def test_unknown_env_delta_invalidates_fingerprint(
         self,
         hermetic: MutmutConfig,
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(BENIGN_VARIABLE, "run-1")
+        monkeypatch.setenv(APPLICATION_VARIABLE, "run-1")
         first = build_stats_context_fingerprint(hermetic, project_root=project)
-        monkeypatch.setenv(BENIGN_VARIABLE, "run-2")
+        monkeypatch.setenv(APPLICATION_VARIABLE, "run-2")
         second = build_stats_context_fingerprint(hermetic, project_root=project)
-        assert first == second, (
-            "a benign inherited environment difference must not invalidate "
-            "the verdict-reuse basis (issue #195 RC-1)"
+        assert first != second, (
+            "S3-001: an arbitrary inherited input can change project verdicts "
+            "and must invalidate the old reuse context"
         )
+        assert build_stats_context_fingerprint(hermetic, project_root=project) == second
 
     def test_mtime_touch_keeps_fingerprint(
         self,
@@ -154,7 +154,7 @@ class TestFingerprintStability:
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv(BENIGN_VARIABLE, raising=False)
+        monkeypatch.delenv(APPLICATION_VARIABLE, raising=False)
         first = build_stats_context_fingerprint(hermetic, project_root=project)
         # Content-identical timestamp bump: only mtime/ctime move.
         os.utime(project / "srcmod.py")
@@ -198,7 +198,7 @@ class TestFingerprintInvalidation:
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv(BENIGN_VARIABLE, raising=False)
+        monkeypatch.delenv(APPLICATION_VARIABLE, raising=False)
         first = build_stats_context_fingerprint(hermetic, project_root=project)
         (project / "srcmod.py").write_text(
             "def add(a, b):\n    return a + b + 0\n", encoding="utf-8"
@@ -243,19 +243,23 @@ class TestDistributionBasisStability:
 
 
 class TestEvidenceObjectStability:
-    """The evidence object must stay reuse-safe under benign deltas."""
+    """Different complete contexts cannot reuse each other's verdicts."""
 
-    def test_benign_env_delta_keeps_reuse_safety(
+    def test_unknown_env_delta_changes_complete_evidence(
         self,
         hermetic: MutmutConfig,
         project: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(BENIGN_VARIABLE, "run-1")
+        monkeypatch.setenv(APPLICATION_VARIABLE, "run-1")
         first = _build_stats_context_evidence(hermetic, project_root=project)
-        monkeypatch.setenv(BENIGN_VARIABLE, "run-2")
+        monkeypatch.setenv(APPLICATION_VARIABLE, "run-2")
         second = _build_stats_context_evidence(hermetic, project_root=project)
         assert first.complete
         assert second.complete
-        assert first.fingerprint == second.fingerprint
+        assert first.fingerprint != second.fingerprint
+        assert (
+            _build_stats_context_evidence(hermetic, project_root=project).fingerprint
+            == second.fingerprint
+        )
         assert not first.fingerprint.startswith("no-reuse:")

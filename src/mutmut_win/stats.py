@@ -826,52 +826,29 @@ def build_staging_context_evidence(
     return RunBasisEvidence(hasher.hexdigest(), complete)
 
 
-# Issue #195: cross-run verdict reuse must survive a restart.  Hashing the
-# complete inherited environment invalidated every cached verdict whenever a
-# session- or wrapper-specific variable differed between two launches of the
-# same unchanged project.  The reuse basis therefore binds only the curated
-# names below that can change what a pytest child observes;
-# ``_hash_inherited_environment`` remains as a diagnostics primitive for
-# observation sessions.
-_VERDICT_RELEVANT_ENV_PREFIXES = ("python", "pytest", "mutmut_", "mutant_")
-_VERDICT_RELEVANT_ENV_NAMES = frozenset(
-    {
-        "py_ignore_importmismatch",
-        "path",
-        "pathext",
-        "systemroot",
-        "comspec",
-        "temp",
-        "tmp",
-        "hypothesis_storage_directory",
-    }
-)
-
-
 def _verdict_relevant_environment_entries() -> list[tuple[str, str]]:
-    """Return the curated (name, value) pairs that can reach child verdicts."""
+    """Return every inherited input that project tests can observe.
+
+    S3-001: arbitrary application variables reach pytest children. No name
+    allowlist can establish that an unknown variable is verdict-irrelevant.
+    Unchanged environments remain reusable; changed inputs require new verdicts.
+    """
 
     return sorted(
-        (
-            (name, value)
-            for name, value in os.environ.items()
-            if name.casefold().startswith(_VERDICT_RELEVANT_ENV_PREFIXES)
-            or name.casefold() in _VERDICT_RELEVANT_ENV_NAMES
-        ),
+        os.environ.items(),
         key=lambda item: (item[0].casefold(), item[0]),
     )
 
 
 def _hash_verdict_relevant_environment(hasher: Any) -> None:
-    """Bind only environment names that can change child verdicts (#195).
+    """Bind the full inherited environment without publishing its values.
 
-    ``PYTHON*``/``PYTEST*`` names and the process-creation/temp variables
-    above can change what an executed child observes.  Everything else
-    (shell wrappers, session identifiers, terminal hints) cannot reach
-    verdict semantics and must not invalidate cross-run reuse.
+    S3-001 supersedes the curated #195 environment contract: even a shell
+    identifier can be read by a project test. Length-prefixed hashing binds
+    absent, empty and changed values distinctly, including unknown names.
     """
 
-    hasher.update(b"verdict-environment:v1\0")
+    hasher.update(b"verdict-environment:v2\0")
     for name, value in _verdict_relevant_environment_entries():
         encoded_name = name.encode("utf-8", errors="surrogateescape")
         encoded_value = value.encode("utf-8", errors="surrogateescape")
