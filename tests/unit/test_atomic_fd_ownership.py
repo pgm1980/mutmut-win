@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import BaseModel, Field
 
 import mutmut_win.atomic_file as atomic_module
 from mutmut_win.atomic_file import UnsafeAtomicWriteError, atomic_write_bytes
@@ -88,23 +89,35 @@ class SiblingFdRecorder:
         self._real_close(fd)
 
 
+class _RejectedSiblingState(BaseModel):
+    """Keep injected validation failures stable across cleanup observations."""
+
+    observed_names: set[Path] = Field(default_factory=set)
+    rejected_names: set[Path] = Field(default_factory=set)
+
+
 def _reject_sibling_path_view(
     monkeypatch: pytest.MonkeyPatch,
     *,
     failures: int = 10_000,
-) -> None:
+) -> _RejectedSiblingState:
     """Make the path-view ``lstat`` report an extra link for N siblings."""
     real_lstat = Path.lstat
-    remaining = {"failures": failures}
+    state = _RejectedSiblingState()
 
     def atomic_twins(self: Path) -> os.stat_result:
         result = real_lstat(self)
-        if ".mutmut-atomic-" in self.name and remaining["failures"] > 0:
-            remaining["failures"] -= 1
-            return _doctored_nlink(result, nlink=2)
+        if ".mutmut-atomic-" in self.name:
+            if self not in state.observed_names:
+                state.observed_names.add(self)
+                if len(state.rejected_names) < failures:
+                    state.rejected_names.add(self)
+            if self in state.rejected_names:
+                return _doctored_nlink(result, nlink=2)
         return result
 
     monkeypatch.setattr(Path, "lstat", atomic_twins)
+    return state
 
 
 def _install_fd_recorder(
@@ -200,7 +213,7 @@ class TestSiblingFdOwnershipProperty:
             pytest.MonkeyPatch.context() as monkeypatch,
         ):
             recorder = _install_fd_recorder(monkeypatch)
-            _reject_sibling_path_view(monkeypatch, failures=failures)
+            state = _reject_sibling_path_view(monkeypatch, failures=failures)
 
             def sleep(_seconds: float) -> None:
                 if interrupt_in_sleep:
@@ -221,3 +234,9 @@ class TestSiblingFdOwnershipProperty:
 
             assert recorder.double_closes == []
             assert recorder.open_fds == set()
+            assert len(state.observed_names) == (1 if interrupt_in_sleep else min(failures + 1, 5))
+            if not interrupt_in_sleep and failures < 5:
+                assert target.read_bytes() == b"x"
+                assert set(Path(tmp).iterdir()) == {target}
+            else:
+                assert set(Path(tmp).iterdir()) == set()
