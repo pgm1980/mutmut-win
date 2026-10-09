@@ -31,9 +31,14 @@ def test_type_filter_preserves_real_clean_and_basis_contract(
     (source / "target.py").write_text("def value():\n    return 2\n", encoding="utf-8")
     tests = tmp_path / "tests"
     tests.mkdir()
+    clean_marker = tmp_path.with_name(tmp_path.name + "-clean-success.txt")
     expected = 2 if healthy else 3
     (tests / "test_target.py").write_text(
-        f"from target import value\ndef test_value():\n    assert value() == {expected}\n",
+        "import os\nfrom pathlib import Path\nfrom target import value\n"
+        f"def test_value():\n    assert value() == {expected}\n"
+        "    if os.environ.get('MUTANT_UNDER_TEST') == '' and "
+        "os.environ.get('MUTMUT_CLEAN_NAMES_TOKEN'):\n"
+        f"        Path({str(clean_marker)!r}).write_text('original test passed', encoding='utf-8')\n",
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(
@@ -49,6 +54,10 @@ def test_type_filter_preserves_real_clean_and_basis_contract(
         _command: list[str],
     ) -> tuple[list[MutationTask], set[str]]:
         filter_calls.append(len(tasks))
+        if healthy:
+            # Only the successful body in the real clean-phase subprocess can
+            # create this external marker; all-caught must not bypass it.
+            assert clean_marker.read_text(encoding="utf-8") == "original test passed"
         if catch_all:
             return [], {task.mutant_name for task in tasks}
         return tasks, set()
@@ -70,10 +79,12 @@ def test_type_filter_preserves_real_clean_and_basis_contract(
             orchestrator.run()
         assert filter_calls == []
         assert load_results(database) == []
+        assert not clean_marker.exists()
         return
 
     result = orchestrator.run()
     assert len(filter_calls) == 1
+    assert clean_marker.read_text(encoding="utf-8") == "original test passed"
     assert result.total_mutants == filter_calls[0] > 0
     assert result.type_check_caught == (result.total_mutants if catch_all else 0)
     assert result.killed == (0 if catch_all else result.total_mutants)
