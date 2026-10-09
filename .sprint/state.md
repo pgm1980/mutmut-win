@@ -1,35 +1,34 @@
 ---
-current_sprint: "47"
-sprint_goal: "v3.1.0: released"
-branch: "fix/v3.1.0-testsanierung"
-started_at: "2026-10-06"
-phase: "released"
-candidate_commit: "e9544f0"
-candidate_tree: "0f903ce8f3b0357b56cddbfc4938f779550aaee5"
-integrated_commit: "9426088"
-integrated_tree: "0f903ce8f3b0357b56cddbfc4938f779550aaee5"
-release_tag: "v3.1.0"
-housekeeping_done: true
-memory_updated: true
-github_issues_closed: true
+current_sprint: "48"
+sprint_goal: "v3.1.0: in progress"
+branch: "fix/v3.1.0-s3-sanierung"
+started_at: "2026-10-09"
+phase: "in_progress"
+candidate_commit: ""
+candidate_tree: ""
+integrated_commit: ""
+integrated_tree: ""
+release_tag: ""
+housekeeping_done: false
+memory_updated: false
+github_issues_closed: false
 sprint_backlog_written: true
-semgrep_passed: true
-tests_passed: true
-documentation_updated: true
+semgrep_passed: false
+tests_passed: false
+documentation_updated: false
 ---
 
-# Sprint State - Testsanierung 3.1.0: Testpyramide W0 bis W5
+# Sprint State - S3-Sanierung
 
 <!-- LIVE_STATE_START -->
 
 <!-- RELEASE_PHASE: in_progress -->
 <!-- RELEASE_PHASE_STATUS: implementation-and-final-gates-open -->
 <!-- RELEASE_TARGET: v3.1.0 -->
-<!-- RELEASE_BRANCH: `fix/v3.1.0-testsanierung` -->
+<!-- RELEASE_BRANCH: `fix/v3.1.0-s3-sanierung` -->
 <!-- RELEASE_PUBLICATION_AUTHORITY: canonical-external-block -->
 
 <!-- LIVE_STATE_END -->
-
 <!-- ARCHIVE_START -->
 
 ## Archiv: Sprint 46 - v3.0.0
