@@ -623,6 +623,8 @@ def _parenthesize_for_context(
       parses as ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046);
     - the base of an attribute access: a bare decimal integer swallows the
       dot into a float token — ``0.bit_length()`` is a SyntaxError (M-047).
+      A unary replacement also needs parentheses to keep the attribute on
+      the replacement value, including negative integer mutants (S3-015).
 
     Everything else stays untouched: mutant texts remain diff-minimal, and
     mapping keys under profile ALL keep their valid bare form.
@@ -649,7 +651,10 @@ def _parenthesize_for_context(
     if (
         isinstance(parent, cst.Attribute)
         and parent.value is node
-        and _is_bare_decimal_integer(mutated_node)
+        and (
+            _is_bare_decimal_integer(mutated_node)
+            or (isinstance(mutated_node, cst.UnaryOperation) and not mutated_node.lpar)
+        )
     ):
         return mutated_node.with_changes(
             lpar=[cst.LeftParen()],
