@@ -932,35 +932,6 @@ class MutationOrchestrator:
         self._start_current_run(all_tasks, source_data_by_file)
 
         # ------------------------------------------------------------------
-        # Step 1b: Apply type-checker filter (if configured).
-        # ------------------------------------------------------------------
-        type_checked_names: set[str] = set()
-        if self._config.type_check_command:
-            all_tasks, type_checked_names = _filter_with_type_checker(
-                all_tasks,
-                source_data_by_file,
-                self._config.type_check_command,
-            )
-            _verify_type_checker_left_staging_intact(staging_evidence)
-        if not all_tasks:
-            # Every mutant was caught by the type checker — a legitimate,
-            # successful run, not an IndexError (issue #93 / A3-OS-010).
-            _validate_staging_unchanged(staging_evidence, source_data_by_file)
-            create_db(self._db_path)
-            self._maybe_purge_stale(all_generated_names)
-            _persist_type_check_kills(self._db_path, type_checked_names)
-            for sfd in source_data_by_file.values():
-                sfd.save()
-            summary = MutationRunResult(
-                total_mutants=len(type_checked_names),
-                type_check_caught=len(type_checked_names),
-                duration_seconds=time.monotonic() - wall_start,
-            )
-            print(f"All {len(type_checked_names)} mutants caught by the type checker.")
-            _print_summary(summary)
-            return summary
-
-        # ------------------------------------------------------------------
         # Step 2: Validate the clean test suite.
         # ------------------------------------------------------------------
         # Explicit staging setup (issue #116 / A2-RN-010): the .pth blocker
@@ -1004,6 +975,45 @@ class MutationOrchestrator:
             raise CleanTestFailedError(msg)
         _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
+        # Fresh clean-call proof covers the complete generated population,
+        # including the all-caught shortcut before statistics or verdicts.
+        clean_names = self._runner.clean_runtime_names
+        if clean_names is None:
+            raise MutantNameDispatchError(
+                "Missing or invalid clean runtime-name proof; cannot validate mutant dispatch. "
+                + (self._runner.clean_runtime_names_diagnostic or "")
+            )
+        _verify_runtime_mutant_names(all_generated_names, MutmutStats(), runtime_names=clean_names)
+
+        # ------------------------------------------------------------------
+        # Step 2a: Apply type-checker filter (if configured).
+        # ------------------------------------------------------------------
+        type_checked_names: set[str] = set()
+        if self._config.type_check_command:
+            all_tasks, type_checked_names = _filter_with_type_checker(
+                all_tasks,
+                source_data_by_file,
+                self._config.type_check_command,
+            )
+            _verify_type_checker_left_staging_intact(staging_evidence)
+        if not all_tasks:
+            # Every mutant was caught by the type checker — a legitimate,
+            # successful run, not an IndexError (issue #93 / A3-OS-010).
+            _validate_staging_unchanged(staging_evidence, source_data_by_file)
+            create_db(self._db_path)
+            self._maybe_purge_stale(all_generated_names)
+            _persist_type_check_kills(self._db_path, type_checked_names)
+            for sfd in source_data_by_file.values():
+                sfd.save()
+            summary = MutationRunResult(
+                total_mutants=len(type_checked_names),
+                type_check_caught=len(type_checked_names),
+                duration_seconds=time.monotonic() - wall_start,
+            )
+            print(f"All {len(type_checked_names)} mutants caught by the type checker.")
+            _print_summary(summary)
+            return summary
+
         # ------------------------------------------------------------------
         # Step 3: Collect per-test timing stats (load from cache if available).
         # ------------------------------------------------------------------
@@ -1023,19 +1033,9 @@ class MutationOrchestrator:
         )
         _validate_staging_unchanged(staging_evidence, source_data_by_file)
 
-        # M-053: prove NAME dispatch before any verdict producer.  The
-        # forced-fail run below only proves that the trampoline wrapper is
-        # installed and reads MUTANT_UNDER_TEST (its 'fail' sentinel
-        # terminates before the prefix dispatch); the stats keys above are
-        # the only runtime evidence for the actual mutant-name dispatch.
+        # Retain the timing-statistics name check as an additional diagnostic.
+        # The fresh clean-call proof above is independent of this cache.
         _verify_runtime_mutant_names(all_generated_names, mutmut_stats)
-        clean_names = self._runner.clean_runtime_names
-        if clean_names is None:
-            raise MutantNameDispatchError(
-                "Missing or invalid clean runtime-name proof; cannot validate mutant dispatch. "
-                + (self._runner.clean_runtime_names_diagnostic or "")
-            )
-        _verify_runtime_mutant_names(all_generated_names, mutmut_stats, runtime_names=clean_names)
 
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
