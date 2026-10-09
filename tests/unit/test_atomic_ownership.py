@@ -89,3 +89,31 @@ def test_rejected_sibling_keeps_foreign_bytes_after_close(
     assert state.sibling.read_bytes() == b"FOREIGN-FIXTURE"
     assert saved.read_bytes() == hardlink.read_bytes() == b""
     assert target.read_bytes() == (b"NEW" if corridor == "sibling" else b"OLD")
+
+
+@pytest.mark.parametrize("identity", [(-1, 1), (1, 0), (1, -1)])
+def test_cleanup_capture_refuses_invalid_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identity: tuple[int, int]
+) -> None:
+    """An invalid descriptor observation cannot grant cleanup authority."""
+    target = tmp_path / "owned.bin"
+    target.write_bytes(b"KEEP")
+    with target.open("rb") as handle, monkeypatch.context() as patcher:
+        patcher.setattr(atomic_module, "_identity", lambda _stat: identity)
+        assert atomic_module._capture_cleanup_identity(handle.fileno()) is None
+    assert target.read_bytes() == b"KEEP"
+
+
+def test_cleanup_capture_refuses_unavailable_descriptor() -> None:
+    """An invalid descriptor preserves the original failure without path cleanup."""
+    assert atomic_module._capture_cleanup_identity(-1) is None
+
+
+def test_cleanup_capture_refuses_non_regular_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory-shaped observation cannot authorize deleting a sibling."""
+    directory_stat = tmp_path.stat()
+    with monkeypatch.context() as patcher:
+        patcher.setattr(atomic_module.os, "fstat", lambda _fd: directory_stat)
+        assert atomic_module._capture_cleanup_identity(-1) is None

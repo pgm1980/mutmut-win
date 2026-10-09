@@ -132,6 +132,24 @@ def _identity(file_stat: os.stat_result) -> FileIdentity:
     return file_stat.st_dev, file_stat.st_ino
 
 
+def _capture_cleanup_identity(fd: int) -> FileIdentity | None:
+    """Refresh ownership from a still-owned descriptor after rejected validation.
+
+    A transient handle/path observation mismatch must not force cleanup by name.
+    Capture a fresh handle identity before close; the cleanup helper separately
+    checks whether the current leaf still has that identity. An unavailable or
+    invalid observation cannot authorize deletion.
+    """
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        return None
+    identity = _identity(opened)
+    if not stat.S_ISREG(opened.st_mode) or identity[0] < 0 or identity[1] <= 0:
+        return None
+    return identity
+
+
 def _is_reparse_point(file_stat: os.stat_result) -> bool:
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     attributes = getattr(file_stat, "st_file_attributes", 0)
@@ -353,6 +371,7 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             raise
 
         fd_owned = True
+        cleanup_identity: FileIdentity | None = None
         try:
             opened_stat = os.fstat(fd)
             leaf_stat = temp_path.lstat()
@@ -365,8 +384,8 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             # filter-driver enumeration in child processes).  Exclusive
             # creation, handle/path identity equality, regular-file shape
             # and the path-view link count carry the private-sibling
-            # contract; a hardlink attack on this fresh random name would
-            # already have failed the ``O_EXCL`` creation above.
+            # contract. ``O_EXCL`` proves initial ownership only: a later
+            # hardlink or name change still requires rejection and safe cleanup.
             if (
                 not stat.S_ISREG(opened_stat.st_mode)
                 or stat.S_ISLNK(leaf_stat.st_mode)
@@ -374,10 +393,10 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
                 or opened_identity != _identity(leaf_stat)
                 or leaf_stat.st_nlink != 1
             ):
+                cleanup_identity = _capture_cleanup_identity(fd)
                 fd_owned = False
                 os.close(fd)
-                with contextlib.suppress(OSError):
-                    temp_path.unlink()
+                _cleanup_owned_temp(temp_path, cleanup_identity)
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
                     # One-line field diagnosis in the error itself: the
@@ -394,17 +413,16 @@ def _open_random_sibling(path: Path) -> tuple[int, Path, FileIdentity]:
             return fd, temp_path, opened_identity
         except BaseException:
             # Ownership rule (M-066): the validation-failure branch already
-            # closed — and unlinked — its own fd before deciding to retry or
+            # closed its own fd before deciding to retry or
             # fail, and Windows recycles descriptor numbers immediately, so
             # only a still-owned fd may be closed here; a second close could
-            # hit a descriptor a concurrent thread just received.  The second
-            # unlink attempt stays unconditional: after a failed first
-            # unlink the entry may still need cleaning up.
+            # hit a descriptor a concurrent thread just received. Cleanup may
+            # be retried, but the name may now belong to a foreign writer.
             if fd_owned:
+                cleanup_identity = _capture_cleanup_identity(fd)
                 with contextlib.suppress(OSError):
                     os.close(fd)
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
+            _cleanup_owned_temp(temp_path, cleanup_identity)
             raise
 
 
@@ -964,9 +982,8 @@ def create_exclusive_random_bytes(
             # (CX221-071; MBR-2026-09-14-01 follow-up field data) while the
             # path view stays at one.  Exclusive creation, handle/path
             # identity equality, regular-file shape and the path-view link
-            # count carry the private-file contract; a hardlink attack on
-            # this fresh random name would already have failed the
-            # ``O_EXCL`` creation above (M-013).
+            # count carry the private-file contract. ``O_EXCL`` proves initial
+            # ownership only; later link/name changes still need safe cleanup.
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or stat.S_ISLNK(leaf.st_mode)
@@ -978,15 +995,14 @@ def create_exclusive_random_bytes(
             ):
                 # Ownership is released before the close so an OSError from
                 # the close itself never triggers a second close in the
-                # finally.  The own fresh ``O_EXCL`` entry is unlinked BY
-                # NAME — a name nobody else can have created — because a
-                # handle/path identity flap would defeat an
-                # identity-checked cleanup and leave the entry behind.
+                # finally. Refresh a possibly flapping handle observation while
+                # the descriptor is still ours, then revalidate path ownership
+                # during cleanup: another writer can reuse the name after close.
+                identity = _capture_cleanup_identity(fd)
                 owned_fd = fd
                 fd = None
                 os.close(owned_fd)
-                with contextlib.suppress(OSError):
-                    path.unlink()
+                _cleanup_owned_temp(path, identity)
                 identity = None
                 validation_attempts_left -= 1
                 if validation_attempts_left <= 0:
