@@ -57,6 +57,14 @@ def _successful_popen_with_phase_proof(proc: MagicMock) -> Callable[..., MagicMo
         assert isinstance(marker, str)
         assert isinstance(token, str)
         Path(marker).write_text(token, encoding="utf-8")
+        # A successful coverage child also publishes its current nonce-bound
+        # collection policy; this mock exercises handle ownership only.
+        policy_path = env.get("MUTMUT_COVERAGE_POLICY_PATH")
+        if policy_path is not None:
+            policy_token = env["MUTMUT_COVERAGE_POLICY_TOKEN"]
+            assert isinstance(policy_path, str)
+            assert isinstance(policy_token, str)
+            Path(policy_path).write_text(f"{policy_token}:parent", encoding="utf-8")
         return proc
 
     return fake_popen

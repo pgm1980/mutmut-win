@@ -102,7 +102,14 @@ def _fake_process_boundaries(
         return 2 if outcome == "nonzero" else 0
 
     def phase_process(_phase: str, cmd: list[str], _env: dict[str, str], **_kwargs: Any) -> int:
-        return complete(cmd)
+        result = complete(cmd)
+        if result == 0 and "MUTMUT_COVERAGE_POLICY_PATH" in _env:
+            # Model the successful child's policy publication, keeping this
+            # test focused on argument-file transport and runtime cleanup.
+            Path(_env["MUTMUT_COVERAGE_POLICY_PATH"]).write_text(
+                f"{_env['MUTMUT_COVERAGE_POLICY_TOKEN']}:parent", encoding="utf-8"
+            )
+        return result
 
     def collection_process(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(cmd, complete(cmd), stdout="", stderr="")

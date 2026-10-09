@@ -36,7 +36,8 @@ class TestDeprecationNotice:
             result = CliRunner().invoke(cli, ["results", "--treat-timeout-as-kill"])
         assert result.exit_code == 0
         assert "deprecated" in result.output
-        assert "infinite-loop detection" in result.output
+        assert "unresolved timeouts as kills" in result.output
+        assert "infinite-loop detection" not in result.output
 
     def test_results_without_flag_stays_silent(self) -> None:
         with patch(
