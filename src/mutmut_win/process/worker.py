@@ -967,7 +967,11 @@ def prepare_pytest_collection_guard(
 
 
 def configure_ephemeral_pytest_environment(
-    env: dict[str, str], runtime_dir: Path, *, shared_pycache: Path | None = None
+    env: dict[str, str],
+    runtime_dir: Path,
+    *,
+    shared_pycache: Path | None = None,
+    coverage_data_file: Path | None = None,
 ) -> Path:
     """Redirect Python/pytest/Hypothesis state to one fresh process directory.
 
@@ -983,6 +987,15 @@ def configure_ephemeral_pytest_environment(
     subsequent phases get cache hits instead of recompiling ~80 MB.
     Bytecode writing is enabled in this mode because the staging tree is
     frozen after generation (verified by _validate_staging_unchanged).
+
+    Args:
+        env: Child environment to isolate.
+        runtime_dir: Fresh external directory for this phase's state.
+        shared_pycache: Optional run-scoped bytecode cache.
+        coverage_data_file: Coverage phase's explicit external data target.
+            Spawn children read ``COVERAGE_FILE`` instead of inheriting the
+            parent's coverage command-line options. Ordinary phases omit this
+            override and retain their own isolated output target.
 
     Returns:
         The isolated pytest cache directory to use in ``-o cache_dir=...``.
@@ -1005,7 +1018,10 @@ def configure_ephemeral_pytest_environment(
         env["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
     hypothesis_dir.mkdir(parents=True, exist_ok=True)
     env["HYPOTHESIS_STORAGE_DIRECTORY"] = str(hypothesis_dir)
-    env["COVERAGE_FILE"] = str(runtime_dir / ".coverage")
+    # S3-002: the coverage parent and multiprocessing children must publish
+    # into the same fresh directory that gather_coverage will merge. Never
+    # preserve arbitrary inherited COVERAGE_FILE for ordinary phases.
+    env["COVERAGE_FILE"] = str(coverage_data_file or runtime_dir / ".coverage")
     env[_PYTEST_RUNTIME_DIR_ENV] = str(runtime_dir)
     return cache_dir
 
