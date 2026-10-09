@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.models import GenerationDegradation, MutationRunResult
