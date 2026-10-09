@@ -129,7 +129,13 @@ def test_second_publication_failure_is_sticky_after_old_name(
         names.record_runtime_name("pkg.x_b")
     assert recorder.invalid
     if fault in {"pending", "ready"}:
-        assert names._path(recorder.directory, recorder.ticket, "invalid").exists()
+        # Invalidity is now persisted in the existing control file even if a
+        # new marker cannot be created; inspect it through a coherent view.
+        with (
+            names._path(recorder.directory, recorder.ticket, "control").open("rb") as stream,
+            mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as control,
+        ):
+            assert control[0] == names._INVALID
     else:
         assert recorder.control[0] == names._INVALID
     with pytest.raises(RuntimeError, match="closed or invalid"):
@@ -147,9 +153,12 @@ def test_closed_child_map_and_failed_poison_marker_cannot_reuse_ready(
     names._begin(recorder)
     names._append(recorder, names._Entry(kind="child", value=child_ticket.participant_id))
     recorder.control[0] = names._READY
-    child = names._attach(child_ticket)
-    monkeypatch.setattr(names, "_recorder", child)
+    monkeypatch.setattr(names, "_recorder", None)
+    names._resume_spawn(child_ticket.model_dump_json())
+    child = names._ensure_recorder()
     names.record_runtime_name("pkg.x_a")
+    _pid, entries = names._read_part(recorder.directory, child_ticket)
+    assert entries == [names._Entry(kind="name", value="pkg.x_a")]
     child.control.close()
     original_touch = Path.touch
 

@@ -128,8 +128,6 @@ def _attach(ticket: _Ticket) -> _Recorder:
         recorder = _Recorder(directory=directory, ticket=ticket, control=control)
         control[8:16] = os.getpid().to_bytes(8, "little")
         control[0] = _READY
-        # Permanent bootstrap bit, independent of later publication states.
-        control[1] = 1
         return recorder
     except BaseException:
         control.close()
@@ -244,7 +242,13 @@ def start_pytest() -> None:
         ticket = _create_ticket(directory, None)
         (directory / "parent.json").write_text(ticket.model_dump_json(), encoding="utf-8")
         _recorder = _attach(ticket)
-    install_spawn_observer()
+    try:
+        install_spawn_observer()
+        # Publish only after the active recorder and observer both exist.
+        _recorder.control[1] = 1
+    except BaseException:
+        _invalidate(_recorder)
+        raise
 
 
 def _resume_spawn(raw_ticket: str) -> None:
@@ -253,7 +257,14 @@ def _resume_spawn(raw_ticket: str) -> None:
     if ticket.parent_participant_id is None or _recorder is not None:
         raise ValueError("invalid child runtime-name ticket")
     _recorder = _attach(ticket)
-    install_spawn_observer()
+    try:
+        install_spawn_observer()
+        # This permanent bit acknowledges the complete bootstrap, not just
+        # attaching the view. It never overrides later PENDING/INVALID state.
+        _recorder.control[1] = 1
+    except BaseException:
+        _invalidate(_recorder)
+        raise
 
 
 class _SpawnObserver(BaseModel):
@@ -263,14 +274,18 @@ class _SpawnObserver(BaseModel):
         return _resume_spawn, (self.ticket.model_dump_json(),)
 
 
-def _wait_bootstrap(ticket: _Ticket) -> None:
+def _wait_bootstrap(ticket: _Ticket, child: process.BaseProcess) -> None:
     with (
         _path(_directory(), ticket, "control").open("r+b") as stream,
         mmap.mmap(stream.fileno(), _CONTROL_BYTES, access=mmap.ACCESS_READ) as control,
     ):
         deadline = time.monotonic() + 30
         while control[1] != 1:
-            if control[0] == _INVALID or time.monotonic() >= deadline:
+            if (
+                control[0] == _INVALID
+                or child.exitcode is not None
+                or time.monotonic() >= deadline
+            ):
                 raise RuntimeError("clean runtime-name child bootstrap incomplete")
             time.sleep(0.005)
         if _read_ticket(control) != ticket or not int.from_bytes(control[8:16], "little"):
@@ -318,7 +333,7 @@ def install_spawn_observer() -> None:
                 ticket = _start_ticket.get()
                 if ticket is None:
                     raise RuntimeError("clean child started without a runtime-name ticket")
-                _wait_bootstrap(ticket)
+                _wait_bootstrap(ticket, child)
             except BaseException:
                 # Pool has not added this worker to its list until start()
                 # returns. Reap an already started child here, even when the

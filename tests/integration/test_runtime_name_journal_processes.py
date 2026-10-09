@@ -253,7 +253,7 @@ def test_bootstrap_wait_failure_reaps_spawned_child_before_raising(
         "from mutmut_win import runtime_names as names\n"
         "from child_support import STARTED, delayed_reduce, empty\n"
         "def test_child(monkeypatch):\n"
-        "    def expired(ticket):\n"
+        "    def expired(ticket, child):\n"
         "        deadline = time.monotonic() + 15\n"
         "        while not STARTED.with_suffix('.ready').exists():\n"
         "            assert time.monotonic() < deadline\n            time.sleep(0.005)\n"
