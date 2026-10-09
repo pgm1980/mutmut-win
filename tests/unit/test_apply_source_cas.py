@@ -96,6 +96,13 @@ class _RetryCalls(BaseModel):
     delays: list[float] = Field(default_factory=list)
 
 
+class _HeldSibling(BaseModel):
+    """Bind the actual private sibling observed before insertion."""
+
+    path: Path | None = None
+    identity: tuple[int, int] | None = None
+
+
 def _open_share_delete_writer(path: Path) -> int:
     """Open *path* for writing while granting rename/delete sharing."""
     handle = _KERNEL32.CreateFileW(
@@ -671,6 +678,132 @@ class TestReadonlyApplyAndPromotion:
             assert saved_backup.read_bytes() == b"STABLE BACKUP"
         else:
             assert set(tmp_path.iterdir()) == {source, backup}
+
+
+class TestCasFailedInsertionCleanup:
+    """S3-018: report actual restoration and clean only a verified own temp."""
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_failed_insertion_retries_cleanup_and_reports_real_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        source_before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        state = _HeldSibling()
+        calls = _RetryCalls()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                state.path, state.identity = path, identity
+                held.enter_context(path.open("rb"))
+
+            def release_after_insertion_failed(seconds: float) -> None:
+                # Cleanup must start only after insertion failed and restoration ran.
+                assert _snapshot_leaf(source) == source_before
+                assert list(tmp_path.glob(".*.mutmut-displaced")) == []
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
+            monkeypatch.setattr(atomic_module.time, "sleep", release_after_insertion_failed)
+            with pytest.raises(OSError) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            assert _snapshot_leaf(source) == source_before
+            assert _snapshot_leaf(backup) == backup_before
+            diagnostic = str(caught.value)
+            assert f"restored to {source}" in diagnostic
+            assert "cannot insert replacement" in diagnostic
+            assert "WinError 32" in diagnostic
+            assert caught.value.__cause__ is not None
+            assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+            assert state.path is not None
+            if release:
+                assert set(tmp_path.iterdir()) == {source, backup}
+            else:
+                assert state.path.read_bytes() == b"MUTATED"
+                assert (state.path.stat().st_dev, state.path.stat().st_ino) == state.identity
+                assert f"owned temporary file remains at {state.path}" in diagnostic
+
+    def test_cleanup_retry_preserves_readonly_foreign_recreate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        saved = tmp_path / "saved-owned-temp"
+        source.write_bytes(b"ORIGINAL")
+        state = _HeldSibling()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                state.path, state.identity = path, identity
+                held.enter_context(path.open("rb"))
+
+            def replace_with_foreign(_seconds: float) -> None:
+                assert source.read_bytes() == b"ORIGINAL"
+                held.close()
+                assert state.path is not None
+                state.path.rename(saved)
+                state.path.write_bytes(b"FOREIGN")
+                state.path.chmod(stat.S_IREAD)
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
+            monkeypatch.setattr(atomic_module.time, "sleep", replace_with_foreign)
+            with pytest.raises(OSError):
+                atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+        assert state.path is not None
+        try:
+            assert state.path.read_bytes() == b"FOREIGN"
+            assert state.path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+            assert saved.read_bytes() == b"MUTATED"
+            assert source.read_bytes() == b"ORIGINAL"
+        finally:
+            state.path.chmod(stat.S_IWRITE)
+
+    def test_cli_reports_persistent_owned_temp_and_restored_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import ExitStack
+
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = _snapshot_leaf(source)
+        state = _HeldSibling()
+        real_check = atomic_module._checked_temp
+        with ExitStack() as held:
+
+            def hold_source_temp(path: Path, identity: tuple[int, int]) -> None:
+                real_check(path, identity)
+                if path.name.startswith(f".{source.name}.mutmut-atomic-"):
+                    state.path, state.identity = path, identity
+                    held.enter_context(path.open("rb"))
+
+            monkeypatch.setattr(atomic_module, "_checked_temp", hold_source_temp)
+            result = CliRunner().invoke(cli, ["apply", name])
+            assert result.exit_code == 1
+            assert "Applied mutant" not in result.output
+            assert _snapshot_leaf(source) == before
+            assert state.path is not None
+            assert state.path.exists()
+            assert "restored to" in result.stderr
+            assert f"owned temporary file remains at {state.path}" in result.stderr
+            assert "cannot insert replacement" in result.stderr
 
 
 class TestDisplacementRaceWindow:
