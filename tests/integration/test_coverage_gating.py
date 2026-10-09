@@ -135,6 +135,60 @@ class TestCoverageGatingEndToEnd:
         assert 2 in file_covered  # body of covered()
         assert 6 not in file_covered  # body of never_called() was never run
 
+    @pytest.mark.parametrize("relative_files", [False, True])
+    def test_spawn_child_lines_remain_in_the_mutation_universe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_files: bool
+    ) -> None:
+        """S3-002: real spawn children contribute their executed source lines."""
+        monkeypatch.chdir(tmp_path)
+        _build_mutants_tree(tmp_path)
+        source = (
+            "def covered():\n    return 1\n\n"
+            "def only_in_child():\n    value = 2\n    return value + 1\n\n"
+            "def never_called():\n    return 42\n"
+        )
+        (tmp_path / "mutants/src/pkg/mod.py").write_text(source, encoding="utf-8")
+        (tmp_path / "mutants/pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\npythonpath = ["src"]\n'
+            '[tool.coverage.run]\nconcurrency = ["multiprocessing"]\n'
+            f"relative_files = {str(relative_files).lower()}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "mutants/tests/test_mod.py").write_text(
+            textwrap.dedent(
+                """
+                import multiprocessing
+                from pkg.mod import covered, only_in_child
+
+                def test_both():
+                    assert covered() == 1
+                    process = multiprocessing.get_context("spawn").Process(target=only_in_child)
+                    process.start()
+                    try:
+                        process.join(30)
+                        assert process.exitcode == 0
+                    finally:
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(10)
+                        process.close()
+                """
+            ),
+            encoding="utf-8",
+        )
+        runner = PytestRunner(MutmutConfig(tests_dir=["tests"]))
+
+        covered_map = gather_coverage(runner, ["src/pkg/mod.py"])
+        lines = get_covered_lines_for_file("src/pkg/mod.py", covered_map)
+
+        assert lines is not None
+        assert {2, 5, 6} <= lines, "Parent and spawn-child bodies must both be measured"
+        assert 9 not in lines, "The never-called body must remain excluded"
+        _, names = mutate_file_contents("src/pkg/mod.py", source, covered_lines=lines)
+        assert len(names) == 14
+        assert any("only_in_child" in name for name in names)
+        assert all("never_called" not in name for name in names)
+
     def test_followup_run_measures_original_lines_not_generator_lines(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
