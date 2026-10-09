@@ -105,10 +105,7 @@ def test_dry_run_degradation_cannot_authorize_score(
 ) -> None:
     """The independent score guard rejects a preview before generation."""
     _write_project(isolated_cli_workspace, healthy=True, broken=True)
-    result = CliRunner().invoke(
-        cli, ["run", "--dry-run", "--output", "json", "--min-score", "80"]
-    )
+    result = CliRunner().invoke(cli, ["run", "--dry-run", "--output", "json", "--min-score", "80"])
     assert result.exit_code == 2
     assert "dry-run" in result.stderr
     assert "min-score" in result.stderr
-
