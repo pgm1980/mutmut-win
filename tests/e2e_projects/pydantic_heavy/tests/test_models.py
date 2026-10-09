@@ -4,9 +4,29 @@ from __future__ import annotations
 
 import math
 
+from hypothesis import given, strategies as st
 from pydantic import ValidationError
 
 from pydantic_heavy.models import DiscountedOrder, LineItem, Order
+
+
+@given(quantity=st.integers(min_value=1, max_value=20), discount=st.integers(0, 100))
+def test_payment_uses_validated_nested_computed_fields(quantity: int, discount: int) -> None:
+    """The ordinary class method must consume computed fields across inheritance."""
+    order = DiscountedOrder(
+        order_id="ORD-0001",
+        items=[LineItem(name="item", quantity=quantity, unit_price=1.0)],
+        discount_percent=discount,
+    )
+    assert order.requires_payment() is (discount < 100)
+
+
+def test_empty_order_requires_no_payment() -> None:
+    """The zero-total boundary distinguishes inverted and shifted comparisons."""
+    assert (
+        DiscountedOrder(order_id="ORD-0001", items=[], discount_percent=0).requires_payment()
+        is False
+    )
 
 
 def _sample_order() -> Order:

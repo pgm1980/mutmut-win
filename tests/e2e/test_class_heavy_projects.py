@@ -1,33 +1,37 @@
-"""E2E: trampoline boundary for class-heavy projects (T8, TM-11).
+"""Real class-method trampolines that consume validated Pydantic computed fields.
 
-The engine's own models/browser gates surfaced a trampoline boundary for
-class-heavy modules (BLOCKED-GATES-MODELS-BROWSER.md, hypotheses H1-H4:
-136/140 clean-run failures on trampolined pydantic models, 68x slowdown,
-product code exonerated by mirror comparison).  TM-11 pins that boundary at
-PROJECT level with a strict xfail: the class-heavy fixture's untrampolined
-suite is green (mirror oracle, kept as a passing control), while the full
-engine run against it is EXPECTED to fail.  ``strict=True`` makes the
-boundary live: when a future engine version fixes the boundary, XPASS
-fails this test and forces updating the documented status.
-
-No pre-fix here by design (goal boundary): H1-H4 are reserved for the
-external adversarial review.
+This bounded fixture establishes its own positive mutation population. It does
+not establish the causes of historical models/browser failures or universal
+framework support. Unrelated errors and harness timeouts must fail normally.
 """
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import BaseModel
+
+from mutmut_win.db import known_run_basis_incompleteness, load_latest_run_results
+from mutmut_win.mutation import mutate_file_contents
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-from tests.e2e.e2e_util import PYDANTIC_HEAVY, copy_project, run_cli
+from tests.e2e.e2e_util import PYDANTIC_HEAVY, cache_db, copy_project, run_cli
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
+
+
+class _ClassMutationMetadata(BaseModel):
+    """Persisted bindings needed by the independent population oracle."""
+
+    source_hash: str
+    generated_hash: str
+    exit_code_by_key: dict[str, int | None]
 
 
 def test_pydantic_heavy_fixture_suite_is_green_untrampolined(tmp_path: Path) -> None:
@@ -47,17 +51,30 @@ def test_pydantic_heavy_fixture_suite_is_green_untrampolined(tmp_path: Path) -> 
     assert " failed" not in result.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "TM-11: trampoline boundary for class-heavy projects "
-        "(pydantic BaseModel/computed_field/validators; engine-level evidence: "
-        "BLOCKED-GATES-MODELS-BROWSER.md, H1-H4 reserved for the external review)"
-    ),
-)
 def test_pydantic_heavy_full_engine_run_completes(tmp_path: Path) -> None:
-    """The full engine run against the class-heavy fixture (expected xfail)."""
+    """Require actual class instrumentation, complete evidence and causal kills."""
 
     project = copy_project(PYDANTIC_HEAVY, tmp_path)
+    source = project / "src/pydantic_heavy/models.py"
+    _, names = mutate_file_contents(str(source), source.read_text(encoding="utf-8"))
+    assert names, "The framework fixture must produce a positive mutation population"
+    assert all("DiscountedOrderǁrequires_payment__mutmut_" in name for name in names)
     result = run_cli(project, "run", "--no-progress", timeout=900)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    state, verdicts = load_latest_run_results(cache_db(project))
+    assert state is not None
+    expected = {f"pydantic_heavy.models.{name}" for name in names}
+    assert set(state.planned_names) == expected
+    assert state.status == "completed" and state.is_full_run
+    assert not state.pending_names
+    assert known_run_basis_incompleteness(state) is None
+    assert {verdict.mutant_name for verdict in verdicts} == expected
+    assert all(verdict.status == "killed" for verdict in verdicts)
+    generated = project / "mutants/src/pydantic_heavy/models.py"
+    metadata = _ClassMutationMetadata.model_validate_json(
+        generated.with_suffix(".py.meta").read_text(encoding="utf-8")
+    )
+    assert set(metadata.exit_code_by_key) == expected
+    assert metadata.source_hash == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert metadata.generated_hash == hashlib.sha256(generated.read_bytes()).hexdigest()
+    print(f"class population={len(expected)}; killed={len(verdicts)}; basis=complete")
