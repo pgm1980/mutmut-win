@@ -68,7 +68,7 @@ build = [
     "editables==0.5",
 ]
 security = [
-    "semgrep==1.175.0",
+    "semgrep==1.180.0",
 ]
 release = [
     "check-wheel-contents==0.6.3",

@@ -1,0 +1,20 @@
+S3-052 — isolierter Entwurf zur PO-Entscheidung, keine Freigabe
+
+Dieser Checkout bereitet ausschließlich eine überprüfbare Vertragsoption vor.
+Semgrep 1.180.0 und der daraus aufgelöste PyJWT-Pin 2.15.1 sind hier Vorschläge.
+Original und Hauptintegration behalten den bisherigen verbindlichen Pin 1.175.0
+bis zur ausdrücklichen PO-Entscheidung. Keine Release- oder Integrationsfreigabe.
+
+Der vollständige Lock ändert nur Semgrep 1.175.0 -> 1.180.0 und
+PyJWT 2.13.0 -> 2.15.1. Windows/exakt CPython 3.14.7, Zizmor 1.30.0,
+alle nativen Manifestwerkzeuge, Regelbundle, Finding-Allowlist und die
+fail-closed Semgrep-Validierung bleiben unverändert.
+
+Die CI-Option entfernt die 14 bisherigen Advisory-Ignores und die unvollständig
+belegte pauschale Offline-Unerreichbarkeitsbehauptung. Ein unabhängiger roher
+Audit des vollständigen Exportes ist zwingend; Kompatibilität ist kein Audit-PASS.
+
+Prüfungen und abschließende Entscheidungsnotiz werden mit Source-/Lockhash
+extern unter p4-security-option gebunden. Historische Greens und dieses Dokument
+ändern keine Sprint-/Releaseflags. Adoption verlangt die PO-Entscheidung und
+neue integrierte Fullgates auf dem tatsächlich übernommenen Source-/Lockstand.
