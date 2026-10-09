@@ -50,7 +50,7 @@ def test_type_filter_preserves_real_clean_and_basis_contract(
         return tasks, set()
 
     monkeypatch.setattr(orchestrator_module, "_filter_with_type_checker", type_filter)
-    database = tmp_path / "mutants" / "mutmut.db"
+    database = tmp_path / "cache.db"
     orchestrator = MutationOrchestrator(
         MutmutConfig(
             paths_to_mutate=["src"],
