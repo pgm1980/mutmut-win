@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from hypothesis import example, given
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
@@ -389,3 +389,30 @@ def test_whole_phase_forced_fail_attribution(
         runner.last_diagnostic_output
     )
     assert runner.last_forced_fail_attributed is case.attributed, runner.last_diagnostic_output
+
+
+@settings(max_examples=6, deadline=None)
+@given(depth=st.integers(min_value=0, max_value=4), mixed=st.booleans())
+def test_generated_exception_groups_require_every_leaf(depth: int, mixed: bool) -> None:
+    """Adding an unrelated leaf must invalidate any generated pure group shape."""
+    body = (
+        _COLLECTION_TRY
+        + "    error = exc\n"
+        + f"    for _ in range({depth}):\n"
+        + "        error = ExceptionGroup('nested', [error, exc])\n"
+        + (
+            "    error = ExceptionGroup('mixed', [error, ValueError('unrelated')])\n"
+            if mixed
+            else ""
+        )
+        + "    raise error from None\n"
+        + _COLLECTION_TEST
+    )
+    with TemporaryDirectory(prefix="mutmut-s3-group-") as directory:
+        with pytest.MonkeyPatch.context() as patch:
+            root = Path(directory)
+            patch.chdir(root)
+            runner = _stage_runner(root, body, [])
+            assert runner.run_clean_test() == 0, runner.last_diagnostic_output
+            assert runner.run_forced_fail("pkg.mod.value__mutmut_1") == 2
+            assert runner.last_forced_fail_attributed is (not mixed), runner.last_diagnostic_output
