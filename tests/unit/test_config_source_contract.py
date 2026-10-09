@@ -22,6 +22,7 @@ This file doubles as the sole ``--tests-dir`` for the targeted
 from __future__ import annotations
 
 import configparser
+import ctypes
 import string
 import tempfile
 from pathlib import Path
@@ -35,6 +36,63 @@ from hypothesis import strategies as st
 from mutmut_win.cli import cli
 from mutmut_win.config import MutmutConfig, load_config
 from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
+
+
+class TestMutationPathAliasAuthority:
+    """Windows short aliases must not become runtime mutant prefixes."""
+
+    @pytest.mark.parametrize("select_file", [False, True])
+    def test_real_ntfs_short_alias_is_rejected_before_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, select_file: bool
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        package = tmp_path / "src" / "longsourcepackage"
+        package.mkdir(parents=True)
+        source = package / "longsourcemodule.py"
+        source.write_text("def value():\n    return 1\n", encoding="utf-8")
+        selected = source if select_file else package
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        short_path = kernel32.GetShortPathNameW
+        short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        short_path.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = short_path(str(selected), buffer, len(buffer))
+        assert 0 < length < len(buffer), ctypes.get_last_error()
+        alias = Path(buffer.value)
+        # A missing short-name host capability is not passing alias evidence.
+        if alias.name.casefold() == selected.name.casefold():
+            pytest.skip("NTFS did not allocate a distinct 8.3 name for this fixture")
+        assert alias.samefile(selected)
+        relative = selected.relative_to(tmp_path).with_name(alias.name).as_posix()
+        (tmp_path / "pyproject.toml").write_text(
+            f'[tool.mutmut]\npaths_to_mutate=["{relative}"]\n', encoding="utf-8"
+        )
+        with pytest.raises(InvalidConfigValueError, match="filesystem alias"):
+            load_config()
+        result = CliRunner().invoke(cli, ["run", "--dry-run", "--output", "json"])
+        assert result.exit_code == 2
+        assert "filesystem alias" in result.output
+        assert not (tmp_path / "mutants").exists()
+
+    @pytest.mark.parametrize("selected", ["src/package", "SRC/PACKAGE", "src/real~1"])
+    def test_existing_case_spelling_and_real_tilde_names_remain_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src/package").mkdir(parents=True)
+        (tmp_path / "src/real~1").mkdir()
+        config = MutmutConfig(paths_to_mutate=[selected])
+        assert config.paths_to_mutate == [selected]
+
+    @given(st.text(alphabet=string.ascii_lowercase, min_size=1, max_size=8))
+    def test_existing_directory_case_variants_preserve_configuration(self, name: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="mutmut-alias-property-") as directory:
+            project = Path(directory)
+            (project / name).mkdir()
+            config = MutmutConfig.model_validate(
+                {"paths_to_mutate": [name.upper()]}, context={"project_root": project}
+            )
+            assert config.paths_to_mutate == [name.upper()]
 
 if TYPE_CHECKING:
     from collections.abc import Callable
