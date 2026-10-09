@@ -257,7 +257,7 @@ class TestScoreArithmetic:
             (f"live{i}", "survived") for i in range(survived)
         ]
         baseline = compute_cicd_stats(population)
-        extended = compute_cicd_stats(population + [("skip", "skipped"), ("uncovered", "no tests")])
+        extended = compute_cicd_stats([*population, ("skip", "skipped"), ("uncovered", "no tests")])
         assert extended.total == baseline.total + 2
         assert extended.scoreable == baseline.scoreable
         assert extended.score == baseline.score

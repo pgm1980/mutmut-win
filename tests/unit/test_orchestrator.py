@@ -1172,7 +1172,8 @@ class TestSortByEstimatedTime:
         executor.start.assert_called_once()
         fast = [task for task in captured if ".x_fast__mutmut_" in task.mutant_name]
         slow = [task for task in captured if ".x_slow__mutmut_" in task.mutant_name]
-        assert fast and slow
+        assert fast
+        assert slow
         assert captured == fast + slow
         assert {task.estimated_time for task in fast} == {0.1}
         assert {task.estimated_time for task in slow} == {5.0}
