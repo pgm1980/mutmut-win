@@ -36,31 +36,37 @@ Anfragen nennen diese Implementierungssession
 eigene Interpretation. Antworten werden im Ledger gebunden. Sie sind
 keine Ersatzabnahme der Implementierung.
 
-Arbeitsstand 2026-10-09: Die Kandidatenledger mit Rot-/Grün-/Rücknahmebelegen
-werden fortlaufend je Karte gebunden. Drei integrierte Zwischenstände wurden
-mit 224, 317 und 183 bestandenen Regressionstests (im zweiten Lauf ein
-dokumentierter Skip) sowie jeweils Ruff, Format, mypy und import-linter
-geprüft. Die vier Statikgates bestehen auch nach Integration der kanonischen
-Laufzeitnamen, der zusätzlichen Inhaltsgegenlesung und des Clean-Typfilter-Fixes.
-Das ist noch keine finale Abnahme. Jeder Beleg behält seinen eigenen
-Source-/Test-/Lockstand.
+Arbeitsstand 2026-10-09: Auf ausdrückliche PO-Anweisung nach Abschluss der
+drei vorhandenen Agentenaufträge und der begonnenen Hauptsession-Integration
+pausiert. Verbindlicher Fortsetzungscheckpoint: `PO-PAUSE.md`; maschinenlesbar
+`SANIERUNGSLEDGER.json` mit allen 270 S3-IDs und eigenständiger Evidenzbindung.
 
-Die Laufzeitnamensprüfung S3-007 hat 12 erfolgreiche CLI-Arme und einen
-weiterhin zu qualifizierenden Exportarm am früheren Kandidaten. S3-016 besteht
-seine vier echten Clean-Kontrollen; die gezielte Quellrücknahme reproduziert
-zwei Fehler. Die Inhaltsgegenlesung für S3-001 besteht 60 gezielte Kontrollen
-und die erweiterte Auswahl mit insgesamt 173 PASS und drei Skips; Benchmark und integrierte
-Reuse-/Export-Wiederholung folgen. S3-020/030 werden nach ihrer terminalen
-isolierten Abnahme integriert.
+Die Kandidaten aller 50 konkreten Karten sind integriert. Für die 220 zunächst
+unverifizierten Karten bleiben individuelle Prüfaufträge und Grenzen erhalten
+(95 P2, 125 P3). Statische Beobachtungen begründen kein pauschales Fehlerurteil.
 
-Alle 220 unverifizierten Karten besitzen individuelle aktuelle Prüfaufträge
-und präzise Grenzen in getrennten Registern (95 P2, 125 P3). Statische
-Gegenbeobachtungen werden nicht zu dynamischen Fehler- oder Widerlegungsbelegen.
-Die sporadischen Basisfehler früherer Läufe bleiben sichtbar; ihre genaue
-historische Ursache wird nicht aus dem neuen Hashfix abgeleitet. Der rohe
-Dependency-Audit bleibt FAIL. Eine konkrete Semgrep-/Lock-Upgradeoption wird
-isoliert für eine PO-Entscheidung über den verbindlichen Pin vorbereitet.
+Eigene Prüfung des Code-/Test-/Lockstands c373982: 80 ausgewählte Vertragstests,
+Ruff, Format, mypy strict, import-linter, kanonisches Semgrep, nativer
+Release-Wrapper und vollständiger Environment-Audit PASS. Der Audit umfasst
+130 Windows-Abhängigkeiten inklusive pip und packaging ohne gemeldete
+Schwachstellen oder Skips. Semgrep 1.180.0/PyJWT 2.15.1 sind ausdrücklich vom
+PO genehmigt und integriert; CI prüft jetzt zusätzlich die frische volle
+Lock-Umgebung. Historische rote Belege bleiben unverändert nachvollziehbar.
 
-Die vom PO bestätigte Lifecycle-Korrektur gilt identisch für AGENTS.md und
-CLAUDE.md: Der ausführbare Vertrag mit 17 Feldern bleibt erhalten. Kein
-Sprint-Abschlussflag wird aus diesen Zwischenständen abgeleitet.
+S3-001: Inhaltshash-Gegenkontrollen und begrenzter Vorher-/Nachher-Benchmark
+abgeschlossen; höhere Laufzeitkosten ausdrücklich dokumentiert. S3-016:
+positive Clean-Phasen-/Token-/Exitbeobachtung und identisch gebundener
+Rot-/Grünvergleich liegen vor. S3-020/030 sind integriert. Der abschließende
+CLI-/Reuse-/Exportumfang samt eigener Source-/Test-/Lockbindung steht in
+`PO-PAUSE.md` und im verlinkten terminalen Agentenledger.
+
+AGENTS.md und CLAUDE.md enthalten beide den vom PO bestätigten ausführbaren
+17-Felder-Lifecyclevertrag und den genehmigten Semgrep-Pin. Der Reviewer hat
+seine begonnenen Gegenprüfungen abgeschlossen und pausiert. Seine Antworten
+erteilen keine Releasefreigabe.
+
+Die vollständige integrierte pytest-Suite mit Coverage und die tatsächliche
+Mutation des geänderten Produktionscodes bleiben NOT_EXECUTED am finalen
+integrierten Stand. Historische Basis-/Exportfehler werden nicht rückwirkend
+dem neuen Hashfix zugeschrieben. Weiterhin NO-GO; keine Sprint-Abschlussflags.
+Keine neuen Aufgaben oder Kampagnen bis zur ausdrücklichen Wiederaufnahme.

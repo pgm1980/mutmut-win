@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "thread_id": "01a11fac-70d2-7880-8a58-8db2ac2df94e",
-  "state": "IN_PROGRESS",
+  "state": "PAUSED_BY_PO",
   "baseline_commit": "fef1b61358dd6f860dbc7d9ec353c5334905d02e",
   "branch": "fix/v3.1.0-s3-sanierung",
   "platform": "Windows CPython 3.14.7",
   "frozen_manifest_sha256": "039138cde34f5fa872c45212cc676b2b5014df044fb385d29f35fd71a2c0b0b2",
   "evidence_root": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac",
-  "acceptance": "NO_GO_UNTIL_FINAL_GATES",
+  "acceptance": "NO_GO_FULL_COVERAGE_AND_PRODUCTION_MUTATION_OUTSTANDING",
   "plan": [
     {
       "name": "Preserve baseline, full manifest verification, authority and live processes",
@@ -121,55 +121,32 @@
         "src/mutmut_win/stats.py:836",
         "src/mutmut_win/stats.py:851"
       ],
-      "status": "SCOPED_PASS_NATIVE_REUSE_EXPORT_AND_BENCHMARK_PENDING",
+      "status": "SCOPED_PASS_FULL_COVERAGE_AND_MUTATION_OUTSTANDING",
       "source_binding": {
-        "commit": "e4470f9d4e3eff6bd651bad8af62c0f63100ab21",
-        "test_commits": [
-          "387ce0d",
-          "082c2e9"
-        ],
-        "lock_sha256": "d20c5b2efddc6832b3a14e082851e6a692a0676e7b1be95bfb1b8590ed1a0cd6"
+        "integrated_source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+        "candidate_commit": "1529d8b5c3d3125d08ba98b9f473d16b9adfe108",
+        "integrated_inputs": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+          "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+        }
       },
-      "red": [
-        {
-          "receipt": "s3-001-unit-red.json",
-          "result": "FAIL_EXPECTED",
-          "detail": "4 regressions fail before source fix"
-        },
-        {
-          "receipt": "s3-001-cli-red-frozen.json",
-          "result": "BUG_REPRODUCED",
-          "detail": "Same lax context reuses 3 kills/100/complete/Exit0; forced rerun 3 survivors/0/complete/Exit1"
-        }
-      ],
+      "red": "Revert only stats.py to c1dde66 with all60 final tests unchanged:18 FAIL/42 PASS. Restore exact1529d8b bytes:60 PASS. The18 include new read-budget/hook-reachability assertions and are not18 independent native defect reproductions.",
       "green": [
-        {
-          "receipt": "s3-001-unit-green.json",
-          "result": "PASS",
-          "passed": 113,
-          "skipped": 3,
-          "scope": "environment, result reuse, dependency basis, stats diagnostics"
-        },
-        {
-          "receipt": "s3-001-cli-green-frozen.json",
-          "result": "FAIL",
-          "detail": "same-strict healthy-reuse assertion fails; verdicts3K/100 and terminal basis true, timing context reuse disabled as incomplete; cause under diagnosis; changed-lax and fresh-lax NOT_EXECUTED"
-        }
+        "60 direct controls PASS; 173 PASS and 3 documented SKIP in four related modules. Ruff, format, mypy strict and import-linter scoped PASS."
       ],
       "causal_control": [
-        {
-          "red": "s3-001-causal-red.json",
-          "red_outcome": "4 expected hash assertions",
-          "restored": "s3-001-causal-restored-green.json",
-          "restored_outcome": "4 PASS",
-          "checkout": "astra-s3-causal-001",
-          "source": "e4470f9, only stats.py replaced with 082c2e9 then byte-restored"
-        }
+        "Revert only stats.py to c1dde66 with all60 final tests unchanged:18 FAIL/42 PASS. Restore exact1529d8b bytes:60 PASS. The18 include new read-budget/hook-reachability assertions and are not18 independent native defect reproductions."
       ],
-      "healthy_controls": [],
+      "healthy_controls": [
+        "40 real writes after H1 over source/alias with restored mtime, with/without native link churn.",
+        "Native HIDDEN changes at first read, H2 completion and final rebound; native readonly control.",
+        "H2 read error, deterministic early EOF testdouble, native observable write/truncate/link drift during H2.",
+        "Real native lexical displacement/replacement after H2 via FILE_SHARE_DELETE test handles, plus healthy same-path control.",
+        "Unchanged file and healthy foreign link change consume exactly two file lengths through two handles; third fresh handle consumes zero content, five fstat observations total.",
+        "Canonical hasher receives first-stream bytes only. Completed bounded benchmark shows identical healthy small/large input digests and separately measured helper budgets; no whole-basis cross-environment digest equality claim."
+      ],
       "affected_callers": [
-        "_installed_distribution_basis -> dependency/context and run basis",
-        "Stored verdict reuse and evidence completeness through execution basis"
+        "s3-001-callers-serena.json: context tree, runtime identity, project import core, effective import paths, installed distributions, stats context evidence"
       ],
       "side_effects": [
         "Any inherited input drift invalidates verdict reuse; byte-identical environment remains stable",
@@ -177,12 +154,19 @@
         "Existing curated-environment assertions corrected and retained with explicit S3-001 supersession comments"
       ],
       "gates": [],
-      "mutation": null,
+      "mutation": {
+        "status": "NOT_EXECUTED",
+        "scope": "Changed production modules"
+      },
       "remaining_limits": [
-        "The repeated full CLI strict/same/lax/fresh control passed; the original failed run remains preserved.",
-        "Current P1 full suite was FAIL with six failures; four obsolete mocks were corrected in 8fb5acd. Two intermittent basis diagnostics remain under investigation.",
-        "Real concurrent hardlink add/remove now reproduces incomplete hashing (2 FAIL, 3 controls PASS). It is not retrospectively proven to be the cause of the two prior failures.",
-        "Final integrated gates and production mutation remain pending."
+        "Two agreeing bounded observations are not a universal atomicity guarantee against arbitrary repeated coordinated writes.",
+        "Historical full-suite/export failures remain bound to their original receipts; this fix does not establish their exact retrospective cause.",
+        "The old local diagnostic observer fixture was excluded from commit1529d8b and preserved externally before restoration; its isolated Ruff TC003 failure is not hidden.",
+        "Earlier candidate greens are historical and do not supersede later counterexamples.",
+        "Integrated native CLI reuse/export qualification, full final gates and product mutation remain NOT_EXECUTED for this content-fix ledger. The source-bound benchmark is complete only within its explicitly limited local measurement scope.",
+        "Historical candidate-ledger statements that CLI or security/native/audit gates are still open describe the older ledger scope. Consult latest_cli_qualification and integrated_intermediate_gates for subsequent terminal results.",
+        "Latest CLI ledger is a separate precisely bound candidate; its lock/source identity is not silently promoted to the final integrated candidate.",
+        "Final complete pytest/coverage and production mutation remain NOT_EXECUTED on the integrated candidate."
       ],
       "supplemental_evidence": [
         "s3-001-cli-repeat-frozen.json",
@@ -197,6 +181,29 @@
         "commit": "1529d8b5c3d3125d08ba98b9f473d16b9adfe108",
         "integrated": true,
         "final_acceptance": false
+      },
+      "latest_candidate_ledger": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-001-CONTENT-LEDGER-V2.json",
+        "sha256": "b6e068e9c6ed7c3bfd83a634eb4abf76669696531285c0243e4ea5a5ada4713b"
+      },
+      "latest_cli_scope": {
+        "status": "PASS",
+        "wrapper_tests": 1,
+        "phases": 4,
+        "duration_seconds": 646.39,
+        "case_ledger": "REUSE-CASE-LEDGER.json",
+        "successful_public_exports": 4,
+        "strict": "3 killed, 0 survived, score 100, run exit 0, export exit 0",
+        "same_strict": "Same results; real stderr confirms Reused 3 cached verdicts",
+        "changed_lax": "0 killed, 3 survived, score 0, min-score exit 1, export exit 0; no retained three-kill reuse",
+        "fresh_lax": "Same survivor population and score with --rerun-all; run exit 1, export exit 0",
+        "input_environment_unique_count_excluding_strict": 1,
+        "basis": "Actual CLI, actual dependencies/interpreter, actual DB, original execution_basis_complete and completed-run assertions; no dummy basis",
+        "harness": "External wrapper calls the unchanged original test and all its assertions, replacing only its launcher with actual uv run and adding public exports",
+        "harness_sha256": "877c8dad3b0b9df694a3f28d2dce3bb5d6bb37c169efd63b16fbdd3ef559caac",
+        "warnings": [
+          "Two PytestUnknownMarkWarning for imported e2e and slow marks: external harness rootdir C:\\Users\\pmitt did not load project marker registration. Preserved; no rerun or assertion relaxation."
+        ]
       }
     },
     {
@@ -591,25 +598,77 @@
         "src/mutmut_win/orchestrator.py:2023",
         "src/mutmut_win/runner.py:594"
       ],
-      "status": "FIX_IMPLEMENTED_VERIFICATION_IN_PROGRESS",
-      "source_binding": null,
-      "red": [],
-      "green": [],
-      "causal_control": [],
+      "status": "CLI_MATRIX_13_PASS_FULL_COVERAGE_AND_MUTATION_OUTSTANDING",
+      "source_binding": {
+        "integrated_source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+        "cli_candidate_commit": "22b2eccd343791aa87d4ae2f3239c6005b9f2a1d",
+        "exact_cli_binding": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-001-integrated-cli\\FINAL-LEDGER.json",
+          "sha256": "b0cdb19a892028097cc1655c1704e1068d7a5346ae14a1db9a7df6fbebedc7ff"
+        },
+        "integrated_inputs": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+          "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+        }
+      },
+      "red": [
+        "Historical causal journal control:9 FAIL/74 PASS/13 deselected; receipt and unchanged-test restored arm retained separately."
+      ],
+      "green": [
+        "Terminal runtime CLI matrix:13 PASS,16 deselected on22b2ecc, unchanged source/test/lock. This includes expected conservative rejection controls; thirteen passing cases do not mean thirteen successful mutation campaigns.",
+        "Historical restored journal control:83 PASS/13 deselected; does not replace final full-suite coverage or production mutation."
+      ],
+      "causal_control": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-causal-red.json",
+          "sha256": "89fdf7092a9f308a88d3fdff24afc2bd5aa3159e29e9ceb4103fdd6375e96de1"
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-causal-red.log",
+          "sha256": "9e73aa52dcd4bc6808977cea0602af23c2d0eba4deff7191eafdf8cb0355a93d"
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-restored.json",
+          "sha256": "f9f21f88dcac55ca30bf0553f4913a812745ae88aef9841b10780c04b0b8fbc4"
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-restored.log",
+          "sha256": "404711fd235eba10531e40b75a515a77230328e3a44af9e9881e071598b968be"
+        }
+      ],
       "healthy_controls": [],
       "affected_callers": [],
       "side_effects": [],
       "gates": [],
-      "mutation": null,
+      "mutation": {
+        "status": "NOT_EXECUTED",
+        "scope": "Changed-production qualification; fixture campaigns in the CLI matrix are separate evidence"
+      },
       "remaining_limits": [
-        "Current fixed-control plus cumulative event journal candidate 50c1fd5: nine expected causal failures; restored 83 tests PASS.",
-        "Thirteen complete CLI cases still running; final integration, full gates and production mutation pending.",
-        "Pure child-only forced-fail attribution may conservatively block under reviewer response 011; separate parent function healthy controls are required."
+        "Read the terminal CLI ledger for exact case verdicts and source/test/lock binding; historical failures remain preserved.",
+        "Pure child-only forced-fail attribution retains its documented conservative boundary.",
+        "Integrated full pytest/coverage and changed-production mutation remain NOT_EXECUTED."
       ],
       "supplemental_evidence": [
         "s3-007-journal-causal-red.json",
         "s3-007-journal-restored.json"
-      ]
+      ],
+      "latest_cli_ledger": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-001-integrated-cli\\FINAL-LEDGER.json",
+        "sha256": "b0cdb19a892028097cc1655c1704e1068d7a5346ae14a1db9a7df6fbebedc7ff"
+      },
+      "latest_cli_scope": {
+        "status": "PASS",
+        "selected_tests": 13,
+        "deselected_tests": 16,
+        "duration_seconds": 1415.66,
+        "case_ledger": "CLI-CASE-LEDGER.json",
+        "successful_public_exports": 6,
+        "recorded_child_calls": 6,
+        "test_oracle": "Unchanged from 50c1fd5 and 60a1ffb; git diff for the tracked matrix and S3-001 test is empty",
+        "rejected_cases": "PASS includes intentional alias rejection; child-only canonical refuses score/export authority under the existing Forced-Fail boundary",
+        "historical_limit": "Historical 50c1fd5 12 PASS / 1 export FAIL is preserved. Current integrated PASS does not retrospectively identify its cause."
+      }
     },
     {
       "s3_id": "S3-008",
@@ -980,18 +1039,54 @@
         "src/mutmut_win/orchestrator.py:971",
         "src/mutmut_win/orchestrator.py:764"
       ],
-      "status": "SCOPED_PASS_INTEGRATED_FINAL_GATES_PENDING",
-      "source_binding": null,
-      "red": [],
-      "green": [],
-      "causal_control": [],
-      "healthy_controls": [],
-      "affected_callers": [],
+      "status": "SCOPED_PASS_FULL_COVERAGE_AND_MUTATION_OUTSTANDING",
+      "source_binding": {
+        "integrated_source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+        "candidate_commit": "cb39b3a952b7f6d8c75efddab0dcb86a4329bb9e",
+        "integrated_inputs": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+          "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+        }
+      },
+      "red": "Real generated mutants and native Clean runner: 2 FAIL / 2 healthy PASS before the fix. All-caught skipped Clean; remaining tasks invoked the filter before failing Clean.",
+      "green": [
+        "Final cb39b3a phase matrix:4 PASS. Before type-filter entry, both healthy arms observe successful original assertions in the real current Clean subprocess, exact current token hash and real _run_phase exit0. Both failing arms show exit1, no marker, no filter and no persisted result rows. Final Ruff/Format/mypy/imports receipts PASS on this same source/test/lock binding."
+      ],
+      "causal_control": [
+        "Final testhash4cbeb8d9.. unchanged across controlled pair; only orchestrator.py restored to4195fb6 source bytes:healthy selected arms2 FAIL/2 deselected on missing completed-clean exit proof ([] versus[0]) before filter decision. Exact cb39b3a production bytes restored:full four-arm matrix4 PASS. Earlier marker-only testhash1182d3d1.. is a separate preserved stage, not the same final testbytes."
+      ],
+      "healthy_controls": [
+        "Real PytestRunner._run_phase is transparently observed, delegated exactly once per phase, and its actual exitcode returned unchanged; it is not replaced by a canned Clean result.",
+        "Marker is a sibling outside frozen project/staging, absent initially and immediately before the actual Clean phase. Only after the original assertion passes does the subprocess write SHA256 of its current MUTMUT_CLEAN_NAMES_TOKEN while MUTANT_UNDER_TEST is empty.",
+        "At type-filter entry, before catch_all decision:clean_exits==[0], exactly one observed current token and marker text equal to that token SHA. Stats, forced-fail and normal mutant workers cannot satisfy this claimed signal.",
+        "Both broken arms return actual Clean exit1, do not create the marker, never call the filter and leave no result rows.",
+        "Only the type-filter decision is a behavioral double; no claim that a real mypy invocation catches every generated mutant. Generation, Clean execution, basis construction, remaining worker execution and finalization remain real.",
+        "Generic type_check_command still yields execution_basis_complete false and absent persisted tests_fingerprint; marker is not productive basis/reuse/score/export authority."
+      ],
+      "affected_callers": [
+        "MutationOrchestrator._run_pipeline",
+        "_filter_with_type_checker",
+        "CleanTestFailedError",
+        "PytestRunner.run_clean_test",
+        "PytestRunner._run_phase",
+        "_run_with_identity run finalization"
+      ],
       "side_effects": [],
       "gates": [],
-      "mutation": null,
+      "mutation": {
+        "status": "NOT_EXECUTED",
+        "scope": "Changed production modules"
+      },
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Old assertion that healthy arms execute real Clean was under-observed in the first test revision. V2 binds the stronger positive subprocess-body/current-token/exitcode proof to final testhash4cbeb8d9.. and the controlled final red/restore pair.",
+        "The phase observer is instrumentation delegating to the actual _run_phase; the only substituted behavioral decision is type_filter. It does not prove a real mypy all-caught classification.",
+        "Earlier harness failures from DB-in-mutants and missing .mutmut-cache are preserved as historical failures, not causal product evidence.",
+        "Marker proves successful body execution; suite success additionally requires the actual clean phase exit0. It confers no productive authority.",
+        "This is in-process orchestrator integration with actual subprocesses, not a newly executed top-level CLI acceptance. Native CLI/score/export qualification, integrated full coverage/security/native/audit gates and mutation remain open.",
+        "Reviewer019/020 validated requirements and earlier evidence. The final cb39b3a phase pair is independently receipt-reviewed here; no new reviewer acceptance is invented.",
+        "Historical candidate-ledger statements that CLI or security/native/audit gates are still open describe the older ledger scope. Consult latest_cli_qualification and integrated_intermediate_gates for subsequent terminal results.",
+        "Latest CLI ledger is a separate precisely bound candidate; its lock/source identity is not silently promoted to the final integrated candidate.",
+        "Final complete pytest/coverage and production mutation remain NOT_EXECUTED on the integrated candidate."
       ],
       "wave4_candidate": {
         "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-016-LEDGER.json",
@@ -999,6 +1094,10 @@
         "commit": "931bf230e96d6feb12c017e4aaf6659da7182aaf",
         "integrated": true,
         "final_acceptance": false
+      },
+      "latest_candidate_ledger": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-016-LEDGER-V2.json",
+        "sha256": "001881b217826696d789ba99b13eab74565e335b35743371d3b449aa461d5d5c"
       }
     },
     {
@@ -2513,18 +2612,101 @@
         "scripts/semgrep_release_gate.py:1301",
         "scripts/semgrep_release_gate.py:1898"
       ],
-      "status": "VERIFICATION_IN_PROGRESS",
-      "source_binding": null,
-      "red": [],
-      "green": [],
+      "status": "CURRENT_INTEGRATED_GATE_PASS_NOT_RELEASE_ACCEPTANCE",
+      "source_binding": {
+        "integrated_source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+        "integrated_inputs": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+          "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+        }
+      },
+      "red": [
+        "Canonical integrated-security-red: FAIL semgrep-findings;43 expected,44 actual;19 missing/20 extra. Full diagnostic report preserved, no Raw-scan PASS substitution."
+      ],
+      "green": [
+        "Official canonical wrapper at c373982:360 targets,346 rules,44 exact adjudicated findings,0 unexpected/errors/skipped rules/fixpoint timeouts; full postscan integrity checks PASS."
+      ],
       "causal_control": [],
       "healthy_controls": [],
       "affected_callers": [],
       "side_effects": [],
-      "gates": [],
-      "mutation": null,
+      "gates": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.json",
+          "sha256": "9101dddbc015e9725a977b6591845df967cdb93e19f0c99aedc16c4ad6d0a22a",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stdout.log",
+            "sha256": "f2d5198a544621a139c567d4189b92046a3a883f2b8a18156caebea8c2d5d192"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.json",
+          "sha256": "ceb7885dc3581d42e690279a2cf1845023c411af7240eaef3bc4b17e5323fa43",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stdout.log",
+            "sha256": "c6b7f2b366877a09235287ea5eb16c99595f4afa4f925f5874f88d310632bed5"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.json",
+          "sha256": "dc311bd3f9f48c3a6d24c631eb09918cec7210c4b8dcb5e55ecf42bc02fbcc3e",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stdout.log",
+            "sha256": "6236c14ee25cbf6d7f4d33a7f725751159dd9a4ea7f7d8e27e29e3b7be9b3b9d"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.json",
+          "sha256": "bead948237bd4c6b37dda95493f974185942b08000b6e75c27ceb50332bc597e",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stdout.log",
+            "sha256": "88c9b05206f13ee75b469c4197f70ac6a480d19439331476bcc961305847d4de"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stderr.log",
+            "sha256": "4e4757ff226a44b5c448b1c4624619419c22d5272463dc19510b4754871a72f9"
+          }
+        }
+      ],
+      "mutation": {
+        "status": "NOT_EXECUTED",
+        "scope": "Source/script changed-surface qualification remains outstanding"
+      },
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "PO-approved pin change is not proof of historical exploitability or a retrospectively established cause.",
+        "Full integrated pytest/coverage and production mutation remain NOT_EXECUTED; no release authority."
       ],
       "individual_verification": {
         "register": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p4-open-verification-p2\\P2-VERIFICATION-REGISTER.json",
@@ -2559,18 +2741,104 @@
         "scripts/semgrep_release_gate.py:1301",
         "scripts/semgrep_release_gate.py:1914"
       ],
-      "status": "RAW_AUDIT_FAIL_RELEASE_BLOCKING",
-      "source_binding": null,
-      "red": [],
-      "green": [],
+      "status": "CURRENT_INTEGRATED_GATE_PASS_NOT_RELEASE_ACCEPTANCE",
+      "source_binding": {
+        "integrated_source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+        "integrated_inputs": {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+          "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+        }
+      },
+      "red": [
+        "Previous lock raw audit reported14 advisories; first upgraded requirements report omitted already satisfied pip/packaging. Both limitations retained in the security-option ledger.",
+        "CI denominator contract:1FAIL before addition of separate fresh full-lock environment audit."
+      ],
+      "green": [
+        "Own current freshly locked installed-environment audit --strict:130 dependencies,0 reported vulnerabilities,0 skips; includes pip26.2.1 and packaging26.3.",
+        "Selected80 gate-contract tests PASS; native release wrapper PASS after CI change."
+      ],
       "causal_control": [],
       "healthy_controls": [],
       "affected_callers": [],
       "side_effects": [],
-      "gates": [],
-      "mutation": null,
+      "gates": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.json",
+          "sha256": "9101dddbc015e9725a977b6591845df967cdb93e19f0c99aedc16c4ad6d0a22a",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stdout.log",
+            "sha256": "f2d5198a544621a139c567d4189b92046a3a883f2b8a18156caebea8c2d5d192"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.json",
+          "sha256": "ceb7885dc3581d42e690279a2cf1845023c411af7240eaef3bc4b17e5323fa43",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stdout.log",
+            "sha256": "c6b7f2b366877a09235287ea5eb16c99595f4afa4f925f5874f88d310632bed5"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.json",
+          "sha256": "dc311bd3f9f48c3a6d24c631eb09918cec7210c4b8dcb5e55ecf42bc02fbcc3e",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stdout.log",
+            "sha256": "6236c14ee25cbf6d7f4d33a7f725751159dd9a4ea7f7d8e27e29e3b7be9b3b9d"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stderr.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.json",
+          "sha256": "bead948237bd4c6b37dda95493f974185942b08000b6e75c27ceb50332bc597e",
+          "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+          "exit_code": 0,
+          "source_files": 462,
+          "unchanged": true,
+          "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+          "stdout": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stdout.log",
+            "sha256": "88c9b05206f13ee75b469c4197f70ac6a480d19439331476bcc961305847d4de"
+          },
+          "stderr": {
+            "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stderr.log",
+            "sha256": "4e4757ff226a44b5c448b1c4624619419c22d5272463dc19510b4754871a72f9"
+          }
+        }
+      ],
+      "mutation": {
+        "status": "NOT_EXECUTED",
+        "scope": "Source/script changed-surface qualification remains outstanding"
+      },
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "PO-approved pin change is not proof of historical exploitability or a retrospectively established cause.",
+        "Full integrated pytest/coverage and production mutation remain NOT_EXECUTED; no release authority.",
+        "Advisory4146 has no published first-fix version; claim only that the current full audit does not report locked PyJWT2.15.1 affected."
       ],
       "wave4_candidate": {
         "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-audit-config-docs\\S3-052-038-LEDGER-FINAL-51aa45f.json",
@@ -2594,6 +2862,10 @@
         "dynamic_status": "NOT_EXECUTED",
         "remaining_exact_check": "Gelockten vollständigen Raw-Audit und kanonischen policygebundenen Audit auf identischem Export ausführen; jede Advisory-ID/Version/Begründung abgleichen. Erreichbarkeit separat prüfen, keinen Exploit aus Advisory allein ableiten.",
         "scope": "Independent read-only P2 review; specific later qualified remediation/audit evidence takes precedence where separately bound."
+      },
+      "security_option_ledger": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p4-security-option\\S3-052-OPTION-LEDGER.json",
+        "sha256": "75e4119537a265f17090990a7015cbcfc14942c013947094c01ac42d98688e6b"
       }
     },
     {
@@ -13877,8 +14149,23 @@
     {
       "date": "2026-10-09",
       "topic": "Sprint state schema",
-      "decision": "Retain executable17-field lifecycle contract; correct AGENTS schema",
+      "decision": "Retain executable17-field lifecycle contract; correct both AGENTS.md and CLAUDE.md as explicitly directed by the PO.",
       "source": "Direct user reply in thread01a11fac-70d2-7880-8a58-8db2ac2df94e"
+    },
+    {
+      "date": "2026-10-09",
+      "topic": "Security pins",
+      "decision": "PO explicitly approved Semgrep1.180.0 and PyJWT2.15.1. AGENTS.md and CLAUDE.md updated. No release acceptance implied.",
+      "evidence": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-SEMGREP-PIN-DECISION.json",
+        "sha256": "d8d3dd7bd6000f1b23fd50f57f35c4ab9d1319020065b1bf4c3b3d7a0b279c63"
+      }
+    },
+    {
+      "date": "2026-10-09",
+      "topic": "Pause after current work",
+      "decision": "Finish the three existing background assignments and already-started main-session integration/ledger tasks; reviewer finishes current check and pauses. No new full-suite or mutation campaigns before explicit continuation.",
+      "source": "Direct human user instruction in thread01a11fac-70d2-7880-8a58-8db2ac2df94e"
     }
   ],
   "integrated_intermediate_gates": [
@@ -14093,6 +14380,142 @@
         "Contracts: 1 kept, 0 broken."
       ],
       "scope": "Intermediate integrated candidate; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.json",
+      "sha256": "9101dddbc015e9725a977b6591845df967cdb93e19f0c99aedc16c4ad6d0a22a",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stdout.log",
+        "sha256": "f2d5198a544621a139c567d4189b92046a3a883f2b8a18156caebea8c2d5d192"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.json",
+      "sha256": "ceb7885dc3581d42e690279a2cf1845023c411af7240eaef3bc4b17e5323fa43",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stdout.log",
+        "sha256": "c6b7f2b366877a09235287ea5eb16c99595f4afa4f925f5874f88d310632bed5"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.json",
+      "sha256": "dc311bd3f9f48c3a6d24c631eb09918cec7210c4b8dcb5e55ecf42bc02fbcc3e",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stdout.log",
+        "sha256": "6236c14ee25cbf6d7f4d33a7f725751159dd9a4ea7f7d8e27e29e3b7be9b3b9d"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.json",
+      "sha256": "4e09ab84e861326b3c6f35dca4c7bc786184769698c001b5cf43d43e21f70bb9",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.stdout.log",
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.json",
+      "sha256": "b507313618db65d7785f664d2c377ceca5788a6beb61fefc8280bcf8ab5b9516",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.stdout.log",
+        "sha256": "9a5619a25c32a8f39f0bb1d9b3330bd6f749c97aacc71a5270b01ece69d70e7f"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.json",
+      "sha256": "992ed293286b4851efb5893c9152c599927ac454ca04da1362a610079b47c870",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.stdout.log",
+        "sha256": "73cc387dbefa102cdfc7d7db87d6c95c795a4f8d220916a50712bbe6567a758e"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.stderr.log",
+        "sha256": "5b115d54ec1213cfbe06053adcff78e794107566ac4e832613fcb899b4d3b911"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.json",
+      "sha256": "2cfa7f1bcfb44f995488021e526301bed2ce90950751b0a3fe27527dc03f24b0",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.stdout.log",
+        "sha256": "583d4150fea12f85903b9eea08b21823936d91b78a8f022818c338c38be39b7e"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.json",
+      "sha256": "bead948237bd4c6b37dda95493f974185942b08000b6e75c27ceb50332bc597e",
+      "source_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+      "exit_code": 0,
+      "source_files": 462,
+      "unchanged": true,
+      "scope": "Integrated pre-pause candidate; selected80 tests only; full pytest/coverage and production mutation NOT_EXECUTED",
+      "stdout": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stdout.log",
+        "sha256": "88c9b05206f13ee75b469c4197f70ac6a480d19439331476bcc961305847d4de"
+      },
+      "stderr": {
+        "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stderr.log",
+        "sha256": "4e4757ff226a44b5c448b1c4624619419c22d5272463dc19510b4754871a72f9"
+      }
     }
   ],
   "reviewer_response_receipts": [
@@ -14189,8 +14612,63 @@
       "sha256": "58d8905386d8879a351bfbef4529a46cbcaf8f74cb930a645caf2c7709302ba9",
       "clarification": 17,
       "authority": "Reviewer clarification, not candidate acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-019.json",
+      "sha256": "fa66f4120595298ecff4b2deca54940521487c15d27dc6caebec8b2ef16f5497",
+      "clarification": 19,
+      "authority": "Reviewer clarification, no release acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-020.json",
+      "sha256": "2b78b87b24a7d6442ee9f1ebb2becfa7c0206913ed8d76278037094baa806b39",
+      "clarification": 20,
+      "authority": "Reviewer clarification, no release acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-021.json",
+      "sha256": "4d59b6f9cf32f91222713c2b8e4f6922d9c95f8b30631cda7d3fb5a6b0323cdc",
+      "clarification": 21,
+      "authority": "Reviewer clarification, no release acceptance"
     }
   ],
-  "checkpoint_commit": "9ef9130d910db3973af82bfe93f61e06ab7c65ba",
-  "checkpoint_at": "2026-10-09T14:21:07.2947451+02:00"
+  "checkpoint_commit": "c37398255e71ed0748f48fe53b5a2e1b0f6ebf7d",
+  "checkpoint_at": "2026-10-09T15:20:18.4172679+02:00",
+  "pause_source_binding": {
+    "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+    "sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4"
+  },
+  "protected_integrity": {
+    "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-PROTECTED-INTEGRITY.json",
+    "sha256": "de5d9e89a30f9a6a30f29dd584fc5ceb56770e569cfa9d672417bb18969e1ec0"
+  },
+  "security_adjudication": {
+    "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\ADJUDICATION.json",
+    "sha256": "c828c35ca2d30560b9afd9fb86b2e6fe69a01f87a20e1d16bc3ffaba89e1bd18"
+  },
+  "latest_cli_qualification": {
+    "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-001-integrated-cli\\FINAL-LEDGER.json",
+    "sha256": "b0cdb19a892028097cc1655c1704e1068d7a5346ae14a1db9a7df6fbebedc7ff"
+  },
+  "reviewer_pause_checkpoint": {
+    "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\sol-s3-reviewer-pause-20261009-01a11c92\\PAUSE-CHECKPOINT-01a120b5.json",
+    "sha256": "2994b3ac923fd39d8110e59b4ba10298b53a79c411860fc05f57b5be254f3ebc"
+  },
+  "root_config_integration_evidence": [
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\root-config-integration-red.json",
+      "sha256": "aea90c77ff2acd5e5b56fa8ad9f641a1bbb2c7e55ed2d458406c8f773757fbff"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\integrated-config-mypy-green.json",
+      "sha256": "545e135a1d28f1063c496e427125f60be9f99c27e3a5f78d95182badda1e79ae"
+    }
+  ],
+  "latest_cli_manifest_verification": {
+    "files": 391,
+    "hash_mismatches": 0,
+    "manifest": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-001-integrated-cli\\SHA256-MANIFEST.json",
+    "manifest_sha256": "74cfc793979d431b87b70ac70474ab82c830f1dee6025f76e6ba76615739ef72",
+    "verified_by": "root"
+  }
 }
