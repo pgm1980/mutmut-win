@@ -142,12 +142,14 @@ class TestExportDenominatorLine:
         assert stats.effective_killed == 40
         assert stats.score == pytest.approx(40 / 56 * 100.0)
 
-    def test_console_line_shows_scoreable_not_total(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("excluded_status", ["skipped", "no tests"])
+    def test_export_denominator_requires_test_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, excluded_status: str
     ) -> None:
+        """Intentional exclusions permit export; untested evidence never does."""
         rows = (
             [MutationResult(mutant_name=f"k{i}", status="killed") for i in range(40)]
-            + [MutationResult(mutant_name=f"n{i}", status="no tests") for i in range(22)]
+            + [MutationResult(mutant_name=f"e{i}", status=excluded_status) for i in range(22)]
             + [MutationResult(mutant_name=f"s{i}", status="survived") for i in range(16)]
         )
         current = MutationRunState(
@@ -167,6 +169,8 @@ class TestExportDenominatorLine:
         )
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
+        artifact = tmp_path / "mutants" / "mutmut-cicd-stats.json"
+        artifact.write_text('{"stale": true}', encoding="utf-8")
         with (
             patch(
                 "mutmut_win.cli._load_result_snapshot_or_exit",
@@ -177,7 +181,15 @@ class TestExportDenominatorLine:
         ):
             mock_save.return_value = compute_cicd_stats([(r.mutant_name, r.status) for r in rows])
             result = CliRunner().invoke(cli, ["export-cicd-stats"])
+        if excluded_status == "no tests":
+            assert result.exit_code == 1
+            assert "no_tests" in result.output
+            mock_save.assert_not_called()
+            assert not artifact.exists()
+            assert "40 killed / 56 scoreable" not in result.output
+            return
         assert result.exit_code == 0
+        mock_save.assert_called_once()
         assert "40 killed / 56 scoreable" in result.output
         assert "/ 78" not in result.output  # the misleading raw total is gone
 

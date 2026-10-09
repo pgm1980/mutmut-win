@@ -1188,8 +1188,18 @@ def run(
     if treat_timeout_as_kill and not dry_run and testable > 0:
         click.echo(_timeout_as_kill_score_line(result), err=True)
 
+    if result.no_tests:
+        click.echo(
+            "Unresolved no_tests evidence: diagnostic score only; test evidence is "
+            "incomplete, and verdict reuse plus CI/CD export are disabled.",
+            err=True,
+        )
+
     # --- Score gate ---
     if min_score is not None:
+        if result.no_tests:
+            click.echo("Unresolved no_tests evidence — score gate failed closed.", err=True)
+            sys.exit(1)
         surface_report = _mutation_surface_report(result.degraded_files)
         if surface_report is not None:
             click.echo(surface_report, err=True)
@@ -1732,6 +1742,14 @@ def _export_cicd_stats_locked() -> None:
     if not all_results:
         _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo("No results found. Run 'mutmut-win run' first.", err=True)
+        sys.exit(1)
+
+    if any(result.status == "no tests" for result in all_results):
+        click.echo(
+            "Unresolved no_tests evidence — CI/CD export failed closed. "
+            "Re-run with a test population that executes under every mutant.",
+            err=True,
+        )
         sys.exit(1)
 
     if current_run is not None and (current_run.status != "completed" or current_run.pending_names):

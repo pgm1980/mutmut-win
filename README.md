@@ -368,6 +368,10 @@ Notes:
   an inherited ambient `PYTHONPATH` are deliberately ignored. An absolute path
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
+- **Junction mutation roots are rejected early.** A `paths_to_mutate` entry
+  naming a Junction, or a file/directory below one, is rejected before staging
+  or generation. Configure the ordinary project-relative source location
+  instead. This restriction also applies to absolute aliases before resolution.
 - **Links and junctions below `also_copy`/`extra_paths` are skipped.**
   Directory junctions, symlinks and other reparse points *below* a configured
   entry are not walked and not copied into `mutants/` (a `RuntimeWarning`
@@ -461,7 +465,7 @@ Notes:
 | `survived` | **No test noticed the change — this is your test gap** |
 | `timeout` | Budget exceeded; sampling may suggest a loop but cannot prove nontermination |
 | `suspicious` | Unexpected pytest exit code, or pytest exited 0 without a verified test-call execution proof (neutralized phase, only skipped tests, or a proof publication failure — never counted as a kill); the diagnostic tail is captured |
-| `no tests` | Reserved for a future runtime-authoritative mapper; the current collector never emits this verdict |
+| `no tests` | Pytest collected no tests under the mutant (exit 5); retained as diagnostic evidence, never a kill or reusable verdict |
 | `skipped` | Excluded from this run |
 
 ```text
@@ -480,6 +484,14 @@ The denominator excludes `skipped`, historical or future-authoritative
 `no tests`, and unchecked mutants. The current non-authoritative mapper never
 creates new `no tests` verdicts: an unobserved mutant runs the full suite.
 Always read the bucket counts next to the percentage.
+
+A worker can still report `no tests` when a collection hook removes the test
+population under a mutant. The historical percentage above remains readable,
+but any unresolved `no tests` makes the run diagnostic only: JSON reports
+`execution_basis_complete: false`, current and historical verdict reuse is
+revoked, every `--min-score` threshold fails, and CI/CD export is refused.
+Without a threshold, the CLI explicitly reports incomplete test evidence.
+Resolve the collection gap and rerun before using the results as CI evidence.
 
 The deprecated `run --treat-timeout-as-kill` flag (see `results`) only
 changes what the `--min-score` gate judges: the JSON `score` field and the
