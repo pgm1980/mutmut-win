@@ -390,18 +390,23 @@ def _resolve_since_commit(ref: str, *, json_stdout: TextIO | None) -> str:
     # of it, so git cannot read it as an option; ^{commit} peels tags and
     # rejects every non-commit object.  --quiet keeps git's stderr empty on
     # failure — the diagnosis above is our own message.
-    rev_result = sp.run(  # noqa: S603 — git CLI with controlled args
-        [  # noqa: S607 — git is a well-known executable
-            "git",
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            f"{ref}^{{commit}}",
-        ],
-        capture_output=True,
-        cwd=Path.cwd(),
-    )
+    try:
+        # Fixed Git subcommand; the validated ref is one argument after --.
+        rev_result = sp.run(  # noqa: S603
+            # Git is the documented external prerequisite resolved by Windows.
+            [  # noqa: S607
+                "git",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                f"{ref}^{{commit}}",
+            ],
+            capture_output=True,
+            cwd=Path.cwd(),
+        )
+    except OSError as exc:
+        _since_commit_usage_error(json_stdout, f"Cannot execute git for --since-commit: {exc}")
     if rev_result.returncode != 0:
         _since_commit_usage_error(
             json_stdout,
@@ -456,19 +461,24 @@ def _git_changed_names(oid: str, *, json_stdout: TextIO | None) -> list[str]:
     # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
     # the process default anyway; it is spelled out because --relative
     # derives the output base from it (setting it alone fixes nothing).
-    git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-        [  # noqa: S607 — git is a well-known executable
-            "git",
-            "diff",
-            "--name-only",
-            "-z",
-            "--relative",
-            oid,
-            "--",
-        ],
-        capture_output=True,
-        cwd=Path.cwd(),
-    )
+    try:
+        # Fixed Git subcommand and pre-validated canonical commit object id.
+        git_result = sp.run(  # noqa: S603
+            # Git is the documented external prerequisite resolved by Windows.
+            [  # noqa: S607
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                "--relative",
+                oid,
+                "--",
+            ],
+            capture_output=True,
+            cwd=Path.cwd(),
+        )
+    except OSError as exc:
+        _since_commit_usage_error(json_stdout, f"Cannot execute git for --since-commit: {exc}")
     # Issue #102 / A3-CM-006: the returncode was never checked — an
     # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
     if git_result.returncode != 0:
