@@ -36,20 +36,30 @@ Anfragen nennen diese Implementierungssession
 eigene Interpretation. Antworten werden im Ledger gebunden. Sie sind
 keine Ersatzabnahme der Implementierung.
 
-Arbeitsstand 2026-10-09: Für 46 Karten liegen verknüpfte Kandidatenledger
-mit Rot-/Grün-/Rücknahmebelegen vor. Zwei integrierte Zwischenstände wurden
-mit 224 beziehungsweise 317 bestandenen Regressionstests (im zweiten Lauf
-ein dokumentierter Skip) sowie jeweils Ruff, Format, mypy und import-linter
-geprüft. Das ist noch keine finale Abnahme. Die Source-/Test-/Lockbindung
-dieser zehn Receipts wird im maschinenlesbaren Ledger festgehalten.
+Arbeitsstand 2026-10-09: Die Kandidatenledger mit Rot-/Grün-/Rücknahmebelegen
+werden fortlaufend je Karte gebunden. Drei integrierte Zwischenstände wurden
+mit 224, 317 und 183 bestandenen Regressionstests (im zweiten Lauf ein
+dokumentierter Skip) sowie jeweils Ruff, Format, mypy und import-linter
+geprüft. Die vier Statikgates bestehen auch nach Integration der kanonischen
+Laufzeitnamen, der zusätzlichen Inhaltsgegenlesung und des Clean-Typfilter-Fixes.
+Das ist noch keine finale Abnahme. Jeder Beleg behält seinen eigenen
+Source-/Test-/Lockstand.
 
-Die Laufzeitnamensprüfung S3-007 befindet sich in der erweiterten CLI-Prüfung.
-S3-016, S3-020 und S3-030 sowie die verbleibenden Test-/Dokumentationskarten
-werden parallel in getrennten Worktrees bearbeitet. Die unverifizierten
-Karten bleiben Prüfaufträge und werden nicht durch die Implementierungsbilanz
-zu bestätigten Fehlern. Die beiden sporadischen Basisfehler des früheren
-vollständigen P1-Laufs bleiben sichtbar; ein neu reproduzierter Hardlink-Race
-wird kausal geprüft. Der ungefilterte Dependency-Audit bleibt gesondert FAIL.
+Die Laufzeitnamensprüfung S3-007 hat 12 erfolgreiche CLI-Arme und einen
+weiterhin zu qualifizierenden Exportarm am früheren Kandidaten. S3-016 besteht
+seine vier echten Clean-Kontrollen; die gezielte Quellrücknahme reproduziert
+zwei Fehler. Die Inhaltsgegenlesung für S3-001 besteht 60 gezielte Kontrollen
+und die erweiterte Auswahl mit insgesamt 173 PASS und drei Skips; Benchmark und integrierte
+Reuse-/Export-Wiederholung folgen. S3-020/030 werden nach ihrer terminalen
+isolierten Abnahme integriert.
+
+Alle 220 unverifizierten Karten besitzen individuelle aktuelle Prüfaufträge
+und präzise Grenzen in getrennten Registern (95 P2, 125 P3). Statische
+Gegenbeobachtungen werden nicht zu dynamischen Fehler- oder Widerlegungsbelegen.
+Die sporadischen Basisfehler früherer Läufe bleiben sichtbar; ihre genaue
+historische Ursache wird nicht aus dem neuen Hashfix abgeleitet. Der rohe
+Dependency-Audit bleibt FAIL. Eine konkrete Semgrep-/Lock-Upgradeoption wird
+isoliert für eine PO-Entscheidung über den verbindlichen Pin vorbereitet.
 
 Die vom PO bestätigte Lifecycle-Korrektur gilt identisch für AGENTS.md und
 CLAUDE.md: Der ausführbare Vertrag mit 17 Feldern bleibt erhalten. Kein
