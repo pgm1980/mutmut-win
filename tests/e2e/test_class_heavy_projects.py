@@ -70,7 +70,24 @@ def test_pydantic_heavy_full_engine_run_completes(tmp_path: Path) -> None:
     assert not state.pending_names
     assert known_run_basis_incompleteness(state) is None
     assert {verdict.mutant_name for verdict in verdicts} == expected
-    assert all(verdict.status == "killed" for verdict in verdicts)
+    assert all(verdict.status in {"killed", "survived"} for verdict in verdicts)
+    killed = sum(verdict.status == "killed" for verdict in verdicts)
+    assert killed / len(expected) >= 0.8
+    survivors = [verdict for verdict in verdicts if verdict.status == "survived"]
+    assert len(survivors) == 1
+    # The fixture constructs finite nonnegative payable amounts: quantity 1..20,
+    # unit_price=1.0, discount 0..100, plus the empty order. On that bounded
+    # domain >0 and !=0 are equivalent. This does not exempt another mutation
+    # or establish equivalence for every possible Pydantic input (e.g. NaN).
+    survivor_diff = run_cli(project, "show", survivors[0].mutant_name)
+    assert survivor_diff.returncode == 0, survivor_diff.stderr
+    assert survivor_diff.stdout.splitlines()[0] == f"# {survivors[0].mutant_name}"
+    assert [line for line in survivor_diff.stdout.splitlines() if line.startswith(("-", "+"))] == [
+        "--- a/src/pydantic_heavy/models.py",
+        "+++ b/src/pydantic_heavy/models.py",
+        "-        return self.payable > 0",
+        "+        return self.payable != 0",
+    ]
     generated = project / "mutants/src/pydantic_heavy/models.py"
     metadata = _ClassMutationMetadata.model_validate_json(
         generated.with_suffix(".py.meta").read_text(encoding="utf-8")
@@ -78,4 +95,8 @@ def test_pydantic_heavy_full_engine_run_completes(tmp_path: Path) -> None:
     assert set(metadata.exit_code_by_key) == expected
     assert metadata.source_hash == hashlib.sha256(source.read_bytes()).hexdigest()
     assert metadata.generated_hash == hashlib.sha256(generated.read_bytes()).hexdigest()
-    print(f"class population={len(expected)}; killed={len(verdicts)}; basis=complete")
+    print(
+        f"class population={len(expected)}; killed={killed}; "
+        f"equivalent_survivors={len(survivors)}; "
+        f"score={100 * killed / len(expected)}; basis=complete"
+    )

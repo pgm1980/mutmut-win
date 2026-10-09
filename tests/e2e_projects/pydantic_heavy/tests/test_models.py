@@ -18,6 +18,8 @@ def test_payment_uses_validated_nested_computed_fields(quantity: int, discount: 
         items=[LineItem(name="item", quantity=quantity, unit_price=1.0)],
         discount_percent=discount,
     )
+    assert math.isfinite(order.payable)
+    assert order.payable >= 0
     assert order.requires_payment() is (discount < 100)
 
 
