@@ -9,14 +9,21 @@ covered and one never-called function.  Spike-verified design
 
 from __future__ import annotations
 
+import hashlib
+import shutil
+import subprocess
+import sys
 import textwrap
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import coverage
 import pytest
+from pydantic import BaseModel
 
 from mutmut_win.code_coverage import gather_coverage, get_covered_lines_for_file
 from mutmut_win.config import MutmutConfig
+from mutmut_win.models import MutationRunResult
 from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.runner import PytestRunner
 
@@ -24,6 +31,97 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
+class _ChildTerminationEvidence(BaseModel):
+    parent_pid: int
+    child_pid: int
+    reported_pid: int
+    product_value: int
+    child_exit: int
+    parent_lines: set[int]
+    part_names: list[str]
+
+
+class _CoverageMetadata(BaseModel):
+    exit_code_by_key: dict[str, int]
+    generation_fingerprint: str
+    generated_hash: str
+
+
+class _CoverageCliEvidence(BaseModel):
+    phase: str
+    started: str
+    ended: str
+    command: list[str]
+    cwd: str
+    exit_code: int
+    config_hash: str
+    source_hash: str
+    test_hash: str
+    summary: MutationRunResult
+    metadata: _CoverageMetadata
+
+
+def _run_coverage_cli(project: Path, evidence: Path, phase: str) -> _CoverageCliEvidence:
+    uv = shutil.which("uv")
+    assert uv is not None
+    command = [
+        uv,
+        "run",
+        "--no-sync",
+        "--python",
+        sys.executable,
+        "python",
+        "-I",
+        "-m",
+        "mutmut_win",
+        "run",
+        "--no-progress",
+        "--output",
+        "json",
+        "--min-score",
+        "80",
+    ]
+    started = datetime.now(UTC).isoformat()
+    # S603: fixed CLI and an independently resolved uv executable; no shell input.
+    completed = subprocess.run(  # noqa: S603
+        command,
+        cwd=project,
+        capture_output=True,
+        timeout=600,
+    )
+    # Keep original Windows diagnostic bytes. The machine channel is UTF-8 JSON;
+    # stderr may use the inherited Windows codepage and is not parsed as data.
+    (evidence / f"{phase}.stdout").write_bytes(completed.stdout)
+    (evidence / f"{phase}.stderr").write_bytes(completed.stderr)
+    summary = MutationRunResult.model_validate_json(completed.stdout)
+    metadata = _CoverageMetadata.model_validate_json(
+        (project / "mutants/src/pkg/mod.py.meta").read_text(encoding="utf-8")
+    )
+    result = _CoverageCliEvidence(
+        phase=phase,
+        started=started,
+        ended=datetime.now(UTC).isoformat(),
+        command=command,
+        cwd=str(project),
+        exit_code=completed.returncode,
+        config_hash=hashlib.sha256((project / "pyproject.toml").read_bytes()).hexdigest(),
+        source_hash=hashlib.sha256((project / "src/pkg/mod.py").read_bytes()).hexdigest(),
+        test_hash=hashlib.sha256((project / "tests/test_mod.py").read_bytes()).hexdigest(),
+        summary=summary,
+        metadata=metadata,
+    )
+    (evidence / f"{phase}.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    assert summary.execution_basis_complete
+    assert not summary.run_aborted
+    assert not summary.was_interrupted
+    assert summary.killed + summary.survived == summary.total_mutants
+    assert not summary.degraded_files
+    assert completed.returncode == int(summary.score < 80)
+    assert len(metadata.exit_code_by_key) == summary.total_mutants
+    return result
+
 
 _MODULE_SOURCE = textwrap.dedent(
     """
@@ -62,6 +160,187 @@ def _build_mutants_tree(tmp_path: Path) -> None:
 
 
 class TestCoverageGatingEndToEnd:
+    def test_hard_stopped_spawn_child_cannot_shrink_the_universe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A child reports completed product work before Windows terminates it."""
+        monkeypatch.chdir(tmp_path)
+        _build_mutants_tree(tmp_path)
+        source = "def covered():\n    return 1\n\ndef only_in_child():\n    return 2\n"
+        (tmp_path / "mutants/src/pkg/mod.py").write_text(source, encoding="utf-8")
+        (tmp_path / "mutants/pyproject.toml").write_text(
+            '[tool.pytest.ini_options]\npythonpath=["src"]\n'
+            '[tool.coverage.run]\nconcurrency=["multiprocessing"]\n',
+            encoding="utf-8",
+        )
+        proof_path = tmp_path / "child-proof.txt"
+        (tmp_path / "mutants/tests/test_mod.py").write_text(
+            textwrap.dedent("""
+                import multiprocessing
+                import os
+                import time
+                from pathlib import Path
+                from pkg.mod import covered, only_in_child
+
+                def execute_then_wait(sender):
+                    value = only_in_child()
+                    sender.send((os.getpid(), value))
+                    sender.close()
+                    time.sleep(120)
+
+                def test_parent_and_hard_stopped_child():
+                    assert covered() == 1
+                    ctx = multiprocessing.get_context("spawn")
+                    receiver, sender = ctx.Pipe(duplex=False)
+                    process = ctx.Process(target=execute_then_wait, args=(sender,))
+                    process.start()
+                    sender.close()
+                    try:
+                        assert receiver.poll(30), "child never acknowledged product work"
+                        reported_pid, value = receiver.recv()
+                        assert reported_pid == process.pid and value == 2
+                        assert process.is_alive()
+                        process.terminate()
+                        process.join(10)
+                        assert not process.is_alive()
+                        assert process.exitcode not in (None, 0)
+                        proof = (
+                            f"{os.getpid()} {process.pid} {reported_pid} "
+                            f"{value} {process.exitcode}"
+                        )
+                        Path(PROOF_PATH).write_text(proof, encoding="utf-8")
+                    finally:
+                        receiver.close()
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(10)
+                        process.close()
+            """).replace("PROOF_PATH", repr(str(proof_path))),
+            encoding="utf-8",
+        )
+        runner = PytestRunner(MutmutConfig(tests_dir=["tests"]))
+        collect = runner.run_coverage_collection
+        records: list[_ChildTerminationEvidence] = []
+
+        def observe_collection(data_file: Path) -> int:
+            result = collect(data_file)
+            parent_pid, child_pid, reported_pid, value, child_exit = map(
+                int, proof_path.read_text(encoding="utf-8").split()
+            )
+            parts = sorted(data_file.parent.glob(".coverage.mutmut.*"))
+            parent_parts = [part for part in parts if f".pid{parent_pid}." in part.name]
+            assert len(parent_parts) == 1, (parent_pid, [part.name for part in parts])
+            assert not any(f".pid{child_pid}." in part.name for part in parts)
+            data = coverage.CoverageData(basename=str(parent_parts[0]))
+            data.read()
+            parent_lines: set[int] = set()
+            for filename in data.measured_files():
+                if filename.replace("\\", "/").endswith("/pkg/mod.py"):
+                    parent_lines.update(data.lines(filename) or [])
+            records.append(
+                _ChildTerminationEvidence(
+                    parent_pid=parent_pid,
+                    child_pid=child_pid,
+                    reported_pid=reported_pid,
+                    product_value=value,
+                    child_exit=child_exit,
+                    parent_lines=parent_lines,
+                    part_names=[part.name for part in parts],
+                )
+            )
+            return result
+
+        monkeypatch.setattr(runner, "run_coverage_collection", observe_collection)
+        selected = gather_coverage(runner, ["src/pkg/mod.py"])
+        assert selected is None
+        assert len(records) == 1
+        record = records[0]
+        assert record.child_pid == record.reported_pid != record.parent_pid
+        assert record.product_value == 2
+        assert record.child_exit != 0
+        assert 2 in record.parent_lines
+        assert 5 not in record.parent_lines
+        _, actual = mutate_file_contents(
+            "src/pkg/mod.py",
+            source,
+            get_covered_lines_for_file(
+                "src/pkg/mod.py",
+                selected,
+            ),
+        )
+        _, expected = mutate_file_contents("src/pkg/mod.py", source, None)
+        _, parent_only = mutate_file_contents("src/pkg/mod.py", source, record.parent_lines)
+        assert actual == expected
+        assert len(actual) > len(parent_only) > 0
+        assert any("only_in_child" in name for name in actual)
+        (tmp_path / "hard-child-evidence.json").write_text(
+            record.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+    def test_cli_mode_switch_replaces_stale_reduced_generation(self, tmp_path: Path) -> None:
+        """Real repeated CLI runs bind selection, generation, verdicts and score."""
+        evidence = tmp_path / "evidence"
+        evidence.mkdir()
+        project = tmp_path / "transition"
+        reference = tmp_path / "reference"
+        source = "def covered():\n    return 1\n\ndef never_called():\n    return 2\n"
+        tests = "from pkg.mod import covered\n\ndef test_covered():\n    assert covered() == 1\n"
+        config = (
+            '[tool.mutmut]\npaths_to_mutate=["src/pkg"]\ntests_dir=["tests"]\n'
+            "max_children=1\nmutate_only_covered_lines=true\n"
+            '[tool.pytest.ini_options]\npythonpath=["src"]\n'
+        )
+        for root in (project, reference):
+            (root / "src/pkg").mkdir(parents=True)
+            (root / "tests").mkdir()
+            (root / "src/pkg/__init__.py").write_text("", encoding="utf-8")
+            (root / "src/pkg/mod.py").write_text(source, encoding="utf-8")
+            (root / "tests/test_mod.py").write_text(tests, encoding="utf-8")
+        config_path = project / "pyproject.toml"
+        config_path.write_text(config, encoding="utf-8")
+        (reference / "pyproject.toml").write_text(
+            config.replace("mutate_only_covered_lines=true", "mutate_only_covered_lines=false"),
+            encoding="utf-8",
+        )
+        selective = _run_coverage_cli(project, evidence, "selective-before")
+        staged = project / "mutants/src/pkg/mod.py"
+        sidecar = staged.with_name("mod.py.meta")
+        old_source, old_meta = staged.read_bytes(), sidecar.read_bytes()
+        assert selective.summary.score == 100
+        assert selective.summary.survived == 0
+        assert all("covered__" in key for key in selective.metadata.exit_code_by_key)
+        full_config = config + '[tool.coverage.run]\nconcurrency=["multiprocessing"]\n'
+        config_path.write_text(full_config, encoding="utf-8")
+        full = _run_coverage_cli(project, evidence, "multiprocessing-after-selective")
+        assert full.summary.total_mutants > selective.summary.total_mutants > 0
+        assert full.summary.survived > 0
+        assert full.summary.score < 80
+        assert full.metadata.generation_fingerprint != selective.metadata.generation_fingerprint
+        # Reinsert authentic older generated bytes and ownership metadata while
+        # retaining the new full-mode config fingerprint and verdict database.
+        staged.write_bytes(old_source)
+        sidecar.write_bytes(old_meta)
+        stale = _run_coverage_cli(project, evidence, "multiprocessing-stale-sidecar")
+        independent = _run_coverage_cli(reference, evidence, "independent-all-lines")
+        for observed in (full, stale):
+            assert observed.metadata.exit_code_by_key == independent.metadata.exit_code_by_key
+            assert observed.summary.score == independent.summary.score
+            assert observed.summary.total_mutants == independent.summary.total_mutants
+            assert observed.metadata.generated_hash == independent.metadata.generated_hash
+            assert "Mutating all configured source lines" in (
+                evidence / f"{observed.phase}.stderr"
+            ).read_bytes().decode("utf-8", errors="backslashreplace")
+        config_path.write_text(config, encoding="utf-8")
+        restored = _run_coverage_cli(project, evidence, "selective-restored")
+        assert restored.metadata.exit_code_by_key == selective.metadata.exit_code_by_key
+        assert restored.metadata.generation_fingerprint == selective.metadata.generation_fingerprint
+        assert restored.metadata.generated_hash == selective.metadata.generated_hash
+        assert restored.summary.score == selective.summary.score
+        assert "Mutating all configured source lines" not in (
+            evidence / "selective-restored.stderr"
+        ).read_bytes().decode("utf-8", errors="backslashreplace")
+
     def test_real_subprocess_coverage_filters_uncovered_mutants(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
