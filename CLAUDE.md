@@ -200,7 +200,7 @@ Serena ist als MCP-Server verfügbar und bietet präzise, symbolbasierte Code-Na
 
 ### Semgrep — Security-Scanning
 
-Semgrep MUSS ausschließlich über den getrackten, fail-closed Release-Wrapper ausgeführt werden. Der Wrapper bindet Semgrep 1.175.0 aus `uv.lock`, spiegelt den vollständigen Git-owned Release-Scope in ein externes Root, verwendet das content-gepinnte Offline-Regelbundle und validiert Findings, Parserfehler, übersprungene Regeln, Fixpoint-Timeouts sowie Manifest-/Target-/Policy-/TOCTOU-Drift.
+Semgrep MUSS ausschließlich über den getrackten, fail-closed Release-Wrapper ausgeführt werden. Der Wrapper bindet Semgrep 1.180.0 aus `uv.lock`, spiegelt den vollständigen Git-owned Release-Scope in ein externes Root, verwendet das content-gepinnte Offline-Regelbundle und validiert Findings, Parserfehler, übersprungene Regeln, Fixpoint-Timeouts sowie Manifest-/Target-/Policy-/TOCTOU-Drift.
 
 Vor jedem Sync oder Gate mit Releaseevidenz MUSS `UV_PROJECT_ENVIRONMENT` auf
 ein frisches absolutes Verzeichnis außerhalb des Checkouts zeigen.
@@ -567,7 +567,7 @@ Verzeichnis. Der Checkout darf weder `.venv`, Werkzeug-Caches mit eigener
 | mypy                        | aktuell           | Statische Typ-Prüfung                         |
 | mutmut-win                  | Paketstand aus `pyproject.toml` | Mutation Testing (Windows) — dieses Projekt selbst |
 | pip-audit                   | aktuell           | Dependency-Audit                              |
-| Semgrep CLI                 | 1.175.0 (uv.lock) | Security-Scanning über den Release-Wrapper    |
+| Semgrep CLI                 | 1.180.0 (uv.lock) | Security-Scanning über den Release-Wrapper    |
 | Zizmor                      | 1.30.0 (uv.lock)  | Offline-Workflowaudit via nativem Release-Wrapper |
 | Serena MCP-Server           | aktuell           | Symbolbasierte Code-Analyse                   |
 | Context7 MCP-Server         | aktuell           | Aktuelle API-Dokumentation                    |

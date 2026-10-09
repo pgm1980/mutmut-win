@@ -350,7 +350,7 @@ def _parse(
 
 
 def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
-    assert gate.SEMGREP_VERSION == "1.175.0"
+    assert gate.SEMGREP_VERSION == "1.180.0"
     assert gate.SCAN_ROOTS == ("src", "tests", "scripts", "benchmarks")
     assert gate.POLICY_SKIP_PREFIXES == ()
     assert (

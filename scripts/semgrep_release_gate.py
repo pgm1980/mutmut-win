@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Final
 
-SEMGREP_VERSION: Final = "1.175.0"
+SEMGREP_VERSION: Final = "1.180.0"
 SEMGREP_ENGINE: Final = "OSS"
 SEMGREP_BOOTSTRAP_JOBS: Final = "4"
 # Semgrep 1.175 uses shared-memory parallelism for ``--jobs``.  On constrained
@@ -1610,7 +1610,7 @@ def _finding_signature(result: object, mirror: Path) -> FindingSignature:
     if "is_ignored" in extra:
         raise GateError(
             "semgrep-findings",
-            "Semgrep 1.175.0 --disable-nosem results must omit extra.is_ignored",
+            f"Semgrep {SEMGREP_VERSION} --disable-nosem results must omit extra.is_ignored",
         )
     source_bytes, _identity_value = _read_stable_file(mirror, path)
     try:

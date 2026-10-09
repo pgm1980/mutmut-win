@@ -2190,8 +2190,10 @@ def test_dependency_export_body_is_path_independent_and_pinned(tmp_path: Path) -
     # v2.21.5 (a591676): the pin moves with the deliberate urllib3
     # 2.7.0 -> 2.8.0 security upgrade (PYSEC-2026-4175/4176/4177);
     # the export body pins exact versions, so the hash changes with it.
+    # S3-052 draft option: only Semgrep 1.175.0 -> 1.180.0 and its compatible
+    # PyJWT 2.13.0 -> 2.15.1 dependency change. PO adoption is still pending.
     assert hashlib.sha256(bodies[0]).hexdigest() == (
-        "332addca64b6450a2ad1207c362d1e8b406ad68ed90414e9fe73de55a715b7b4"
+        "7b90c68b192dbced3e810af0b33a00c90c13daba5850eeddc94853d0978bf04a"
     )
 
 
@@ -2216,7 +2218,7 @@ def test_python_metadata_matches_exact_windows_runtime_support() -> None:
     locked_build_backend = ["hatchling==1.32.0", "editables==0.5"]
     assert pyproject["build-system"]["requires"] == locked_build_backend
     assert pyproject["dependency-groups"]["build"] == locked_build_backend
-    assert pyproject["dependency-groups"]["security"] == ["semgrep==1.175.0"]
+    assert pyproject["dependency-groups"]["security"] == ["semgrep==1.180.0"]
     locked_release_tools = [
         "check-wheel-contents==0.6.3",
         "pyflakes==3.4.0",
@@ -2233,9 +2235,9 @@ def test_python_metadata_matches_exact_windows_runtime_support() -> None:
     locked_semgrep = next(package for package in lock["package"] if package["name"] == "semgrep")
     assert locked_project["dev-dependencies"]["security"] == [{"name": "semgrep"}]
     assert locked_project["metadata"]["requires-dev"]["security"] == [
-        {"name": "semgrep", "specifier": "==1.175.0"}
+        {"name": "semgrep", "specifier": "==1.180.0"}
     ]
-    assert locked_semgrep["version"] == "1.175.0"
+    assert locked_semgrep["version"] == "1.180.0"
     assert locked_semgrep["source"] == {"registry": "https://pypi.org/simple"}
     assert locked_semgrep["sdist"]["hash"].startswith("sha256:")
     assert locked_semgrep["wheels"]
