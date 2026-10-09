@@ -1,7 +1,8 @@
-"""E2E: Config fail-closed chain — invalid configs MUST abort before staging (GAP-1).
+"""E2E: rejected config values and warned, ignored unknown keys (GAP-1/S3-038).
 
-Covers M-032-M-045: absolute paths, dot-dot aliases, unknown fields,
-cross-field conflicts, and type_check_command blocking CI/CD export.
+Invalid known values abort before staging. Unknown keys warn and allow a run.
+These cases cover absolute paths, escaping dot-dot aliases, unknown keys,
+type_check_command blocking CI/CD export, and a valid-config control.
 Every case drives the real CLI (`python -m mutmut_win run`) against a
 real pyproject.toml in an isolated tmp workspace — no mocks.
 """
@@ -81,10 +82,9 @@ class TestOutsideProjectDotDotRejected:
         assert not (project / "mutants").exists()
 
 
-class TestUnknownFieldRejected:
-    def test_unknown_field_does_not_change_behavior(self, tmp_path: Path) -> None:
-        """Unknown fields are silently ignored by pydantic (extra=ignore) —
-        the engine must behave identically with or without them."""
+class TestUnknownFieldWarned:
+    def test_unknown_field_warns_and_allows_both_campaigns(self, tmp_path: Path) -> None:
+        """Unknown keys warn on stderr and allow both real campaigns to finish."""
 
         project = _make_project(tmp_path)
         # Config WITH unknown field
@@ -114,7 +114,9 @@ class TestUnknownFieldRejected:
             f"stdout:\n{result_with.stdout}\nstderr:\n{result_with.stderr}"
         )
         assert result_without.returncode == 0
-        # Both should produce the same number of mutants
+        assert "Warning: unknown [tool.mutmut] key 'nonexistent_option'" in result_with.stderr
+        assert "unknown [tool.mutmut] key" not in result_without.stderr
+        # Both campaigns reach their mutation summary; this is not a warning oracle.
         assert "Total mutants" in result_with.stdout
         assert "Total mutants" in result_without.stdout
 

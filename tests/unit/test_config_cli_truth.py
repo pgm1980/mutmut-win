@@ -126,7 +126,7 @@ class TestConfigTypoWarning:
             '[tool.mutmut]\npaths_to_mutate = ["src"]\n', encoding="utf-8"
         )
         load_config(tmp_path)
-        assert "unknown" not in capsys.readouterr().out.lower()
+        assert "unknown" not in capsys.readouterr().err.lower()
 
 
 class TestSinceCommitTruth:

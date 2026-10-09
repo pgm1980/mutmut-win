@@ -263,8 +263,11 @@ timeout classification retain their existing behavior.
 ## Configuration
 
 Everything lives in `pyproject.toml` under `[tool.mutmut]` (CLI flags
-override per run). Unknown keys produce a warning with a did-you-mean
-suggestion. A `setup.cfg` `[mutmut]` section is honored as fallback when
+override per run). Unknown keys are ignored and produce a warning on stderr;
+similar TOML keys also receive a did-you-mean suggestion. An unknown key alone
+does not reject the configuration or prevent a run. Invalid values for known
+options are rejected with exit 2 before staging. A `setup.cfg` `[mutmut]`
+section is honored as fallback when
 `pyproject.toml` has no `[tool.mutmut]` table; `[tool.mutmut]` itself must
 be a table — an array of tables (`[[tool.mutmut]]`) or any other non-table
 value is rejected as a configuration error (exit 2) instead of silently
