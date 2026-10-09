@@ -375,8 +375,8 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         )
         == gate.DEFAULT_BUNDLE_CONTRACT
     )
-    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 43
-    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 43
+    assert len(gate.DEFAULT_FINDING_ALLOWLIST) == 44
+    assert len(set(gate.DEFAULT_FINDING_ALLOWLIST)) == 44
     assert gate.DEFAULT_FINDING_ALLOWLIST[0].path == "tests/integration/test_kill_proc_tree.py"
     assert gate.DEFAULT_FINDING_ALLOWLIST[-1].lines_sha256 == (
         "7aeebb7bac13a5dc2ddf55dfb695ad49831db1e2986fdc6017079c736fa76c0f"
@@ -389,7 +389,7 @@ def test_production_rule_bundle_and_findings_are_fully_pinned() -> None:
         end_line=100,
         end_col=46,
         lines_sha256="d454e85371f697f3da8ea2205f9a4db0316cc71e28d017a6b30cc8c0ffc9f40e",
-        file_sha256="04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09",
+        file_sha256="dc1de1cab389f75f827147a7ad250a7821f8a69ec4601bb9f226b1c505c01126",
     )
     assert [
         finding

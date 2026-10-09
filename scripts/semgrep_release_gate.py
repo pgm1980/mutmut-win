@@ -138,19 +138,19 @@ _IMPORT_RULE: Final = "python.lang.security.audit.non-literal-import.non-literal
 _EXEC_RULE: Final = "python.lang.security.audit.exec-detected.exec-detected"
 _PICKLE_RULE: Final = "python.lang.security.deserialization.pickle.avoid-pickle"
 _KILL_PROC_FILE_SHA: Final = "b830510300d6a2b2ad872cad65a80e022106aacbb6c2dd166a9a31cf41c46ac3"
-_ARCHITECTURE_FILE_SHA: Final = "04ab808dfb72ad42dc1114446ae490eb8a5c90b639ff6ca05508167f38328a09"
+_ARCHITECTURE_FILE_SHA: Final = "dc1de1cab389f75f827147a7ad250a7821f8a69ec4601bb9f226b1c505c01126"
 _CLASS_BODY_FILE_SHA: Final = "cfa26e6a173f08327891116c1604256d92bcef7ea17ce1534e31f8c725c51dc5"
 _DUPLICATE_DEFINITIONS_FILE_SHA: Final = (
-    "70a0c10cf3a01b69598f0221beb7e47c45c80d5fed4159ab6ecb4fcc24c28a03"
+    "85f897543c51f7f2198200b9b1db8ac33d323af6c05e4fcaaa0b6822e394c713"
 )
 _MODELS_FILE_SHA: Final = "cfcd968a3ee16aedadfe1b1a61a95b5418c62537b7c4a02db99cf9ee5915a43a"
 _MUTANT_DIFF_FILE_SHA: Final = "97f3f30ecd1893a5518b045154020e0791d4b430ebfa3a30b0906cd41417d5df"
-_HIT_RECORDING_FILE_SHA: Final = "87381a47877db98d06a08910b1d895b8784c1727d738f44665b57cbb63719584"
+_HIT_RECORDING_FILE_SHA: Final = "2ede26f74a3ffcced85fba20608b4fb896ecab4489e64b2a280c0431bbc0bf91"
 _MUTATION_ADVERSARIAL_FILE_SHA: Final = (
     "71b78b0b445dc88fceb069eb69abf71c1dfc60c81b9d7cbd479f3b7bc6941952"
 )
 _MUTATION_HARDENING_FILE_SHA: Final = (
-    "f8661ec3c4a78e9d9daa1d519a29a791899ee5b892fdf08aeadfd4ad31943ce8"
+    "9867be16d0357c03b27e20da45ee9f4a7e41f87a12ae1221d0bbb06a80f46e46"
 )
 _SITECUSTOMIZE_FILE_SHA: Final = "991169a46ec355325d51178e193e4df8caa6f6647c0a754a9542686f6c2b63bb"
 _STATICMETHOD_FILE_SHA: Final = "d9707d4b429b3274fcebf64b52eaa9f747df9973c0045821b574569f7cae62ca"
@@ -167,19 +167,15 @@ _MUTANT_SAFETY_NET_FILE_SHA: Final = (
 # harness files whose adjudicated subprocess findings are pinned below.
 _E2E_UTIL_FILE_SHA: Final = "79cb61f09ec355be85ea44c3c800b6afe9d03c2d16fd80e7b046574ea92e4335"
 _INTERRUPT_FINALIZATION_FILE_SHA: Final = (
-    "57e311fcbfbe831fc933451152d6fbbf3c27cb4875696e80fe43209c38a8fb98"
-)
-_PYCACHE_INTEGRATION_FILE_SHA: Final = (
-    "3d4afdd7e584435238552da4d8f4dc8aab87e35ad09401424e72fdc4afb71251"
+    "3877f2174b7326b141511b6eb7b228d6ef0db413534f1549c09e765919dc96e4"
 )
 _ATOMIC_CRASH_RECOVERY_FILE_SHA: Final = (
-    "2122fde11b0d18d5c6d8d2202fc02a9cf4f34924434bfb50082c39dabc10c907"
+    "08a02b2c97f8e336ef30ae1e7a9b05fdb6f5162db0d533eff77f77d3d7632173"
 )
 _PROCESS_LIFECYCLE_FILE_SHA: Final = (
     "b3e5da55812025fdba1b2d0c12f4e895ad7acc282911890537e9afdd9977442f"
 )
-_STAGING_DRIFT_FILE_SHA: Final = "acc67449b28bcf09d8f32c1e34ac92f5e2820f51d39bc072ae2d1a6a74395afc"
-_WORKSPACE_LOCK_FILE_SHA: Final = "5adb1a04e5b8951723f4bb75de6e0812b3c7f0294b13fefd8f883b8b044f8787"
+_WORKSPACE_LOCK_FILE_SHA: Final = "68c7f344a6c4861afdf14aa14b049b79055b27325a785134c5f19beec072129e"
 
 
 DEFAULT_FINDING_ALLOWLIST: Final = (
@@ -235,44 +231,24 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/e2e/test_interrupt_finalization.py",
         _POPEN1_RULE,
-        39,
-        12,
-        48,
-        6,
-        "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
+        50,
+        16,
+        60,
+        10,
+        "67dfc79bee3f507b8cb2e4e2cd9ee91de44fbca9e089e5ac430eb9e927219c8f",
         _INTERRUPT_FINALIZATION_FILE_SHA,
     ),
     FindingSignature(
         "tests/e2e/test_interrupt_finalization.py",
         _POPEN_RULE,
-        39,
-        12,
-        48,
-        6,
-        "d4c915d592b39d9f3e99a133ffe1f704c36445de0e625b6246785d34d2c5214e",
+        50,
+        16,
+        60,
+        10,
+        "67dfc79bee3f507b8cb2e4e2cd9ee91de44fbca9e089e5ac430eb9e927219c8f",
         _INTERRUPT_FINALIZATION_FILE_SHA,
     ),
-    # M-149b pycache forwarding integration harness.
-    FindingSignature(
-        "tests/e2e/test_pycache_integration.py",
-        _POPEN1_RULE,
-        91,
-        19,
-        99,
-        10,
-        "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
-        _PYCACHE_INTEGRATION_FILE_SHA,
-    ),
-    FindingSignature(
-        "tests/e2e/test_pycache_integration.py",
-        _POPEN_RULE,
-        91,
-        19,
-        99,
-        10,
-        "353cf0820bbaf2886b70e364e4bc7b5747f394c7bceaed48940d542c2b324575",
-        _PYCACHE_INTEGRATION_FILE_SHA,
-    ),
+    # S3-036 now uses the shared run_cli helper; its existing pins remain below.
     # GAP-2 atomic crash recovery: kills a writer subprocess mid-write.
     FindingSignature(
         "tests/integration/test_atomic_crash_recovery.py",
@@ -305,36 +281,26 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "f2fbfa699fc880dcaf8347aeb839bfd283632333002d913a4d257f7e91d3102c",
         _PROCESS_LIFECYCLE_FILE_SHA,
     ),
-    # GAP-4 staging drift: engine run whose source changes mid-dispatch.
-    FindingSignature(
-        "tests/integration/test_staging_drift_detection.py",
-        _POPEN_RULE,
-        50,
-        16,
-        57,
-        10,
-        "c7740e79533ba62579f932ad262efa631a9d921632da6baae82f5f5bdf452201",
-        _STAGING_DRIFT_FILE_SHA,
-    ),
+    # S3-032 uses binary file output; its Popen has no Python3.6 text keyword finding.
     # GAP-6 workspace lock contention: two engines racing for one workspace.
     FindingSignature(
         "tests/integration/test_workspace_lock_contention.py",
         _POPEN1_RULE,
-        31,
-        12,
-        39,
-        6,
-        "3a6ea5a16741f1ac7be60ff348ffb2a8a180cee238f9cc44b7d1d25479f6405c",
+        53,
+        16,
+        61,
+        10,
+        "43fbcda6bd1b74a99c3863bb1046c8410cd8484557f46c3aff059e55037c71b7",
         _WORKSPACE_LOCK_FILE_SHA,
     ),
     FindingSignature(
         "tests/integration/test_workspace_lock_contention.py",
         _POPEN_RULE,
-        31,
-        12,
-        39,
-        6,
-        "3a6ea5a16741f1ac7be60ff348ffb2a8a180cee238f9cc44b7d1d25479f6405c",
+        53,
+        16,
+        61,
+        10,
+        "43fbcda6bd1b74a99c3863bb1046c8410cd8484557f46c3aff059e55037c71b7",
         _WORKSPACE_LOCK_FILE_SHA,
     ),
     FindingSignature(
@@ -435,9 +401,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_duplicate_definitions_220.py",
         _EXEC_RULE,
-        211,
+        212,
         5,
-        211,
+        212,
         83,
         "1dccd9aaa511115af8daeb45c3e8fd2fb3efbb8a13ae2d532846bc4c69de89a4",
         _DUPLICATE_DEFINITIONS_FILE_SHA,
@@ -453,7 +419,7 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
             "06bcfb77f28dc11c6fe59297f6856a66300b0b1ad39bd1d0709030d79bf8e1af",
             _DUPLICATE_DEFINITIONS_FILE_SHA,
         )
-        for line in (295, 322, 332, 350, 471, 561)
+        for line in (299, 326, 336, 354, 475, 569)
     ),
     FindingSignature(
         "tests/unit/test_models.py",
@@ -485,18 +451,60 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
         "b9531179ddec5d36108a0b76b13811e43929d7302780880bdd417e44ff25a989",
         _MODELS_FILE_SHA,
     ),
-    # M-149b position refresh: the shared-pycache work inserted code above
+    # S3 runtime-name proof: checked-in engine template plus fixed test literals.
+    # No external text is compiled; exact source and finding spans remain pinned.
+    FindingSignature(
+        "benchmarks/test_runtime_name_benchmark.py",
+        _EXEC_RULE,
+        40,
+        5,
+        43,
+        6,
+        "a24c96d7cd7542c70a52b45ce3a6ef4583469751d90cb9a7544083bfd2fbe720",
+        "e58ab76c09fc50face007b204e78543a00f41e4a2848f05e60efc6fc88691f4e",
+    ),
+    FindingSignature(
+        "tests/unit/test_runtime_name_proof.py",
+        _EXEC_RULE,
+        294,
+        5,
+        297,
+        6,
+        "8f026dc010fa53f43fa67486fc9a763504e7f32eee3f94f0e6fa0d5cc173eb4a",
+        "b3bce7e0b07b47b93fad62f8a20b535089921325e62bbdfedcb0824d16852c5e",
+    ),
+    FindingSignature(
+        "tests/unit/test_runtime_name_proof.py",
+        _EXEC_RULE,
+        360,
+        5,
+        360,
+        65,
+        "db77d2b896fbfa9bc225bcb302d765fdc8b7e88ba85d286b8d51dab404df1c00",
+        "b3bce7e0b07b47b93fad62f8a20b535089921325e62bbdfedcb0824d16852c5e",
+    ),
+    FindingSignature(
+        "tests/unit/test_runtime_name_proof.py",
+        _EXEC_RULE,
+        362,
+        5,
+        362,
+        61,
+        "0a4da5545dfd060c2ad098b679e8376e4a135425474df3d44058f2bcb3ff8fe8",
+        "b3bce7e0b07b47b93fad62f8a20b535089921325e62bbdfedcb0824d16852c5e",
+    ),
+    # S3 position refresh: reviewed staging changes inserted code above
     # the deferred import; the finding content is unchanged (identical
     # lines_sha256), only position and file hash were re-recorded.
     FindingSignature(
         "src/mutmut_win/file_setup.py",
         _IMPORT_RULE,
-        2882,
+        2898,
         22,
-        2882,
+        2898,
         58,
         "d9d54c69ac7a744f05cf0b035cebb2c6c3f6adffb21898d0845c6898b82ced8f",
-        "6d6888efc29ba75913dd2694896d86b1335b9a48c42d8b8ecf6c85aec59e919e",
+        "1491ba95d273f82a20db15b551e1ebdc73376f2ca9b8b2284bb6e7138174b630",
     ),
     FindingSignature(
         "tests/unit/test_models.py",
@@ -533,9 +541,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_mutation_hardening_round2.py",
         _EXEC_RULE,
-        24,
+        25,
         9,
-        26,
+        27,
         10,
         "c54d2d1f16e578eddbbb1066e364300b01e75e272915d3bb57eba022cd4fc58c",
         _MUTATION_HARDENING_FILE_SHA,
@@ -609,9 +617,9 @@ DEFAULT_FINDING_ALLOWLIST: Final = (
     FindingSignature(
         "tests/unit/test_hit_recording.py",
         _EXEC_RULE,
-        175,
+        178,
         9,
-        175,
+        178,
         41,
         "7aeebb7bac13a5dc2ddf55dfb695ad49831db1e2986fdc6017079c736fa76c0f",
         _HIT_RECORDING_FILE_SHA,

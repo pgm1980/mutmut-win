@@ -2583,6 +2583,14 @@ def test_ci_covers_exact_windows_runtime_and_separate_release_gates() -> None:
     assert workflow.count(full_sync) == 3
     for job in (quality_job, tests_job, audit_job):
         assert job.index(backend_bootstrap) < job.index(full_sync)
+    # The requirements resolver omits already satisfied bootstrap packages.
+    # A separate fresh full-lock environment must also audit pip and packaging.
+    full_audit_sync = "uv sync --locked --all-extras --all-groups --no-install-project"
+    full_audit_command = "uv run --no-sync pip-audit --strict --progress-spinner off"
+    full_audit_environment = 'UV_PROJECT_ENVIRONMENT: "${{ runner.temp }}/mutmut-win-full-audit"'
+    assert audit_job.count(full_audit_environment) == 2
+    assert audit_job.index(full_audit_sync) < audit_job.index(full_audit_command)
+    assert "--ignore-vuln" not in audit_job
     security_sync = "uv sync --locked --only-group security --no-install-project"
     security_command = "uv run --no-sync python -I scripts/semgrep_release_gate.py"
     security_run_lines = re.findall(r"^\s*run:\s*(.+?)\s*$", security_job, re.MULTILINE)

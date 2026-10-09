@@ -207,13 +207,23 @@ jobs:
         run: >-
           uv export --frozen --all-extras --all-groups --no-hashes
           --no-emit-project --output-file audit-requirements.txt
-      # S3-052 draft: audit the complete locked dependency universe without
+      # S3-052: query the locked requirements without
       # advisory suppressions. Semgrep 1.180.0 permits the locked PyJWT 2.15.1;
       # dependency compatibility alone is not a vulnerability-free claim.
       - name: Query current vulnerability advisories
         run: >-
           uv run --no-sync pip-audit --requirement audit-requirements.txt
           --progress-spinner off
+      # The requirements resolver can omit already satisfied pip/packaging.
+      # Audit the complete installed lock in a separate fresh external environment.
+      - name: Sync the complete locked audit environment
+        env:
+          UV_PROJECT_ENVIRONMENT: "${{ runner.temp }}/mutmut-win-full-audit"
+        run: uv sync --locked --all-extras --all-groups --no-install-project
+      - name: Audit every installed locked dependency
+        env:
+          UV_PROJECT_ENVIRONMENT: "${{ runner.temp }}/mutmut-win-full-audit"
+        run: uv run --no-sync pip-audit --strict --progress-spinner off
 
   build:
     name: Build distributions
