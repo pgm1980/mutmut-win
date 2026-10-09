@@ -210,9 +210,11 @@ class SourceFileMutationData(BaseModel):
         except FileNotFoundError:
             return
         except (
-            json.JSONDecodeError,
-            UnicodeDecodeError,
+            ValueError,
+            RecursionError,
         ):
+            # JSON/Unicode decoding errors are ValueErrors, as is CPython's
+            # integer digit limit. Excessive nesting raises RecursionError.
             self._reset_loaded_fields()
             if heal_corrupt:
                 self._discard_corrupt_meta()
@@ -427,7 +429,9 @@ def read_owned_source_metadata(meta_path: Path) -> dict[str, object] | None:
         mode = meta_path.lstat().st_mode
         is_link_like = meta_path.is_symlink() or meta_path.is_junction()
         raw: object = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, RuntimeError, json.JSONDecodeError, UnicodeDecodeError):  # fmt: skip
+    except (OSError, RuntimeError, ValueError):  # fmt: skip
+        # Includes JSON/Unicode/digit-limit failures; RuntimeError already
+        # covers the decoder's RecursionError. This reader never heals bytes.
         return None
     if is_link_like or not stat.S_ISREG(mode) or not isinstance(raw, dict):
         return None

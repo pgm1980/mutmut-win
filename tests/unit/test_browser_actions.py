@@ -389,6 +389,39 @@ def test_retest_module_refuses_overlong_command_line(
     assert "mutmut-win run" in str(refused["message"])
 
 
+@pytest.mark.parametrize("character", ["x", "\U00010400"])
+@pytest.mark.parametrize("over_limit", [False, True])
+def test_retest_module_counts_serialized_utf16_units(
+    retest_browser: tuple[ResultBrowser, list[tuple[str, list[str]]], list[dict[str, object]]],
+    monkeypatch: pytest.MonkeyPatch,
+    character: str,
+    over_limit: bool,
+) -> None:
+    """The actual serialized Unicode command is bounded before any launch."""
+    from mutmut_win.browser import _RETEST_COMMAND_LINE_LIMIT
+
+    base = "my_lib.x_f__mutmut_1"
+    prefix = subprocess.list2cmdline([sys.executable, "-m", "mutmut_win", "run", base])
+    padding = _RETEST_COMMAND_LINE_LIMIT - len(prefix.encode("utf-16-le")) // 2
+    assert padding > 0
+    width = 1 if character == "x" else 2
+    name = base + character * (padding // width) + "x" * (padding % width + over_limit)
+    command_line = subprocess.list2cmdline([sys.executable, "-m", "mutmut_win", "run", name])
+    expected_units = _RETEST_COMMAND_LINE_LIMIT + over_limit
+    assert len(command_line.encode("utf-16-le")) // 2 == expected_units
+    app, launched, notifications = retest_browser
+    _load_source_state(app, {_INIT_FILE: [name]})
+    monkeypatch.setattr(app, "_get_selected_mutant_name", lambda: name)
+    app.action_retest_module()
+    if over_limit:
+        assert launched == []
+        assert notifications[0]["severity"] == "warning"
+        assert str(expected_units) in str(notifications[0]["message"])
+    else:
+        assert launched == [("run", [name])]
+        assert notifications[0].get("severity") != "warning"
+
+
 @pytest.mark.parametrize("at_limit", [True, False], ids=["exactly-at-limit", "one-over-limit"])
 def test_retest_module_command_line_limit_boundary(
     retest_browser: tuple[ResultBrowser, list[tuple[str, list[str]]], list[dict[str, object]]],

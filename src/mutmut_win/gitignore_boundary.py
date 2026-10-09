@@ -324,7 +324,9 @@ def _load_ignore_level(
         )
         return _IgnoreLevel(base=base, patterns=(), rules_unknown=True)
 
-    lines = [line for line in text.splitlines() if line.strip()]
+    # Git delimits patterns at LF. Unicode separators and bare CR are part
+    # of a pattern/comment, not additional rules (S3-010).
+    lines = [line for line in text.split("\n") if line.strip()]
     if not lines:
         return None
     _verify_dir_marker_support()

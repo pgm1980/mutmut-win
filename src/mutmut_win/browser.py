@@ -823,11 +823,12 @@ class ResultBrowser(App[None]):
             command_line = subprocess.list2cmdline(
                 [sys.executable, "-m", "mutmut_win", "run", *names]
             )
-            if len(command_line) > _RETEST_COMMAND_LINE_LIMIT:
+            command_line_units = sum(2 if ord(char) > 0xFFFF else 1 for char in command_line)
+            if command_line_units > _RETEST_COMMAND_LINE_LIMIT:
                 self.notify(
                     f"Retest module refused for {file_path}: the explicit list of "
-                    f"{len(names)} mutant names needs {len(command_line)} command-line "
-                    f"characters, beyond the Windows limit of "
+                    f"{len(names)} mutant names needs {command_line_units} command-line "
+                    f"UTF-16 units, beyond the Windows limit of "
                     f"{_RETEST_COMMAND_LINE_LIMIT}. Start it manually with a subset: "
                     "mutmut-win run <mutant names>",
                     title="Retest module",
