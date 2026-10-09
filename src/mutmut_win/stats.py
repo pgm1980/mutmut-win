@@ -343,8 +343,25 @@ def _skip_context_file(name: str) -> bool:
 def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     """Compare identity and mutation-sensitive fields of two file stats."""
 
-    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
-    return all(getattr(left, field) == getattr(right, field) for field in fields)
+    fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+        "st_nlink",
+        "st_birthtime_ns",
+        "st_file_attributes",
+        "st_reparse_tag",
+    )
+    # Link/attribute updates can share a timestamp tick. Compare the actual
+    # fields too, preserving presence rather than equating a missing value.
+    return all(
+        hasattr(left, field) == hasattr(right, field)
+        and getattr(left, field, None) == getattr(right, field, None)
+        for field in fields
+    )
 
 
 @component("metadata", identity=("include_timestamps", "include_link_count"))
@@ -410,8 +427,12 @@ def _same_path_binding(
     fields = ["st_dev", "st_ino", "st_mode"]
     if compare_link_count:
         fields.append("st_nlink")
-    fields.extend(("st_size", "st_mtime_ns"))
-    return all(getattr(left, field) == getattr(right, field) for field in fields)
+    fields.extend(("st_size", "st_mtime_ns", "st_file_attributes", "st_reparse_tag"))
+    return all(
+        hasattr(left, field) == hasattr(right, field)
+        and getattr(left, field, None) == getattr(right, field, None)
+        for field in fields
+    )
 
 
 def _absolute_lexical_path(path: Path) -> Path:
@@ -438,6 +459,51 @@ def _record_file_observation(role: str, metadata: os.stat_result) -> None:
                 )
             },
         )
+
+
+def _verify_fresh_file_content(
+    path: Path,
+    stream: BinaryIO,
+    before: os.stat_result,
+    rebound: os.stat_result,
+    content_digest: bytes,
+    *,
+    hash_timestamps: bool,
+    hash_link_count: bool,
+) -> bool:
+    """Confirm the first byte stream through a fresh, stable file observation.
+
+    The fresh rebound handle starts at zero, avoiding any old buffered bytes.
+    Its complete content must match the first read and remain strictly stable.
+    This does not reset or republish a partially accumulated canonical digest.
+    """
+    if not _same_path_binding(before, rebound, compare_link_count=hash_link_count):
+        return False
+    if hash_timestamps and not _same_file_snapshot(before, rebound):
+        return False
+    checked_content = hashlib.sha256()
+    checked_size = 0
+    while chunk := stream.read(1024 * 1024):
+        checked_size += len(chunk)
+        if checked_size > rebound.st_size:
+            return False
+        checked_content.update(chunk)
+    checked = os.fstat(stream.fileno())
+    _record_file_observation("content-recheck", checked)
+    if (
+        checked_size != rebound.st_size
+        or not _same_file_snapshot(rebound, checked)
+        or checked_content.digest() != content_digest
+    ):
+        return False
+    # Rebinding during the additional read is still a different object even
+    # when its bytes, size and mtime happen to match the first observation.
+    with _open_for_hash(path) as final_stream:
+        final_binding = os.fstat(final_stream.fileno())
+        _record_file_observation("recheck-binding", final_binding)
+    return _same_path_binding(checked, final_binding, compare_link_count=hash_link_count) and (
+        not hash_timestamps or _same_file_snapshot(before, final_binding)
+    )
 
 
 @component("file", identity=("path", "label", "hash_timestamps", "hash_link_count"))
@@ -479,11 +545,19 @@ def _hash_context_file(
                 include_timestamps=hash_timestamps,
                 include_link_count=hash_link_count,
             )
+            content_hasher = hashlib.sha256()
+            content_size = 0
             with component_scope("content"):
                 while chunk := stream.read(1024 * 1024):
                     hasher.update(chunk)
+                    content_hasher.update(chunk)
+                    content_size += len(chunk)
+                    if content_size > before.st_size:
+                        break
             after_handle = os.fstat(stream.fileno())
             _record_file_observation("after-handle", after_handle)
+            complete_content = content_size == before.st_size
+            stable_content = complete_content and _same_file_snapshot(before, after_handle)
             # Re-open the lexical path while the hashed handle is still live.
             # On POSIX this catches rename-and-replace; on Windows it avoids
             # comparing ``fstat().st_ctime`` with the path-stat value, whose
@@ -491,7 +565,24 @@ def _hash_context_file(
             with _open_for_hash(absolute) as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
                 _record_file_observation("rebound", rebound_handle)
-        if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
+                neutral_link_change = (
+                    complete_content
+                    and not hash_timestamps
+                    and not hash_link_count
+                    and before.st_nlink != after_handle.st_nlink
+                    and _same_path_binding(before, after_handle, compare_link_count=False)
+                )
+                if stable_content or neutral_link_change:
+                    stable_content = _verify_fresh_file_content(
+                        absolute,
+                        rebound,
+                        before,
+                        rebound_handle,
+                        content_hasher.digest(),
+                        hash_timestamps=hash_timestamps,
+                        hash_link_count=hash_link_count,
+                    )
+        if not stable_content or not _same_path_binding(
             after_handle,
             rebound_handle,
             compare_link_count=hash_link_count,

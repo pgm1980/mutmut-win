@@ -119,6 +119,8 @@ def test_metadata_change_has_stable_content_token(tmp_path: Path) -> None:
         "before",
         "after-handle",
         "rebound",
+        "content-recheck",
+        "recheck-binding",
     ]
 
 
@@ -210,5 +212,7 @@ def test_file_observation_events_publish_all_six_bound_metadata_values(tmp_path:
         {"kind": "file-observation", "role": "before", "fields": expected_fields},
         {"kind": "file-observation", "role": "after-handle", "fields": expected_fields},
         {"kind": "file-observation", "role": "rebound", "fields": expected_fields},
+        {"kind": "file-observation", "role": "content-recheck", "fields": expected_fields},
+        {"kind": "file-observation", "role": "recheck-binding", "fields": expected_fields},
     ]
     assert report["diagnostics_complete"] is True
