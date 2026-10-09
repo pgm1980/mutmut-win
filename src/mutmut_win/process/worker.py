@@ -997,17 +997,20 @@ def configure_ephemeral_pytest_environment(
     """Redirect Python/pytest/Hypothesis state to one fresh process directory.
 
     ``PYTHONDONTWRITEBYTECODE`` alone does not stop CPython from consuming an
-    existing ``UNCHECKED_HASH`` pyc.  A unique ``PYTHONPYCACHEPREFIX`` changes
-    the normal import lookup as well as the write target.  The directory must
-    never be shared across phases: explicit ``py_compile`` can still populate
+    existing ``UNCHECKED_HASH`` pyc. A unique ``PYTHONPYCACHEPREFIX`` changes
+    the normal import lookup as well as the write target. Isolated phases
+    therefore use a fresh prefix; explicit ``py_compile`` can still populate
     it despite the no-write flag.
 
     M-149: when *shared_pycache* is provided (run-scoped, not phase-scoped),
     the pycache directory is reused across all phases of one run.  The first
     phase compiles the trampolined staging tree and writes bytecode;
-    subsequent phases get cache hits instead of recompiling ~80 MB.
-    Bytecode writing is enabled in this mode because the staging tree is
-    frozen after generation (verified by _validate_staging_unchanged).
+    subsequent phases can reuse those cache entries. Shared-cache consumers
+    must start Python with ``--check-hash-based-pycs always``: staging evidence
+    cannot detect an off-source UNCHECKED_HASH file written into the cache.
+    The flag validates its source hash; it does not authenticate arbitrary
+    bytecode or change timestamp-based cache validation. Bytecode writing
+    remains enabled for the supported shared mode.
 
     Args:
         env: Child environment to isolate.
@@ -1831,6 +1834,8 @@ def _pytest_base_cmd() -> list[str]:
     """
     return [
         sys.executable,
+        "--check-hash-based-pycs",
+        "always",
         "-m",
         "pytest",
         "-p",
