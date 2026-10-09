@@ -82,7 +82,10 @@ async def test_browser_loads_campaign_renders_diff_and_stops_worker(
         assert "+" in content.code
         cli_diff = run_cli(browser_campaign, "show", selected)
         assert cli_diff.returncode == 0
-        assert content.code.strip() == cli_diff.stdout.strip()
+        cli_header, separator, cli_body = cli_diff.stdout.partition("\n")
+        assert cli_header == f"# {selected}"
+        assert separator == "\n"
+        assert content.code.strip() == cli_body.strip()
         worker = app._diff_worker
         assert worker is not None
         assert worker.is_alive()
