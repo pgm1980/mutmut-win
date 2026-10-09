@@ -30,12 +30,15 @@ def test_case_rename_refreshes_import_and_generation_identity(
     mirror(config)
     old_staged = tmp_path / "mutants" / old_relative
     names, _, fast_path = create_mutants_for_file(old_relative, old_staged)
-    assert names and not fast_path
+    assert names
+    assert not fast_path
     assert old_staged.with_name(old_staged.name + ".meta").is_file()
 
     old_entry = old_source.parent if rename_directory else old_source
     new_entry = old_entry.with_name(old_entry.name.lower())
     intermediate = old_entry.with_name("rename_intermediate")
+    assert old_entry.resolve().is_relative_to(tmp_path.resolve())
+    assert intermediate.resolve().is_relative_to(tmp_path.resolve())
     old_entry.rename(intermediate)
     intermediate.rename(new_entry)
     new_source = new_entry / "module.py" if rename_directory else new_entry
@@ -69,8 +72,14 @@ def test_case_rename_refreshes_import_and_generation_identity(
         # The fixed probe runs through uv in the externally synchronized environment.
         result = subprocess.run(  # noqa: S603
             [
-                uv, "run", "--no-sync", "--project", str(Path(__file__).resolve().parents[2]),
-                "python", "-I", "-c",
+                uv,
+                "run",
+                "--no-sync",
+                "--project",
+                str(Path(__file__).resolve().parents[2]),
+                "python",
+                "-I",
+                "-c",
                 f"import sys; sys.path.insert(0, {str(root)!r}); "
                 f"from {expected_prefix[:-1]} import value; print(value())",
             ],
@@ -80,3 +89,28 @@ def test_case_rename_refreshes_import_and_generation_identity(
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == b"2"
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_case_rename_preserves_independent_metadata_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: bool
+) -> None:
+    """A live metadata fixture remains a mirror and is never deleted as a sidecar."""
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "src/Helper.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    fixture = source.with_name(source.name + ".meta")
+    fixture.write_bytes(b"independent caller fixture")
+    config = MutmutConfig(paths_to_mutate=[], also_copy=["src"])
+    mirror = copy_also_copy_files if configured else copy_src_dir
+    mirror(config)
+    for original in (source, fixture):
+        temporary = original.with_name("rename_intermediate")
+        original.rename(temporary)
+        temporary.rename(original.with_name(original.name.lower()))
+    mirror(config)
+    staged = tmp_path / "mutants/src"
+    assert {entry.name for entry in staged.iterdir()} == {"helper.py", "helper.py.meta"}
+    assert (staged / "helper.py").read_bytes() == source.read_bytes()
+    assert (staged / "helper.py.meta").read_bytes() == b"independent caller fixture"
