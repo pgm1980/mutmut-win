@@ -215,6 +215,28 @@ if _hang_deadline_raw is not None:
 
 from mutmut_win.atomic_file import atomic_write_bytes
 
+# S3-002: only the actual coverage phase requests this proof. Inspect its
+# live collector, not a separately parsed configuration or caller claim.
+_coverage_policy_path = os.environ.get("MUTMUT_COVERAGE_POLICY_PATH")
+if _coverage_policy_path:
+    import coverage
+
+    _coverage_current = coverage.Coverage.current()
+    if _coverage_current is None:
+        raise pytest.UsageError("coverage policy requested without an active collector")
+    _coverage_concurrency = _coverage_current.get_option("run:concurrency")
+    if not isinstance(_coverage_concurrency, list) or not all(
+        isinstance(value, str) for value in _coverage_concurrency
+    ):
+        raise pytest.UsageError("coverage concurrency policy is invalid")
+    _coverage_mode = (
+        "multiprocessing" if "multiprocessing" in _coverage_concurrency else "parent"
+    )
+    _coverage_token = os.environ["MUTMUT_COVERAGE_POLICY_TOKEN"]
+    atomic_write_bytes(
+        Path(_coverage_policy_path), f"{_coverage_token}:{_coverage_mode}".encode("utf-8")
+    )
+
 _PATH_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PATH"
 _PROOF_ENV = "MUTMUT_PYTEST_PHASE_SENTINEL_PROOF"
 _ALLOWED_DIRS_ENV = "MUTMUT_PYTEST_ALLOWED_DIRS"
@@ -1002,6 +1024,9 @@ def configure_ephemeral_pytest_environment(
     """
 
     runtime_dir = runtime_dir.absolute()
+    if coverage_data_file is None:
+        env.pop("MUTMUT_COVERAGE_POLICY_PATH", None)
+        env.pop("MUTMUT_COVERAGE_POLICY_TOKEN", None)
     cache_dir = runtime_dir / "pytest-cache"
     hypothesis_dir = runtime_dir / "hypothesis"
     if shared_pycache is not None:

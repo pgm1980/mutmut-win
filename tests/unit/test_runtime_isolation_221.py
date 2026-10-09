@@ -139,6 +139,8 @@ def test_ephemeral_pytest_environment_keeps_runtime_state_outside_staging(
         "PYTHONPYCACHEPREFIX": str(staging / "stale-python-cache"),
         "HYPOTHESIS_STORAGE_DIRECTORY": str(staging / "stale-hypothesis"),
         "COVERAGE_FILE": str(staging / ".coverage"),
+        "MUTMUT_COVERAGE_POLICY_PATH": str(staging / "untrusted-policy"),
+        "MUTMUT_COVERAGE_POLICY_TOKEN": "untrusted",
     }
 
     pytest_cache = configure_ephemeral_pytest_environment(environment, runtime_dir)
@@ -151,6 +153,8 @@ def test_ephemeral_pytest_environment_keeps_runtime_state_outside_staging(
     }
     assert pytest_cache == expected_paths["pytest"]
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "MUTMUT_COVERAGE_POLICY_PATH" not in environment
+    assert "MUTMUT_COVERAGE_POLICY_TOKEN" not in environment
     assert Path(environment["PYTHONPYCACHEPREFIX"]) == expected_paths["python"]
     assert Path(environment["HYPOTHESIS_STORAGE_DIRECTORY"]) == expected_paths["hypothesis"]
     assert Path(environment["COVERAGE_FILE"]) == expected_paths["coverage"]

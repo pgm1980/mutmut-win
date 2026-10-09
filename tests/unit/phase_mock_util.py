@@ -70,6 +70,10 @@ def phase_popen(
                 token = env.get("MUTMUT_PYTEST_PHASE_SENTINEL_PROOF")
                 if isinstance(marker, str) and isinstance(token, str):
                     Path(marker).write_text(token, encoding="utf-8")
+                coverage_marker = env.get("MUTMUT_COVERAGE_POLICY_PATH")
+                coverage_token = env.get("MUTMUT_COVERAGE_POLICY_TOKEN")
+                if isinstance(coverage_marker, str) and isinstance(coverage_token, str):
+                    Path(coverage_marker).write_text(f"{coverage_token}:parent", encoding="utf-8")
         return proc
 
     with (

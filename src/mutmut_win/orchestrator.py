@@ -1616,14 +1616,14 @@ class MutationOrchestrator:
     def _gather_coverage(
         self,
         source_files: list[str],
-    ) -> dict[str, set[int]]:
+    ) -> dict[str, set[int]] | None:
         """Run tests with coverage tracking and return covered lines per file.
 
         Args:
             source_files: Relative paths of source files to track.
 
         Returns:
-            Mapping of absolute file paths to sets of covered line numbers.
+            Covered lines, or None for conservative all-lines generation.
         """
         from mutmut_win.code_coverage import gather_coverage
 

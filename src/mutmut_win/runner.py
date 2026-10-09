@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ from mutmut_win.atomic_file import atomic_write_bytes, ensure_atomic_bytes
 # Explicit re-export for BWC — single source of truth: constants (#110).
 from mutmut_win.constants import MUTANT_ENV_VAR as MUTANT_ENV_VAR
 from mutmut_win.constants import SOURCE_ROOT_NAMES, configured_staging_relative_path
-from mutmut_win.exceptions import OrchestratorError
+from mutmut_win.exceptions import CoverageCollectionError, OrchestratorError
 from mutmut_win.process.worker import (
     PYTEST_PHASE_GUARD_PLUGIN,
     _write_pytest_argfile,
@@ -224,6 +225,7 @@ class PytestRunner:
         # phases get cache hits instead of recompiling ~80 MB trampolined source).
         self.shared_pycache: Path | None = None
         self._forced_fail_attributed: bool | None = None
+        self.coverage_uses_multiprocessing = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -705,7 +707,27 @@ class PytestRunner:
         cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
-        return self._run_phase("coverage collection", cmd, env, coverage_data_file=data_file)
+        self.coverage_uses_multiprocessing = False
+        token = secrets.token_hex(32)
+        policy_path = data_file.parent / f".mutmut-coverage-policy-{token}"
+        env["MUTMUT_COVERAGE_POLICY_PATH"] = str(policy_path)
+        env["MUTMUT_COVERAGE_POLICY_TOKEN"] = token
+        try:
+            result = self._run_phase("coverage collection", cmd, env, coverage_data_file=data_file)
+            if result == 0:
+                try:
+                    with policy_path.open("rb") as stream:
+                        policy = stream.read(len(token) + 32)
+                except OSError as exc:
+                    raise CoverageCollectionError("coverage policy proof is missing") from exc
+                if policy == f"{token}:multiprocessing".encode():
+                    self.coverage_uses_multiprocessing = True
+                elif policy != f"{token}:parent".encode():
+                    raise CoverageCollectionError("coverage policy proof is invalid")
+            return result
+        finally:
+            with contextlib.suppress(OSError):
+                policy_path.unlink(missing_ok=True)
 
     def run_forced_fail(
         self,

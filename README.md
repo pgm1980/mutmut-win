@@ -378,8 +378,12 @@ Notes:
   The project's own coverage configuration is honored: `relative_files
   = true` keys are resolved against the staged `mutants/` tree before
   matching, and parallel data files (`parallel = true`, including
-  `concurrency = multiprocessing` children) are merged into one
-  measurement. Code exercised only in test-spawned subprocesses or
+  `concurrency = multiprocessing` children) share one external data target.
+  When the actual collector uses `multiprocessing`, the run explicitly
+  falls back to mutating all configured source lines: a valid parent part
+  cannot prove that every child saved its measurements. Missing child parts
+  therefore cannot shrink the mutation population. Without that mode,
+  parent measurements still select covered lines. Code exercised only in test-spawned subprocesses or
   pytest-xdist workers is invisible to it — such a run fails loudly
   instead of silently filtering every mutant. Follow-up runs restore every target to
   its unmutated bytes before the coverage phase, so coverage always

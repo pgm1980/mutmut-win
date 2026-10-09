@@ -10,8 +10,10 @@ under ``coverage run --data-file=<fresh external temp dir>/.coverage.mutmut``
 inside ``mutants/`` (which at that point holds the UNMUTATED copies — line
 numbers are identical to the original sources the mutant generator filters
 against), and the parent merges every data file written to the exclusive
-output directory — ``parallel = true`` parts, including measurements from
-coverage-spawned ``multiprocessing`` children, are combined.  Measured keys
+output directory — ``parallel = true`` parts are combined. Multiprocessing
+measurements share that directory but cannot authorize line exclusion:
+the live collector's multiprocessing mode selects conservative all-lines
+generation even if every present data part is readable. Measured keys
 are matched canonically: a relative key (the staged project config may set
 ``relative_files = true``) is first bound to ``mutants/`` — the coverage
 subprocess cwd — then ``os.path.realpath`` folds filesystem aliases (8.3
@@ -34,8 +36,8 @@ Known limits (documented in the README): code exercised only via
 test-spawned subprocesses or pytest-xdist workers is not measured; an
 all-empty measurement therefore raises instead of filtering everything.
 Coverage's own child processes (``concurrency = multiprocessing``) ARE
-measured — their parallel data parts are merged, which can surface more
-covered mutants than a parent-process-only measurement would.
+measured, but missing child parts cannot be distinguished from unexecuted
+lines. Their configured mode therefore preserves the full source universe.
 """
 
 from __future__ import annotations
@@ -158,7 +160,9 @@ def _merge_measured_lines(data_candidates: list[Path], mutants_dir: Path) -> dic
     return measured
 
 
-def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dict[str, set[int]]:
+def gather_coverage(
+    runner: _CoverageRunner, source_files: Iterable[str]
+) -> dict[str, set[int]] | None:
     """Collect per-file covered lines via the subprocess coverage bridge.
 
     Args:
@@ -166,7 +170,9 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
         source_files: Project-relative paths of the files to be mutated.
 
     Returns:
-        Mapping of normcased absolute mutants-paths to covered line sets.
+        Mapping of normcased absolute mutants-paths to covered line sets,
+        or ``None`` to retain every line when multiprocessing measurement
+        cannot prove that every child saved its data.
 
     Raises:
         CoverageCollectionError: If the collection run fails, leaves no data
@@ -192,6 +198,15 @@ def gather_coverage(runner: _CoverageRunner, source_files: Iterable[str]) -> dic
                 f"the test suite must pass before mutate_only_covered_lines can "
                 f"measure it."
             )
+        # S3-002: even readable parent/child files cannot prove that every
+        # child saved its measurements. The production runner authenticates
+        # this policy from the actual live collector before returning 0.
+        if getattr(runner, "coverage_uses_multiprocessing", False) is True:
+            print(
+                "Coverage uses multiprocessing; child measurement completeness "
+                "is unproven. Mutating all configured source lines."
+            )
+            return None
         # parallel=true writes suffixed parts instead of one suffixless
         # file; SQLite sidecars of a crashed run are never data.
         data_candidates = sorted(
