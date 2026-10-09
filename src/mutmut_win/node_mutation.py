@@ -758,11 +758,11 @@ def operator_regex(node: cst.Call) -> Iterable[cst.Call]:
         return
 
     # Statically resolve re.VERBOSE (keyword, positional, or a monotonic
-    # BitOr member); a global inline (?x) prefix counts too.  Unknown flags
-    # keep today's flagless behaviour (M-051).
+    # BitOr member). The regex scanner handles global and scoped inline flags.
+    # Unknown flag expressions keep today's flagless behaviour (M-051).
     verbose = _resolve_verbose_flag(node.args, node.func.attr.value)
     effective_flags = 0
-    if verbose or pattern.startswith("(?x)"):
+    if verbose:
         effective_flags = re.VERBOSE
 
     for mutated_pattern in mutate_regex_pattern(pattern, effective_flags):

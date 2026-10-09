@@ -73,6 +73,8 @@ def test_literal_hashes_keep_distinguishable_mutations(pattern: str) -> None:
 @given(st.text(alphabet="abc[]()?#\\d+*{}", max_size=30))
 def test_verbose_comment_payload_cannot_create_mutation_sites(payload: str) -> None:
     """Arbitrary single-line comment syntax is inert in a scoped x group."""
-    pattern = f"(?x:a # {payload}\n b)"
+    # A fixed suffix prevents a trailing payload backslash from escaping the
+    # newline and making the source pattern itself an unterminated group.
+    pattern = f"(?x:a # {payload} end\n b)"
     assert re.fullmatch(pattern, "ab") is not None
     assert mutate_regex_pattern(pattern) == []
