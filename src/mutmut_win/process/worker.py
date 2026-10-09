@@ -177,6 +177,7 @@ _PYTEST_HANG_DUMP_ENV: str = "MUTMUT_PYTEST_HANG_DUMP_SECONDS"
 _PYTEST_PHASE_GUARD_SOURCE: str = '''\
 """Auto-generated mutmut-win pytest phase-execution guard."""
 
+from collections.abc import Generator
 import json
 import os
 import stat
@@ -591,42 +592,90 @@ _FORCED_FAIL_PROOF_PATH_ENV = "MUTMUT_FORCED_FAIL_PROOF_PATH"
 _FORCED_FAIL_PROOF_TOKEN_ENV = "MUTMUT_FORCED_FAIL_PROOF_TOKEN"
 
 
-def _publish_forced_fail_proof(
+_forced_fail_reports: list[pytest.CollectReport | pytest.TestReport] = []
+_forced_fail_exceptions: list[
+    tuple[pytest.CollectReport | pytest.TestReport, BaseException]
+] = []
+_forced_fail_blocked = False
+
+
+def _is_forced_fail_exception(error: BaseException) -> bool:
+    """Accept only genuine sentinel leaves through explicit causes and pure groups.
+
+    Implicit context never proves causality. Cycles, excessive depth/size and
+    control exceptions fail closed. Shared leaves in a group remain valid.
+    """
+    from mutmut_win.exceptions import MutmutProgrammaticFailException
+
+    pending = [(error, False, 0)]
+    active: set[int] = set()
+    complete: set[int] = set()
+    while pending:
+        current, leaving, depth = pending.pop()
+        identity = id(current)
+        if leaving:
+            active.remove(identity)
+            complete.add(identity)
+            continue
+        if identity in complete:
+            continue
+        if identity in active or depth > 64 or len(active) + len(complete) >= 256:
+            return False
+        if isinstance(current, (pytest.skip.Exception, pytest.xfail.Exception,
+                                KeyboardInterrupt, SystemExit)):
+            return False
+        if isinstance(current, MutmutProgrammaticFailException):
+            complete.add(identity)
+            continue
+        cause = current.__cause__
+        if isinstance(current, BaseExceptionGroup):
+            children = list(current.exceptions)
+            if cause is not None:
+                children.append(cause)
+        elif cause is not None:
+            children = [cause]
+        else:
+            return False
+        active.add(identity)
+        pending.append((current, True, depth))
+        pending.extend((child, False, depth + 1) for child in children)
+    return True
+
+
+def _record_forced_fail_exception(
     call: pytest.CallInfo[object], report: pytest.CollectReport | pytest.TestReport
 ) -> None:
-    """Publish proof only for a failed report with the real trampoline exception.
+    """Retain actual exceptions and report identities until the command finishes."""
+    if not (os.environ.get(_FORCED_FAIL_PROOF_PATH_ENV)
+            and os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV)):
+        return
+    if call.excinfo is not None:
+        _forced_fail_exceptions.append((report, call.excinfo.value))
 
-    The proof is published only when the final report failed AND the exception is
-    the trampoline's
-    MutmutProgrammaticFailException (checked on the call's excinfo, any
-    phase: setup, call, teardown — fixtures throw too). Without both env
-    variables this hook is a strict no-op, so every other phase and worker
-    is unaffected. Publication failures are silently swallowed: the
-    forced-fail phase must not turn a diagnostics problem into a pytest
-    INTERNALERROR; the gate then fails closed on the missing proof.
-    """
+
+def _publish_forced_fail_proof(exit_code: int) -> None:
+    """Publish only after every failed report and the complete command qualify."""
     proof_path = os.environ.get(_FORCED_FAIL_PROOF_PATH_ENV)
     proof_token = os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV)
-    if not (proof_path and proof_token):
+    if not (proof_path and proof_token) or _forced_fail_blocked or exit_code not in (1, 2):
         return
     try:
-        if not report.failed or hasattr(report, "wasxfail"):
-            return
-        excinfo = call.excinfo
-        if excinfo is None:
-            return
-        from mutmut_win.exceptions import MutmutProgrammaticFailException
-
-        if not excinfo.errisinstance(MutmutProgrammaticFailException):
+        failed = [report for report in _forced_fail_reports if report.failed]
+        attributable = {
+            id(report) for report, error in _forced_fail_exceptions
+            if _is_forced_fail_exception(error)
+        }
+        if not failed or any(
+            id(report) not in attributable or hasattr(report, "wasxfail") for report in failed
+        ):
             return
         # M-130 fix: use a PLAIN file write, not atomic_write_bytes.
-        # atomic_write_bytes is a trampolined function in the staged
-        # module — under MUTANT_UNDER_TEST=fail it raises before writing,
-        # silently swallowing the proof publication. The proof file needs
-        # no atomicity: the consumer reads it once after the process exits.
-        with open(proof_path, "wb") as proof_handle:
+        # The helper is itself trampolined during self-mutation. Exclusive
+        # creation also preserves a preexisting wrong-token rejection.
+        with open(proof_path, "xb") as proof_handle:
             proof_handle.write(proof_token.encode("utf-8"))
-    except Exception:
+    except BaseException:
+        # Diagnostics must never change the pytest result; absent proof blocks.
         pass
 
 
@@ -635,7 +684,7 @@ def pytest_runtest_makereport(item, call):
     """Observe the final test report after pytest's skip/xfail conversion."""
     outcome = yield
     try:
-        _publish_forced_fail_proof(call, outcome.get_result())
+        _record_forced_fail_exception(call, outcome.get_result())
     except Exception:
         pass
 
@@ -651,7 +700,52 @@ def pytest_exception_interact(
     Runtime reports remain owned by the outermost makereport wrapper.
     """
     if call.when == "collect":
-        _publish_forced_fail_proof(call, report)
+        _record_forced_fail_exception(call, report)
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """Retain collection reports so later failures cannot inherit earlier proof."""
+    if os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV):
+        _forced_fail_reports.append(report)
+
+
+@pytest.hookimpl(specname="pytest_runtest_logreport")
+def pytest_forced_fail_logreport(report: pytest.TestReport) -> None:
+    """Observe final runtime reports without replacing the execution-proof hook."""
+    if os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV):
+        _forced_fail_reports.append(report)
+
+
+def pytest_keyboard_interrupt(excinfo: pytest.ExceptionInfo[BaseException]) -> None:
+    """Reject real interruptions while allowing pytest's collection-error exit."""
+    global _forced_fail_blocked
+    if type(excinfo.value) is not pytest.Session.Interrupted:
+        _forced_fail_blocked = True
+
+
+def pytest_internalerror() -> None:
+    """Prevent an internal error from qualifying even if a plugin changes its exit."""
+    global _forced_fail_blocked
+    _forced_fail_blocked = True
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish() -> Generator[None, object, object]:
+    """Preserve and record finalization errors, including pytest.exit overrides."""
+    global _forced_fail_blocked
+    try:
+        return (yield)
+    except BaseException:
+        _forced_fail_blocked = True
+        raise
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_cmdline_main() -> Generator[None, int, int]:
+    """Publish after sessionfinish and unconfigure have both returned normally."""
+    exit_code = yield
+    _publish_forced_fail_proof(exit_code)
+    return exit_code
 
 
 @pytest.hookimpl(trylast=True)
