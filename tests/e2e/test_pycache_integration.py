@@ -1,145 +1,137 @@
-"""M-149b integration test: dispatch workers actually share the pycache.
-
-Runs a real mutmut-win campaign against simple_lib (~14 mutants) and
-verifies the full chain: orchestrator → executor → worker → pytest child
-all reuse the same bytecode cache. The independent oracle is timing:
-the first mutant pays the compilation cost, subsequent mutants read from
-the shared cache and complete measurably faster.
-"""
+"""Observe the cache used by real pytest children in a complete campaign."""
 
 from __future__ import annotations
 
 import sqlite3
-import subprocess
-import sys
 from contextlib import closing
-from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import BaseModel
 
 from tests.e2e.e2e_util import SIMPLE_LIB, copy_project, run_cli
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = [pytest.mark.e2e, pytest.mark.slow]
 
 
+class WorkerCacheObservation(BaseModel):
+    """Environment recorded while a real child executes a fixture test."""
+
+    mutant: str
+    prefix: str | None
+    writing_disabled: bool
+    pid: int
+
+
+class CampaignCacheEvidence(BaseModel):
+    """Run-bound verdicts and observations from the same fresh campaign."""
+
+    run_id: str
+    verdict_mutants: set[str]
+    observations: list[WorkerCacheObservation]
+
+
+@pytest.fixture(scope="module")
+def cache_campaign(tmp_path_factory: pytest.TempPathFactory) -> CampaignCacheEvidence:
+    """Run a campaign whose fixture records the actual child cache environment."""
+    temporary = tmp_path_factory.mktemp("native-shared-cache")
+    project = copy_project(SIMPLE_LIB, temporary)
+    observations = temporary / "observations"
+    observations.mkdir()
+    # The observer is part of the fixture before staging and only records data.
+    # Each pytest process writes its own mutant-bound file, without shared writes.
+    (project / "conftest.py").write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "from pydantic import BaseModel\n"
+        "class Observation(BaseModel):\n"
+        "    mutant: str\n"
+        "    prefix: str | None\n"
+        "    writing_disabled: bool\n"
+        "    pid: int\n"
+        "def pytest_runtest_call(item):\n"
+        "    mutant = os.environ.get('MUTANT_UNDER_TEST', '')\n"
+        "    observation = Observation(mutant=mutant, prefix=sys.pycache_prefix,\n"
+        "        writing_disabled=sys.dont_write_bytecode, pid=os.getpid())\n"
+        f"    directory = Path({str(observations)!r})\n"
+        "    name = f'{os.getpid()}-{mutant}.json'\n"
+        "    (directory / name).write_text(observation.model_dump_json(), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    result = run_cli(project, "run", "--no-progress", timeout=900)
+    assert result.returncode == 0, result.stdout + result.stderr
+    db_path = project / ".mutmut-cache" / "mutmut-cache.db"
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as connection:
+        run = connection.execute(
+            "SELECT run_id, status FROM mutation_run ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        assert run is not None
+        assert run[1] == "completed", run
+        verdicts = connection.execute(
+            "SELECT mutant_name, result_status, duration FROM mutation_run_mutant"
+            " WHERE run_id = ? ORDER BY ordinal",
+            (run[0],),
+        ).fetchall()
+    assert len(verdicts) >= 5, verdicts
+    assert all(status in {"killed", "survived"} for _, status, _ in verdicts), verdicts
+    assert all(duration is not None and duration > 0 for _, _, duration in verdicts), verdicts
+    evidence = CampaignCacheEvidence(
+        run_id=run[0],
+        verdict_mutants={name for name, _, _ in verdicts},
+        observations=[
+            WorkerCacheObservation.model_validate_json(path.read_text(encoding="utf-8"))
+            for path in sorted(observations.glob("*.json"))
+        ],
+    )
+    (temporary / "campaign-cache-evidence.json").write_text(
+        evidence.model_dump_json(indent=2), encoding="utf-8"
+    )
+    return evidence
+
+
 class TestDispatchWorkerSharedPycache:
-    """Real campaign: workers share bytecode cache across mutants."""
+    """Bind the configured shared cache to actual worker execution and verdicts."""
 
-    def test_workers_share_pycache_and_speed_up(self, tmp_path: Path) -> None:
-        """Full campaign with shared pycache: total time significantly less
-        than first-mutant compile time x mutant count."""
+    def test_worker_verdicts_use_observed_clean_cache(
+        self, cache_campaign: CampaignCacheEvidence
+    ) -> None:
+        """Every recorded verdict has a real child using the clean phase cache."""
+        workers = [
+            observation
+            for observation in cache_campaign.observations
+            if observation.mutant in cache_campaign.verdict_mutants
+        ]
+        assert {worker.mutant for worker in workers} == cache_campaign.verdict_mutants
+        clean = [
+            observation for observation in cache_campaign.observations if not observation.mutant
+        ]
+        assert clean, cache_campaign
+        clean_prefixes = {observation.prefix for observation in clean}
+        assert len(clean_prefixes) == 1
+        assert None not in clean_prefixes
+        for worker in workers:
+            assert worker.pid > 0
+            assert worker.prefix in clean_prefixes, worker
+            assert worker.writing_disabled is False, worker
 
-        project = copy_project(SIMPLE_LIB, tmp_path)
-
-        # Run the full campaign
-        result = run_cli(project, "run", "--no-progress", timeout=900)
-
-        assert result.returncode == 0, (
-            f"Campaign failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-
-        # Read per-mutant durations from the cache DB
-        db_path = project / ".mutmut-cache" / "mutmut-cache.db"
-        assert db_path.is_file(), "cache DB must exist after a successful run"
-
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-            run_id = conn.execute(
-                "SELECT run_id FROM mutation_run ORDER BY sequence DESC LIMIT 1"
-            ).fetchone()[0]
-            durations = conn.execute(
-                "SELECT duration FROM mutation_run_mutant"
-                " WHERE run_id = ? AND duration IS NOT NULL AND duration > 0"
-                " ORDER BY ordinal",
-                (run_id,),
-            ).fetchall()
-
-        assert len(durations) >= 5, (
-            f"Expected at least 5 mutants with durations, got {len(durations)}"
-        )
-
-        values = [d[0] for d in durations]
-        first = values[0]
-        later_avg = sum(values[1:]) / max(1, len(values) - 1)
-
-        # The first mutant includes the compilation of ~80 MB trampolined
-        # source (~350s for orchestrator.py alone in the old ephemeral mode).
-        # With shared pycache, later mutants should be MUCH faster than the
-        # first one because they read from the cache.
-        # We assert the later mutants are at most 3x the first mutant's time
-        # (conservative: without sharing, every mutant would be similar).
-        # Note: without M-149b, all mutants would be roughly the same duration.
-        assert later_avg < first * 3.0, (
-            f"Shared pycache not working: first mutant {first:.1f}s, "
-            f"later average {later_avg:.1f}s — without sharing, all mutants "
-            f"would be similarly slow (compile from scratch each time). "
-            f"Durations: {values}"
-        )
-
-        # NOTE: the shared pycache temp dir may be cleaned up after the run,
-        # so the durations above are the primary oracle.
-
-    def test_worker_env_has_shared_pycache_during_run(self, tmp_path: Path) -> None:
-        """During a campaign, worker pytest children see PYTHONPYCACHEPREFIX
-        pointing to a shared (non-ephemeral) directory."""
-
-        project = copy_project(SIMPLE_LIB, tmp_path)
-
-        # Start the campaign as a subprocess
-        process = subprocess.Popen(
-            [sys.executable, "-m", "mutmut_win", "run", "--no-progress"],
-            cwd=project,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-        # Wait for the campaign to complete
-        try:
-            stdout, _ = process.communicate(timeout=600)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=30)
-            pytest.fail("Campaign timed out")
-
-        assert process.returncode == 0, f"stdout:\n{stdout}"
-
-        # Check for the M-149b evidence in the output:
-        # The run should NOT show per-worker compilation warnings
-        # and should complete significantly faster than without sharing
-        assert "Score" in stdout, "campaign summary must be present"
-
-        # The total duration should be reasonable (not 14 x 450s = 6300s
-        # which would be the case without shared pycache)
-        db_path = project / ".mutmut-cache" / "mutmut-cache.db"
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-            run_id = conn.execute(
-                "SELECT run_id FROM mutation_run ORDER BY sequence DESC LIMIT 1"
-            ).fetchone()[0]
-            (total_duration,) = conn.execute(
-                "SELECT SUM(duration) FROM mutation_run_mutant WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            mutant_count = len(
-                conn.execute(
-                    "SELECT ordinal FROM mutation_run_mutant WHERE run_id = ?",
-                    (run_id,),
-                ).fetchall()
-            )
-
-        # Without shared pycache: ~450s per mutant x N mutants
-        # With shared pycache: only the first mutant pays the compile cost
-        # For simple_lib (~14 mutants), total should be well under 14 x 450s
-        if total_duration and mutant_count > 0:
-            avg_per_mutant = total_duration / mutant_count
-            # Conservative: average should be under 300s (without sharing
-            # it would be ~450s; with sharing, only the first is slow)
-            assert avg_per_mutant < 300, (
-                f"Average {avg_per_mutant:.1f}s per mutant suggests "
-                f"shared pycache is not working (expected < 300s, "
-                f"got {avg_per_mutant:.1f}s across {mutant_count} mutants)"
-            )
+    def test_worker_env_has_shared_pycache_during_run(
+        self, cache_campaign: CampaignCacheEvidence
+    ) -> None:
+        """Stats and worker children preserve writable sharing across the run."""
+        stats = [
+            observation
+            for observation in cache_campaign.observations
+            if observation.mutant == "stats"
+        ]
+        assert stats, cache_campaign
+        stats_prefixes = {observation.prefix for observation in stats}
+        assert len(stats_prefixes) == 1
+        assert None not in stats_prefixes
+        workers = [
+            observation
+            for observation in cache_campaign.observations
+            if observation.mutant in cache_campaign.verdict_mutants
+        ]
+        assert workers
+        assert {worker.prefix for worker in workers} == stats_prefixes
+        assert all(not observation.writing_disabled for observation in [*stats, *workers])
