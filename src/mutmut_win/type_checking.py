@@ -718,6 +718,15 @@ def run_type_checker(type_check_command: list[str]) -> list[TypeCheckingError]:
         checker, completed_process.stdout, completed_process.stderr
     )
 
+    # Exit 1 may also mean that Python could not import mypy. A genuine
+    # findings status needs at least one JSONL record; notes are valid records
+    # even though the error-only parser below intentionally filters them out.
+    if checker == "mypy" and completed_process.returncode == 1 and report == []:
+        raise TypeCheckCommandError(
+            "type check command failed with exit code 1 without JSON diagnostics. "
+            f"stderr: {completed_process.stderr}"
+        )
+
     return _parse_report(checker, report, completed_process.stdout)
 
 
