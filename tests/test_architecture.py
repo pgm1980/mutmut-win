@@ -179,12 +179,9 @@ def test_no_upward_import_from_process() -> None:
 
 
 def test_config_has_no_process_dependency() -> None:
-    """Config module must not depend on the process layer.
+    """Delegate the config dependency claim to the executable layer contract.
 
-    Verifies that mutmut_win.config can be imported in isolation without
-    pulling in heavy subprocess/multiprocessing machinery.
+    The same import-linter gate checks real import edges, including imports
+    inside functions and private aliases. Public attributes prove no such boundary.
     """
-    config_mod = import_module("mutmut_win.config")
-    # If the import succeeds and the key class is present, the layer boundary holds.
-    assert hasattr(config_mod, "MutmutConfig")
-    assert hasattr(config_mod, "load_config")
+    test_import_linter_contracts_hold()

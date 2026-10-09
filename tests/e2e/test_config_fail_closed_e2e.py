@@ -60,8 +60,17 @@ class TestAbsolutePathsRejected:
         assert not (project / "mutants").exists(), "NO mutants/ directory may be created"
 
 
-class TestDotDotAliasRejected:
-    def test_dot_dot_in_paths_to_mutate_fails(self, tmp_path: Path) -> None:
+class TestOutsideProjectDotDotRejected:
+    """Prove outside-project containment rejection at the public CLI boundary.
+
+    Internal ``..`` spellings require canonicalization rather than rejection.
+    That separate contract is exercised by TestPathsToMutateCanonicalisation
+    in tests/unit/test_config.py, including its Hypothesis properties. This
+    outside-project scenario does not observe the internal canonical spelling.
+    """
+
+    def test_outside_project_dotdot_path_fails_before_staging(self, tmp_path: Path) -> None:
+        """Reject a path outside the project before any staging directory exists."""
         project = _make_project(tmp_path)
         (project / "pyproject.toml").write_text(
             '[tool.mutmut]\npaths_to_mutate = ["../outside/src"]\ntests_dir = ["tests"]\n',
