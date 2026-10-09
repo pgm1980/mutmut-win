@@ -114,7 +114,7 @@ def _run_classifier_against_subprocess(
     return classification, granted_cpu_pct
 
 
-def test_busy_loop_subprocess_classified_as_infinite_loop(
+def test_busy_loop_subprocess_is_a_diagnostic_timeout(
     tmp_path: Path,
 ) -> None:
     """``while True: pass`` must classify as killed_by_infinite_loop.
@@ -138,7 +138,8 @@ def test_busy_loop_subprocess_classified_as_infinite_loop(
             # Run the original assertions.
             samples = classification.forensics.samples_collected
             assert samples >= 5, f"Expected at least 5 samples, got {samples}"
-            assert classification.verdict == "killed_by_infinite_loop", (
+            assert classification.verdict == "timeout"
+            assert classification.forensics.loop_suspected, (
                 f"Real busy-loop wrongly classified as "
                 f"{classification.verdict!r} (granted {granted:.1f}%). "
                 f"Bug #5 / Issue #71 — IL detector defect."

@@ -214,7 +214,7 @@ class TestResultsTypeCheckLine:
             return_value=(None, self._rows()),
         ):
             result = CliRunner().invoke(cli, ["results"])
-        assert "Killed:     3  (incl. 1 infinite-loop)" in result.output
+        assert "Killed:     2" in result.output
 
     def test_score_still_counts_the_kill_class(self) -> None:
         """Presentation changes, the formula does not: (2+1+1)/5 = 80%."""
@@ -223,7 +223,7 @@ class TestResultsTypeCheckLine:
             return_value=(None, self._rows()),
         ):
             result = CliRunner().invoke(cli, ["results"])
-        assert "Score:      80.0%" in result.output
+        assert "Score:      60.0%" in result.output
 
     def test_three_channels_agree_with_skipped_rows(self) -> None:
         """SCO-002 + #91: with skipped > 0 the DB-wide channels stay
@@ -235,11 +235,11 @@ class TestResultsTypeCheckLine:
         cicd = compute_cicd_stats([(r.mutant_name, r.status) for r in rows])
         assert cicd.skipped == 1
         assert cicd.scoreable == 5  # 6 total - 1 skipped
-        assert cicd.score == pytest.approx(80.0)
+        assert cicd.score == pytest.approx(60.0)
         with patch(
             "mutmut_win.cli._load_result_snapshot_or_exit",
             return_value=(None, rows),
         ):
             result = CliRunner().invoke(cli, ["results"])
         assert "Skipped:    1" in result.output
-        assert "Score:      80.0%" in result.output
+        assert "Score:      60.0%" in result.output

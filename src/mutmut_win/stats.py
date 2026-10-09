@@ -2098,19 +2098,18 @@ class CicdStats:
     """Aggregated mutation run statistics for CI/CD export.
 
     Attributes:
-        killed: Number of mutants killed by tests, including infinite-loop
-            kills (matching the run gate and the ``results`` command).
+        killed: Number of mutants killed by tests.
         survived: Number of surviving (un-killed) mutants.
         total: Total number of mutants generated.
         no_tests: Number of mutants with no covering tests.
         skipped: Number of explicitly skipped mutants.
         suspicious: Number of mutants with suspicious exit codes.
-        timeout: Number of timed-out mutants.
+        timeout: Number of timed-out mutants, including legacy loop classifications.
         check_was_interrupted_by_user: Number of mutants interrupted by the user.
         segfault: Number of mutants that caused a segfault.
         caught_by_type_check: Number of mutants caught by the type checker.
-        killed_by_infinite_loop: Subset of ``killed`` that was classified as
-            an infinite loop by the IL detector.
+        killed_by_infinite_loop: Historical diagnostic subset of ``timeout``.
+            The field name is preserved for readers of the existing JSON schema.
         score: Mutation score as a percentage (0.0-100.0).
     """
 
@@ -2130,8 +2129,8 @@ class CicdStats:
     def effective_killed(self) -> int:
         """The kill class behind :attr:`score` (issue #91).
 
-        ``killed`` already includes infinite-loop kills (#86); the type
-        checker and a crash under a mutant are detections too.
+        A type-check rejection and a crash under a mutant are detections too.
+        Historical loop classifications remain conservative timeouts (S3-003).
         """
         return self.killed + self.caught_by_type_check + self.segfault
 
@@ -2149,8 +2148,7 @@ class CicdStats:
     def score(self) -> float:
         """Mutation score as a percentage.
 
-        The numerator is the kill class: ``killed`` (which already includes
-        infinite-loop kills, #86) plus ``caught_by_type_check`` plus
+        The numerator is the kill class: ``killed`` plus ``caught_by_type_check`` plus
         ``segfault`` — a crash under a mutant is a detection (issue #91).
         Buckets stay disjoint; aggregation happens only here.
 
@@ -2179,9 +2177,9 @@ def compute_cicd_stats(results: list[tuple[str, str | None]]) -> CicdStats:
             case "killed":
                 stats.killed += 1
             case "killed_by_infinite_loop":
-                # An IL kill IS a kill — the run gate and `results` already
-                # count it that way; before #86 it silently deflated the score.
-                stats.killed += 1
+                # S3-003: retain the historical diagnostic subset without granting
+                # kill authority. This also protects results/export before a rerun.
+                stats.timeout += 1
                 stats.killed_by_infinite_loop += 1
             case "survived":
                 stats.survived += 1

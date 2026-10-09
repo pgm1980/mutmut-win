@@ -123,6 +123,25 @@ def test_compute_score_all_timeouts_with_flag_gives_full_score() -> None:
 
 
 class TestTimeoutAsKillScoreReporting:
+    @pytest.mark.parametrize("opt_in", [False, True])
+    def test_s3_timeout_policy_changes_gate_but_never_raw_score(self, opt_in: bool) -> None:
+        """The same unresolved timeout fails by default and passes only by opt-in."""
+        result = MutationRunResult(
+            total_mutants=2,
+            killed=1,
+            timeout=1,
+            execution_basis_complete=True,
+        )
+        args = ["--output", "json", "--min-score", "80"]
+        if opt_in:
+            args.append("--treat-timeout-as-kill")
+
+        exit_code, stderr, stdout = _invoke_run_with(result, *args)
+
+        assert exit_code == (0 if opt_in else 1), stderr
+        assert json.loads(stdout)["score"] == 50.0
+        assert (_SCORE_LINE_MARKER in stderr) is opt_in
+
     def test_score_line_names_effective_and_raw_score(self) -> None:
         result = MutationRunResult(total_mutants=10, killed=5, timeout=5)
 

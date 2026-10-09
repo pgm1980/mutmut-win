@@ -98,8 +98,8 @@ class TestShowCommandForensics:
         result = CliRunner().invoke(cli_module.show, ["pkg.x_f__mutmut_1"])
         assert result.exit_code == 0, result.output
         if with_db_row:
-            assert "Infinite-loop verdict" in result.stderr
-            assert "Infinite-loop verdict" not in result.stdout
+            assert "Legacy infinite-loop classification" in result.stderr
+            assert "Legacy infinite-loop classification" not in result.stdout
         return result.output
 
     def test_show_appends_panel_for_il_kill(
@@ -107,7 +107,7 @@ class TestShowCommandForensics:
     ) -> None:
         output = self._invoke_show(tmp_path, monkeypatch, with_db_row=True)
         assert "-old\n+new" in output  # diff still rendered
-        assert "Infinite-loop verdict" in output
+        assert "Legacy infinite-loop classification" in output
         assert "confidence: high" in output
 
     def test_show_without_db_row_renders_diff_only(
@@ -115,7 +115,7 @@ class TestShowCommandForensics:
     ) -> None:
         output = self._invoke_show(tmp_path, monkeypatch, with_db_row=False)
         assert "-old\n+new" in output
-        assert "Infinite-loop verdict" not in output
+        assert "Legacy infinite-loop classification" not in output
 
     def test_show_with_glob_pattern_finds_forensics_panel(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -148,4 +148,4 @@ class TestShowCommandForensics:
 
         assert result.exit_code == 0, result.output
         assert "# pkg.x_f__mutmut_1" in result.output  # header shows the RESOLVED name
-        assert "Infinite-loop verdict" in result.output
+        assert "Legacy infinite-loop classification" in result.output

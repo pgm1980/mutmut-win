@@ -67,12 +67,13 @@ def test_s3_finite_busy_window_is_not_a_nontermination_proof(cpu: float) -> None
     assert classification.forensics.samples_collected == 20
 
 
-def test_classify_hypothesis_infinite_loop_is_killed_with_high_confidence() -> None:
-    """CPU pegged + no output + running for full window → killed_by_infinite_loop, high conf."""
+def test_classify_busy_window_has_high_pattern_confidence() -> None:
+    """Busy quiet samples support high pattern confidence, never a kill."""
     samples = _make_samples(n=20, cpu=99.0, output_growth_per_sample=0, status="running")
     result = classify_samples(samples, IlThresholds())
 
-    assert result.verdict == "killed_by_infinite_loop"
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is True
     assert result.confidence == "high", (
         f"Expected high confidence with CPU=99 (margin 41% over threshold 70%), "
         f"got {result.confidence}. Forensics: {result.forensics}"
@@ -94,7 +95,8 @@ def test_classify_slow_io_test_is_timeout_not_loop() -> None:
     samples = _make_samples(n=20, cpu=5.0, output_growth_per_sample=0, status="sleeping")
     result = classify_samples(samples, IlThresholds())
 
-    assert result.verdict == "timeout", (
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is False, (
         f"Slow I/O test wrongly classified as IL — false positive. Forensics: {result.forensics}"
     )
     assert result.confidence == "low"
@@ -110,18 +112,20 @@ def test_classify_genuine_many_hypothesis_examples_is_timeout() -> None:
     )
     result = classify_samples(samples, IlThresholds())
 
-    assert result.verdict == "timeout", (
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is False, (
         f"Genuine slow test (with output progress) wrongly classified as IL. "
         f"Forensics: {result.forensics}"
     )
 
 
-def test_classify_async_event_loop_spinning_is_killed() -> None:
-    """High CPU + no output + running (async busy-loop) → killed_by_infinite_loop."""
+def test_classify_spinning_window_is_only_suspected() -> None:
+    """A busy quiet window remains a timeout with a suspected-loop diagnostic."""
     samples = _make_samples(n=20, cpu=92.0, output_growth_per_sample=0, status="running")
     result = classify_samples(samples, IlThresholds())
 
-    assert result.verdict == "killed_by_infinite_loop"
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is True
 
 
 def test_classify_empty_samples_returns_timeout_low_confidence() -> None:
@@ -129,6 +133,7 @@ def test_classify_empty_samples_returns_timeout_low_confidence() -> None:
     result = classify_samples([], IlThresholds())
 
     assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is False
     assert result.confidence == "low"
     assert result.forensics.samples_collected == 0
 
@@ -139,15 +144,17 @@ def test_classify_just_below_cpu_threshold_is_timeout() -> None:
     result = classify_samples(samples, IlThresholds(cpu_threshold=70.0))
 
     assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is False
 
 
-def test_classify_just_above_threshold_is_killed_medium_confidence() -> None:
-    """All three thresholds barely met → killed_by_infinite_loop, medium confidence."""
+def test_classify_just_above_threshold_has_medium_pattern_confidence() -> None:
+    """Barely met pattern thresholds yield medium diagnostic confidence."""
     samples = _make_samples(n=20, cpu=72.0, output_growth_per_sample=0, status="running")
     # cpu=72 vs threshold 70 → margin ~3% < 20% → medium
     result = classify_samples(samples, IlThresholds(cpu_threshold=70.0))
 
-    assert result.verdict == "killed_by_infinite_loop"
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is True
     assert result.confidence == "medium", (
         f"Expected medium confidence for narrow threshold margin, got {result.confidence}"
     )
@@ -169,6 +176,7 @@ def test_classify_running_ratio_below_threshold_blocks_il_verdict() -> None:
     result = classify_samples(samples, IlThresholds())
 
     assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is False
     assert result.forensics.running_ratio == 0.6
 
 
@@ -178,7 +186,8 @@ def test_classify_tunable_thresholds_lower_cpu_floor() -> None:
     permissive = IlThresholds(cpu_threshold=50.0)
 
     result = classify_samples(samples, permissive)
-    assert result.verdict == "killed_by_infinite_loop"
+    assert result.verdict == "timeout"
+    assert result.forensics.loop_suspected is True
 
 
 def test_classify_forensics_capture_last_output_tail() -> None:

@@ -2402,9 +2402,8 @@ def _persist_type_check_kills(db_path: Path, caught_names: set[str]) -> None:
 #: type-check kills are re-produced by the filter each run, and interrupt
 #: placeholders carry no verdict — extending this set must be a conscious
 #: decision (the pin test enforces that).
-REUSABLE_STATUSES: frozenset[str] = frozenset(
-    {"killed", "survived", "segfault", "killed_by_infinite_loop"}
-)
+# S3-003: historical loop classifications are budget-sensitive observations.
+REUSABLE_STATUSES: frozenset[str] = frozenset({"killed", "survived", "segfault"})
 _TEST_BASIS_FINGERPRINT_MARKER = "mutmut-win:test-basis:v2"
 _FULL_SUITE_FINGERPRINT_MARKER = "mutmut-win:full-suite:v2"
 
@@ -2722,13 +2721,12 @@ def _increment_summary(summary: MutationRunResult, status: str) -> None:
         status: Mutation status string from ``constants.status_by_exit_code``.
     """
     match status:
-        case "killed" | "caught by type check" | "killed_by_infinite_loop":
-            # Issue #71: killed_by_infinite_loop is a true kill (suite never
-            # terminates under the mutant — observable behaviour change).
+        case "killed" | "caught by type check":
             summary.killed += 1
         case "survived":
             summary.survived += 1
-        case "timeout":
+        case "timeout" | "killed_by_infinite_loop":
+            # S3-003: old heuristic rows remain readable, but are not proven kills.
             summary.timeout += 1
         case "suspicious":
             summary.suspicious += 1

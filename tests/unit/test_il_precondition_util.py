@@ -27,6 +27,7 @@ def _make_classification(cpu_mean: float, verdict: str = "timeout") -> Any:
         running_ratio=1.0,
         samples_collected=15,
         window_seconds=3.0,
+        loop_suspected=verdict == "killed_by_infinite_loop",
     )
     return LoopClassification(verdict=verdict, confidence="low", forensics=forensics)
 

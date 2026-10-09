@@ -63,10 +63,10 @@ def assess_busy_loop_run(
     threshold = float(thresholds.cpu_threshold)
 
     # Correct IL verdict: accept without oracle dependency.
-    if classification.verdict == "killed_by_infinite_loop":
+    if classification.forensics.loop_suspected:
         return IlRunAssessment(
             decision="assert_il",
-            reason="classifier returned killed_by_infinite_loop",
+            reason="classifier observed the busy-loop pattern without granting kill authority",
         )
 
     # Non-IL: check the precondition first.

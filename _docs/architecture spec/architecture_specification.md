@@ -164,6 +164,13 @@ Option A: `multiprocessing.set_start_method('spawn')` mit langlebigem Worker-Poo
 
 ### ADR-002: Timeout-Strategie — Wall-Clock-Timeout
 
+**S3-003-Präzisierung (2026-10-09):** Ein Budgetablauf begrenzt die Ausführung,
+beweist aber keine Nichttermination. CPU-, Output- und I/O-Samples bleiben
+diagnostische Hinweise. Der Worker beendet weiterhin den enthaltenen Prozessbaum
+und persistiert `timeout` mit Forensik. Historische `killed_by_infinite_loop`-Werte
+bleiben lesbar, zählen konservativ als Timeouts und werden nicht wiederverwendet.
+Nur die explizite Option `--treat-timeout-as-kill` ändert die effektive Scorepolitik.
+
 **Status:** Accepted
 **Datum:** 2026-03-30
 

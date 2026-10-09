@@ -44,7 +44,6 @@ class TestReusableStatuses:
             "killed",
             "survived",
             "segfault",
-            "killed_by_infinite_loop",
         } == REUSABLE_STATUSES
 
 

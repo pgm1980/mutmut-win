@@ -1,44 +1,15 @@
-"""Infinite-loop detection for mutation-test workers (Bug #5 / Issue #71).
+"""Timeout activity diagnostics for mutation-test workers.
 
-The pre-Sprint-26 worker only knew "subprocess timed out — exit_code 36".
-That bucketed two semantically different things into the same TIMEOUT bucket:
+A lightweight sampler observes CPU, captured output and I/O activity while the
+contained subprocess runs. On a deadline breach the worker kills the tree and
+persists these observations. A quiet busy window suggests a possible loop but
+also describes finite CPU work; it never proves nontermination (S3-003).
 
-1. **Infinite loop** introduced by the mutation (CPU pegged, no output, the
-   suite would never terminate). The mutation IS detected; classification as
-   TIMEOUT understates the kill.
-2. **Genuine slow test** that hit the wall-clock budget for non-mutation
-   reasons (network wait, expensive setup, …). Real TIMEOUT.
-
-This module distinguishes the two with a sampling classifier: a lightweight
-``threading.Thread`` observes the subprocess tree during its lifetime; after
-``TimeoutExpired`` the caller invokes :func:`classify_samples`, which returns
-a :class:`LoopClassification` carrying the verdict, a confidence band, and a
-structured :class:`IlForensics` snapshot that is persisted with the mutant so
-every classification can be audited post hoc (``mutmut-win show <mutant>``).
-
-Signals and their honest, platform-dependent reach (issues #88/#89):
-
-- **CPU** (mean over the window, process tree): the primary signal, real on
-  all platforms.
-- **Progress** (negative signal — observable progress vetoes IL): captured-log
-  growth (the worker sets ``PYTHONUNBUFFERED=1`` so ``st_size`` is honest)
-  OR io_counters activity of the tree (a pure spin makes zero syscalls;
-  unavailable on macOS). Note that pytest writes nothing *during* a single
-  long test, so a silent log alone is weak evidence — hence the conjunction
-  with CPU.
-- **Process status** (``running_ratio``): POSIX only. Windows reports
-  virtually every process as "running", so the worker declares the signal
-  unavailable there (``status_signal_available=False``) and verdicts rest on
-  the other signals — capped at ``medium`` confidence, never ``high``.
-
-Reference scenarios (status column is POSIX semantics):
-
-| Scenario                           | CPU      | Progress  | Status   | Verdict                  |
-|------------------------------------|----------|-----------|----------|--------------------------|
-| Hypothesis-IL (Bug #5 case)        | high     | none      | running  | killed_by_infinite_loop  |
-| Slow DB / network test             | low      | none      | sleeping | timeout                  |
-| Genuine many Hypothesis examples   | med-high | growing   | running  | timeout                  |
-| Async event loop spinning          | high     | none      | running  | killed_by_infinite_loop  |
+``classify_samples`` therefore always returns ``timeout``. The additive
+``IlForensics.loop_suspected`` flag and confidence describe only the observed
+pattern. On Windows the process-status signal is unavailable, so pattern
+confidence is capped at ``medium``. Monitoring, containment and timeout cleanup
+remain independent of score policy. Legacy exit/status constants stay readable.
 """
 
 from __future__ import annotations
@@ -151,6 +122,8 @@ class IlForensics(BaseModel):
     # New in v2.8.0 (#89): io_counters ops delta over the window; None when
     # the signal was unavailable (macOS, AccessDenied).
     io_ops_delta: int | None = None
+    # S3-003: sampled activity is diagnostic, never proof of nontermination.
+    loop_suspected: bool = False
 
 
 class LoopClassification(BaseModel):
@@ -220,10 +193,10 @@ def classify_samples(
     status_signal_available: bool = True,
     sampler_errors: int = 0,
 ) -> LoopClassification:
-    """Apply the triple-check rule and return a :class:`LoopClassification`.
+    """Describe sampled activity without authorizing a nontermination verdict.
 
     The rule:
-    ``killed_by_infinite_loop`` iff all *available* checks hold simultaneously
+    ``forensics.loop_suspected`` iff all *available* checks hold simultaneously
     over the rolling window of ``samples``:
 
     - mean(cpu_pct) >= ``thresholds.cpu_threshold``
@@ -237,7 +210,9 @@ def classify_samples(
     - running_ratio >= ``thresholds.running_ratio`` — only if
       ``status_signal_available``
 
-    Otherwise: ``timeout`` (the pre-Sprint-26 default).
+    The verdict is always ``timeout``. A finite busy computation can produce
+    exactly the same samples as a nonterminating program (S3-003). Confidence
+    describes the observed pattern, not a proof of nontermination.
 
     Args:
         samples: Rolling-window observations from :class:`ProcessMonitor`.
@@ -252,9 +227,9 @@ def classify_samples(
 
     Confidence semantics — reflects evidence quality, not just margins:
     - ``high``: ALL THREE signals were available and passed with ≥20 % margin
-    - ``medium``: IL verdict, but either a margin <20 % or only two signals
+    - ``medium``: suspected loop, but either a margin <20 % or only two signals
       were available (two-of-three is never sold as ``high``)
-    - ``low``: ``timeout`` verdict, zero samples, or fewer than
+    - ``low``: no loop pattern, zero samples, or fewer than
       :data:`MIN_SAMPLES_FOR_VERDICT` samples (A2-JT-009)
     """
     if len(samples) < MIN_SAMPLES_FOR_VERDICT:
@@ -330,13 +305,15 @@ def classify_samples(
         weakest = min(margins)
         confidence: Confidence = "high" if weakest >= 0.2 else "medium"
         if not status_signal_available:
-            # Two-of-three checks is honest evidence for a kill, but never
+            # Two-of-three checks describes a possible loop, but never
             # "high" — the cap is monotone (only ever lowers confidence).
             confidence = "medium"
+        # S3-003: finite CPU work has the same observable window as a loop.
+        # Preserve the useful pattern and confidence without granting kill authority.
         return LoopClassification(
-            verdict="killed_by_infinite_loop",
+            verdict="timeout",
             confidence=confidence,
-            forensics=forensics,
+            forensics=forensics.model_copy(update={"loop_suspected": True}),
         )
 
     return LoopClassification(

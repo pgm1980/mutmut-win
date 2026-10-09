@@ -531,9 +531,8 @@ class MutationRunResult(BaseModel):
 
         Default behaviour matches ``score`` (timeouts excluded from the
         numerator). Setting ``treat_timeout_as_kill=True`` counts timeout
-        mutants toward the kill bucket — a downstream mitigation for Bug #71
-        where Hypothesis tests turn infinite-loop mutations into TIMEOUT
-        instead of KILLED, deflating the reported score.
+        mutants toward the kill bucket as an explicit user scoring policy.
+        Sampling cannot prove nontermination; the default remains conservative.
         """
         denominator = self.total_mutants - self.skipped - self.no_tests - self.unchecked
         if denominator <= 0:

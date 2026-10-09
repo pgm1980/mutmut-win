@@ -52,11 +52,11 @@ identity-capable volume rather than disabling the safety check.
   collection, derived from your own clean run) plus the scaled runtime of its
   authoritative assignment or, for diagnostic mappings, the complete suite.
   The model is printed at the start of every run.
-- **Detects infinite loops.** A psutil-based sampling classifier
-  separates real non-termination (CPU pegged, no output progress, no I/O
-  activity) from genuinely slow tests, with persisted forensics and a
-  platform-aware confidence band — instead of lumping everything into
-  "timeout".
+- **Diagnoses timed-out work.** A psutil-based sampler records CPU, output
+  and I/O activity with a platform-aware confidence band. A busy, quiet
+  window may suggest a loop but also occurs during finite computation.
+  Deadline breaches remain conservative timeouts, with process-tree cleanup
+  and persisted diagnostics available through `show`.
 - **Uses your type checker as a free kill filter.** With
   `type_check_command` configured, mutants that mypy/pyright already
   reject are counted as caught without running a single test.
@@ -83,7 +83,7 @@ identity-capable volume rather than disabling the safety check.
 | Windows | blocked ([#397](https://github.com/boxed/mutmut/issues/397)) | native (spawn worker pool, job objects, no `fork`) |
 | Orphan protection | — | Windows Job Objects: if the parent dies, the kernel reaps every worker and pytest child |
 | Timeout model | CPU-time limit (`RLIMIT_CPU`) | measured wall-clock budgets; full-suite fallback is at least 60 seconds |
-| Hung mutants | plain timeout | infinite-loop classifier with forensics + confidence |
+| Hung mutants | plain timeout | timeout activity monitoring with forensics + confidence |
 | Type-checker filter | — | `type_check_command` kills mutants without running tests |
 | CI output | text | `--output json` (clean stdout), `--min-score`, CI stats export |
 | Config | `[tool.mutmut]` | same section, compatible — migration is trivial |
@@ -147,7 +147,7 @@ tags are immutable release provenance and are never moved or deleted.
 | Command | Purpose |
 |---|---|
 | `mutmut-win run [OPTIONS] [MUTANT_NAMES…]` | Run mutation testing (optionally filtered to names/globs like `src.mod.x_func*`) |
-| `mutmut-win results [--all] [--treat-timeout-as-kill]` | Result summary from the cache DB (`--treat-timeout-as-kill` is **deprecated** — superseded by infinite-loop detection; removal in a future major) |
+| `mutmut-win results [--all] [--treat-timeout-as-kill]` | Result summary from the cache DB (`--treat-timeout-as-kill` is **deprecated** — explicit timeout scoring policy; removal in a future major) |
 | `mutmut-win show <MUTANT>` | Unified diff of one mutant, plus infinite-loop forensics if any |
 | `mutmut-win apply <MUTANT>` | Apply a mutant to the source file (backup + atomic write + staleness check) |
 | `mutmut-win browse [--show-killed]` | TUI result browser (files → mutants → diff) |
@@ -421,7 +421,7 @@ Notes:
   to commands resolved through `PATH`, `python script.py`, `python -m ...`,
   `uv run ...`, and shell/npm wrappers.
 - On Windows the process-status signal does not exist (psutil reports
-  almost everything as "running"), so infinite-loop verdicts rest on CPU
+  almost everything as "running"), so possible-loop diagnostics rest on CPU
   plus progress evidence and are capped at `medium` confidence.
 - **Operator profiles** select how aggressively mutmut-win mutates. The
   default `advanced` is mutmut-win's historical extras set, extended since
@@ -438,16 +438,16 @@ Notes:
 |---|---|
 | `killed` | A test failed under the mutant — detected ✅ |
 | `caught by type check` | The type checker rejected the mutant (no test run needed) |
-| `killed_by_infinite_loop` | Classifier verdict: the suite never terminates under the mutant |
+| `killed_by_infinite_loop` | Historical sampling classification; counted as a timeout and never reused |
 | `segfault` | The test process crashed under the mutant — also a detection |
 | `survived` | **No test noticed the change — this is your test gap** |
-| `timeout` | Budget exceeded without an infinite-loop verdict |
+| `timeout` | Budget exceeded; sampling may suggest a loop but cannot prove nontermination |
 | `suspicious` | Unexpected pytest exit code, or pytest exited 0 without a verified test-call execution proof (neutralized phase, only skipped tests, or a proof publication failure — never counted as a kill); the diagnostic tail is captured |
 | `no tests` | Reserved for a future runtime-authoritative mapper; the current collector never emits this verdict |
 | `skipped` | Excluded from this run |
 
 ```text
-        killed + type-check-caught + IL-killed + segfault
+        killed + type-check-caught + segfault
 score = ------------------------------------------------- × 100
         total − skipped − no tests − unchecked
 ```

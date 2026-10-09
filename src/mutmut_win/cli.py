@@ -69,16 +69,11 @@ def cli() -> None:
 
 
 def _warn_treat_timeout_as_kill_deprecated() -> None:
-    """Deprecation notice for the Sprint-23 stopgap flag (issue #117).
-
-    Superseded by true infinite-loop detection (v2.5.0, honest since
-    v2.8.0). Decision closed: deprecate now — functional through 2.x —
-    remove in a future major release.
-    """
+    """Explain the retained deprecated explicit timeout-scoring policy."""
     click.echo(
-        "Warning: --treat-timeout-as-kill is deprecated — superseded by "
-        "infinite-loop detection (since v2.5.0). The flag stays functional "
-        "in 2.x and will be removed in a future major release.",
+        "Warning: --treat-timeout-as-kill is deprecated. This explicit policy "
+        "counts unresolved timeouts as kills; sampling does not prove "
+        "nontermination. The raw score remains conservative.",
         err=True,
     )
 
@@ -689,7 +684,7 @@ def _is_mutation_target(
     is_flag=True,
     default=False,
     help=(
-        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "(DEPRECATED — explicit timeout scoring policy; removal in a "
         "future major release.) Count TIMEOUT mutants toward the kill bucket "
         "for the --min-score gate and one dedicated stderr line; the reported "
         "JSON score and text summary stay raw. Workaround for Bug #71 "
@@ -1223,7 +1218,7 @@ def run(
     is_flag=True,
     default=False,
     help=(
-        "(DEPRECATED — superseded by infinite-loop detection; removal in a "
+        "(DEPRECATED — explicit timeout scoring policy; removal in a "
         "future major release.) Count TIMEOUT mutants toward the kill bucket "
         "in the displayed score. Workaround for Bug #71 (Hypothesis tests "
         "turn infinite-loop mutations into TIMEOUT)."
@@ -1311,10 +1306,10 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
     score = (score_kills / aggregate.scoreable * 100.0) if aggregate.scoreable > 0 else 0.0
 
     click.echo(f"Total:      {total}")
+    click.echo(f"Killed:     {kill_aggregate}")
     if il_killed > 0:
-        click.echo(f"Killed:     {kill_aggregate}  (incl. {il_killed} infinite-loop)")
-    else:
-        click.echo(f"Killed:     {kill_aggregate}")
+        click.echo(f"Legacy loop classifications: {il_killed} (counted as timeouts)")
+    counts["timeout"] = timeout
     if type_check > 0:
         click.echo(f"Type-check:  {type_check}")
     # Render EVERY status that occurs (issue #91 / A4-UI-009: segfault,
@@ -1355,7 +1350,7 @@ def results(show_all: bool, treat_timeout_as_kill: bool) -> None:
 
 
 def _format_forensics_panel(status: str | None, forensics: dict[str, object] | None) -> str | None:
-    """Render the IL forensics panel for ``show``, or None for non-IL mutants.
+    """Render timeout diagnostics, including historical loop classifications.
 
     NULL-safe in two ways: rows written before v2.8.0 have no forensics at
     all (column is NULL), and a recorded dict may lack individual keys.
@@ -1365,12 +1360,14 @@ def _format_forensics_panel(status: str | None, forensics: dict[str, object] | N
         forensics: The persisted forensics snapshot, or ``None``.
 
     Returns:
-        The panel text, or ``None`` if *status* is not an IL kill.
+        The panel text, or ``None`` for a status without timeout diagnostics.
     """
-    if status != "killed_by_infinite_loop":
+    if status not in {"timeout", "killed_by_infinite_loop"}:
         return None
     confidence = forensics.get("confidence", "unknown") if forensics else "unknown"
-    lines = ["", f"Infinite-loop verdict — confidence: {confidence}"]
+    label = "Timeout diagnostics" if status == "timeout" else "Legacy infinite-loop classification"
+    lines = ["", f"{label} — pattern confidence: {confidence}"]
+    lines.append("  Sampling does not prove nontermination; counted as a timeout.")
     if forensics is None:
         lines.append("  No forensics recorded (run predates v2.8.0).")
         return "\n".join(lines)

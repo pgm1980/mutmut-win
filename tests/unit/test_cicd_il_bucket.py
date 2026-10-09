@@ -1,10 +1,7 @@
-"""Tests for the CICD IL bucket (Issue #86, audit A3-OS-002).
+"""Legacy loop classifications count as timeouts in every reporting channel.
 
-``compute_cicd_stats`` had no case for ``killed_by_infinite_loop``: IL kills
-counted into ``total`` but no bucket, deflating the exported score (verified
-33.3 % vs the 66.7 % the ``results`` command reports on identical data).
-IL kills now count as ``killed`` (matching the run gate and ``results``) and
-are additionally surfaced in an explicit ``killed_by_infinite_loop`` field.
+The existing ``killed_by_infinite_loop`` JSON field is retained as a diagnostic
+subset of timeouts, without granting historical CPU heuristics kill authority.
 """
 
 from __future__ import annotations
@@ -42,18 +39,20 @@ class TestCicdIlBucket:
 
     def test_il_kills_count_as_killed(self) -> None:
         stats = compute_cicd_stats(_RESULTS)
-        assert stats.killed == 2  # was 1 before #86
+        assert stats.killed == 1
+        assert stats.timeout == 1
         assert stats.killed_by_infinite_loop == 1
 
     def test_score_matches_the_results_channel(self) -> None:
-        # The run gate and `results` count IL as a kill: 2 of 3 = 66.7 %.
+        # One proven kill, one legacy timeout and one survivor: 1 of 3.
         stats = compute_cicd_stats(_RESULTS)
-        assert stats.score == pytest.approx(200.0 / 3.0)
+        assert stats.score == pytest.approx(100.0 / 3.0)
 
     def test_json_export_surfaces_the_il_field(self, tmp_path: Path) -> None:
         save_cicd_stats(_RESULTS, mutants_dir=tmp_path)
         payload = json.loads((tmp_path / "mutmut-cicd-stats.json").read_text(encoding="utf-8"))
-        assert payload["killed"] == 2
+        assert payload["killed"] == 1
+        assert payload["timeout"] == 1
         assert payload["killed_by_infinite_loop"] == 1
 
 
@@ -84,16 +83,19 @@ class TestThreeChannelConsistency:
             _update_summary_and_persist(event, summary, db_path, {})
 
         # Channel 1: run gate (orchestrator summary).
-        assert summary.score == pytest.approx(200.0 / 3.0)
+        assert summary.score == pytest.approx(100.0 / 3.0)
+        assert summary.killed == 1
+        assert summary.timeout == 1
 
         # Channel 2: `results` command on the same DB.
         monkeypatch.setattr(cli_module, "DEFAULT_DB_PATH", db_path)
         output = CliRunner().invoke(cli_module.results, []).output
-        assert "Killed:     2  (incl. 1 infinite-loop)" in output
-        assert "Score:      66.7%" in output
+        assert "Killed:     1" in output
+        assert "Score:      33.3%" in output
+        assert "counted as timeouts" in output
 
         # Channel 3: CICD export from the same DB rows.
         rows = load_results(db_path)
         cicd = compute_cicd_stats([(r.mutant_name, r.status) for r in rows])
-        assert cicd.score == pytest.approx(200.0 / 3.0)
+        assert cicd.score == pytest.approx(100.0 / 3.0)
         assert cicd.killed_by_infinite_loop == 1

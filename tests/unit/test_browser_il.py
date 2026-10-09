@@ -30,7 +30,7 @@ class TestBrowserIlAwareness:
     def test_kill_statuses_cover_all_kill_classes(self) -> None:
         assert "killed" in _KILL_STATUSES
         assert "caught by type check" in _KILL_STATUSES
-        assert "killed_by_infinite_loop" in _KILL_STATUSES
+        assert "killed_by_infinite_loop" not in _KILL_STATUSES
         assert "survived" not in _KILL_STATUSES
         assert "timeout" not in _KILL_STATUSES
 

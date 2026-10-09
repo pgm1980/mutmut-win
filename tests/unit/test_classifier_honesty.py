@@ -54,13 +54,15 @@ class TestTwoSignalConfidenceCap:
         # Perfect margins on CPU and output — but with the status signal
         # declared unavailable only two of three checks are real.
         result = classify_samples(_samples(20), IlThresholds(), status_signal_available=False)
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
         assert result.confidence == "medium"
         assert result.forensics.status_signal_used is False
 
     def test_three_signal_verdict_still_reaches_high(self) -> None:
         result = classify_samples(_samples(20), IlThresholds(), status_signal_available=True)
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
         assert result.confidence == "high"
         assert result.forensics.status_signal_used is True
 
@@ -70,7 +72,8 @@ class TestTwoSignalConfidenceCap:
         result = classify_samples(
             _samples(20, status="sleeping"), IlThresholds(), status_signal_available=False
         )
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
 
 
 class TestMinimumSampleFloor:
@@ -78,12 +81,14 @@ class TestMinimumSampleFloor:
         # JT-009: a single cpu=99 sample used to produce IL with HIGH confidence.
         result = classify_samples(_samples(MIN_SAMPLES_FOR_VERDICT - 1), IlThresholds())
         assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is False
         assert result.confidence == "low"
         assert result.forensics.samples_collected == MIN_SAMPLES_FOR_VERDICT - 1
 
     def test_at_floor_a_verdict_is_possible(self) -> None:
         result = classify_samples(_samples(MIN_SAMPLES_FOR_VERDICT), IlThresholds())
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
 
 
 class TestOutputSignalMissingData:
@@ -92,6 +97,7 @@ class TestOutputSignalMissingData:
         # a pro-IL bias.  Missing data must never argue FOR a kill.
         result = classify_samples(_samples(20, output_bytes=None), IlThresholds())
         assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is False
 
     def test_growth_is_computed_over_measurable_samples_only(self) -> None:
         base = time.monotonic()
@@ -106,6 +112,7 @@ class TestOutputSignalMissingData:
         result = classify_samples(measurable + with_holes, IlThresholds())
         # 45 KB growth across the measurable subset — clearly above threshold.
         assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is False
         assert result.forensics.output_growth_bytes == 45_000
 
 
@@ -163,18 +170,21 @@ class TestIoProgressVeto:
         samples = _io_samples(20, io_ops_per_sample=500)
         result = classify_samples(samples, IlThresholds())
         assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is False
         assert result.forensics.io_ops_delta == 19 * 500
 
     def test_frozen_io_does_not_veto(self) -> None:
         result = classify_samples(_io_samples(20, io_ops_per_sample=0), IlThresholds())
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
         assert result.forensics.io_ops_delta == 0
 
     def test_unmeasurable_io_is_neutral(self) -> None:
         # macOS has no io_counters; AccessDenied can hit individual reads.
         # Missing data neither vetoes nor argues for a kill.
         result = classify_samples(_samples(20), IlThresholds())  # io_ops=None default
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
         assert result.forensics.io_ops_delta is None
 
     def test_delta_at_threshold_does_not_veto(self) -> None:
@@ -182,7 +192,8 @@ class TestIoProgressVeto:
         # magnitude margin against stray ticks, not a hair trigger.
         per_sample = IO_OPS_PROGRESS_THRESHOLD // 19  # total stays <= threshold
         result = classify_samples(_io_samples(20, per_sample), IlThresholds())
-        assert result.verdict == "killed_by_infinite_loop"
+        assert result.verdict == "timeout"
+        assert result.forensics.loop_suspected is True
 
 
 @pytest.mark.skipif(not has_psutil(), reason="psutil not installed")

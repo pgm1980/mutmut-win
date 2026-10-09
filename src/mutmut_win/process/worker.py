@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 
 from mutmut_win.atomic_file import atomic_write_bytes, ensure_atomic_bytes
 from mutmut_win.constants import (
-    EXIT_CODE_INFINITE_LOOP,
     EXIT_CODE_TIMEOUT,
     SOURCE_ROOT_NAMES,
     configured_staging_relative_path,
@@ -1549,16 +1548,12 @@ def _process_task(
                     status_signal_available=sys.platform != "win32",
                     sampler_errors=monitor.sampler_errors,
                 )
-                if classification.verdict == "killed_by_infinite_loop":
-                    exit_code = EXIT_CODE_INFINITE_LOOP
-                    forensics_dict = classification.forensics.model_dump()
-                    forensics_dict["confidence"] = classification.confidence
-                else:
-                    exit_code = EXIT_CODE_TIMEOUT
-                    # Persist forensics even on plain timeout so the user can see
-                    # why the classifier said "not IL".
-                    forensics_dict = classification.forensics.model_dump()
-                    forensics_dict["confidence"] = classification.confidence
+                # S3-003: a finite sampling window cannot establish nontermination.
+                # The deadline still kills the contained tree; diagnostics never
+                # promote a budget breach into an authoritative mutant kill.
+                exit_code = EXIT_CODE_TIMEOUT
+                forensics_dict = classification.forensics.model_dump()
+                forensics_dict["confidence"] = classification.confidence
             else:
                 exit_code = EXIT_CODE_TIMEOUT  # no detection available
     except OSError as exc:

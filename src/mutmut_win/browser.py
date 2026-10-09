@@ -50,9 +50,7 @@ _EMOJI_BY_STATUS: dict[str, str] = emoji_by_status
 
 #: Statuses that count as a kill — hidden from the mutants table unless
 #: --show-killed is given.
-_KILL_STATUSES: frozenset[str] = frozenset(
-    {"killed", "caught by type check", "killed_by_infinite_loop"}
-)
+_KILL_STATUSES: frozenset[str] = frozenset({"killed", "caught by type check"})
 
 _STATUS_COLUMNS: list[tuple[str, Any]] = [("path", "Path")] + [
     (status, Text(emoji, justify="right")) for status, emoji in _EMOJI_BY_STATUS.items()
@@ -97,9 +95,9 @@ def _describe_mutant(
             return f"Killed ({exit_code=}): Mutant caused a test to fail 🎉"
         case "killed_by_infinite_loop":
             return (
-                f"Killed — infinite loop ({exit_code=}): The IL detector classified "
-                "this mutant as non-terminating 🌀 "
-                "Run 'mutmut-win show <mutant>' for the forensics behind the verdict."
+                f"Legacy infinite loop classification ({exit_code=}): "
+                "Sampling did not prove nontermination; counted as a timeout. "
+                "Run 'mutmut-win show <mutant>' for the recorded diagnostics."
             )
         case "survived":
             return f"Survived ({exit_code=}): No test detected this mutant. {view_tests_desc}"
