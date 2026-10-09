@@ -225,6 +225,125 @@ class TestAtomicReplaceIfUnchanged:
         assert siblings == [], f"unexpected siblings: {siblings}"
 
 
+class TestCasInterruptRecovery:
+    """S3-013: cancellation preserves source ownership and reports recovery."""
+
+    @pytest.mark.parametrize("phase", ["verification", "insertion"])
+    @pytest.mark.parametrize("interrupt_type", [KeyboardInterrupt, SystemExit])
+    def test_interrupt_restores_source_before_publication(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        phase: str,
+        interrupt_type: type[BaseException],
+    ) -> None:
+        """Cancellation at either pre-publication phase restores the original leaf."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        interrupted = interrupt_type("controlled cancellation")
+        real_read = Path.read_bytes
+        real_rename = Path.rename
+
+        def read_at_phase(path: Path) -> bytes:
+            if phase == "verification" and path.name.endswith(".mutmut-displaced"):
+                raise interrupted
+            return real_read(path)
+
+        def rename_at_phase(path: Path, destination: Path) -> Path:
+            if phase == "insertion" and ".mutmut-atomic-" in path.name and destination == source:
+                raise interrupted
+            return real_rename(path, destination)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", read_at_phase)
+            patcher.setattr(Path, "rename", rename_at_phase)
+            with pytest.raises(interrupt_type) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        assert caught.value is interrupted
+        assert source.exists(), "interruption left the normal source path absent"
+        assert source.read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert (source.stat().st_dev, source.stat().st_ino) == original_identity
+        assert set(tmp_path.iterdir()) == {source, backup}
+        assert str(source) in " ".join(getattr(caught.value, "__notes__", []))
+
+    @pytest.mark.parametrize("foreign_source", [False, True])
+    def test_interrupted_restore_names_actual_surviving_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_source: bool
+    ) -> None:
+        """A blocked restoration retains the original and any foreign recreated source."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+
+        def read_then_interrupt(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                if foreign_source:
+                    source.write_bytes(b"FOREIGN")
+                raise KeyboardInterrupt("controlled cancellation")
+            return real_read(path)
+
+        real_rename = Path.rename
+
+        def prevent_restore(path: Path, destination: Path) -> Path:
+            if not foreign_source and path.name.endswith(".mutmut-displaced"):
+                raise PermissionError("controlled restoration denial")
+            return real_rename(path, destination)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", read_then_interrupt)
+            patcher.setattr(Path, "rename", prevent_restore)
+            with pytest.raises(KeyboardInterrupt) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        assert len(displaced) == 1
+        assert displaced[0].read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert source.exists() is foreign_source
+        if foreign_source:
+            assert source.read_bytes() == b"FOREIGN"
+        assert list(tmp_path.glob(".*.mutmut-atomic-*.tmp")) == []
+        notes = " ".join(getattr(caught.value, "__notes__", []))
+        assert str(displaced[0]) in notes
+
+    def test_cli_interrupt_reports_actual_recovery_without_applied_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The public apply command must expose recovery information on cancellation."""
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = source.read_bytes()
+        real_read = Path.read_bytes
+
+        def interrupt_displaced_read(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                raise KeyboardInterrupt("controlled cancellation")
+            return real_read(path)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", interrupt_displaced_read)
+            outcome = CliRunner().invoke(cli, ["apply", name])
+
+        assert outcome.exit_code != 0
+        assert "Applied mutant" not in outcome.output
+        assert source.exists(), "CLI cancellation left the source absent"
+        assert source.read_bytes() == before
+        assert "restored" in outcome.stderr
+        assert "src" in outcome.stderr and "mod.py" in outcome.stderr
+
+
 class TestDisplacementRaceWindow:
     """Races INSIDE the displacement CAS core stretch (AR-17 / TQ-003 / M-005).
 
