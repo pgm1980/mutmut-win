@@ -231,3 +231,161 @@ def test_forced_fail_token_requires_exact_bytes(payload: bytes) -> None:
         proof.write_bytes(payload)
         assert consume_forced_fail_proof(proof, "expected-token") is (payload == b"expected-token")
         assert not proof.exists()
+
+
+class PhaseAttributionCase(BaseModel):
+    """Describe observable whole-phase attribution without reproducing its algorithm."""
+
+    name: str
+    body: str
+    attributed: bool
+    secondary: str = ""
+    secondary_name: str = "test_zzz_other.py"
+    conftest: str = ""
+
+
+_COLLECTION_TRY = "\ntry:\n    VALUE = value()\nexcept Exception as exc:\n"
+_COLLECTION_TEST = "\ndef test_value():\n    assert VALUE == 2\n"
+_LATER_FOREIGN = (
+    "\nif os.environ.get('MUTANT_UNDER_TEST') == 'fail':\n"
+    "    raise ValueError('independent collection error')\n"
+    "def test_other():\n    assert True\n"
+)
+_MIXED_GROUP = (
+    _COLLECTION_TRY
+    + ("    raise ExceptionGroup('mixed', [exc, ValueError('independent')]) from None\n")
+    + _COLLECTION_TEST
+)
+_PHASE_CASES = [
+    PhaseAttributionCase(
+        name="explicit_collection_cause",
+        attributed=True,
+        body=_COLLECTION_TRY + "    raise RuntimeError('wrapper') from exc\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="explicit_body_cause",
+        attributed=True,
+        body="\ndef test_value():\n    try:\n        assert value() == 2\n"
+        "    except Exception as exc:\n        raise RuntimeError('wrapper') from exc\n",
+    ),
+    PhaseAttributionCase(
+        name="pure_nested_shared_group",
+        attributed=True,
+        body=_COLLECTION_TRY + "    raise ExceptionGroup('outer', ["
+        "ExceptionGroup('inner', [exc, exc])]) from None\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="group_explicit_cause",
+        attributed=True,
+        body=_COLLECTION_TRY + "    wrapped = RuntimeError('wrapper')\n"
+        "    wrapped.__cause__ = exc\n"
+        "    raise ExceptionGroup('pure', [wrapped, exc]) from None\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(name="mixed_group", attributed=False, body=_MIXED_GROUP),
+    PhaseAttributionCase(
+        name="mixed_group_with_genuine_cause",
+        attributed=False,
+        body=_COLLECTION_TRY + "    raise ExceptionGroup('mixed', ["
+        "ValueError('independent')]) from exc\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="implicit_context",
+        attributed=False,
+        body=_COLLECTION_TRY + "    raise RuntimeError('independent')\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="suppressed_context",
+        attributed=False,
+        body=_COLLECTION_TRY
+        + "    raise RuntimeError('independent') from None\n"
+        + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="cause_cycle",
+        attributed=False,
+        body=_COLLECTION_TRY + "    wrapped = RuntimeError('cycle')\n"
+        "    wrapped.__cause__ = wrapped\n    raise wrapped from wrapped\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="skip_with_explicit_cause",
+        attributed=False,
+        body=_COLLECTION_TRY + "    raise pytest.skip.Exception('skip', "
+        "allow_module_level=True) from exc\n" + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="xfail_with_explicit_cause",
+        attributed=False,
+        body=_COLLECTION_TRY
+        + "    raise pytest.xfail.Exception('xfail') from exc\n"
+        + _COLLECTION_TEST,
+    ),
+    PhaseAttributionCase(
+        name="later_foreign_collection",
+        attributed=False,
+        body=_IMPORT_ASSERTION,
+        secondary=_LATER_FOREIGN,
+    ),
+    PhaseAttributionCase(
+        name="earlier_foreign_collection",
+        attributed=False,
+        body=_IMPORT_ASSERTION,
+        secondary=_LATER_FOREIGN,
+        secondary_name="test_aaa_other.py",
+    ),
+    PhaseAttributionCase(
+        name="later_mixed_group",
+        attributed=False,
+        body=_IMPORT_ASSERTION,
+        secondary=_MIXED_GROUP,
+    ),
+    PhaseAttributionCase(
+        name="later_foreign_runtime",
+        attributed=False,
+        body=_BODY,
+        secondary="\ndef test_other():\n"
+        "    if os.environ.get('MUTANT_UNDER_TEST') == 'fail':\n"
+        "        raise ValueError('independent runtime error')\n    assert True\n",
+    ),
+    *[
+        PhaseAttributionCase(
+            name=f"later_{hook}_failure",
+            attributed=False,
+            body=_IMPORT_ASSERTION,
+            conftest="import os\nimport pytest\n@pytest.hookimpl(trylast=True)\n"
+            f"def {hook}():\n"
+            "    if os.environ.get('MUTANT_UNDER_TEST') == 'fail':\n"
+            "        raise RuntimeError('independent finalization error')\n",
+        )
+        for hook in ("pytest_sessionfinish", "pytest_unconfigure")
+    ],
+    PhaseAttributionCase(
+        name="later_keyboard_interrupt",
+        attributed=False,
+        body=_BODY,
+        secondary="\ndef test_other():\n"
+        "    if os.environ.get('MUTANT_UNDER_TEST') == 'fail':\n"
+        "        raise KeyboardInterrupt('independent interruption')\n    assert True\n",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _PHASE_CASES, ids=[case.name for case in _PHASE_CASES])
+def test_whole_phase_forced_fail_attribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: PhaseAttributionCase
+) -> None:
+    """Require all failed reports and finalization to support the forced-fail proof."""
+    monkeypatch.chdir(tmp_path)
+    runner = _stage_runner(
+        tmp_path, case.body, ["--continue-on-collection-errors", "--maxfail=0"], case.conftest
+    )
+    if case.secondary:
+        for subtree in (tmp_path, tmp_path / "mutants"):
+            (subtree / "tests" / case.secondary_name).write_text(
+                _IMPORTS + case.secondary, encoding="utf-8"
+            )
+    assert runner.run_clean_test() == 0, runner.last_diagnostic_output
+    assert runner.collect_tests(), runner.last_diagnostic_output
+    assert runner.run_forced_fail("pkg.mod.value__mutmut_1") not in (0, 36), (
+        runner.last_diagnostic_output
+    )
+    assert runner.last_forced_fail_attributed is case.attributed, runner.last_diagnostic_output
