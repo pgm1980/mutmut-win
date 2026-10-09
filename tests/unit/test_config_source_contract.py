@@ -41,6 +41,21 @@ from mutmut_win.exceptions import ConfigError, InvalidConfigValueError
 class TestMutationPathAliasAuthority:
     """Windows short aliases must not become runtime mutant prefixes."""
 
+    def test_case_alias_is_rejected_before_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        package = tmp_path / "src" / "longsourcepackage"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("def value():\n    return 1\n", encoding="utf-8")
+        alias = Path("src/LONGSOURCEPACKAGE")
+        assert alias.samefile(package)
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.mutmut]\npaths_to_mutate=["src/LONGSOURCEPACKAGE"]\n', encoding="utf-8"
+        )
+        with pytest.raises(InvalidConfigValueError, match="filesystem alias"):
+            load_config()
+
     @pytest.mark.parametrize("select_file", [False, True])
     def test_real_ntfs_short_alias_is_rejected_before_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, select_file: bool
@@ -79,20 +94,25 @@ class TestMutationPathAliasAuthority:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "src/package").mkdir(parents=True)
-        (tmp_path / "src/real~1").mkdir()
+        (tmp_path / selected).mkdir(parents=True)
         config = MutmutConfig(paths_to_mutate=[selected])
         assert config.paths_to_mutate == [selected]
 
     @given(st.text(alphabet=string.ascii_lowercase, min_size=1, max_size=8))
     def test_existing_directory_case_variants_preserve_configuration(self, name: str) -> None:
+        name = "pkg_" + name  # Generated names cannot coincide with Windows device names.
         with tempfile.TemporaryDirectory(prefix="mutmut-alias-property-") as directory:
             project = Path(directory)
             (project / name).mkdir()
             config = MutmutConfig.model_validate(
-                {"paths_to_mutate": [name.upper()]}, context={"project_root": project}
+                {"paths_to_mutate": [name]}, context={"project_root": project}
             )
-            assert config.paths_to_mutate == [name.upper()]
+            assert config.paths_to_mutate == [name]
+            with pytest.raises(ValueError, match="filesystem alias"):
+                MutmutConfig.model_validate(
+                    {"paths_to_mutate": [name.upper()]}, context={"project_root": project}
+                )
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
