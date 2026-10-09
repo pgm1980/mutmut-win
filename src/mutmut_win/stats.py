@@ -344,8 +344,17 @@ def _skip_context_file(name: str) -> bool:
 def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
     """Compare identity and mutation-sensitive fields of two file stats."""
 
-    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
-    return all(getattr(left, field) == getattr(right, field) for field in fields)
+    fields = (
+        "st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns",
+        "st_nlink", "st_file_attributes", "st_reparse_tag",
+    )
+    # Link/attribute updates can share a timestamp tick. Compare the actual
+    # fields too, preserving presence rather than equating a missing value.
+    return all(
+        hasattr(left, field) == hasattr(right, field)
+        and getattr(left, field, None) == getattr(right, field, None)
+        for field in fields
+    )
 
 
 @component("metadata", identity=("include_timestamps", "include_link_count"))
@@ -411,8 +420,12 @@ def _same_path_binding(
     fields = ["st_dev", "st_ino", "st_mode"]
     if compare_link_count:
         fields.append("st_nlink")
-    fields.extend(("st_size", "st_mtime_ns"))
-    return all(getattr(left, field) == getattr(right, field) for field in fields)
+    fields.extend(("st_size", "st_mtime_ns", "st_file_attributes", "st_reparse_tag"))
+    return all(
+        hasattr(left, field) == hasattr(right, field)
+        and getattr(left, field, None) == getattr(right, field, None)
+        for field in fields
+    )
 
 
 def _absolute_lexical_path(path: Path) -> Path:

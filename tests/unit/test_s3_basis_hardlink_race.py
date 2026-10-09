@@ -80,20 +80,23 @@ def test_real_content_change_during_dependency_hash_stays_incomplete(
 
 @pytest.mark.parametrize("via_alias", [False, True], ids=["source-write", "alias-write"])
 @pytest.mark.parametrize("link_churn", [False, True], ids=["no-churn", "with-churn"])
+@pytest.mark.parametrize("iteration", range(10))
 def test_write_after_read_with_restored_mtime_never_authorizes_old_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     via_alias: bool,
     link_churn: bool,
+    iteration: int,
 ) -> None:
     """Detect same-size replacement after the first full content read."""
-    source = tmp_path / "dependency.py"
+    source = tmp_path / f"dependency-{iteration}.py"
     source.write_bytes(b"value = 42\n")
     alias = tmp_path / "existing-alias.py"
     alias.hardlink_to(source)
     original = source.stat()
     real_fstat = os.fstat
     calls = 0
+    observations: list[os.stat_result] = []
 
     def mutate_after_read(file_descriptor: int) -> os.stat_result:
         nonlocal calls
@@ -103,10 +106,16 @@ def test_write_after_read_with_restored_mtime_never_authorizes_old_bytes(
             os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
             if link_churn:
                 (tmp_path / "new-environment.py").hardlink_to(source)
-        return real_fstat(file_descriptor)
+        observed = real_fstat(file_descriptor)
+        observations.append(observed)
+        return observed
 
     monkeypatch.setattr(os, "fstat", mutate_after_read)
-    assert not _hash_context_file(hashlib.sha256(), source, label="source", seen=set())
+    complete = _hash_context_file(hashlib.sha256(), source, label="source", seen=set())
+    assert not complete, [
+        (item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns, item.st_nlink)
+        for item in observations
+    ]
     assert calls >= 3
     assert source.read_bytes() == b"value = 43\n"
     assert source.stat().st_mtime_ns == original.st_mtime_ns
