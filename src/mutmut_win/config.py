@@ -409,8 +409,7 @@ class MutmutConfig(BaseModel):
                     if component != ".." and candidate.exists():
                         try:
                             matches_entry = any(
-                                child.name == component
-                                for child in parent.iterdir()
+                                child.name == component for child in parent.iterdir()
                             )
                         except OSError as exc:
                             raise ValueError(
