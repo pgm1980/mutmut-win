@@ -408,11 +408,13 @@ def test_generated_exception_groups_require_every_leaf(depth: int, mixed: bool) 
         + "    raise error from None\n"
         + _COLLECTION_TEST
     )
-    with TemporaryDirectory(prefix="mutmut-s3-group-") as directory:
-        with pytest.MonkeyPatch.context() as patch:
-            root = Path(directory)
-            patch.chdir(root)
-            runner = _stage_runner(root, body, [])
-            assert runner.run_clean_test() == 0, runner.last_diagnostic_output
-            assert runner.run_forced_fail("pkg.mod.value__mutmut_1") == 2
-            assert runner.last_forced_fail_attributed is (not mixed), runner.last_diagnostic_output
+    with (
+        TemporaryDirectory(prefix="mutmut-s3-group-") as directory,
+        pytest.MonkeyPatch.context() as patch,
+    ):
+        root = Path(directory)
+        patch.chdir(root)
+        runner = _stage_runner(root, body, [])
+        assert runner.run_clean_test() == 0, runner.last_diagnostic_output
+        assert runner.run_forced_fail("pkg.mod.value__mutmut_1") == 2
+        assert runner.last_forced_fail_attributed is (not mixed), runner.last_diagnostic_output
