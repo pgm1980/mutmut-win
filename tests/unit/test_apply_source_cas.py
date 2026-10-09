@@ -810,6 +810,135 @@ class TestCasFailedInsertionCleanup:
             assert "cannot insert replacement" in result.stderr
 
 
+class TestSourceDisplacementRetry:
+    """S3-029: retain CAS binding while waiting for a real Windows read handle."""
+
+    @pytest.mark.parametrize("release", [False, True])
+    def test_source_read_handle_has_bounded_displacement_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: bool
+    ) -> None:
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        before = _snapshot_leaf(source)
+        backup_before = _snapshot_leaf(backup)
+        calls = _RetryCalls()
+        with source.open("rb") as held:
+
+            def release_during_wait(seconds: float) -> None:
+                assert _snapshot_leaf(source) == before
+                calls.delays.append(seconds)
+                if release:
+                    held.close()
+
+            monkeypatch.setattr(atomic_module.time, "sleep", release_during_wait)
+            if release:
+                assert atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+            else:
+                with pytest.raises(
+                    atomic_module.AtomicReplaceError, match="cannot displace"
+                ) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert isinstance(caught.value.__cause__, PermissionError)
+                assert _snapshot_leaf(source) == before
+                assert _snapshot_leaf(backup) == backup_before
+        assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
+        assert set(tmp_path.iterdir()) == {source, backup}
+        if release:
+            assert source.read_bytes() == b"MUTATED"
+            assert _snapshot_leaf(backup) == before
+
+    @pytest.mark.parametrize("change", ["bytes", "same-bytes-new-inode"])
+    def test_displacement_retry_rejects_changed_source_immediately(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+    ) -> None:
+        source = tmp_path / "source.py"
+        saved = tmp_path / "saved-original"
+        source.write_bytes(b"ORIGINAL")
+        calls = _RetryCalls()
+        with source.open("rb") as held:
+
+            def change_after_failed_attempt(seconds: float) -> None:
+                calls.delays.append(seconds)
+                held.close()
+                if change == "same-bytes-new-inode":
+                    source.rename(saved)
+                    source.write_bytes(b"ORIGINAL")
+                else:
+                    source.write_bytes(b"FOREIGN")
+
+            monkeypatch.setattr(atomic_module.time, "sleep", change_after_failed_attempt)
+            with pytest.raises(AtomicPreconditionError, match="changed"):
+                atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+        assert calls.delays == [0.01]
+        assert source.read_bytes() == (
+            b"ORIGINAL" if change == "same-bytes-new-inode" else b"FOREIGN"
+        )
+        assert list(tmp_path.glob(".*.mutmut-*")) == []
+        if change == "same-bytes-new-inode":
+            assert saved.read_bytes() == b"ORIGINAL"
+
+    def test_real_source_handle_released_by_timer(self, tmp_path: Path) -> None:
+        """A real failed rename starts a timer; subsequent attempts may succeed."""
+        from threading import Timer
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        real_rename = Path.rename
+        with source.open("rb") as held:
+            timer = Timer(0.05, held.close)
+
+            def start_timer_after_failure(path: Path, destination: Path) -> Path:
+                try:
+                    return real_rename(path, destination)
+                except PermissionError:
+                    if path == source and timer.ident is None:
+                        timer.start()
+                    raise
+
+            try:
+                with patch.object(
+                    Path, "rename", autospec=True, side_effect=start_timer_after_failure
+                ):
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert timer.ident is not None
+            finally:
+                timer.cancel()
+                if timer.ident is not None:
+                    timer.join(timeout=2)
+                assert not timer.is_alive()
+        assert source.read_bytes() == b"MUTATED"
+        assert backup.read_bytes() == b"ORIGINAL"
+        assert set(tmp_path.iterdir()) == {source, backup}
+
+    def test_cli_does_not_misreport_persistent_source_lock_as_changed_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from click.testing import CliRunner
+
+        from mutmut_win.cli import cli
+
+        name, _config, source = _setup_apply_project(tmp_path, monkeypatch)
+        before = _snapshot_leaf(source)
+        monkeypatch.setattr(atomic_module.time, "sleep", lambda _seconds: None)
+        with source.open("rb"):
+            result = CliRunner().invoke(cli, ["apply", name])
+        assert result.exit_code == 1
+        assert "Applied mutant" not in result.output
+        assert "cannot displace" in result.stderr
+        assert "changed while applying" not in result.stderr
+        assert _snapshot_leaf(source) == before
+        assert list(source.parent.glob(".*.mutmut-*")) == []
+
+
 class TestDisplacementRaceWindow:
     """Races INSIDE the displacement CAS core stretch (AR-17 / TQ-003 / M-005).
 
