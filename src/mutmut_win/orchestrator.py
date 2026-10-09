@@ -1066,10 +1066,9 @@ class MutationOrchestrator:
             raise ForcedFailError(msg)
         if not self._runner.last_forced_fail_attributed:
             msg = (
-                f"Tests failed under the forced-fail run (exit {ff_exit}), but no "
-                "MutmutProgrammaticFailException appeared in the output — the "
-                "failure does not stem from the trampoline and cannot prove "
-                "the mutant switch works."
+                f"Tests failed under the forced-fail run (exit {ff_exit}), but the phase "
+                "was not fully attributable to "
+                "MutmutProgrammaticFailException — the mutant switch could not be verified."
             )
             tail = self._runner.last_diagnostic_output
             if tail:

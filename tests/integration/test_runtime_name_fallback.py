@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from mutmut_win.config import MutmutConfig
-from mutmut_win.db import DEFAULT_DB_PATH, load_results
+from mutmut_win.db import DEFAULT_DB_PATH, load_current_run, load_results
 from mutmut_win.file_setup import create_mutants_for_file
 from mutmut_win.runner import PytestRunner
 
@@ -168,6 +168,10 @@ def test_clean_spawn_transports_actual_child_calls(
         ("double_called", True),
         ("spawn_canonical", False),
         ("spawn_alias", False),
+        ("spawn_canonical_anchor", False),
+        ("spawn_canonical_anchor", True),
+        ("spawn_alias_anchor", False),
+        ("spawn_alias_anchor", True),
     ],
 )
 def test_cli_runtime_name_proof_is_independent_of_stats(
@@ -177,7 +181,11 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
     project = tmp_path / "project"
     module = project / "src/pkg/mod.py"
     module.parent.mkdir(parents=True)
-    module.write_text("def value():\n    return 2\n", encoding="utf-8")
+    anchored = layout.endswith("_anchor")
+    module.write_text(
+        "def value():\n    return 2\n" + ("\ndef anchor():\n    return 3\n" if anchored else ""),
+        encoding="utf-8",
+    )
     tests = project / "tests"
     tests.mkdir()
     imports = []
@@ -203,20 +211,27 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
     )
     child_marker = tmp_path / "child-called.json"
     if layout.startswith("spawn_"):
-        imported = "pkg.mod" if layout == "spawn_canonical" else "src.pkg.mod"
+        imported = "pkg.mod" if "canonical" in layout else "src.pkg.mod"
         (project / "child_support.py").write_text(
             "import json, os\nfrom pathlib import Path\n"
             "def exercise():\n"
             f"    from {imported} import value\n"
             "    result = value()\n"
-            "    payload = {'pid': os.getpid(), 'value': result}\n"
-            f"    Path({str(child_marker)!r}).write_text(json.dumps(payload))\n",
+            "    assert result == 2\n"
+            "    if os.environ.get('MUTANT_UNDER_TEST') == '':\n"
+            "        payload = {'pid': os.getpid(), 'value': result, 'module': value.__module__}\n"
+            f"        Path({str(child_marker)!r}).write_text(json.dumps(payload))\n",
             encoding="utf-8",
         )
         test_source = (
-            "import multiprocessing\nfrom child_support import exercise\n"
-            "def test_value():\n"
-            "    child = multiprocessing.get_context('spawn').Process(target=exercise)\n"
+            "import multiprocessing, os\nfrom child_support import exercise\n"
+            + ("from pkg.mod import anchor\n" if anchored else "")
+            + "def test_value():\n"
+            + ("    assert os.environ.get('MUTANT_UNDER_TEST') != 'stats'\n" if fail_stats else "")
+            # Reviewer011: a different generated parent function supplies
+            # attribution without masking the child's value-only alias key.
+            + ("    assert anchor() == 3\n" if anchored else "")
+            + "    child = multiprocessing.get_context('spawn').Process(target=exercise)\n"
             "    child.start()\n"
             "    try:\n        child.join(30)\n        assert child.exitcode == 0\n"
             "    finally:\n        if child.is_alive():\n            child.terminate()\n"
@@ -235,7 +250,8 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
     env["UV_PROJECT_ENVIRONMENT"] = str(Path(os.environ["VIRTUAL_ENV"]).resolve())
     score_options = (
         ["--min-score", "80"]
-        if layout in {"canonical", "alias_loaded_canonical_called", "double_called"}
+        if layout
+        in {"canonical", "alias_loaded_canonical_called", "double_called", "spawn_canonical_anchor"}
         else []
     )
     # The controlled CLI runs through uv in the externally synchronized parent environment.
@@ -264,7 +280,34 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
     if layout.startswith("spawn_"):
         child = json.loads(child_marker.read_text())
         assert child["pid"] != os.getpid()
-    if layout in {"alias", "canonical_loaded_alias_called", "spawn_alias"}:
+        assert child["value"] == 2
+        assert child["module"] == ("pkg.mod" if "canonical" in layout else "src.pkg.mod")
+    if layout == "spawn_canonical":
+        # Reviewer011 permits this explicit conservative boundary. Clean
+        # child-call evidence does not prove causality of a parent failure.
+        assert result.returncode == 1, (result.stdout, stderr)
+        assert "forced-fail" in stderr
+        assert "not fully attributable" in stderr
+        assert "MutmutProgrammaticFailException" in stderr
+        current = load_current_run(project / DEFAULT_DB_PATH)
+        assert current is not None
+        assert current.status == "failed"
+        assert not current.completed_results
+        assert load_results(project / DEFAULT_DB_PATH) == []
+        assert "score" not in json.loads(result.stdout)
+        assert not (project / "mutants/mutmut-cicd-stats.json").exists()
+        # The same controlled uv executable and isolated project exercise
+        # public export refusal for the failed campaign.
+        refused = subprocess.run(  # noqa: S603
+            [uv, "run", "--no-sync", "python", "-m", "mutmut_win", "export-cicd-stats"],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            timeout=180,
+        )
+        assert refused.returncode == 1, refused.stderr
+        assert not (project / "mutants/mutmut-cicd-stats.json").exists()
+    elif layout in {"alias", "canonical_loaded_alias_called", "spawn_alias", "spawn_alias_anchor"}:
         assert result.returncode == 1, (result.stdout, stderr)
         assert "src.pkg.mod.x_value" in stderr
         assert "pkg.mod.x_value" in stderr
@@ -273,20 +316,27 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
         assert result.returncode == 0, (result.stdout, stderr)
         payload = json.loads(result.stdout)
         (tmp_path / "result.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        assert payload["total_mutants"] == 5
-        expected_killed = 0 if layout == "spawn_canonical" else 5
+        expected_total = 10 if anchored else 5
+        assert payload["total_mutants"] == expected_total
+        expected_killed = expected_total
         assert payload["killed"] == expected_killed
-        assert payload["survived"] == 5 - expected_killed
-        assert payload["score"] == expected_killed * 20.0
+        assert payload["survived"] == 0
+        assert payload["score"] == 100.0
         assert payload["execution_basis_complete"]
         verdicts = load_results(project / DEFAULT_DB_PATH)
-        assert len(verdicts) == 5
+        assert len(verdicts) == expected_total
         assert {row.mutant_name for row in verdicts} == {
-            f"pkg.mod.x_value__mutmut_{number}" for number in range(1, 6)
+            f"pkg.mod.x_{function}__mutmut_{number}"
+            for function in (["value", "anchor"] if anchored else ["value"])
+            for number in range(1, 6)
         }
-        assert {row.status for row in verdicts} == (
-            {"survived"} if layout == "spawn_canonical" else {"killed"}
-        )
+        assert {row.status for row in verdicts} == {"killed"}
+        current = load_current_run(project / DEFAULT_DB_PATH)
+        assert current is not None
+        assert current.status == "completed"
+        assert len(current.completed_results) == expected_total
+        if fail_stats:
+            assert "stats collection failed" in stderr
         (tmp_path / "verdicts.json").write_text(
             "[" + ",".join(row.model_dump_json() for row in verdicts) + "]", encoding="utf-8"
         )

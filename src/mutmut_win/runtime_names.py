@@ -281,11 +281,7 @@ def _wait_bootstrap(ticket: _Ticket, child: process.BaseProcess) -> None:
     ):
         deadline = time.monotonic() + 30
         while control[1] != 1:
-            if (
-                control[0] == _INVALID
-                or child.exitcode is not None
-                or time.monotonic() >= deadline
-            ):
+            if control[0] == _INVALID or child.exitcode is not None or time.monotonic() >= deadline:
                 raise RuntimeError("clean runtime-name child bootstrap incomplete")
             time.sleep(0.005)
         if _read_ticket(control) != ticket or not int.from_bytes(control[8:16], "little"):
