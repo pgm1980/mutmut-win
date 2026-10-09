@@ -224,6 +224,20 @@ def _terminate_type_checker_tree(
         except BaseException as exc:
             cleanup_errors.append((label, exc))
 
+    # Host-wide enumeration is diagnostic and can be slow. Terminate through
+    # the retained Job/process handles first; the captured identity still
+    # permits the verified orphan sweep after the root exits.
+    if job_handle is not None:
+        attempt("close type-checker Job Object", lambda: _close_type_checker_job(job_handle))
+    elif sys.platform != "win32":
+
+        def kill_process_group() -> None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+
+        attempt("kill type-checker process group", kill_process_group)
+    attempt("kill direct type-checker child", process.kill)
+
     processes: list[psutil.Process] = []
     if root_create_time is None:
         logger.debug(
@@ -240,16 +254,6 @@ def _terminate_type_checker_tree(
             processes = []
             cleanup_errors.append(("snapshot process tree", exc))
 
-    if job_handle is not None:
-        attempt("close type-checker Job Object", lambda: _close_type_checker_job(job_handle))
-    elif sys.platform != "win32":
-
-        def kill_process_group() -> None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-
-        attempt("kill type-checker process group", kill_process_group)
-
     # Kill the root first so it cannot create more children while the captured
     # descendants are being terminated.  Every member of the snapshot is
     # identity-verified (captured root create_time + verified PPID edges);
@@ -263,9 +267,8 @@ def _terminate_type_checker_tree(
             lambda: psutil.wait_procs(processes, timeout=_PROCESS_KILL_GRACE_SECONDS),
         )
 
-    # Last-resort direct-child kill/reap.  This wait is bounded and cannot be
+    # Reap the already-terminated direct child. This wait is bounded and cannot be
     # extended by a descendant holding stdout/stderr because they are files.
-    attempt("kill direct type-checker child", process.kill)
     try:
         process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
