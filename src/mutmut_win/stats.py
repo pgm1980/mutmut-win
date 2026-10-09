@@ -441,6 +441,41 @@ def _record_file_observation(role: str, metadata: os.stat_result) -> None:
         )
 
 
+def _recheck_link_churn(
+    path: Path,
+    stream: BinaryIO,
+    before: os.stat_result,
+    after: os.stat_result,
+    rebound: os.stat_result,
+    content_digest: bytes,
+) -> bool:
+    """Revalidate the first byte stream after an otherwise neutral link change.
+
+    The fresh rebound handle starts at zero, avoiding any old buffered bytes.
+    Its complete content must match the first read and remain strictly stable.
+    This does not reset or republish a partially accumulated canonical digest.
+    """
+    if before.st_nlink == after.st_nlink or not _same_path_binding(
+        before, after, compare_link_count=False
+    ):
+        return False
+    if not _same_path_binding(after, rebound, compare_link_count=False):
+        return False
+    checked_content = hashlib.sha256()
+    while chunk := stream.read(1024 * 1024):
+        checked_content.update(chunk)
+    checked = os.fstat(stream.fileno())
+    _record_file_observation("content-recheck", checked)
+    if not _same_file_snapshot(rebound, checked) or checked_content.digest() != content_digest:
+        return False
+    # Rebinding during the additional read is still a different object even
+    # when its bytes, size and mtime happen to match the first observation.
+    with _open_for_hash(path) as final_stream:
+        final_binding = os.fstat(final_stream.fileno())
+        _record_file_observation("recheck-binding", final_binding)
+    return _same_path_binding(checked, final_binding, compare_link_count=False)
+
+
 @component("file", identity=("path", "label", "hash_timestamps", "hash_link_count"))
 def _hash_context_file(
     hasher: Any,
@@ -480,11 +515,14 @@ def _hash_context_file(
                 include_timestamps=hash_timestamps,
                 include_link_count=hash_link_count,
             )
+            content_hasher = hashlib.sha256()
             with component_scope("content"):
                 while chunk := stream.read(1024 * 1024):
                     hasher.update(chunk)
+                    content_hasher.update(chunk)
             after_handle = os.fstat(stream.fileno())
             _record_file_observation("after-handle", after_handle)
+            stable_content = _same_file_snapshot(before, after_handle)
             # Re-open the lexical path while the hashed handle is still live.
             # On POSIX this catches rename-and-replace; on Windows it avoids
             # comparing ``fstat().st_ctime`` with the path-stat value, whose
@@ -492,7 +530,16 @@ def _hash_context_file(
             with _open_for_hash(absolute) as rebound:
                 rebound_handle = os.fstat(rebound.fileno())
                 _record_file_observation("rebound", rebound_handle)
-        if not _same_file_snapshot(before, after_handle) or not _same_path_binding(
+                if not stable_content and not hash_timestamps and not hash_link_count:
+                    stable_content = _recheck_link_churn(
+                        absolute,
+                        rebound,
+                        before,
+                        after_handle,
+                        rebound_handle,
+                        content_hasher.digest(),
+                    )
+        if not stable_content or not _same_path_binding(
             after_handle,
             rebound_handle,
             compare_link_count=hash_link_count,
