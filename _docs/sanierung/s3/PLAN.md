@@ -35,3 +35,22 @@ Anfragen nennen diese Implementierungssession
 `01a11fac-70d2-7880-8a58-8db2ac2df94e`, S3-IDs, genaue Normstelle und
 eigene Interpretation. Antworten werden im Ledger gebunden. Sie sind
 keine Ersatzabnahme der Implementierung.
+
+Arbeitsstand 2026-10-09: Für 46 Karten liegen verknüpfte Kandidatenledger
+mit Rot-/Grün-/Rücknahmebelegen vor. Zwei integrierte Zwischenstände wurden
+mit 224 beziehungsweise 317 bestandenen Regressionstests (im zweiten Lauf
+ein dokumentierter Skip) sowie jeweils Ruff, Format, mypy und import-linter
+geprüft. Das ist noch keine finale Abnahme. Die Source-/Test-/Lockbindung
+dieser zehn Receipts wird im maschinenlesbaren Ledger festgehalten.
+
+Die Laufzeitnamensprüfung S3-007 befindet sich in der erweiterten CLI-Prüfung.
+S3-016, S3-020 und S3-030 sowie die verbleibenden Test-/Dokumentationskarten
+werden parallel in getrennten Worktrees bearbeitet. Die unverifizierten
+Karten bleiben Prüfaufträge und werden nicht durch die Implementierungsbilanz
+zu bestätigten Fehlern. Die beiden sporadischen Basisfehler des früheren
+vollständigen P1-Laufs bleiben sichtbar; ein neu reproduzierter Hardlink-Race
+wird kausal geprüft. Der ungefilterte Dependency-Audit bleibt gesondert FAIL.
+
+Die vom PO bestätigte Lifecycle-Korrektur gilt identisch für AGENTS.md und
+CLAUDE.md: Der ausführbare Vertrag mit 17 Feldern bleibt erhalten. Kein
+Sprint-Abschlussflag wird aus diesen Zwischenständen abgeleitet.

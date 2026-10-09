@@ -22,22 +22,22 @@
     {
       "name": "P2 product S3-004 through S3-015",
       "wave": 2,
-      "state": "NOT_EXECUTED"
+      "state": "IN_PROGRESS"
     },
     {
       "name": "P2 tests S3-031,032,033,042,043,044,045,048,049",
       "wave": 3,
-      "state": "NOT_EXECUTED"
+      "state": "IN_PROGRESS"
     },
     {
       "name": "P3 product, tests and document corrections; adjudicate open cards against evidence",
       "wave": 4,
-      "state": "NOT_EXECUTED"
+      "state": "IN_PROGRESS"
     },
     {
       "name": "Integrate source/tests/lock, causal controls, full coverage, lint, format, mypy, imports, Semgrep, native wrapper, unfiltered and policy audit, mutation and survivor adjudication",
       "wave": 5,
-      "state": "NOT_EXECUTED"
+      "state": "IN_PROGRESS"
     }
   ],
   "rules_source": "C:\\claude_codex\\mutmut-win\\_docs\\reviews\\external-review-v3.1.0\\sol-cross-cross-review\\ASTRA-SANIERUNGSAUFTRAG.md",
@@ -179,10 +179,17 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "Healthy identical-context CLI reuse not yet proved on candidate; diagnosis running",
-        "Changed-lax and forced-lax candidate arms not reached by failing E2E",
-        "Integrated final gates and mutation NOT_EXECUTED",
-        "First CLI helper attempt s3-001-cli-baseline.json incomplete and excluded from authority-red"
+        "The repeated full CLI strict/same/lax/fresh control passed; the original failed run remains preserved.",
+        "Current P1 full suite was FAIL with six failures; four obsolete mocks were corrected in 8fb5acd. Two intermittent basis diagnostics remain under investigation.",
+        "Real concurrent hardlink add/remove now reproduces incomplete hashing (2 FAIL, 3 controls PASS). It is not retrospectively proven to be the cause of the two prior failures.",
+        "Final integrated gates and production mutation remain pending."
+      ],
+      "supplemental_evidence": [
+        "s3-001-cli-repeat-frozen.json",
+        "p1-integrated-suite.json",
+        "p1-basis-export-repro.json",
+        "p1-basis-export-observed.json",
+        "s3-001-hardlink-race-red.json"
       ]
     },
     {
@@ -204,7 +211,7 @@
         "src/mutmut_win/process/worker.py:1008",
         "src/mutmut_win/config.py:242"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -215,7 +222,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p1-coverage\\S3-002-ledger.json",
+          "sha256": "4c9db53beff5b1360efbee2b098bdfd55571aa1311f7aa3c97903eb0f2db5632",
+          "candidate_commit": "90182b3d00ce8d1eb815b60f9cb20b925eaa5e93",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -239,7 +257,7 @@
         "src/mutmut_win/process/worker.py:1552",
         "src/mutmut_win/orchestrator.py:2725"
       ],
-      "status": "INTEGRATED_SCOPED_VERIFICATION",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": {
         "agent_commit": "2caff6b0bb61cbd0939f1d4a393036a323ee3137",
         "integration_commit": "9a036a8",
@@ -401,13 +419,18 @@
         "src/mutmut_win/models.py"
       ],
       "remaining_limits": [
-        "No full-suite, full-coverage or final integrated release claim.",
-        "No mutation score yet; 80percent criterion remains pending centrally.",
-        "Classifier keeps legacy Literal/status constants for historical compatibility; new worker outputs cannot promote a sampled pattern.",
-        "Legacy field killed_by_infinite_loop remains a diagnostic subset of timeout in existing export schema.",
-        "Historical test name test_il_kills_count_as_killed still needs optional Serena rename during integration; its assertions now demand timeout.",
-        "Broad targeted run predates final documentation/test-name changes; final production hashes are compared in each receipt record.",
-        "Pure unit/property samples may exercise unavailable status signal for mathematical classification tests; real Windows cases explicitly cap confidence at medium."
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p1-timeout\\S3-003-LEDGER.json",
+          "sha256": "b72b9448b42f9e7cbd26d5c78e750c72f096ec8286447b96f65ecc85ddcbe665",
+          "candidate_commit": "2caff6b0bb61cbd0939f1d4a393036a323ee3137",
+          "integrated": false,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -429,7 +452,7 @@
         "src/mutmut_win/process/worker.py:573",
         "src/mutmut_win/runner.py:706"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -440,7 +463,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-collection\\S3-004-057-LEDGER-FINAL-925c62d.json",
+          "sha256": "45d2a70dedff588eb835d30479367e6ab8636b91146a317c45c5fe27ecf66777",
+          "candidate_commit": "925c62d4a29d9850d0cb2603a28ceb7cbf8965f0",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -461,7 +495,7 @@
         "src/mutmut_win/mutation.py:970",
         "src/mutmut_win/orchestrator.py:1714"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -472,7 +506,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-005-015-LEDGER.json",
+          "sha256": "619758138fe0018a2df233e55bc6c150f23cbd269b832f7554fcb954119bb1b1",
+          "candidate_commit": "83c10e1e44492be5da97d2db2b412bc0c26752fc",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -494,7 +539,7 @@
         "src/mutmut_win/file_setup.py:3109",
         "src/mutmut_win/trampoline.py:190"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -505,7 +550,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-paths\\S3-006-007-011-ledger.json",
+          "sha256": "6ad1c415d4f372f320994f6839d5fbec92bcfda96cfaa0c287c378451a400c1c",
+          "candidate_commit": "4b230de0d89a33d4f61f126d69a0ccc45a7341c9",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -528,7 +584,7 @@
         "src/mutmut_win/orchestrator.py:2023",
         "src/mutmut_win/runner.py:594"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "FIX_IMPLEMENTED_VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -539,7 +595,13 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Current fixed-control plus cumulative event journal candidate 50c1fd5: nine expected causal failures; restored 83 tests PASS.",
+        "Thirteen complete CLI cases still running; final integration, full gates and production mutation pending.",
+        "Pure child-only forced-fail attribution may conservatively block under reviewer response 011; separate parent function healthy controls are required."
+      ],
+      "supplemental_evidence": [
+        "s3-007-journal-causal-red.json",
+        "s3-007-journal-restored.json"
       ]
     },
     {
@@ -562,7 +624,7 @@
         "src/mutmut_win/atomic_file.py:380",
         "src/mutmut_win/atomic_file.py:989"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -573,7 +635,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-008-013-LEDGER.json",
+          "sha256": "9f7b0ab6217f6c6d0dc42167bfa4410127b82a86a3c03a73609bc5f11af139b4",
+          "candidate_commit": "7e01cb4d881a88bbdd01ceaaa557592d316ffafe",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -596,7 +669,7 @@
         "src/mutmut_win/cli.py:1684",
         "src/mutmut_win/cli.py:1692"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -607,7 +680,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-009-LEDGER.json",
+          "sha256": "a239050838edf84014bcb278bf4e6edfd31430c98472f622087792fee1a408d3",
+          "candidate_commit": "928f7d0476392ff045a0f425ab575bf933be07c9",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -627,7 +711,7 @@
       "source_locations": [
         "src/mutmut_win/gitignore_boundary.py:327"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -638,7 +722,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-010-012-LEDGER.json",
+          "sha256": "ecba43fa6802898c251aa0795926abac137cd1a5fa47fc4b46cd0761727ee549",
+          "candidate_commit": "d38cbe33aade1c4dee08b209b1d3c6fd19cf3f2c",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -659,7 +754,7 @@
         "src/mutmut_win/file_setup.py:1741",
         "src/mutmut_win/file_setup.py:2297"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -670,7 +765,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-paths\\S3-006-007-011-ledger.json",
+          "sha256": "6ad1c415d4f372f320994f6839d5fbec92bcfda96cfaa0c287c378451a400c1c",
+          "candidate_commit": "4b230de0d89a33d4f61f126d69a0ccc45a7341c9",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -691,7 +797,7 @@
         "src/mutmut_win/models.py:209",
         "src/mutmut_win/models.py:215"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -702,7 +808,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-010-012-LEDGER.json",
+          "sha256": "ecba43fa6802898c251aa0795926abac137cd1a5fa47fc4b46cd0761727ee549",
+          "candidate_commit": "d38cbe33aade1c4dee08b209b1d3c6fd19cf3f2c",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -724,7 +841,7 @@
         "src/mutmut_win/atomic_file.py:1193",
         "src/mutmut_win/atomic_file.py:1226"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -735,7 +852,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-008-013-LEDGER.json",
+          "sha256": "9f7b0ab6217f6c6d0dc42167bfa4410127b82a86a3c03a73609bc5f11af139b4",
+          "candidate_commit": "7e01cb4d881a88bbdd01ceaaa557592d316ffafe",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -757,7 +885,7 @@
         "src/mutmut_win/atomic_file.py:1193",
         "src/mutmut_win/atomic_file.py:1226"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -768,7 +896,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-014-018-029-LEDGER.json",
+          "sha256": "c4968f78165db564f3470a14cd51438cc0cc0b94958dcc66749679798bf8b9a0",
+          "candidate_commit": "6e544e806ad1781864f5cf9f3a9b1bedbdc9f09a",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -789,7 +928,7 @@
         "src/mutmut_win/mutation.py:648",
         "src/mutmut_win/node_mutation.py:61"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -800,7 +939,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-005-015-LEDGER.json",
+          "sha256": "619758138fe0018a2df233e55bc6c150f23cbd269b832f7554fcb954119bb1b1",
+          "candidate_commit": "83c10e1e44492be5da97d2db2b412bc0c26752fc",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -823,7 +973,7 @@
         "src/mutmut_win/orchestrator.py:971",
         "src/mutmut_win/orchestrator.py:764"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -856,7 +1006,7 @@
         "src/mutmut_win/type_checking.py:236",
         "src/mutmut_win/type_checking.py:244"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -867,7 +1017,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-typechecking\\S3-017-073-082-LEDGER.json",
+          "sha256": "fcb98b16aeb7bb31c96c43ad9a1b11bffc3498cff227e4064cdafa40b20645f1",
+          "candidate_commit": "a8f288b41000d3fa2488759ad5687261703f8707",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -889,7 +1050,7 @@
         "src/mutmut_win/atomic_file.py:1241",
         "src/mutmut_win/atomic_file.py:1302"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -900,7 +1061,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-014-018-029-LEDGER.json",
+          "sha256": "c4968f78165db564f3470a14cd51438cc0cc0b94958dcc66749679798bf8b9a0",
+          "candidate_commit": "6e544e806ad1781864f5cf9f3a9b1bedbdc9f09a",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -923,7 +1095,7 @@
         "src/mutmut_win/process/worker.py:994",
         "src/mutmut_win/process/worker.py:998"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -934,7 +1106,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-bytecode-stats\\S3-019-024-036-LEDGER.json",
+          "sha256": "5611a281f2a3c100a114d5e7b1e35f9965cb6d462a846f25010c8efa7de49ca9",
+          "candidate_commit": "2644d5659f26a98de706262eb3625ed8808e5dcc",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -956,7 +1139,7 @@
         "src/mutmut_win/process/worker.py:56",
         "src/mutmut_win/models.py:538"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -987,7 +1170,7 @@
       "source_locations": [
         "src/mutmut_win/cli.py:398"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -998,7 +1181,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-021-LEDGER.json",
+          "sha256": "04603ba3526691e5999fb407cfa03cb89ca2d1d3685ed2649db57d9c2330c986",
+          "candidate_commit": "5bb830d7b39239114f8f0215be8df4dc79fa069c",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1019,7 +1213,7 @@
         "src/mutmut_win/stats.py:163",
         "src/mutmut_win/stats.py:165"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1030,7 +1224,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-022-LEDGER.json",
+          "sha256": "152c7e6b514ea9a5f231e91615c15ac08898152c6a09d4885b5b3565862517e4",
+          "candidate_commit": "c80b5b5b3dae732dc375bec87ac05b7577dcac96",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1053,7 +1258,7 @@
         "src/mutmut_win/hit_recording.py:24",
         "src/mutmut_win/hit_recording.py:80"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1064,7 +1269,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-hit-regex-template\\S3-023-025-026-LEDGER.json",
+          "sha256": "d8d7b626dc3ea503beeea42477da099505293d69907caf51287302b4f3e66b27",
+          "candidate_commit": "c3c454c7fb511bfdbcc46003d09547b17f2ab6aa",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1085,7 +1301,7 @@
         "src/mutmut_win/runner.py:544",
         "src/mutmut_win/runner.py:337"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1096,7 +1312,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-bytecode-stats\\S3-019-024-036-LEDGER.json",
+          "sha256": "5611a281f2a3c100a114d5e7b1e35f9965cb6d462a846f25010c8efa7de49ca9",
+          "candidate_commit": "2644d5659f26a98de706262eb3625ed8808e5dcc",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1120,7 +1347,7 @@
         "src/mutmut_win/regex_mutation.py:398",
         "src/mutmut_win/regex_mutation.py:442"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1131,7 +1358,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-hit-regex-template\\S3-023-025-026-LEDGER.json",
+          "sha256": "d8d7b626dc3ea503beeea42477da099505293d69907caf51287302b4f3e66b27",
+          "candidate_commit": "c3c454c7fb511bfdbcc46003d09547b17f2ab6aa",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1152,7 +1390,7 @@
         "src/mutmut_win/node_mutation.py:212",
         "src/mutmut_win/node_mutation.py:219"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1163,7 +1401,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-hit-regex-template\\S3-023-025-026-LEDGER.json",
+          "sha256": "d8d7b626dc3ea503beeea42477da099505293d69907caf51287302b4f3e66b27",
+          "candidate_commit": "c3c454c7fb511bfdbcc46003d09547b17f2ab6aa",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1186,7 +1435,7 @@
         "src/mutmut_win/browser.py:421",
         "src/mutmut_win/cli.py:1535"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1197,7 +1446,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-browser-db-errors\\S3-027-028-LEDGER-FINAL-41e0eec.json",
+          "sha256": "f39cd352086b9035397dfb8750c56cf6ceb1900f15e87d044bcd650b0d55f23e",
+          "candidate_commit": "41e0eec7364bc71bc249cf42cb0ecddda45bcc6e",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1218,7 +1478,7 @@
         "src/mutmut_win/browser.py:421",
         "src/mutmut_win/browser.py:319"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1229,7 +1489,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-browser-db-errors\\S3-027-028-LEDGER-FINAL-41e0eec.json",
+          "sha256": "f39cd352086b9035397dfb8750c56cf6ceb1900f15e87d044bcd650b0d55f23e",
+          "candidate_commit": "41e0eec7364bc71bc249cf42cb0ecddda45bcc6e",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1251,7 +1522,7 @@
         "src/mutmut_win/atomic_file.py:1187",
         "src/mutmut_win/atomic_file.py:1190"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1262,7 +1533,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-014-018-029-LEDGER.json",
+          "sha256": "c4968f78165db564f3470a14cd51438cc0cc0b94958dcc66749679798bf8b9a0",
+          "candidate_commit": "6e544e806ad1781864f5cf9f3a9b1bedbdc9f09a",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1285,7 +1567,7 @@
         "src/mutmut_win/file_setup.py:841",
         "src/mutmut_win/file_setup.py:269"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1319,7 +1601,7 @@
         "tests/integration/test_mutation_operator_correctness.py:71",
         "tests/integration/test_mutation_operator_correctness.py:95"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1330,7 +1612,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-031-033-LEDGER.json",
+          "sha256": "8000f6183cc097deefb926940a3227a3b61e8f30804d30c4e5ac45fa81d211e2",
+          "candidate_commit": "648ddef8d5ec97b01ae0c876832c826d8291125f",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1356,7 +1649,7 @@
         "tests/integration/test_staging_drift_detection.py:79",
         "tests/integration/test_staging_drift_detection.py:83"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1367,7 +1660,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-032-LEDGER.json",
+          "sha256": "b1e3e993dc16efe19fa8ae4c865f9af25c9713ffca9650626c538fe72738b9e2",
+          "candidate_commit": "1d5e4eabd7f0a249cbcc54fc957ee455a9aa99aa",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1389,7 +1693,7 @@
         "tests/unit/test_result_reuse_119.py:416",
         "src/mutmut_win/orchestrator.py:1223"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1400,7 +1704,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-031-033-LEDGER.json",
+          "sha256": "8000f6183cc097deefb926940a3227a3b61e8f30804d30c4e5ac45fa81d211e2",
+          "candidate_commit": "648ddef8d5ec97b01ae0c876832c826d8291125f",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1427,7 +1742,7 @@
         "tests/unit/properties/test_properties.py:173",
         "tests/unit/properties/test_properties.py:230"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1462,7 +1777,7 @@
         "tests/integration/test_atomic_crash_recovery.py:108",
         "tests/integration/test_atomic_crash_recovery.py:114"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1473,7 +1788,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic-test-oracles\\S3-035-044-045-LEDGER.json",
+          "sha256": "439d1d79b5f7a48768506eb5b1f5e53f9e71cf362ab5c22549d8830d12d9ea17",
+          "candidate_commit": "94f427343e5af334632f552a8a5c14bbf9a4a8b8",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1499,7 +1825,7 @@
         "tests/e2e/test_pycache_integration.py:65",
         "tests/e2e/test_pycache_integration.py:74"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1510,7 +1836,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-bytecode-stats\\S3-019-024-036-LEDGER.json",
+          "sha256": "5611a281f2a3c100a114d5e7b1e35f9965cb6d462a846f25010c8efa7de49ca9",
+          "candidate_commit": "2644d5659f26a98de706262eb3625ed8808e5dcc",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1531,7 +1868,7 @@
         "tests/e2e/test_config_fail_closed_e2e.py:64",
         "tests/e2e/test_config_fail_closed_e2e.py:71"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1542,7 +1879,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+          "sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+          "candidate_commit": "6c62ad64cdaa91c19f8152ad444c80cebef91a04",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1567,7 +1915,7 @@
         "src/mutmut_win/config.py:854",
         "src/mutmut_win/config.py:857"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1599,7 +1947,7 @@
         "tests/unit/test_architecture_contracts.py:68",
         "tests/unit/test_architecture_contracts.py:73"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1610,7 +1958,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+          "sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+          "candidate_commit": "6c62ad64cdaa91c19f8152ad444c80cebef91a04",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1632,7 +1991,7 @@
         "tests/test_architecture.py:187",
         "tests/test_architecture.py:189"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1643,7 +2002,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+          "sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+          "candidate_commit": "6c62ad64cdaa91c19f8152ad444c80cebef91a04",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1664,7 +2034,7 @@
         "tests/unit/test_architecture_contracts.py:132",
         "tests/unit/test_architecture_contracts.py:146"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1675,7 +2045,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+          "sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+          "candidate_commit": "6c62ad64cdaa91c19f8152ad444c80cebef91a04",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1699,7 +2080,7 @@
         "tests/e2e/test_class_heavy_projects.py:58",
         "tests/e2e/test_class_heavy_projects.py:63"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1710,7 +2091,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-ui-class-oracles\\S3-042-043-LEDGER-FINAL-c0acb92.json",
+          "sha256": "3c38bb25723113b6a8bb2180c8038d2f005c851a7817c0a93d48e2e99732d987",
+          "candidate_commit": "c0acb92df3d18015f4592e36e5d82d753d7a8514",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1735,7 +2127,7 @@
         "tests/e2e/test_browser_after_run.py:64",
         "src/mutmut_win/cli.py:1535"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1746,7 +2138,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-ui-class-oracles\\S3-042-043-LEDGER-FINAL-c0acb92.json",
+          "sha256": "3c38bb25723113b6a8bb2180c8038d2f005c851a7817c0a93d48e2e99732d987",
+          "candidate_commit": "c0acb92df3d18015f4592e36e5d82d753d7a8514",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1770,7 +2173,7 @@
         "tests/integration/test_workspace_lock_contention.py:52",
         "tests/integration/test_workspace_lock_contention.py:70"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1781,7 +2184,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic-test-oracles\\S3-035-044-045-LEDGER.json",
+          "sha256": "439d1d79b5f7a48768506eb5b1f5e53f9e71cf362ab5c22549d8830d12d9ea17",
+          "candidate_commit": "94f427343e5af334632f552a8a5c14bbf9a4a8b8",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1806,7 +2220,7 @@
         "tests/e2e/test_interrupt_finalization.py:138",
         "tests/e2e/test_interrupt_finalization.py:159"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1817,7 +2231,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic-test-oracles\\S3-035-044-045-LEDGER.json",
+          "sha256": "439d1d79b5f7a48768506eb5b1f5e53f9e71cf362ab5c22549d8830d12d9ea17",
+          "candidate_commit": "94f427343e5af334632f552a8a5c14bbf9a4a8b8",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1839,7 +2264,7 @@
         "tests/unit/test_orchestrator.py:1140",
         "src/mutmut_win/orchestrator.py:1175"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1872,7 +2297,7 @@
         "tests/unit/test_cli.py:253",
         "tests/unit/test_cli.py:264"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1904,7 +2329,7 @@
         "src/mutmut_win/cli.py:1209",
         "_docs/reviews/external-review-v3.1.0/fable-5.1/wf6-lauf2-summary.md:919"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1915,7 +2340,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-048-049-LEDGER.json",
+          "sha256": "144eb1c49b0c375e5129135cade8197c917dbf52b11dab01c1fd77baedd8f88f",
+          "candidate_commit": "47edcbb9309ed0d6e84bbc44fb7c3cc1981c4636",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1936,7 +2372,7 @@
         "src/mutmut_win/cli.py:1209",
         "_docs/reviews/external-review-v3.1.0/fable-5.1/wf6-lauf2-summary.md:920"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1947,7 +2383,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-048-049-LEDGER.json",
+          "sha256": "144eb1c49b0c375e5129135cade8197c917dbf52b11dab01c1fd77baedd8f88f",
+          "candidate_commit": "47edcbb9309ed0d6e84bbc44fb7c3cc1981c4636",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1968,7 +2415,7 @@
         "src/mutmut_win/browser.py:845",
         "src/mutmut_win/process/foreground.py:82"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -1979,7 +2426,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-050-LEDGER.json",
+          "sha256": "c48873e20134e7c23680985fd4fec88128df2c11a7c49efcc1d0340d03614735",
+          "candidate_commit": "46f745916231dcb8b3b31c5d6c60a227c1b6c14e",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -1999,7 +2457,7 @@
         "scripts/semgrep_release_gate.py:1301",
         "scripts/semgrep_release_gate.py:1898"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2029,7 +2487,7 @@
         "scripts/semgrep_release_gate.py:1301",
         "scripts/semgrep_release_gate.py:1914"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "VERIFICATION_IN_PROGRESS",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2060,7 +2518,7 @@
       "source_locations": [
         "_docs/reviews/external-review-v3.1.0/fable-5.1/wf3-failclosed-summary.md:135"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2071,7 +2529,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-json-stream-preview\\S3-053-054-LEDGER-FINAL-886439b.json",
+          "sha256": "6e8df1c500772a0b625598a5ab5fbcb9ca12f5cdaf2547f2282140708e5a41c9",
+          "candidate_commit": "886439b8baa8e7d7fc9331e977bc3d3c81ec2f89",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -2091,7 +2560,7 @@
       "source_locations": [
         "_docs/reviews/external-review-v3.1.0/fable-5.1/wf3-failclosed-summary.md:153"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2102,7 +2571,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-json-stream-preview\\S3-053-054-LEDGER-FINAL-886439b.json",
+          "sha256": "6e8df1c500772a0b625598a5ab5fbcb9ca12f5cdaf2547f2282140708e5a41c9",
+          "candidate_commit": "886439b8baa8e7d7fc9331e977bc3d3c81ec2f89",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -2184,7 +2664,7 @@
       "source_locations": [
         "_docs/reviews/external-review-v3.1.0/fable-5.1/wf3-failclosed-summary.md:198"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2195,7 +2675,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-collection\\S3-004-057-LEDGER-FINAL-925c62d.json",
+          "sha256": "45d2a70dedff588eb835d30479367e6ab8636b91146a317c45c5fe27ecf66777",
+          "candidate_commit": "925c62d4a29d9850d0cb2603a28ceb7cbf8965f0",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -2680,7 +3171,7 @@
       "source_locations": [
         "_docs/reviews/external-review-v3.1.0/fable-5.1/REVIEW-fable-5.1.md:199"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2691,7 +3182,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-typechecking\\S3-017-073-082-LEDGER.json",
+          "sha256": "fcb98b16aeb7bb31c96c43ad9a1b11bffc3498cff227e4064cdafa40b20645f1",
+          "candidate_commit": "a8f288b41000d3fa2488759ad5687261703f8707",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -2959,7 +3461,7 @@
       "source_locations": [
         "_docs/reviews/external-review-v3.1.0/fable-5.1/REVIEW-fable-5.1.md:77"
       ],
-      "status": "NOT_EXECUTED",
+      "status": "CANDIDATE_EVIDENCE_AVAILABLE_FINAL_GATES_PENDING",
       "source_binding": null,
       "red": [],
       "green": [],
@@ -2970,7 +3472,18 @@
       "gates": [],
       "mutation": null,
       "remaining_limits": [
-        "No remediation execution receipt yet"
+        "Candidate-specific limits remain binding in the linked ledger.",
+        "Own final integrated full coverage, security, native, dependency and mutation qualification remain pending."
+      ],
+      "candidate_evidence": [
+        {
+          "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-typechecking\\S3-017-073-082-LEDGER.json",
+          "sha256": "fcb98b16aeb7bb31c96c43ad9a1b11bffc3498cff227e4064cdafa40b20645f1",
+          "candidate_commit": "a8f288b41000d3fa2488759ad5687261703f8707",
+          "integrated": true,
+          "integration_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+          "scope": "Candidate red, green, causal restoration and control receipts; not final integrated acceptance"
+        }
       ]
     },
     {
@@ -8809,5 +9322,171 @@
       "decision": "Retain executable17-field lifecycle contract; correct AGENTS schema",
       "source": "Direct user reply in thread01a11fac-70d2-7880-8a58-8db2ac2df94e"
     }
-  ]
+  ],
+  "integrated_intermediate_gates": [
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-format.json",
+      "sha256": "307e77e56f60155ae827c4c39d3ba3b40caef8e7c919b0c864b12dcd0b51dcd0",
+      "source_commit": "bb07c3e5990b65131589964d84f55f424b0c68b6",
+      "exit_code": 0,
+      "source_files": 345,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-imports.json",
+      "sha256": "ce51b14fc64dab5038125f9e1231ca93ec8c9628baa0a9548e4453264e8cfc07",
+      "source_commit": "bb07c3e5990b65131589964d84f55f424b0c68b6",
+      "exit_code": 0,
+      "source_files": 345,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-mypy.json",
+      "sha256": "4120311d222c05f70b9e6f9ab428b86f61ec9435ff5f1c1c177e379643e676ec",
+      "source_commit": "bb07c3e5990b65131589964d84f55f424b0c68b6",
+      "exit_code": 0,
+      "source_files": 345,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-regressions.json",
+      "sha256": "cc0949d2deeafb7676d2c7bf74e3821ba73a303500413c2d84f854267dd9735b",
+      "source_commit": "bb07c3e5990b65131589964d84f55f424b0c68b6",
+      "exit_code": 0,
+      "source_files": 345,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-ruff.json",
+      "sha256": "120b99a886cd12a1e747265f932c7e0ba676d04a39dd374d642c8b3a8c1648be",
+      "source_commit": "bb07c3e5990b65131589964d84f55f424b0c68b6",
+      "exit_code": 0,
+      "source_files": 345,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-format.json",
+      "sha256": "0b5ab89a08bd8ba688c35d4cf6823e204baaf3cf4a702e4506528413b84b4a94",
+      "source_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+      "exit_code": 0,
+      "source_files": 349,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-imports.json",
+      "sha256": "fea29e8dc8e459b0d4d7342f99366ac940bffd05721c7dadfac2b5f787fa0546",
+      "source_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+      "exit_code": 0,
+      "source_files": 349,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-mypy.json",
+      "sha256": "44d0475a07ec77d3b4a9d43a4f10c0429a9efd1cae57a6d7db0a75b51ae72b29",
+      "source_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+      "exit_code": 0,
+      "source_files": 349,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-regressions.json",
+      "sha256": "7f46eefef132b95b82505a967436274bbae85912c9082c2d67f0ea57074e1bad",
+      "source_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+      "exit_code": 0,
+      "source_files": 349,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-ruff.json",
+      "sha256": "9574ffcc0e1b5500641ee1b3356270e8f87090a70c869cd7293fa6b4130d4bef",
+      "source_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+      "exit_code": 0,
+      "source_files": 349,
+      "unchanged": true,
+      "scope": "Intermediate integrated subset; not final acceptance"
+    }
+  ],
+  "reviewer_response_receipts": [
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-001.json",
+      "sha256": "fc5ada4bf0dee9a16063c1bdb2c0e36a88d18369476cb6c71b70b2f328f5fe11",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-002.json",
+      "sha256": "7e4b166cb3300aa0e46f256c735c190e53d2711ec59de0f987392700eed56427",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-003.json",
+      "sha256": "f0c1f7c76e51b3157ad9e47dee8f304373e14ea3c9957fe8029aa226f925ad70",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-004.json",
+      "sha256": "2dc8beedc580f8f931c79651f9678e8182a071e8d531d2197941804cf767f359",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-005-full.json",
+      "sha256": "2338c9537a03907ed2f7689953dc6417d524f5ea6c72ee1c16cb3ac66728fe2e",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-005.json",
+      "sha256": "0df5540c46be0c9ef4f46fead6e13abc49d14fa6b28bec62bea835bec8dc0c11",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-006.json",
+      "sha256": "bebe6a851989228405b83b459ed52feac6b99130281c301be8fe34b9bcdfdc96",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-007.json",
+      "sha256": "2ddf3faeaafa8c880419ce36f62dcdd0544622df90a1b40642f9d96645e780fd",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-008.json",
+      "sha256": "9cdc1260c2c2037d07f2f0c125b4d1c0222749c50bc4162f65341445445cbaef",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-009.json",
+      "sha256": "9c2f2030a5b95496b764aee17c4eb6395549689fee53c34f0970a35b2b2bb586",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-010.json",
+      "sha256": "4a4247e10f282e9813f556ec1530a80c6602eb04191f27100c6177ebfb101f74",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-011.json",
+      "sha256": "039df25640d9dea6bc1a20000220d98c14c38b3a5aa17229877b94ba79ab063f",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-012.json",
+      "sha256": "e6791b0aa59fb5a1dd9c1ef7ddd2681d50ebfb4282243ac145fec5b974d8eb40",
+      "scope": "Normative clarification; no implementation acceptance"
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-013.json",
+      "sha256": "3f4ed150b8be6304c5d8432f01361ec0f22a8b317fbc84f6c9f87f8370a1f874",
+      "scope": "Normative clarification; no implementation acceptance"
+    }
+  ],
+  "checkpoint_commit": "eba7c88562d55db2bf07447c490c522ac7865dde",
+  "checkpoint_at": "2026-10-09T13:36:52.1044581+02:00"
 }
