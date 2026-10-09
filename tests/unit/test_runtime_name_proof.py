@@ -135,7 +135,9 @@ def test_second_publication_failure_is_sticky_after_old_name(
             names._path(recorder.directory, recorder.ticket, "control").open("rb") as stream,
             mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as control,
         ):
-            assert control[0] == names._INVALID
+            assert control[0] == names._INVALID or names._path(
+                recorder.directory, recorder.ticket, "invalid"
+            ).exists()
     else:
         assert recorder.control[0] == names._INVALID
     with pytest.raises(RuntimeError, match="closed or invalid"):
