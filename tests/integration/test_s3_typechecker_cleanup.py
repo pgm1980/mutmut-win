@@ -82,10 +82,12 @@ def test_authoritative_job_close_precedes_host_snapshot(
             for pid, created in (line.split() for line in pid_file.read_text().splitlines())
         ]
         assert len(observation.identities) == 2
-        assert observation.identities[0] == (
-            observation.root_pid,
-            observation.root_create_time,
-        )
+        assert observation.root_pid > 0
+        assert observation.root_create_time is not None
+        # A Windows venv launcher may be the Popen root, with the script in
+        # its child. Bind that additional identity instead of equating PIDs.
+        assert all(created >= observation.root_create_time for _, created in observation.identities)
+        observation.identities.append((observation.root_pid, observation.root_create_time))
         for pid, created in observation.identities:
             with contextlib.suppress(psutil.NoSuchProcess):
                 process = psutil.Process(pid)
