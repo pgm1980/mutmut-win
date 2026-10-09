@@ -400,3 +400,122 @@ def test_grandchild_completed_names_survive_parent_kill_and_job_cleanup(
     assert not psutil.pid_exists(child["pid"])
     assert not psutil.pid_exists(grandchild["pid"])
     assert runner.clean_runtime_names == {"mod.x_a", "mod.x_b"}
+
+
+@pytest.mark.parametrize("observer_fails", [False, True])
+def test_bootstrap_requires_successful_child_observer_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observer_fails: bool
+) -> None:
+    marker = tmp_path / "observer.json"
+    observed = tmp_path / "parent.json"
+    helper = (
+        "import json, os\nfrom pathlib import Path\n"
+        "from mutmut_win import runtime_names as names\n"
+        "def observed_resume(raw):\n"
+        "    original = names.install_spawn_observer\n"
+        "    def install():\n"
+        "        recorder = names._ensure_recorder()\n"
+        "        payload = {'pid': os.getpid(), 'bootstrap_before': recorder.control[1]}\n"
+        "        payload['recorder_attached'] = True\n"
+        f"        Path({str(marker)!r}).write_text(json.dumps(payload))\n"
+        + (
+            "        raise RuntimeError('injected child observer install failure')\n"
+            if observer_fails
+            else ""
+        )
+        + "        original()\n"
+        "        payload['observer_installed'] = names._installed\n"
+        f"        Path({str(marker)!r}).write_text(json.dumps(payload))\n"
+        "    names.install_spawn_observer = install\n"
+        "    names._resume_spawn(raw)\n"
+        "def observed_reduce(self):\n"
+        "    return observed_resume, (self.ticket.model_dump_json(),)\n"
+        "def empty():\n    pass\n"
+    )
+    test = (
+        "import json, multiprocessing\nfrom pathlib import Path\n"
+        "from mutmut_win import runtime_names as names\n"
+        "from child_support import observed_reduce, empty\n"
+        "def test_child(monkeypatch):\n"
+        "    monkeypatch.setattr(names._SpawnObserver, '__reduce__', observed_reduce)\n"
+        "    child = multiprocessing.get_context('spawn').Process(target=empty)\n"
+        "    caught = None\n"
+        "    try:\n"
+        "        try:\n            child.start()\n"
+        "        except RuntimeError as error:\n"
+        "            assert 'bootstrap incomplete' in str(error)\n            caught = str(error)\n"
+        "        child.join(10)\n        assert not child.is_alive()\n"
+        f"        assert child.exitcode {'!=' if observer_fails else '=='} 0\n"
+        "        payload = {'pid': child.pid, 'exit_code': child.exitcode, 'caught': caught}\n"
+        f"        Path({str(observed)!r}).write_text(json.dumps(payload))\n"
+        "    finally:\n"
+        "        if child.is_alive(): child.terminate()\n        child.join(10)\n"
+    )
+    runner = _project(tmp_path, monkeypatch, helper, test)
+    assert runner.run_clean_test() == 0, runner.last_diagnostic_output
+    child = json.loads(marker.read_text(encoding="utf-8"))
+    parent = json.loads(observed.read_text(encoding="utf-8"))
+    assert child["pid"] == parent["pid"]
+    assert child["recorder_attached"]
+    assert not psutil.pid_exists(child["pid"])
+    if observer_fails:
+        assert parent["exit_code"] != 0
+        assert runner.clean_runtime_names is None
+        assert "incomplete" in (runner.clean_runtime_names_diagnostic or "")
+    else:
+        assert child["observer_installed"]
+        assert parent["exit_code"] == 0
+        assert runner.clean_runtime_names == set()
+
+
+@pytest.mark.slow
+def test_actual_bootstrap_timeout_reaps_child_before_start_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = tmp_path / "started.json"
+    observed = tmp_path / "timeout.json"
+    helper = (
+        "import json, os, time\nfrom pathlib import Path\n"
+        "from mutmut_win import runtime_names as names\n"
+        "def delayed_resume(raw):\n"
+        "    payload = {'pid': os.getpid(), 'delay_seconds': 60}\n"
+        f"    Path({str(started)!r}).write_text(json.dumps(payload))\n"
+        "    time.sleep(60)\n    names._resume_spawn(raw)\n"
+        "def delayed_reduce(self):\n"
+        "    return delayed_resume, (self.ticket.model_dump_json(),)\n"
+        "def empty():\n    pass\n"
+    )
+    test = (
+        "import json, multiprocessing, time\nfrom pathlib import Path\n"
+        "from mutmut_win import runtime_names as names\n"
+        "from child_support import delayed_reduce, empty\n"
+        "def test_child(monkeypatch):\n"
+        "    monkeypatch.setattr(names._SpawnObserver, '__reduce__', delayed_reduce)\n"
+        "    child = multiprocessing.get_context('spawn').Process(target=empty)\n"
+        "    began = time.monotonic()\n"
+        "    try:\n"
+        "        try:\n            child.start()\n"
+        "        except RuntimeError as error:\n"
+        "            assert 'bootstrap incomplete' in str(error)\n"
+        "            payload = {'pid': child.pid, 'error': str(error)}\n"
+        "        else:\n            raise AssertionError('real bootstrap deadline did not fire')\n"
+        "        payload['elapsed_seconds'] = time.monotonic() - began\n"
+        "        payload['alive_after_error'] = child.is_alive()\n"
+        f"        Path({str(observed)!r}).write_text(json.dumps(payload))\n"
+        "        assert 29 <= payload['elapsed_seconds'] < 45\n"
+        "        assert not child.is_alive(), 'real timeout leaked child before raising'\n"
+        "    finally:\n"
+        "        if child.is_alive(): child.terminate()\n        child.join(10)\n"
+    )
+    runner = _project(tmp_path, monkeypatch, helper, test)
+    exit_code = runner.run_clean_test()
+    child = json.loads(started.read_text(encoding="utf-8"))
+    timeout = json.loads(observed.read_text(encoding="utf-8"))
+    assert child["pid"] == timeout["pid"]
+    assert child["delay_seconds"] == 60
+    assert 29 <= timeout["elapsed_seconds"] < 45
+    assert "bootstrap incomplete" in timeout["error"]
+    assert not psutil.pid_exists(child["pid"])
+    assert not timeout["alive_after_error"], runner.last_diagnostic_output
+    assert exit_code == 0, runner.last_diagnostic_output
+    assert runner.clean_runtime_names is None
