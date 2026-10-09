@@ -149,7 +149,8 @@ def _invalidate(recorder: _Recorder) -> None:
     recorder.invalid = True
     try:
         recorder.control[0] = _INVALID
-    except ValueError, OSError:
+    # Preserve the parenthesized syntax supported by the pinned Semgrep parser.
+    except (ValueError, OSError):  # fmt: skip
         # A closed view does not revoke the already published READY state.
         # Reopen the preallocated control file before falling back to a new
         # artifact, whose creation can independently fail.
@@ -159,7 +160,8 @@ def _invalidate(recorder: _Recorder) -> None:
                 mmap.mmap(stream.fileno(), _CONTROL_BYTES, access=mmap.ACCESS_WRITE) as control,
             ):
                 control[0] = _INVALID
-        except ValueError, OSError:
+        # Preserve the parenthesized syntax supported by the pinned Semgrep parser.
+        except (ValueError, OSError):  # fmt: skip
             _path(recorder.directory, recorder.ticket, "invalid").touch(exist_ok=True)
 
 
