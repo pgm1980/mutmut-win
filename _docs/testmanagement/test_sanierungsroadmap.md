@@ -106,7 +106,11 @@ Contract-Tests in deren `--tests-dir` ein (Vorbereitung der W5-Kampagnen).
 - **CLI-Exit-Code-Vertrag:** parametrisierte Tabelle jeder CLI-Fehlerklasse auf den
   dokumentierten Exit-Code (Issue-#130-Klassen, RunLock-Fehlertaxonomie M-093).
 - **JSON-Export-Schema:** CI/CD-Export gegen jsonschema validiert.
-- **Konfigurations-Schema:** ungültige Kombinationen fail-closed (pydantic).
+- **Konfigurations-Schema:** ungültige Werte bekannter Optionen und ungültige
+  Kombinationen werden vor dem Staging mit Exit 2 abgewiesen. Unbekannte
+  Schlüssel werden mit Warnung auf stderr ignoriert; sie sind kein
+  Ablehnungsfall. Die Warnung und die erfolgreiche Fortsetzung benötigen
+  getrennte Assertions. Siehe [GAP-1-Vertragskorrektur S3-038](config_contract_s3.md).
 - **Schreibpfad-Vertrag:** kein raw `open()` in Engine-Modulen — mit dokumentierter
   **Ausnahmeliste** (der erzwungene Forced-Fail-Beweis nach M-130-fix schreibt bewusst
   untrampoliert; die Ausnahme ist Teil des Vertrags, keine Schwächung).
