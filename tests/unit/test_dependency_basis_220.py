@@ -372,7 +372,10 @@ def test_context_reopen_ignores_link_count_churn_but_strict_snapshot_rejects_it(
         nonlocal calls
         calls += 1
         current = real_fstat(fd)
-        if calls % 3 == 0:
+        # A persistent alias must remain visible during the new fresh content
+        # observation; toggling only one stat would model another concurrent
+        # change and correctly fail its strict stability check.
+        if calls >= 3:
             return cast("os.stat_result", _StatWithAdjustedLinkCount(current, 1))
         return current
 
@@ -384,6 +387,7 @@ def test_context_reopen_ignores_link_count_churn_but_strict_snapshot_rejects_it(
         label="dependency",
         seen=set(),
     )
+    calls = 0
     strict_complete = stats_module._hash_context_file(
         hashlib.sha256(),
         target,
