@@ -365,6 +365,10 @@ Notes:
   an inherited ambient `PYTHONPATH` are deliberately ignored. An absolute path
   inside the project is accepted and canonicalized to its staged relative
   location, including Windows case and 8.3 aliases.
+- **Junction mutation roots are rejected early.** A `paths_to_mutate` entry
+  naming a Junction, or a file/directory below one, is rejected before staging
+  or generation. Configure the ordinary project-relative source location
+  instead. This restriction also applies to absolute aliases before resolution.
 - **Links and junctions below `also_copy`/`extra_paths` are skipped.**
   Directory junctions, symlinks and other reparse points *below* a configured
   entry are not walked and not copied into `mutants/` (a `RuntimeWarning`

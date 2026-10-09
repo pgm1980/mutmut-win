@@ -1,15 +1,19 @@
 """S3-020: zero collected tests cannot authorize a mutation score."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from click.testing import CliRunner
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.models import MutationRunResult
 from mutmut_win.orchestrator import MutationOrchestrator
 from mutmut_win.stats import CicdStats
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @given(killed=st.integers(0, 12), no_tests=st.integers(1, 12), skipped=st.integers(0, 5))

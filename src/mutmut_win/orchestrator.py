@@ -703,7 +703,8 @@ class MutationOrchestrator:
                     execution_basis_deauthorized = True
                     if result.no_tests:
                         print(
-                            f"{result.no_tests} no_tests verdict(s) leave test evidence incomplete. "
+                            f"{result.no_tests} no_tests verdict(s) "
+                            "leave test evidence incomplete. "
                             "The score is diagnostic only; current and historical verdict "
                             "reuse, --min-score, and CI/CD export are disabled."
                         )

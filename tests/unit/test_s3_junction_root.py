@@ -12,7 +12,7 @@ from mutmut_win.file_setup import copy_also_copy_files, walk_source_files
 
 
 def _junction(link: Path, target: Path) -> None:
-    command = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+    command = Path(os.environ["SYSTEMROOT"]) / "System32" / "cmd.exe"
     # The trusted Windows command creates only the two pytest-owned paths.
     result = subprocess.run(  # noqa: S603
         [str(command), "/d", "/u", "/c", "mklink", "/J", str(link), str(target)],
@@ -44,7 +44,7 @@ def test_junction_mutation_entry_is_rejected_before_discovery(
         if entry_kind == "file"
         else "alias"
     )
-    with pytest.raises(ValidationError, match="Junction.*mutation"):
+    with pytest.raises(ValidationError, match=r"Junction.*mutation"):
         MutmutConfig(paths_to_mutate=[entry])
     assert source.read_text(encoding="utf-8") == "def value():\n    return 1\n"
     assert not (tmp_path / "mutants").exists()
