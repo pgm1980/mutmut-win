@@ -84,6 +84,7 @@ def test_collision_revokes_run_and_export_after_healthy_control(tmp_path: Path) 
     rejected_export = run_cli(project, "export-cicd-stats")
     (tmp_path / "collision-export.stderr.log").write_text(rejected_export.stderr, encoding="utf-8")
     assert rejected_export.returncode == 1, rejected_export.stdout
-    assert "failed closed" in rejected_export.stderr
+    assert rejected_export.stderr.strip() == "No results found. Run 'mutmut-win run' first."
+    assert not rejected_export.stdout
     assert not artifact.exists()
     assert source_path.read_bytes() == original_bytes
