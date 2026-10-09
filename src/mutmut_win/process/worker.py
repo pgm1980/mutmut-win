@@ -1136,6 +1136,15 @@ def configure_ephemeral_pytest_environment(
             parent's coverage command-line options. Ordinary phases omit this
             override and retain their own isolated output target.
 
+    Args:
+        env: Child environment to isolate.
+        runtime_dir: Fresh external directory for this phase's state.
+        shared_pycache: Optional run-scoped bytecode cache.
+        coverage_data_file: Coverage phase's explicit external data target.
+            Spawn children read ``COVERAGE_FILE`` instead of inheriting the
+            parent's coverage command-line options. Ordinary phases omit this
+            override and retain their own isolated output target.
+
     Returns:
         The isolated pytest cache directory to use in ``-o cache_dir=...``.
     """
