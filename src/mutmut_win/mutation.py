@@ -21,6 +21,7 @@ from libcst.metadata import (
 )
 
 from mutmut_win.constants import Profile
+from mutmut_win.exceptions import MutationError
 from mutmut_win.node_mutation import (
     OPERATORS_TYPE,
     _is_bare_decimal_integer,
@@ -622,6 +623,8 @@ def _parenthesize_for_context(
       parses as ``-(1 ** x)``, not the promised ``(-1) ** x`` (M-046);
     - the base of an attribute access: a bare decimal integer swallows the
       dot into a float token — ``0.bit_length()`` is a SyntaxError (M-047).
+      A unary replacement also needs parentheses to keep the attribute on
+      the replacement value, including negative integer mutants (S3-015).
 
     Everything else stays untouched: mutant texts remain diff-minimal, and
     mapping keys under profile ALL keep their valid bare form.
@@ -648,7 +651,10 @@ def _parenthesize_for_context(
     if (
         isinstance(parent, cst.Attribute)
         and parent.value is node
-        and _is_bare_decimal_integer(mutated_node)
+        and (
+            _is_bare_decimal_integer(mutated_node)
+            or (isinstance(mutated_node, cst.UnaryOperation) and not mutated_node.lpar)
+        )
     ):
         return mutated_node.with_changes(
             lpar=[cst.LeftParen()],
@@ -971,16 +977,14 @@ def function_trampoline_arrangement(
     if collisions:
         # A statically present source identifier would overwrite (or be
         # overwritten by) this function's private orig/mutant/dict namespace.
-        # Skipping one function is safer than corrupting the clean module.
+        # S3-005: skipping it would authorize an incomplete population, including
+        # positive scores from unrelated functions. Block before publication.
         qualified_name = f"{class_name}.{name}" if class_name else name
-        warnings.warn(
+        raise MutationError(
             f"cannot mutate function '{qualified_name}': source identifier "
             f"{collisions[0]!r} collides with its internal trampoline namespace — "
-            "function left unmutated",
-            SyntaxWarning,
-            stacklevel=3,
+            "generation blocked; rename the conflicting source identifier"
         )
-        return (), (), ()
 
     # trampoline with same signature, that forwards the calls to the activated mutant/original
     # (put first, s.t. it stays next to @overload definitions of this function. mypy needs this)

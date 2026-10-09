@@ -279,9 +279,9 @@ class MutationSurfaceDegradedWarning(SyntaxWarning):
     (issue #78 safety net) and excluded from the mutation surface, so
     ``--min-score`` and CI/CD export are revoked for the run (M-003).
 
-    Function-granular skips (U+01C1 mangling, trampoline collisions) keep
-    raising plain ``SyntaxWarning`` — they narrow individual functions, not
-    the file-level surface.
+    The separate U+01C1 mangling limitation retains its ``SyntaxWarning``.
+    Global trampoline namespace collisions raise ``MutationError`` and block
+    generation rather than authorizing a reduced population (S3-005).
     """
 
     def __init__(self, reason: str, message: str) -> None:

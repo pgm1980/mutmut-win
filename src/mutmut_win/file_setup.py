@@ -2968,6 +2968,9 @@ def create_mutants_for_file(
     generation_payload = json.dumps(
         {
             "source_newline_policy": "preserve-v1",
+            # S3-005: old sidecars can contain a silently reduced population.
+            # Recheck every source under the blocking namespace policy once.
+            "namespace_collision_policy": "reject-v1",
             "profile": active_profile.to_name(),
             "do_not_mutate_patterns": sorted(do_not_mutate_patterns),
             "covered_lines": sorted(covered_lines) if covered_lines is not None else None,

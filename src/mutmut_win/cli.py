@@ -390,18 +390,23 @@ def _resolve_since_commit(ref: str, *, json_stdout: TextIO | None) -> str:
     # of it, so git cannot read it as an option; ^{commit} peels tags and
     # rejects every non-commit object.  --quiet keeps git's stderr empty on
     # failure — the diagnosis above is our own message.
-    rev_result = sp.run(  # noqa: S603 — git CLI with controlled args
-        [  # noqa: S607 — git is a well-known executable
-            "git",
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            f"{ref}^{{commit}}",
-        ],
-        capture_output=True,
-        cwd=Path.cwd(),
-    )
+    try:
+        # Fixed Git subcommand; the validated ref is one argument after --.
+        rev_result = sp.run(  # noqa: S603
+            # Git is the documented external prerequisite resolved by Windows.
+            [  # noqa: S607
+                "git",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                f"{ref}^{{commit}}",
+            ],
+            capture_output=True,
+            cwd=Path.cwd(),
+        )
+    except OSError as exc:
+        _since_commit_usage_error(json_stdout, f"Cannot execute git for --since-commit: {exc}")
     if rev_result.returncode != 0:
         _since_commit_usage_error(
             json_stdout,
@@ -456,19 +461,24 @@ def _git_changed_names(oid: str, *, json_stdout: TextIO | None) -> list[str]:
     # / 360°-A4). Untracked files stay invisible to git diff.  ``cwd`` is
     # the process default anyway; it is spelled out because --relative
     # derives the output base from it (setting it alone fixes nothing).
-    git_result = sp.run(  # noqa: S603 — git CLI with controlled args
-        [  # noqa: S607 — git is a well-known executable
-            "git",
-            "diff",
-            "--name-only",
-            "-z",
-            "--relative",
-            oid,
-            "--",
-        ],
-        capture_output=True,
-        cwd=Path.cwd(),
-    )
+    try:
+        # Fixed Git subcommand and pre-validated canonical commit object id.
+        git_result = sp.run(  # noqa: S603
+            # Git is the documented external prerequisite resolved by Windows.
+            [  # noqa: S607
+                "git",
+                "diff",
+                "--name-only",
+                "-z",
+                "--relative",
+                oid,
+                "--",
+            ],
+            capture_output=True,
+            cwd=Path.cwd(),
+        )
+    except OSError as exc:
+        _since_commit_usage_error(json_stdout, f"Cannot execute git for --since-commit: {exc}")
     # Issue #102 / A3-CM-006: the returncode was never checked — an
     # invalid ref meant "nothing changed" + exit 0, a FALSE CI success.
     if git_result.returncode != 0:
@@ -1678,6 +1688,19 @@ def _mutation_surface_report(degraded: Sequence[GenerationDegradation]) -> str |
     return "\n".join(lines)
 
 
+def _revoke_cicd_artifact_or_exit(artifact_path: Path) -> None:
+    """Revoke previous export bytes or identify any remaining artifact as stale."""
+    try:
+        artifact_path.unlink(missing_ok=True)
+    except OSError as exc:
+        click.echo(
+            f"Could not revoke previous CI/CD artifact {artifact_path.absolute()}: {exc}. "
+            "Any remaining artifact is stale and must not be used.",
+            err=True,
+        )
+        sys.exit(1)
+
+
 def _export_cicd_stats_locked() -> None:
     """Export one snapshot while the cache/staging state lock is held."""
     _require_safe_workspace_roots("mutants", ".mutmut-cache")
@@ -1686,10 +1709,10 @@ def _export_cicd_stats_locked() -> None:
     # Revoke any previous artifact before reading persisted authority. A
     # corrupt snapshot must not leave an older green export in place merely
     # because validation fails before the normal evidence checks below.
-    artifact_path.unlink(missing_ok=True)
+    _revoke_cicd_artifact_or_exit(artifact_path)
     current_run, all_results = _load_result_snapshot_or_exit(DEFAULT_DB_PATH)
     if current_run is None:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         if all_results:
             click.echo(
                 "Legacy mutation results have no verifiable run basis; "
@@ -1700,12 +1723,12 @@ def _export_cicd_stats_locked() -> None:
             click.echo("No results found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
     if not all_results:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo("No results found. Run 'mutmut-win run' first.", err=True)
         sys.exit(1)
 
     if current_run is not None and (current_run.status != "completed" or current_run.pending_names):
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run is incomplete "
             f"(status={current_run.status}, pending={len(current_run.pending_names)}); "
@@ -1715,7 +1738,7 @@ def _export_cicd_stats_locked() -> None:
         sys.exit(1)
 
     if current_run is not None and current_run.evidence_invalidated:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run evidence was invalidated because its recorded "
             "execution basis is no longer authoritative or its mutation surface "
@@ -1726,7 +1749,7 @@ def _export_cicd_stats_locked() -> None:
         sys.exit(1)
 
     if current_run.universe_fingerprint is None or current_run.plan_digest is None:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run predates verifiable ordered-plan evidence; "
             "CI/CD export failed closed. Re-run 'mutmut-win run'.",
@@ -1735,7 +1758,7 @@ def _export_cicd_stats_locked() -> None:
         sys.exit(1)
 
     if current_run.basis_fingerprint is None or current_run.basis_config_json is None:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run predates verifiable source/test/config evidence or its "
             "execution basis was incomplete; "
@@ -1746,7 +1769,7 @@ def _export_cicd_stats_locked() -> None:
     try:
         effective_config = MutmutConfig.model_validate_json(current_run.basis_config_json)
     except ValueError:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run has an invalid persisted basis config; "
             "CI/CD export failed closed.",
@@ -1754,7 +1777,7 @@ def _export_cicd_stats_locked() -> None:
         )
         sys.exit(1)
     if not current_run.is_full_run:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Latest mutation run was a subset selection and cannot authorize a full-run "
             "CI/CD score; re-run 'mutmut-win run' without mutant or path filters.",
@@ -1764,10 +1787,10 @@ def _export_cicd_stats_locked() -> None:
     try:
         live_basis = _stable_live_basis(effective_config, DEFAULT_DB_PATH)
     except MutmutWinError:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         raise
     if live_basis != current_run.basis_fingerprint:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo(
             "Source, test, configuration, dependency, or environment inputs changed since "
             "the latest mutation run; "
@@ -1785,7 +1808,7 @@ def _export_cicd_stats_locked() -> None:
         if r.status not in {"not checked", "check was interrupted by user"}
     ]
     if not pairs:
-        artifact_path.unlink(missing_ok=True)
+        _revoke_cicd_artifact_or_exit(artifact_path)
         click.echo("No completed mutation verdicts found; CI/CD export failed closed.", err=True)
         sys.exit(1)
     # M-075 (issue #160): an externally removed or replaced staging directory

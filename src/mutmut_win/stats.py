@@ -16,7 +16,6 @@ Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import importlib.metadata
 import json
@@ -156,14 +155,14 @@ def load_stats(mutants_dir: Path = DEFAULT_STATS_DIR) -> MutmutStats | None:
 
     Returns:
         A populated ``MutmutStats`` instance, or ``None`` if the file does
-        not exist or cannot be parsed.
+        not exist, cannot be read, or cannot be parsed.
     """
     stats_path = mutants_dir / _STATS_FILENAME
     try:
         with stats_path.open(encoding="utf-8") as f:
             raw_data: object = json.load(f)
     except (
-        FileNotFoundError,
+        OSError,
         JSONDecodeError,
         UnicodeDecodeError,
     ):
@@ -1973,8 +1972,16 @@ def _run_stats_collection(
     # A successful subprocess must publish a fresh file. Leaving the old file
     # in place made "exit 0 but plugin wrote nothing" indistinguishable from a
     # valid refresh and silently re-authorized stale data.
-    with contextlib.suppress(FileNotFoundError):
+    try:
         stats_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(
+            f"Warning: stats cache cannot be refreshed ({stats_path}: {exc}) — "
+            "every mutant will run the full test suite (slow)."
+        )
+        return MutmutStats(context_fingerprint=context_fingerprint)
     try:
         exit_code = runner.run_stats(stats_path)
     except BaseException:
