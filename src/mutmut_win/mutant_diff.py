@@ -632,6 +632,22 @@ def get_diff_for_mutant(mutant_name: str, config: MutmutConfig) -> str:
     return render_function_diff(m.path, resolved)
 
 
+def _require_writable_apply_paths(source: Path, backup: Path) -> None:
+    """Reject readonly leaves before apply's first backup write."""
+    for path in (source, backup):
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            if path == backup:
+                continue
+            raise
+        if current.st_mode & stat.S_IWRITE == 0:
+            raise MutmutWinError(
+                f"Cannot apply mutant: read-only file {path.absolute()}; "
+                "source and backup were not changed"
+            )
+
+
 def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
     """Apply a mutant's code to the original source file using CST deep_replace.
 
@@ -668,7 +684,8 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             (compare-and-swap; nothing is overwritten — re-run
             ``mutmut-win run`` first; was a raw ``RuntimeError`` traceback
             until issue #123 / CLI-003).
-        MutmutWinError: If the mutant was applied but the displaced original
+        MutmutWinError: If a read-only source or backup prevents apply before
+            either is written, or if the mutant was applied but the displaced original
             could not be promoted to the backup; the message names the
             surviving location of the original (AR-06/C-002).
     """
@@ -723,6 +740,7 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
         raise StaleStagingError(msg)
 
     backup_path = source_path.with_name(source_path.name + ".mutmut-orig.bak")
+    _require_writable_apply_paths(source_path, backup_path)
     atomic_write_bytes(backup_path, source_bytes, mode=source_mode)
     try:
         applied_bytes = new_module.code.encode(source_encoding)

@@ -1109,6 +1109,40 @@ def _original_is_at(path: Path, identity: FileIdentity) -> bool:
     )
 
 
+def _existing_leaf_identity(path: Path) -> FileIdentity | None:
+    """Capture an existing entry without following it; absence has no identity."""
+    try:
+        return _identity(path.lstat())
+    except FileNotFoundError:
+        return None
+
+
+def _promote_displaced_original(
+    displaced: Path,
+    backup: Path,
+    identity: FileIdentity,
+    parent_identity: FileIdentity,
+) -> None:
+    """Retry transient promotion locks without accepting a changed backup owner."""
+    backup_identity = _existing_leaf_identity(backup)
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        if not _original_is_at(displaced, identity):
+            raise UnsafeAtomicWriteError(
+                f"displaced original was replaced before backup promotion: {displaced}"
+            )
+        _checked_parent(displaced, parent_identity)
+        if _existing_leaf_identity(backup) != backup_identity:
+            raise UnsafeAtomicWriteError(f"backup changed during promotion: {backup}")
+        try:
+            displaced.replace(backup)
+        except PermissionError:
+            if attempt == len(_REPLACE_RETRY_DELAYS):
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+        else:
+            return
+
+
 def _recover_interrupted_cas(
     path: Path,
     displaced_path: Path,
@@ -1360,13 +1394,9 @@ def atomic_replace_if_unchanged(
         if backup_path is not None:
             backup_path = Path(backup_path)
             try:
-                displaced_now = displaced_path.lstat()
-                if _identity(displaced_now) != target_identity:
-                    raise UnsafeAtomicWriteError(
-                        f"displaced original was replaced before backup promotion: {displaced_path}"
-                    )
-                _checked_parent(displaced_path, parent_identity)
-                displaced_path.replace(backup_path)
+                _promote_displaced_original(
+                    displaced_path, backup_path, target_identity, parent_identity
+                )
                 promoted = backup_path.lstat()
                 if _identity(promoted) != target_identity:
                     raise UnsafeAtomicWriteError(

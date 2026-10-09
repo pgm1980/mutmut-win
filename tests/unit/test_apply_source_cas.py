@@ -586,6 +586,92 @@ class TestReadonlyApplyAndPromotion:
             assert _snapshot_leaf(backup) == before
             assert set(tmp_path.iterdir()) == {source, backup}
 
+    def test_real_backup_handle_released_by_timer(self, tmp_path: Path) -> None:
+        """A real sharing violation is retried until an independently timed release."""
+        from threading import Timer
+
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        real_replace = Path.replace
+        with backup.open("rb") as held:
+            timer = Timer(0.05, held.close)
+
+            def start_timer_after_failure(path: Path, destination: Path) -> Path:
+                try:
+                    return real_replace(path, destination)
+                except PermissionError:
+                    if timer.ident is None:
+                        timer.start()
+                    raise
+
+            try:
+                with patch.object(
+                    Path, "replace", autospec=True, side_effect=start_timer_after_failure
+                ):
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+                assert timer.ident is not None
+            finally:
+                timer.cancel()
+                if timer.ident is not None:
+                    timer.join(timeout=2)
+                assert not timer.is_alive()
+        assert source.read_bytes() == b"MUTATED"
+        assert backup.read_bytes() == b"ORIGINAL"
+        assert set(tmp_path.iterdir()) == {source, backup}
+
+    @pytest.mark.parametrize("foreign_backup", [False, True])
+    def test_promotion_wait_keeps_late_writer_and_foreign_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_backup: bool
+    ) -> None:
+        """Waiting cannot replace a new backup owner or lose late original-handle bytes."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        saved_backup = tmp_path / "saved-backup"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"STABLE BACKUP")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        writer = _open_share_delete_writer(source)
+        calls = _RetryCalls()
+        try:
+            with backup.open("rb") as held:
+
+                def change_during_wait(seconds: float) -> None:
+                    calls.delays.append(seconds)
+                    held.close()
+                    _write_via_handle(writer, b"LATE ORIGINAL")
+                    if foreign_backup:
+                        backup.rename(saved_backup)
+                        backup.write_bytes(b"FOREIGN BACKUP")
+
+                monkeypatch.setattr(atomic_module.time, "sleep", change_during_wait)
+                if foreign_backup:
+                    with pytest.raises(
+                        atomic_module.AtomicBackupPromotionError, match="backup changed"
+                    ):
+                        atomic_replace_if_unchanged(
+                            source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                        )
+                else:
+                    assert atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+        finally:
+            _KERNEL32.CloseHandle(writer)
+        assert calls.delays == [0.01]
+        assert source.read_bytes() == b"MUTATED"
+        recovery = next(tmp_path.glob(".*.mutmut-displaced")) if foreign_backup else backup
+        assert recovery.read_bytes() == b"LATE ORIGINAL"
+        assert (recovery.stat().st_dev, recovery.stat().st_ino) == original_identity
+        if foreign_backup:
+            assert backup.read_bytes() == b"FOREIGN BACKUP"
+            assert saved_backup.read_bytes() == b"STABLE BACKUP"
+        else:
+            assert set(tmp_path.iterdir()) == {source, backup}
+
 
 class TestDisplacementRaceWindow:
     """Races INSIDE the displacement CAS core stretch (AR-17 / TQ-003 / M-005).
