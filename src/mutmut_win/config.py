@@ -399,6 +399,30 @@ class MutmutConfig(BaseModel):
             if path.is_absolute():
                 safe.append("." if relative == Path() else str(relative))
             else:
+                # S3-006: case/short aliases resolve to the same Windows file but
+                # their literal names are not Python module names. Check the
+                # real directory entries instead of guessing a '~N' syntax;
+                # genuine tilde names and canonical junction entries remain valid.
+                parent = project_root
+                for component in path.parts:
+                    candidate = parent / component
+                    if component != ".." and candidate.exists():
+                        try:
+                            matches_entry = any(
+                                child.name == component
+                                for child in parent.iterdir()
+                            )
+                        except OSError as exc:
+                            raise ValueError(
+                                f"cannot validate paths_to_mutate spelling {entry!r}"
+                            ) from exc
+                        if not matches_entry:
+                            raise ValueError(
+                                f"paths_to_mutate entry {entry!r} uses a filesystem alias; "
+                                f"use the actual project-relative spelling {str(relative)!r} "
+                                "so generated mutant names match runtime imports"
+                            )
+                    parent = candidate
                 # Preserve the user's harmless relative spelling (including a
                 # trailing separator); only resolved containment is normalized.
                 if ".." in path.parts:

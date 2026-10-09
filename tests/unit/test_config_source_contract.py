@@ -99,7 +99,7 @@ class TestMutationPathAliasAuthority:
         assert config.paths_to_mutate == [selected]
 
     @given(st.text(alphabet=string.ascii_lowercase, min_size=1, max_size=8))
-    def test_existing_directory_case_variants_preserve_configuration(self, name: str) -> None:
+    def test_directory_spelling_controls_alias_rejection(self, name: str) -> None:
         name = "pkg_" + name  # Generated names cannot coincide with Windows device names.
         with tempfile.TemporaryDirectory(prefix="mutmut-alias-property-") as directory:
             project = Path(directory)
