@@ -84,7 +84,7 @@ identity-capable volume rather than disabling the safety check.
 | Orphan protection | — | Windows Job Objects: if the parent dies, the kernel reaps every worker and pytest child |
 | Timeout model | CPU-time limit (`RLIMIT_CPU`) | measured wall-clock budgets; full-suite fallback is at least 60 seconds |
 | Hung mutants | plain timeout | timeout activity monitoring with forensics + confidence |
-| Type-checker filter | — | `type_check_command` kills mutants without running tests |
+| Type-checker filter | — | After a successful clean suite, `type_check_command` can kill mutants without their individual test run |
 | CI output | text | `--output json` (clean stdout), `--min-score`, CI stats export |
 | Config | `[tool.mutmut]` | same section, compatible — migration is trivial |
 | Mutation engine | libcst | identical engine, ported from 3.5.0, + advanced & Phase-2 operators |
@@ -402,6 +402,14 @@ Notes:
   project's native order and stops at the first failure. A survivor still runs
   the complete configured suite; timeouts and reusable-verdict fingerprints
   remain bound to that full suite.
+- Before mutant dispatch, the clean phase validates the canonical names of
+  executed instrumented functions, including registered Windows spawn children.
+  Aliased or duplicate module identities and missing child proof abort the run.
+  An uninstrumented helper subprocess that calls no mutation target is allowed.
+  A suite that calls mutation targets only in a child can still lack attributable
+  forced-failure evidence in the parent test process. In that case the run fails
+  closed and cannot authorize a score gate or CI export. Child name recording
+  does not by itself establish that separate forced-failure proof.
 - Source, test, configuration, and project-import drift is terminal. If only
   ambient interpreter, environment, or external dependency metadata changes
   during a run, diagnostic results remain visible but their basis and reuse
@@ -427,6 +435,9 @@ Notes:
   `results`/`browse` report the run as not release-ready. This applies equally
   to commands resolved through `PATH`, `python script.py`, `python -m ...`,
   `uv run ...`, and shell/npm wrappers.
+  The original clean test suite must succeed before this filter runs, including
+  when the filter would catch every mutant. A type-checker result cannot replace
+  successful execution of the original tests.
 - On Windows the process-status signal does not exist (psutil reports
   almost everything as "running"), so possible-loop diagnostics rest on CPU
   plus progress evidence and are capped at `medium` confidence.

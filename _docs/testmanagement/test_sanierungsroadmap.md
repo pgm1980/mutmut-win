@@ -63,14 +63,16 @@ Abnahmekriterium, nicht optional.
    unterbrochener Lauf (nutzt W0: Resume nach Abbruch = `Campaign-E2E`), ungeeignetes
    Timeout. Negativkontrollen belegen Abweisung, nicht Produktablauf.
 3. **`tests/e2e/test_class_heavy_projects.py` (T8, TM-11):** neue Fixture mit
-   pydantic-`BaseModel`/`@computed_field` und Textual-App. Spiegelvergleich
-   (untrampoliniert grün ↔ trampoliniert aktuell rot, 68-fache Verlangsamung) als
-   **`xfail(strict=True)`** mit gesichertem Repro (BLOCKED-GATES-MODELS-BROWSER.md,
-   glm-followup-Korpus). **Kein Vorab-Fix** — H1–H4 sind dem externen adversarialen
-   Review vorbehalten; xfail macht die Grenze sichtbar und scheitert automatisch,
-   sobald sich etwas ändert.
+   pydantic-`BaseModel`/`@computed_field` und Textual-App. Der aktuelle S3-Test
+   führt den echten Klassenlauf aus und bindet alle acht Mutanten, sieben Kills
+   und einen technisch untersuchten Survivor. Die Textual-Kontrolle öffnet die
+   echte Ergebnisansicht einschließlich Diff und prüft deren Beendigung.
+   Die früheren xfail- und 68-fach-Verlangsamungsangaben in
+   BLOCKED-GATES-MODELS-BROWSER.md und dem glm-followup-Korpus bleiben historische
+   Belege; sie beschreiben nicht den aktuellen Testvertrag. Aktuelle Messungen
+   und Grenzen stehen im S3-042/043-Sanierungsledger.
 
-**Abnahme:** TM-01/06/08-Teilfälle grün; TM-11-xfail dokumentiert; Fallinventar nach
+**Abnahme:** TM-01/06/08-Teilfälle grün; TM-11 mit aktuellem Run-/UI-Beleg; Fallinventar nach
 Zählregeln.
 **Bug-Hunting-Erwartung:** hoch (Resume-, Finalisierungs-, Export-Pfad).
 
@@ -143,7 +145,7 @@ mindestens einen Guard-Test.
    AR27/Evidenz-Korpus aktualisiert.
 5. **Übergabe an externen adversarialen Multi-Agenten-Review** (GPT-6 Astra / Fable 5.1)
    mit Prüfaufträgen H1–H4 und E-A bis E-F — die Testsanierung liefert diesem Review die
-   Reproduktions- und Messbasis (TM-11-xfail, Kill-Raten, Fallinventare).
+   Reproduktions- und Messbasis (TM-11-Run-/UI-Belege, Kill-Raten, Fallinventare).
 
 ## Querschnittsregeln (jede Welle)
 
