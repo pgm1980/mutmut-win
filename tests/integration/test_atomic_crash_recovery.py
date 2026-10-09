@@ -105,9 +105,9 @@ class TestAtomicIntegrity:
         target.chmod(stat.S_IREAD)
 
         try:
-            atomic_write_bytes(target, b"SHOULD_NOT_APPEAR")
-        except PermissionError:
-            pass
+            with pytest.raises(PermissionError):
+                atomic_write_bytes(target, b"SHOULD_NOT_APPEAR")
+            assert not target.stat().st_mode & stat.S_IWRITE
         finally:
             target.chmod(stat.S_IWRITE | stat.S_IREAD)
 
