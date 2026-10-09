@@ -33,7 +33,7 @@ from mutmut_win.orchestrator import (
     _update_summary_and_persist,
     _validate_generated_staging,
 )
-from mutmut_win.stats import RunBasisEvidence
+from mutmut_win.stats import MutmutStats, RunBasisEvidence
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1124,30 +1124,59 @@ class TestFilterTasksByNames:
 
 
 class TestSortByEstimatedTime:
-    def test_apply_timeouts_result_is_sortable(self) -> None:
-        """F7: tasks after _apply_timeouts can be sorted by estimated_time."""
-        tasks = [
-            _task("m3", tests=["t3"]),
-            _task("m1", tests=["t1"]),
-            _task("m2", tests=["t2"]),
-        ]
-        stats = {"t1": 0.1, "t2": 1.0, "t3": 0.5}
-        result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=2.0)
-        sorted_result = sorted(result, key=lambda t: t.estimated_time)
-        times = [t.estimated_time for t in sorted_result]
-        assert times == sorted(times)
+    @pytest.mark.parametrize("slow_first", [True, False])
+    def test_tasks_sorted_ascending_by_estimated_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slow_first: bool
+    ) -> None:
+        """The real pipeline dispatches fast function mutants before slow ones.
 
-    def test_tasks_sorted_ascending_by_estimated_time(self) -> None:
-        """F7: after sorting, fast mutants come first."""
-        tasks = [
-            _task("fast", tests=["t_fast"]),
-            _task("slow", tests=["t_slow"]),
-        ]
-        stats = {"t_fast": 0.1, "t_slow": 5.0}
-        result = _apply_timeouts(tasks, stats, 1.0, startup_floor=5.0, clean_wall_seconds=6.0)
-        result.sort(key=lambda t: t.estimated_time)
-        assert result[0].mutant_name == "fast"
-        assert result[1].mutant_name == "slow"
+        Generation, mapping, timeout assignment and ordering are production
+        paths. Runner/executor and the module's stable-basis fixture are doubles;
+        this checks dispatch order, not Windows scheduling or timing collection.
+        """
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "src"
+        source.mkdir()
+        names = ["slow", "fast"] if slow_first else ["fast", "slow"]
+        (source / "target.py").write_text(
+            "\n".join(f"def {name}(value):\n    return value + 1\n" for name in names),
+            encoding="utf-8",
+        )
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_target.py").write_text("def test_target(): pass\n", encoding="utf-8")
+
+        def collected_stats(_runner: object, **kwargs: object) -> MutmutStats:
+            return MutmutStats(
+                tests_by_mangled_function_name={
+                    "target.x_slow": {"tests/test_target.py::slow"},
+                    "target.x_fast": {"tests/test_target.py::fast"},
+                },
+                duration_by_test={
+                    "tests/test_target.py::slow": 5.0,
+                    "tests/test_target.py::fast": 0.1,
+                },
+                mapping_is_authoritative=True,
+                context_fingerprint=str(kwargs["context_fingerprint"]),
+            )
+
+        monkeypatch.setattr("mutmut_win.orchestrator.collect_or_load_stats", collected_stats)
+        executor, captured = _executor_yielding_kills()
+        result = MutationOrchestrator(
+            _config(paths_to_mutate=["src"], tests_dir=["tests/"]),
+            runner=_make_runner(),
+            executor=executor,
+            db_path=tmp_path / "order.sqlite",
+        ).run()
+
+        executor.start.assert_called_once()
+        fast = [task for task in captured if ".x_fast__mutmut_" in task.mutant_name]
+        slow = [task for task in captured if ".x_slow__mutmut_" in task.mutant_name]
+        assert fast and slow
+        assert captured == fast + slow
+        assert {task.estimated_time for task in fast} == {0.1}
+        assert {task.estimated_time for task in slow} == {5.0}
+        assert result.total_mutants == result.killed == len(captured)
 
 
 # ---------------------------------------------------------------------------
