@@ -547,7 +547,9 @@ class PytestRunner:
         ) as runtime_name:
             runtime_dir = Path(runtime_name)
             env = env.copy()
-            cache_dir = configure_ephemeral_pytest_environment(env, runtime_dir)
+            cache_dir = configure_ephemeral_pytest_environment(
+                env, runtime_dir, shared_pycache=self.shared_pycache
+            )
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
             isolated_cmd = _with_pinned_collection_verbosity(isolated_cmd)
