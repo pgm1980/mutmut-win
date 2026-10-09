@@ -1,8 +1,10 @@
 """Concurrent uv hardlinks must not invalidate unchanged dependency bytes."""
 
+import ctypes
 import hashlib
 import os
 import stat
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
@@ -142,3 +144,33 @@ def test_unchanged_native_file_has_stable_complete_digest(tmp_path: Path) -> Non
     assert _hash_context_file(first, source, label="source", seen=set())
     assert _hash_context_file(second, source, label="source", seen=set())
     assert first.digest() == second.digest()
+
+
+@pytest.mark.parametrize("attribute_step", [2, 4, 5], ids=["first-read", "recheck", "rebound"])
+def test_native_hidden_attribute_with_link_churn_is_not_neutral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attribute_step: int
+) -> None:
+    """A metadata bit absent from st_mode must remain bound to the first bytes."""
+    source = tmp_path / "dependency.py"
+    source.write_bytes(b"value = 42\n")
+    original_attributes = source.stat().st_file_attributes
+    set_attributes = ctypes.WinDLL("kernel32", use_last_error=True).SetFileAttributesW
+    set_attributes.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+    set_attributes.restype = wintypes.BOOL
+    real_fstat = os.fstat
+    calls = 0
+
+    def alter_attributes(file_descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (tmp_path / "new-environment.py").hardlink_to(source)
+        if calls == attribute_step:
+            assert set_attributes(str(source), original_attributes | stat.FILE_ATTRIBUTE_HIDDEN)
+        return real_fstat(file_descriptor)
+
+    monkeypatch.setattr(os, "fstat", alter_attributes)
+    try:
+        assert not _hash_context_file(hashlib.sha256(), source, label="source", seen=set())
+    finally:
+        assert set_attributes(str(source), original_attributes)
