@@ -123,6 +123,24 @@ def test_compute_score_all_timeouts_with_flag_gives_full_score() -> None:
 
 
 class TestTimeoutAsKillScoreReporting:
+    @pytest.mark.parametrize("killed", [1, 2])
+    def test_s3_minimum_score_uses_actual_cli_exit(self, killed: int) -> None:
+        """A complete ordinary campaign must enforce the configured threshold."""
+        result = MutationRunResult(
+            total_mutants=2,
+            killed=killed,
+            survived=2 - killed,
+            execution_basis_complete=True,
+        )
+        exit_code, stderr, stdout = _invoke_run_with(
+            result, "--output", "json", "--min-score", "80"
+        )
+
+        assert json.loads(stdout)["score"] == killed * 50.0
+        assert exit_code == (1 if killed == 1 else 0), stderr
+        assert ("is below threshold 80.0%" in stderr) is (killed == 1)
+        assert _SCORE_LINE_MARKER not in stderr
+
     @pytest.mark.parametrize("opt_in", [False, True])
     def test_s3_timeout_policy_changes_gate_but_never_raw_score(self, opt_in: bool) -> None:
         """The same unresolved timeout fails by default and passes only by opt-in."""
