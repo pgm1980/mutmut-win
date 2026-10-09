@@ -278,7 +278,7 @@ class ResultBrowser(App[None]):
         self._db_results: dict[str, MutationResult] = {}
         self._current_run_names: set[str] | None = None
         self._current_run_state: MutationRunState | None = None
-        self._run_state_error: str | None = None
+        self._run_state_error: CorruptCacheError | CacheEnvironmentError | None = None
         self._unmapped_current_names: set[str] = set()
 
     def compose(self) -> ComposeResult:
@@ -313,8 +313,13 @@ class ResultBrowser(App[None]):
         if self._run_state_error is not None:
             run_status.add_class("evidence-invalidated")
             warning = Text()
+            heading = (
+                "CACHE ENVIRONMENT ERROR"
+                if isinstance(self._run_state_error, CacheEnvironmentError)
+                else "CORRUPT PERSISTED RUN EVIDENCE"
+            )
             warning.append(
-                "CORRUPT PERSISTED RUN EVIDENCE - NOT RELEASE-READY\n",
+                f"{heading} - NOT RELEASE-READY\n",
                 style="bold white on red",
             )
             warning.append(
@@ -417,7 +422,7 @@ class ResultBrowser(App[None]):
         try:
             current_run, latest_results = load_latest_run_results(self._db_path)
         except (CorruptCacheError, CacheEnvironmentError) as exc:
-            self._run_state_error = str(exc)
+            self._run_state_error = exc
             return
         if current_run is not None:
             self._current_run_state = current_run

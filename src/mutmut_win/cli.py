@@ -1546,6 +1546,7 @@ def browse(show_killed: bool) -> None:
     try:
         app = ResultBrowser(show_killed=show_killed)
         app.run()
+        sys.exit(app.return_code or 0)
     except MutmutWinError as exc:
         click.echo(f"Could not open result browser: {exc}", err=True)
         sys.exit(1)
