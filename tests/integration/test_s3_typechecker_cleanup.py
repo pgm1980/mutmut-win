@@ -4,7 +4,7 @@ import contextlib
 import subprocess
 import sys
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psutil
 import pytest
@@ -12,6 +12,9 @@ from pydantic import BaseModel
 
 from mutmut_win import type_checking
 from mutmut_win.exceptions import TypeCheckCommandError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class CleanupObservation(BaseModel):

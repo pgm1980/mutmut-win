@@ -4,7 +4,8 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.exceptions import TypeCheckCommandError
 from mutmut_win.type_checking import run_type_checker
@@ -18,7 +19,7 @@ def test_mypy_exit_one_without_diagnostics_is_failure(stdout: str) -> None:
     )
     with (
         patch("mutmut_win.type_checking._run_type_check_process", return_value=completed),
-        pytest.raises(TypeCheckCommandError, match="exit code 1.*No module named mypy"),
+        pytest.raises(TypeCheckCommandError, match=r"exit code 1.*No module named mypy"),
     ):
         run_type_checker(["python", "-m", "mypy", "--output=json", "."])
 
