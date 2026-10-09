@@ -198,15 +198,6 @@ def gather_coverage(
                 f"the test suite must pass before mutate_only_covered_lines can "
                 f"measure it."
             )
-        # S3-002: even readable parent/child files cannot prove that every
-        # child saved its measurements. The production runner authenticates
-        # this policy from the actual live collector before returning 0.
-        if getattr(runner, "coverage_uses_multiprocessing", False) is True:
-            print(
-                "Coverage uses multiprocessing; child measurement completeness "
-                "is unproven. Mutating all configured source lines."
-            )
-            return None
         # parallel=true writes suffixed parts instead of one suffixless
         # file; SQLite sidecars of a crashed run are never data.
         data_candidates = sorted(
@@ -247,5 +238,16 @@ def gather_coverage(
             f"measured path matches a staged source path (expected e.g. "
             f"{next(iter(covered_lines))!r}, measured e.g. {sorted(measured)[0]!r})."
         )
+
+    # S3-002: even readable parent/child files cannot prove that every child
+    # saved its measurements. Validate the measurement first: all-lines is
+    # an explicit selection policy, never recovery from a failed collection.
+    # The runner authenticates this policy from the actual live collector.
+    if getattr(runner, "coverage_uses_multiprocessing", False) is True:
+        print(
+            "Coverage uses multiprocessing; child measurement completeness "
+            "is unproven. Mutating all configured source lines."
+        )
+        return None
 
     return covered_lines
