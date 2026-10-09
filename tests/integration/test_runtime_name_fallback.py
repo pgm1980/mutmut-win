@@ -8,16 +8,29 @@ from pathlib import Path
 
 import pytest
 
-from mutmut_win.db import DEFAULT_DB_PATH, load_results
 from mutmut_win.config import MutmutConfig
+from mutmut_win.db import DEFAULT_DB_PATH, load_results
 from mutmut_win.file_setup import create_mutants_for_file
 from mutmut_win.runner import PytestRunner
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("import_name", ["pkg.mod", "src.pkg.mod"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "spawn",
+        "default",
+        "pool",
+        "pool_context",
+        "executor",
+        "descendant",
+        "terminated",
+        "registration_failed",
+    ],
+)
 def test_clean_spawn_transports_actual_child_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, import_name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, import_name: str, kind: str
 ) -> None:
     """A healthy spawned child supplies actual names without parent calls."""
     project = tmp_path / "project"
@@ -26,14 +39,36 @@ def test_clean_spawn_transports_actual_child_calls(
     source.write_text("def value():\n    return 2\n", encoding="utf-8")
     monkeypatch.chdir(project)
     create_mutants_for_file(Path("src/pkg/mod.py"), Path("mutants/src/pkg/mod.py"))
-    child_marker = tmp_path / "child.json"
+    child_markers = tmp_path / "children"
+    child_markers.mkdir()
     helper = (
-        "import json, os\nfrom pathlib import Path\n"
-        "def exercise():\n"
+        "import json, os, multiprocessing, time\nfrom pathlib import Path\n"
+        "def exercise(_number=None):\n"
         f"    from {import_name} import value\n"
         "    result = value()\n"
-        f"    Path({str(child_marker)!r}).write_text(json.dumps({{'pid': os.getpid(), 'value': result}}))\n"
+        f"    root = Path({str(child_markers)!r})\n"
+        "    payload = {'pid': os.getpid(), 'value': result}\n"
+        "    (root / f'{os.getpid()}.json').write_text(json.dumps(payload))\n"
         "    assert result == 2\n"
+        "    return os.getpid()\n"
+        "def descendant():\n"
+        "    child = multiprocessing.get_context('spawn').Process(target=exercise)\n"
+        "    child.start()\n    child.join(20)\n    assert child.exitcode == 0\n"
+        "def awaiting_kill(event):\n"
+        "    exercise()\n    event.set()\n    time.sleep(60)\n"
+        "def failed_registration():\n"
+        "    from mutmut_win import runtime_names\n"
+        f"    from {import_name} import value\n"
+        "    original_record = runtime_names.record_runtime_name\n"
+        "    def fail_write(*args):\n        raise OSError('injected first-part failure')\n"
+        "    def record(name):\n"
+        f"        root = Path({str(child_markers)!r})\n"
+        "        payload = {'pid': os.getpid(), 'trampoline_entered': name}\n"
+        "        (root / f'{os.getpid()}.json').write_text(json.dumps(payload))\n"
+        "        original_record(name)\n"
+        "    runtime_names._write_part = fail_write\n"
+        "    runtime_names.record_runtime_name = record\n"
+        "    value()\n"
     )
     test = (
         "import multiprocessing\nfrom child_support import exercise\n"
@@ -44,6 +79,51 @@ def test_clean_spawn_transports_actual_child_calls(
         "    finally:\n        if child.is_alive():\n            child.terminate()\n"
         "        child.join(10)\n"
     )
+    if kind == "default":
+        test = test.replace(
+            "multiprocessing.get_context('spawn').Process", "multiprocessing.Process"
+        )
+    elif kind == "descendant":
+        test = test.replace("import exercise", "import descendant as exercise")
+    elif kind == "registration_failed":
+        test = test.replace("import exercise", "import failed_registration as exercise")
+        test = test.replace("assert child.exitcode == 0", "assert child.exitcode != 0")
+    elif kind == "pool":
+        test = (
+            "import multiprocessing\nfrom child_support import exercise\n"
+            "def test_value():\n"
+            "    pool = multiprocessing.get_context('spawn').Pool(2, maxtasksperchild=1)\n"
+            "    try:\n        pids = pool.map(exercise, range(4), chunksize=1)\n"
+            "        assert len(set(pids)) == 4\n"
+            "    finally:\n        pool.close()\n        pool.join()\n"
+        )
+    elif kind == "pool_context":
+        test = (
+            "import multiprocessing\nfrom child_support import exercise\n"
+            "def test_value():\n"
+            "    with multiprocessing.get_context('spawn').Pool(2) as pool:\n"
+            "        assert len(pool.map(exercise, range(4), chunksize=1)) == 4\n"
+        )
+    elif kind == "executor":
+        test = (
+            "from concurrent.futures import ProcessPoolExecutor\n"
+            "from child_support import exercise\n"
+            "def test_value():\n"
+            "    with ProcessPoolExecutor(max_workers=2, max_tasks_per_child=1) as pool:\n"
+            "        assert len(set(pool.map(exercise, range(4)))) == 4\n"
+        )
+    elif kind == "terminated":
+        test = (
+            "import multiprocessing\nfrom child_support import awaiting_kill\n"
+            "def test_value():\n"
+            "    context = multiprocessing.get_context('spawn')\n"
+            "    called = context.Event()\n"
+            "    child = context.Process(target=awaiting_kill, args=(called,))\n"
+            "    child.start()\n"
+            "    try:\n        assert called.wait(20)\n"
+            "    finally:\n        child.terminate()\n        child.join(10)\n"
+            "    assert not child.is_alive()\n    assert child.exitcode != 0\n"
+        )
     for root in (project, project / "mutants"):
         (root / "tests").mkdir(exist_ok=True)
         (root / "tests/test_value.py").write_text(test, encoding="utf-8")
@@ -53,10 +133,24 @@ def test_clean_spawn_transports_actual_child_calls(
     )
     runner = PytestRunner(MutmutConfig(tests_dir=["tests"], clean_run_timeout=60))
     assert runner.run_clean_test() == 0, runner.last_diagnostic_output
-    child = json.loads(child_marker.read_text(encoding="utf-8"))
-    assert child["pid"] != os.getpid()
-    assert child["value"] == 2
-    assert runner.clean_runtime_names == {f"{import_name}.x_value"}
+    children = [json.loads(path.read_text(encoding="utf-8")) for path in child_markers.iterdir()]
+    if kind == "pool_context":
+        assert 1 <= len(children) <= 2
+    else:
+        assert len(children) == (4 if kind in {"pool", "executor"} else 1)
+    assert all(child["pid"] != os.getpid() for child in children)
+    if kind == "registration_failed":
+        assert children[0]["trampoline_entered"] == f"{import_name}.x_value"
+        assert runner.clean_runtime_names is None
+    elif kind == "terminated":
+        assert children[0]["value"] == 2
+        assert runner.clean_runtime_names is None
+        assert ".complete.json" in (runner.clean_runtime_names_diagnostic or "")
+    else:
+        assert all(child["value"] == 2 for child in children)
+        assert runner.clean_runtime_names == {f"{import_name}.x_value"}, (
+            runner.clean_runtime_names_diagnostic
+        )
 
 
 @pytest.mark.integration
@@ -114,7 +208,8 @@ def test_cli_runtime_name_proof_is_independent_of_stats(
             "def exercise():\n"
             f"    from {imported} import value\n"
             "    result = value()\n"
-            f"    Path({str(child_marker)!r}).write_text(json.dumps({{'pid': os.getpid(), 'value': result}}))\n",
+            "    payload = {'pid': os.getpid(), 'value': result}\n"
+            f"    Path({str(child_marker)!r}).write_text(json.dumps(payload))\n",
             encoding="utf-8",
         )
         test_source = (
