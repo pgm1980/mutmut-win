@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mutmut_win.config import MutmutConfig
+from mutmut_win.exceptions import CoverageCollectionError
 from mutmut_win.runner import (
     MUTANT_ENV_VAR,
     MUTANT_FAIL_SENTINEL,
@@ -532,6 +533,25 @@ def test_extra_args_always_appended_to_command(extra_args: list[str]) -> None:
 
 
 class TestRunCoverageCollection:
+    @pytest.mark.parametrize("payload", [None, b"", b"foreign:parent", b"x" * 1000])
+    def test_missing_or_invalid_collector_policy_blocks_authority(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes | None
+    ) -> None:
+        """A success exit cannot replace the current collector's policy proof."""
+        runner = PytestRunner(_config())
+
+        def complete_phase(
+            _phase: str, _command: list[str], environment: dict[str, str], **_kwargs: object
+        ) -> int:
+            if payload is not None:
+                Path(environment["MUTMUT_COVERAGE_POLICY_PATH"]).write_bytes(payload)
+            return 0
+
+        monkeypatch.setattr(runner, "_run_phase", complete_phase)
+        with pytest.raises(CoverageCollectionError, match="coverage policy proof"):
+            runner.run_coverage_collection(tmp_path / ".coverage.mutmut")
+        assert not list(tmp_path.glob(".mutmut-coverage-policy-*"))
+
     def test_child_environment_uses_the_same_data_target_as_parent(self, tmp_path: Path) -> None:
         """S3-002: inspect the actual process boundary after phase isolation."""
         target = tmp_path / "coverage-output" / ".coverage.mutmut"

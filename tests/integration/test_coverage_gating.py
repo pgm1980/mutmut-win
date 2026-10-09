@@ -139,8 +139,11 @@ class TestCoverageGatingEndToEnd:
     @pytest.mark.parametrize("relative_files", [False, True])
     @pytest.mark.parametrize("drop_child_part", [False, True])
     def test_spawn_child_lines_remain_in_the_mutation_universe(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_files: bool,
-        drop_child_part: bool
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        relative_files: bool,
+        drop_child_part: bool,
     ) -> None:
         """S3-002: real spawn children contribute their executed source lines."""
         monkeypatch.chdir(tmp_path)
