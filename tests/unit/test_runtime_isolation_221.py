@@ -77,18 +77,23 @@ def test_purge_staging_runtime_artifacts_removes_only_runtime_state(
 )
 def test_fresh_pycache_prefix_bypasses_staged_unchecked_hash_bytecode(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     staging = tmp_path / "project" / "mutants"
     staging.mkdir(parents=True)
     source = staging / "runtime_probe.py"
     source.write_text('VALUE = "old"\n', encoding="utf-8")
-    compiled_path = Path(
-        py_compile.compile(
-            str(source),
-            doraise=True,
-            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    # Place the control cache beside its source even when the test runner uses
+    # an external cache prefix. The control child deliberately clears that prefix.
+    with monkeypatch.context() as compilation:
+        compilation.setattr(sys, "pycache_prefix", None)
+        compiled_path = Path(
+            py_compile.compile(
+                str(source),
+                doraise=True,
+                invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            )
         )
-    )
     compiled_before = compiled_path.read_bytes()
     source.write_text('VALUE = "new"\n', encoding="utf-8")
 

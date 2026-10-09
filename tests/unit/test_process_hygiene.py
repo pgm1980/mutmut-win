@@ -82,6 +82,6 @@ class TestWorkerPytestCommand:
         """A4-QX-008: bare 'pytest' from PATH can hit a different interpreter
         than the venv the clean gate validated — pin sys.executable."""
         cmd = _pytest_base_cmd()
-        assert cmd[:3] == [sys.executable, "-m", "pytest"]
+        assert cmd[:5] == [sys.executable, "--check-hash-based-pycs", "always", "-m", "pytest"]
         assert "--tb=no" in cmd
         assert "-q" in cmd

@@ -80,9 +80,7 @@ def _probe_project(
     )
 
 
-def _poison_shared_cache(
-    case: ProbeProject, shared: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _poison_shared_cache(case: ProbeProject, shared: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     alternate = case.project.parent / "off-source.py"
     alternate.write_bytes(b"VALUE = 2\n")
     with monkeypatch.context() as context:
@@ -99,7 +97,9 @@ def _poison_shared_cache(
 
 
 def _run_worker(case: ProbeProject, shared: Path | None) -> None:
-    config = MutmutConfig(paths_to_mutate=["src"], tests_dir=["tests"], infinite_loop_detection=False)
+    config = MutmutConfig(
+        paths_to_mutate=["src"], tests_dir=["tests"], infinite_loop_detection=False
+    )
     config_data = config.model_dump()
     if shared is not None:
         config_data["_worker_shared_pycache"] = str(shared)
