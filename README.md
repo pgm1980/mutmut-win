@@ -710,6 +710,24 @@ for at least one minor release first (current example:
 `--treat-timeout-as-kill`).
 <!-- RELEASE_SEQUENCE: version-bump -> final-gates -> merge-main -> integrated-final-gates -> reproducible-artifacts -> annotated-tag -> github-release -->
 
+## Mutation operator boundaries
+
+Python 3.14 template strings (`t"..."`) are parsed and preserved, but currently
+have no dedicated literal-text or whole-template return-value mutation operator.
+A `Template` exposes its static strings and interpolation values, expressions,
+conversions and format specifications before rendering; applying the f-string
+text operator does not by itself define an adequate template mutation contract.
+Supported operators inside interpolation expressions still apply. Functions
+with no applicable mutation site produce no mutants, so a successful run does
+not establish that every template expression was tested by mutation.
+
+The exact advanced-profile fixture `def value(x): return t"hello {x}!"` produces
+zero mutants; replacing only `t` with `f` produces three (two text mutations and
+one `return None`). These counts describe this fixture, not arbitrary strings,
+expressions or profiles. The generated unmutated template preserves
+`strings == ("hello ", "!")`, `values == (7,)` and expression `"x"` for `value(7)`.
+The f-string control returns `"hello 7!"`.
+
 ## History and project status
 
 mutmut-win started as a Windows port of mutmut 3.5.0's process layer
@@ -732,10 +750,11 @@ the regex operator with the full 14-sub-mutator suite (anchors,
 quantifiers, shorthands, character classes, groups/look-around — harness
 184/188). Regex mutation binds the pattern argument positionally or via
 `pattern=`, never mutates `(?#...)` comments, and honours statically
-resolvable `re.VERBOSE`/`re.X` flags (including `flags=` keywords and a
-global `(?x)` prefix) by locking `#` line comments; unknown flag
-expressions keep the flagless behaviour and scoped `(?x:...)` groups are
-a documented limit. v2.19.0 added the aggressive `all`-tier operators (arithmetic
+resolvable `re.VERBOSE`/`re.X` flags (including `flags=` keywords) by locking
+`#` line comments. The scanner also tracks combined global inline flags and
+scoped enable/disable groups such as `(?ix:...)` and `(?-x:...)`, restoring
+the enclosing mode at the group boundary. Unknown flag expressions retain
+flagless behaviour. v2.19.0 added the aggressive `all`-tier operators (arithmetic
 operand deletion, exception swap, general-statement and member-assignment
 removal, unary-operator insertion) and the mutmut-3.6.0 surface backports
 (pragma `block`/`start`-`end`, regex `do_not_mutate_patterns`, and

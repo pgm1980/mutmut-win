@@ -108,6 +108,7 @@ class TestRecordTrampolineHit:
             # A user filename containing the substring "pytest" is not itself
             # a pytest framework frame.
             f_code=SimpleNamespace(co_filename="C:/project/pytest_helpers.py"),
+            f_globals={"__name__": "pytest_helpers"},
             f_back=None,
         )
         with (
@@ -123,10 +124,12 @@ class TestRecordTrampolineHit:
         _reset_globals()
         pytest_frame = SimpleNamespace(
             f_code=SimpleNamespace(co_filename="C:/venv/Lib/site-packages/_pytest/runner.py"),
+            f_globals={"__name__": "_pytest.runner"},
             f_back=None,
         )
         source_frame = SimpleNamespace(
             f_code=SimpleNamespace(co_filename="C:/project/service.py"),
+            f_globals={"__name__": "service"},
             f_back=pytest_frame,
         )
         with (

@@ -395,16 +395,22 @@ class _RegexSpans(BaseModel):
     comment_spans: tuple[tuple[int, int], ...] = ()
 
 
+_INLINE_FLAGS_RE = re.compile(r"\(\?([aiLmsux]*)(?:-([imsx]+))?([:)])")
+
+
 def _scan_regex(pattern: str, *, verbose: bool = False) -> _RegexSpans:
     """Scan *pattern* once for class and comment spans.
 
     Backslash pairs are tokens.  Outside a class, ``(?#`` starts an inline
     comment that ends at the first unescaped ``)`` (inclusive) or at the end
     of the pattern; a ``[`` inside a comment never opens a class.  With
-    ``verbose``, a ``#`` outside a class locks the rest of its line.
+    ``verbose``, a ``#`` outside a class locks the rest of its line. Global
+    inline flags update that mode; scoped flags restore it at their closing
+    parenthesis. Class, escape and comment contents never change the scope.
     """
     class_spans: list[tuple[int, int]] = []
     comment_spans: list[tuple[int, int]] = []
+    verbose_stack: list[bool] = []
     i, n = 0, len(pattern)
     while i < n:
         char = pattern[i]
@@ -445,6 +451,21 @@ def _scan_regex(pattern: str, *, verbose: bool = False) -> _RegexSpans:
             comment_spans.append((i, end))
             i = end
             continue
+        if char == "(":
+            inline_flags = _INLINE_FLAGS_RE.match(pattern, i)
+            if inline_flags is not None:
+                enabled, disabled, delimiter = inline_flags.groups()
+                if delimiter == ":":
+                    verbose_stack.append(verbose)
+                if "x" in enabled:
+                    verbose = True
+                if disabled and "x" in disabled:
+                    verbose = False
+                i = inline_flags.end()
+                continue
+            verbose_stack.append(verbose)
+        elif char == ")" and verbose_stack:
+            verbose = verbose_stack.pop()
         i += 1
     return _RegexSpans(
         class_spans=tuple(class_spans),
