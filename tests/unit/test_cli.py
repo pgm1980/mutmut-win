@@ -500,7 +500,7 @@ class TestApplyCommand:
 class TestBrowseCommand:
     def test_browse_invokes_result_browser(self) -> None:
         runner = CliRunner()
-        mock_app = MagicMock()
+        mock_app = MagicMock(return_code=0)
         mock_app_class = MagicMock(return_value=mock_app)
 
         with patch("mutmut_win.cli.ResultBrowser", mock_app_class):
@@ -512,7 +512,7 @@ class TestBrowseCommand:
 
     def test_browse_passes_show_killed_flag(self) -> None:
         runner = CliRunner()
-        mock_app = MagicMock()
+        mock_app = MagicMock(return_code=0)
         mock_app_class = MagicMock(return_value=mock_app)
 
         with patch("mutmut_win.cli.ResultBrowser", mock_app_class):

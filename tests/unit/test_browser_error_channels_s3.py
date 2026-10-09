@@ -8,7 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +20,9 @@ from mutmut_win import db
 from mutmut_win.browser import ResultBrowser
 from mutmut_win.cli import cli
 from mutmut_win.exceptions import MutmutWinError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _BROWSER_LAUNCH = """
 import os
@@ -59,7 +62,8 @@ def _browse_process(workspace: Path, *, requested_exit: int | None = 0) -> _Brow
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["S3_BROWSER_EXIT"] = str(requested_exit)
     command = [sys.executable, "-c", _BROWSER_LAUNCH, "browse"]
-    completed = subprocess.run(
+    # The current interpreter and inline headless adapter are fixed test inputs.
+    completed = subprocess.run(  # noqa: S603
         command,
         cwd=workspace,
         env=environment,
@@ -116,11 +120,15 @@ def test_browse_propagates_real_junction_load_failure(
 
 @pytest.mark.parametrize("requested_exit", [0, 4])
 def test_browse_retains_actual_healthy_lifecycle_exit(
-    tmp_path: Path, requested_exit: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_exit: int
 ) -> None:
     """A mounted empty database exits cleanly or preserves its explicit status."""
+    monkeypatch.chdir(tmp_path)
     db.create_db(tmp_path / ".mutmut-cache" / "mutmut-cache.db")
     receipt = _browse_process(tmp_path, requested_exit=requested_exit)
+    results = CliRunner().invoke(cli, ["results"])
+    assert results.exit_code == 0
+    assert "No results found" in results.output
     assert "S3_BANNER=No persisted mutation run" in receipt.stdout
     assert receipt.textual_code == requested_exit
     assert "Traceback" not in receipt.stderr
@@ -215,4 +223,3 @@ async def test_browser_empty_cache_is_healthy(
         assert banner == "No persisted mutation run"
         assert not app.query_one("#run_status", Static).has_class("evidence-invalidated")
     assert not (tmp_path / ".mutmut-cache").exists()
-
