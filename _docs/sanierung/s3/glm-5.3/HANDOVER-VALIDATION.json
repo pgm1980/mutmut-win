@@ -1,0 +1,38 @@
+{
+  "scope": "Documentation and preservation checks only; no new product tests or release acceptance",
+  "status": "PASS_HANDOVER_INTEGRITY_ONLY",
+  "created_at": "2026-10-09T15:44:39.4489913+02:00",
+  "rule_count": 21,
+  "rule_text_ordinal_equal": true,
+  "rule_utf8_sha256": "ba08b9f4f99f04b7c313e4aa38820e42217d9f2f8bc9143b920152d78247c234",
+  "original_order": {
+    "path": "C:\\claude_codex\\mutmut-win\\_docs\\reviews\\external-review-v3.1.0\\sol-cross-cross-review\\ASTRA-SANIERUNGSAUFTRAG.md",
+    "sha256": "62b38a402bb6792cc110661315e09d1cd55e482ce48f6bc4c2d3fc8e524170ca"
+  },
+  "original_copy": {
+    "path": "C:\\Users\\pmitt\\.codex\\worktrees\\astra-s3-sanierung\\mutmut-win\\_docs\\sanierung\\s3\\glm-5.3\\ASTRA-SANIERUNGSAUFTRAG-ORIGINAL.md",
+    "sha256": "62b38a402bb6792cc110661315e09d1cd55e482ce48f6bc4c2d3fc8e524170ca"
+  },
+  "manifest": {
+    "path": "C:\\Users\\pmitt\\.codex\\worktrees\\astra-s3-sanierung\\mutmut-win\\_docs\\sanierung\\s3\\glm-5.3\\SHA256-MANIFEST.json",
+    "sha256": "e5abfc074752d46a28458b98f91edd221f63bdc7d11324c20bb348e70b02145e"
+  },
+  "package_files": 9,
+  "cards": 270,
+  "source_test_lock_files": 367,
+  "source_test_lock_drift": 0,
+  "frozen_s3_files": 1192,
+  "frozen_s3_original_and_mirror": "PASS_SHA256_AND_SIZE",
+  "protected_prior_review_files": 2489,
+  "protected_original_and_mirror": "PASS_SHA256_AND_SIZE",
+  "mirror_files": 64378,
+  "mirror_bytes": 3484564042.0,
+  "mirror_excluded": 1226,
+  "history_bundle_verification": "git bundle verify:complete history, okay",
+  "agent_doc_audit": "Read-only review completed; four clarifications incorporated (sync/run same environment,17 keys/types,mutation inventory expands,explicit CPython implementation)",
+  "git_byte_contract": "Generated handover files canonical UTF-8/LF; original order retains exact historical bytes via scoped -text attribute",
+  "diff_check_exception": "Only ASTRA-SANIERUNGSAUFTRAG-ORIGINAL.md excluded from whitespace diff check because its protected original already ends with a CR-containing blank line; SHA256 equality required instead. No product-code exception.",
+  "new_product_tests": "NOT_EXECUTED",
+  "new_release_gates": "NOT_EXECUTED",
+  "acceptance": "NO_GO"
+}

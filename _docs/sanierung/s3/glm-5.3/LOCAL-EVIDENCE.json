@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "root": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53",
+  "storage": "LOCAL_ONLY; Git contains this mapping and bindings, not raw evidence, installed environments or protected original dirty files",
+  "copy_verification": {
+    "status": "PASS_COPY_SHA256",
+    "files": 64378,
+    "bytes": 3484564042.0,
+    "excluded": 1226,
+    "manifest_sha256": "4e24b754d669e7b6f384b97884e4ff4e7f9a43798adca5112adc771e3a9d8051",
+    "created_at": "2026-10-09T15:41:35.7251331+02:00"
+  },
+  "manifest": {
+    "path": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\EVIDENCE-MANIFEST.json",
+    "sha256": "4e24b754d669e7b6f384b97884e4ff4e7f9a43798adca5112adc771e3a9d8051"
+  },
+  "mapping": [
+    {
+      "original_prefix": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac",
+      "mirror_prefix": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence",
+      "resolution": "Replace this path prefix only when locating a preserved copy; never rewrite historical receipts; verify referenced SHA256"
+    },
+    {
+      "original_prefix": "C:\\claude_codex\\mutmut-win\\_docs\\reviews\\external-review-v3.1.0",
+      "mirror_prefix": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\frozen-reviews",
+      "resolution": "Replace this path prefix only when locating a preserved copy; never rewrite historical receipts; verify referenced SHA256"
+    },
+    {
+      "original_prefix": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\sol-s3-reviewer-pause-20261009-01a11c92",
+      "mirror_prefix": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\sol-pause",
+      "resolution": "Replace this path prefix only when locating a preserved copy; never rewrite historical receipts; verify referenced SHA256"
+    }
+  ],
+  "exclusions": "See EVIDENCE-MANIFEST.json.excluded: installed environments, regenerable tool caches and reparse points not followed. Originals remain untouched; a mirror is evidence bytes, not a path-equivalent runnable environment.",
+  "history_bundle": {
+    "path": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\source-history.bundle",
+    "sha256": "11279f5b7076b2ad010b3a83fd87884bf4e673f0b7a230139fa438ffd01e940e"
+  },
+  "history_bundle_scope": "Complete local Git --all history at pre-handover checkpoint; includes historical worktree refs; later handover commit is on remote branch",
+  "historical_dirty_draft": {
+    "path": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\preserved-paths-draft\\DRAFT-MANIFEST.json",
+    "sha256": "642eb4dfef65470d3b46fe64c487ab07fcc25f7c27e912ce1df11c14e2a8ac1f"
+  },
+  "worktree_inventory": {
+    "path": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\WORKTREE-INVENTORY.json",
+    "sha256": "549bad03505630b812e0e4efc21b0382fb3de684cc0e773e4f3bdedfbc137206"
+  },
+  "astra_main_ledger": "../SANIERUNGSLEDGER.json"
+}

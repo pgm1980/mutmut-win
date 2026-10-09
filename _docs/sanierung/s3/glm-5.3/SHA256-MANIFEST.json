@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "scope": "Handover document/input package only; not a release gate",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 42,
+      "sha256": "8b6d9fd113be69abb78fb8887b58a3d533f84d416c207dbfd8f096c46b028923"
+    },
+    {
+      "path": "ASTRA-SANIERUNGSAUFTRAG-ORIGINAL.md",
+      "bytes": 25148,
+      "sha256": "62b38a402bb6792cc110661315e09d1cd55e482ce48f6bc4c2d3fc8e524170ca"
+    },
+    {
+      "path": "GLM-HANDOVER.md",
+      "bytes": 34720,
+      "sha256": "9c0feea76c20a26078328b7d61049238ac99bf83c3ed48c7740f3d4a32e907df"
+    },
+    {
+      "path": "GLM-STARTPROMPT.md",
+      "bytes": 3929,
+      "sha256": "abe49abebcad2c755d3dafa0cf0f9b8fe39ac52c96a590eff966956ea53049ff"
+    },
+    {
+      "path": "HANDOVER-STATE.json",
+      "bytes": 8076,
+      "sha256": "3f6e20ed9cafb6cc42bae1c1d73d94053b1e610eb29252c3e51c7f659cce9fb2"
+    },
+    {
+      "path": "KARTENINDEX.json",
+      "bytes": 692158,
+      "sha256": "f82ef49b81210224e6918c1ba6c35f196590f390794b4d3b33219383bc91a5ac"
+    },
+    {
+      "path": "LOCAL-EVIDENCE.json",
+      "bytes": 2912,
+      "sha256": "f356bea803d40a9646ea7027f41d5c4e2fdeacc8eb81bc4af70549f5a42efc40"
+    },
+    {
+      "path": "REFERENCE-CHECK.json",
+      "bytes": 50877,
+      "sha256": "1370a898bda58f2c2956dbfcfe615673dfc4a87995d5f55aa572ff4d45c0f049"
+    },
+    {
+      "path": "SOURCE-TEST-LOCK.json",
+      "bytes": 56479,
+      "sha256": "9c83e8fccd104436adcf08440990342d65347cc572919c45f9dc83ed596c958e"
+    }
+  ],
+  "excluded_self_reports": [
+    "SHA256-MANIFEST.json",
+    "HANDOVER-VALIDATION.json"
+  ]
+}

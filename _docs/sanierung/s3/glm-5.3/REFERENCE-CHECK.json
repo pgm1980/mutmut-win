@@ -1,0 +1,791 @@
+{
+  "scope": "Absolute path+sha256 reference objects in central ledger; relative historical source hashes retain their original scope",
+  "references": 98,
+  "mismatches": 0,
+  "results": [
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\integrated-config-mypy-green.json",
+      "expected_sha256": "545e135a1d28f1063c496e427125f60be9f99c27e3a5f78d95182badda1e79ae",
+      "current_sha256": "545e135a1d28f1063c496e427125f60be9f99c27e3a5f78d95182badda1e79ae",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\integrated-config-mypy-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p1-coverage\\S3-002-ledger.json",
+      "expected_sha256": "4c9db53beff5b1360efbee2b098bdfd55571aa1311f7aa3c97903eb0f2db5632",
+      "current_sha256": "4c9db53beff5b1360efbee2b098bdfd55571aa1311f7aa3c97903eb0f2db5632",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p1-coverage\\S3-002-ledger.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p1-timeout\\S3-003-LEDGER.json",
+      "expected_sha256": "b72b9448b42f9e7cbd26d5c78e750c72f096ec8286447b96f65ecc85ddcbe665",
+      "current_sha256": "b72b9448b42f9e7cbd26d5c78e750c72f096ec8286447b96f65ecc85ddcbe665",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p1-timeout\\S3-003-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic-test-oracles\\S3-035-044-045-LEDGER.json",
+      "expected_sha256": "439d1d79b5f7a48768506eb5b1f5e53f9e71cf362ab5c22549d8830d12d9ea17",
+      "current_sha256": "439d1d79b5f7a48768506eb5b1f5e53f9e71cf362ab5c22549d8830d12d9ea17",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-atomic-test-oracles\\S3-035-044-045-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-008-013-LEDGER.json",
+      "expected_sha256": "9f7b0ab6217f6c6d0dc42167bfa4410127b82a86a3c03a73609bc5f11af139b4",
+      "current_sha256": "9f7b0ab6217f6c6d0dc42167bfa4410127b82a86a3c03a73609bc5f11af139b4",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-atomic\\S3-008-013-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-atomic\\S3-014-018-029-LEDGER.json",
+      "expected_sha256": "c4968f78165db564f3470a14cd51438cc0cc0b94958dcc66749679798bf8b9a0",
+      "current_sha256": "c4968f78165db564f3470a14cd51438cc0cc0b94958dcc66749679798bf8b9a0",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-atomic\\S3-014-018-029-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-collection\\S3-004-057-LEDGER-FINAL-925c62d.json",
+      "expected_sha256": "45d2a70dedff588eb835d30479367e6ab8636b91146a317c45c5fe27ecf66777",
+      "current_sha256": "45d2a70dedff588eb835d30479367e6ab8636b91146a317c45c5fe27ecf66777",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-collection\\S3-004-057-LEDGER-FINAL-925c62d.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-json-stream-preview\\S3-053-054-LEDGER-FINAL-886439b.json",
+      "expected_sha256": "6e8df1c500772a0b625598a5ab5fbcb9ca12f5cdaf2547f2282140708e5a41c9",
+      "current_sha256": "6e8df1c500772a0b625598a5ab5fbcb9ca12f5cdaf2547f2282140708e5a41c9",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-json-stream-preview\\S3-053-054-LEDGER-FINAL-886439b.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-paths\\S3-006-007-011-ledger.json",
+      "expected_sha256": "6ad1c415d4f372f320994f6839d5fbec92bcfda96cfaa0c287c378451a400c1c",
+      "current_sha256": "6ad1c415d4f372f320994f6839d5fbec92bcfda96cfaa0c287c378451a400c1c",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-paths\\S3-006-007-011-ledger.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p2-ui-class-oracles\\S3-042-043-LEDGER-FINAL-c0acb92.json",
+      "expected_sha256": "3c38bb25723113b6a8bb2180c8038d2f005c851a7817c0a93d48e2e99732d987",
+      "current_sha256": "3c38bb25723113b6a8bb2180c8038d2f005c851a7817c0a93d48e2e99732d987",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p2-ui-class-oracles\\S3-042-043-LEDGER-FINAL-c0acb92.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-audit-config-docs\\S3-052-038-LEDGER-FINAL-51aa45f.json",
+      "expected_sha256": "fd488a2c3dc852617bddcd1f577bc1a84d5fe18862fc1550ee5405e133da2364",
+      "current_sha256": "fd488a2c3dc852617bddcd1f577bc1a84d5fe18862fc1550ee5405e133da2364",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-audit-config-docs\\S3-052-038-LEDGER-FINAL-51aa45f.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-browser-db-errors\\S3-027-028-LEDGER-FINAL-41e0eec.json",
+      "expected_sha256": "f39cd352086b9035397dfb8750c56cf6ceb1900f15e87d044bcd650b0d55f23e",
+      "current_sha256": "f39cd352086b9035397dfb8750c56cf6ceb1900f15e87d044bcd650b0d55f23e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-browser-db-errors\\S3-027-028-LEDGER-FINAL-41e0eec.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-bytecode-stats\\S3-019-024-036-LEDGER.json",
+      "expected_sha256": "5611a281f2a3c100a114d5e7b1e35f9965cb6d462a846f25010c8efa7de49ca9",
+      "current_sha256": "5611a281f2a3c100a114d5e7b1e35f9965cb6d462a846f25010c8efa7de49ca9",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-bytecode-stats\\S3-019-024-036-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-hit-regex-template\\S3-023-025-026-LEDGER.json",
+      "expected_sha256": "d8d7b626dc3ea503beeea42477da099505293d69907caf51287302b4f3e66b27",
+      "current_sha256": "d8d7b626dc3ea503beeea42477da099505293d69907caf51287302b4f3e66b27",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-hit-regex-template\\S3-023-025-026-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-no-tests-junction\\S3-020-030-LEDGER.json",
+      "expected_sha256": "d0e1c878ea926386e0503deb7ec37cb60d298dba24b5ff2a5cbc2dd7cb665755",
+      "current_sha256": "d0e1c878ea926386e0503deb7ec37cb60d298dba24b5ff2a5cbc2dd7cb665755",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-no-tests-junction\\S3-020-030-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles-034-046-047\\S3-TEST-ORACLES-LEDGER.json",
+      "expected_sha256": "5fb698cfa7747149df04db1a6d4370e861573682b23aa70648c0be1587789f8e",
+      "current_sha256": "5fb698cfa7747149df04db1a6d4370e861573682b23aa70648c0be1587789f8e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-test-oracles-034-046-047\\S3-TEST-ORACLES-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+      "expected_sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+      "current_sha256": "69fd9cacf031e22932777377d7491407a287eac749fffdfb8b209ce298ed0296",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-test-oracles\\S3-TEST-ORACLES-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p3-typechecking\\S3-017-073-082-LEDGER.json",
+      "expected_sha256": "fcb98b16aeb7bb31c96c43ad9a1b11bffc3498cff227e4064cdafa40b20645f1",
+      "current_sha256": "fcb98b16aeb7bb31c96c43ad9a1b11bffc3498cff227e4064cdafa40b20645f1",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p3-typechecking\\S3-017-073-082-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p4-security-option\\S3-052-OPTION-LEDGER.json",
+      "expected_sha256": "75e4119537a265f17090990a7015cbcfc14942c013947094c01ac42d98688e6b",
+      "current_sha256": "75e4119537a265f17090990a7015cbcfc14942c013947094c01ac42d98688e6b",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p4-security-option\\S3-052-OPTION-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\ADJUDICATION.json",
+      "expected_sha256": "c828c35ca2d30560b9afd9fb86b2e6fe69a01f87a20e1d16bc3ffaba89e1bd18",
+      "current_sha256": "c828c35ca2d30560b9afd9fb86b2e6fe69a01f87a20e1d16bc3ffaba89e1bd18",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\ADJUDICATION.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.json",
+      "expected_sha256": "bead948237bd4c6b37dda95493f974185942b08000b6e75c27ceb50332bc597e",
+      "current_sha256": "bead948237bd4c6b37dda95493f974185942b08000b6e75c27ceb50332bc597e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-auditenv-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stderr.log",
+      "expected_sha256": "4e4757ff226a44b5c448b1c4624619419c22d5272463dc19510b4754871a72f9",
+      "current_sha256": "4e4757ff226a44b5c448b1c4624619419c22d5272463dc19510b4754871a72f9",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-auditenv-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-auditenv-green.stdout.log",
+      "expected_sha256": "88c9b05206f13ee75b469c4197f70ac6a480d19439331476bcc961305847d4de",
+      "current_sha256": "88c9b05206f13ee75b469c4197f70ac6a480d19439331476bcc961305847d4de",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-auditenv-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.json",
+      "expected_sha256": "b507313618db65d7785f664d2c377ceca5788a6beb61fefc8280bcf8ab5b9516",
+      "current_sha256": "b507313618db65d7785f664d2c377ceca5788a6beb61fefc8280bcf8ab5b9516",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-format-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-format-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-format-green.stdout.log",
+      "expected_sha256": "9a5619a25c32a8f39f0bb1d9b3330bd6f749c97aacc71a5270b01ece69d70e7f",
+      "current_sha256": "9a5619a25c32a8f39f0bb1d9b3330bd6f749c97aacc71a5270b01ece69d70e7f",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-format-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.json",
+      "expected_sha256": "2cfa7f1bcfb44f995488021e526301bed2ce90950751b0a3fe27527dc03f24b0",
+      "current_sha256": "2cfa7f1bcfb44f995488021e526301bed2ce90950751b0a3fe27527dc03f24b0",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-imports-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-imports-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-imports-green.stdout.log",
+      "expected_sha256": "583d4150fea12f85903b9eea08b21823936d91b78a8f022818c338c38be39b7e",
+      "current_sha256": "583d4150fea12f85903b9eea08b21823936d91b78a8f022818c338c38be39b7e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-imports-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.json",
+      "expected_sha256": "992ed293286b4851efb5893c9152c599927ac454ca04da1362a610079b47c870",
+      "current_sha256": "992ed293286b4851efb5893c9152c599927ac454ca04da1362a610079b47c870",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-mypy-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.stderr.log",
+      "expected_sha256": "5b115d54ec1213cfbe06053adcff78e794107566ac4e832613fcb899b4d3b911",
+      "current_sha256": "5b115d54ec1213cfbe06053adcff78e794107566ac4e832613fcb899b4d3b911",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-mypy-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-mypy-green.stdout.log",
+      "expected_sha256": "73cc387dbefa102cdfc7d7db87d6c95c795a4f8d220916a50712bbe6567a758e",
+      "current_sha256": "73cc387dbefa102cdfc7d7db87d6c95c795a4f8d220916a50712bbe6567a758e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-mypy-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.json",
+      "expected_sha256": "ceb7885dc3581d42e690279a2cf1845023c411af7240eaef3bc4b17e5323fa43",
+      "current_sha256": "ceb7885dc3581d42e690279a2cf1845023c411af7240eaef3bc4b17e5323fa43",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-native-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-native-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-native-green.stdout.log",
+      "expected_sha256": "c6b7f2b366877a09235287ea5eb16c99595f4afa4f925f5874f88d310632bed5",
+      "current_sha256": "c6b7f2b366877a09235287ea5eb16c99595f4afa4f925f5874f88d310632bed5",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-native-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.json",
+      "expected_sha256": "4e09ab84e861326b3c6f35dca4c7bc786184769698c001b5cf43d43e21f70bb9",
+      "current_sha256": "4e09ab84e861326b3c6f35dca4c7bc786184769698c001b5cf43d43e21f70bb9",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-ruff-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-ruff-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-ruff-green.stdout.log",
+      "expected_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "current_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-ruff-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.json",
+      "expected_sha256": "9101dddbc015e9725a977b6591845df967cdb93e19f0c99aedc16c4ad6d0a22a",
+      "current_sha256": "9101dddbc015e9725a977b6591845df967cdb93e19f0c99aedc16c4ad6d0a22a",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-security-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-security-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-security-green.stdout.log",
+      "expected_sha256": "f2d5198a544621a139c567d4189b92046a3a883f2b8a18156caebea8c2d5d192",
+      "current_sha256": "f2d5198a544621a139c567d4189b92046a3a883f2b8a18156caebea8c2d5d192",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-security-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.json",
+      "expected_sha256": "dc311bd3f9f48c3a6d24c631eb09918cec7210c4b8dcb5e55ecf42bc02fbcc3e",
+      "current_sha256": "dc311bd3f9f48c3a6d24c631eb09918cec7210c4b8dcb5e55ecf42bc02fbcc3e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-tests-green.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stderr.log",
+      "expected_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-tests-green.stderr.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\p6-integrated-gates\\integrated-tests-green.stdout.log",
+      "expected_sha256": "6236c14ee25cbf6d7f4d33a7f725751159dd9a4ea7f7d8e27e29e3b7be9b3b9d",
+      "current_sha256": "6236c14ee25cbf6d7f4d33a7f725751159dd9a4ea7f7d8e27e29e3b7be9b3b9d",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\p6-integrated-gates\\integrated-tests-green.stdout.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-PROTECTED-INTEGRITY.json",
+      "expected_sha256": "de5d9e89a30f9a6a30f29dd584fc5ceb56770e569cfa9d672417bb18969e1ec0",
+      "current_sha256": "de5d9e89a30f9a6a30f29dd584fc5ceb56770e569cfa9d672417bb18969e1ec0",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\PO-PAUSE-PROTECTED-INTEGRITY.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-PAUSE-SOURCE-BINDING.json",
+      "expected_sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4",
+      "current_sha256": "c6cd6ae791cc58636f99e86c1ada54fb79696693a94ddba8a5a03858528b5ff4",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\PO-PAUSE-SOURCE-BINDING.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\PO-SEMGREP-PIN-DECISION.json",
+      "expected_sha256": "d8d3dd7bd6000f1b23fd50f57f35c4ab9d1319020065b1bf4c3b3d7a0b279c63",
+      "current_sha256": "d8d3dd7bd6000f1b23fd50f57f35c4ab9d1319020065b1bf4c3b3d7a0b279c63",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\PO-SEMGREP-PIN-DECISION.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-019.json",
+      "expected_sha256": "fa66f4120595298ecff4b2deca54940521487c15d27dc6caebec8b2ef16f5497",
+      "current_sha256": "fa66f4120595298ecff4b2deca54940521487c15d27dc6caebec8b2ef16f5497",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\REVIEWER-019.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-020.json",
+      "expected_sha256": "2b78b87b24a7d6442ee9f1ebb2becfa7c0206913ed8d76278037094baa806b39",
+      "current_sha256": "2b78b87b24a7d6442ee9f1ebb2becfa7c0206913ed8d76278037094baa806b39",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\REVIEWER-020.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\REVIEWER-021.json",
+      "expected_sha256": "4d59b6f9cf32f91222713c2b8e4f6922d9c95f8b30631cda7d3fb5a6b0323cdc",
+      "current_sha256": "4d59b6f9cf32f91222713c2b8e4f6922d9c95f8b30631cda7d3fb5a6b0323cdc",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\REVIEWER-021.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-001.json",
+      "expected_sha256": "fc5ada4bf0dee9a16063c1bdb2c0e36a88d18369476cb6c71b70b2f328f5fe11",
+      "current_sha256": "fc5ada4bf0dee9a16063c1bdb2c0e36a88d18369476cb6c71b70b2f328f5fe11",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-001.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-002.json",
+      "expected_sha256": "7e4b166cb3300aa0e46f256c735c190e53d2711ec59de0f987392700eed56427",
+      "current_sha256": "7e4b166cb3300aa0e46f256c735c190e53d2711ec59de0f987392700eed56427",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-002.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-003.json",
+      "expected_sha256": "f0c1f7c76e51b3157ad9e47dee8f304373e14ea3c9957fe8029aa226f925ad70",
+      "current_sha256": "f0c1f7c76e51b3157ad9e47dee8f304373e14ea3c9957fe8029aa226f925ad70",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-003.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-004.json",
+      "expected_sha256": "2dc8beedc580f8f931c79651f9678e8182a071e8d531d2197941804cf767f359",
+      "current_sha256": "2dc8beedc580f8f931c79651f9678e8182a071e8d531d2197941804cf767f359",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-004.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-005-full.json",
+      "expected_sha256": "2338c9537a03907ed2f7689953dc6417d524f5ea6c72ee1c16cb3ac66728fe2e",
+      "current_sha256": "2338c9537a03907ed2f7689953dc6417d524f5ea6c72ee1c16cb3ac66728fe2e",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-005-full.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-005.json",
+      "expected_sha256": "0df5540c46be0c9ef4f46fead6e13abc49d14fa6b28bec62bea835bec8dc0c11",
+      "current_sha256": "0df5540c46be0c9ef4f46fead6e13abc49d14fa6b28bec62bea835bec8dc0c11",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-005.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-006.json",
+      "expected_sha256": "bebe6a851989228405b83b459ed52feac6b99130281c301be8fe34b9bcdfdc96",
+      "current_sha256": "bebe6a851989228405b83b459ed52feac6b99130281c301be8fe34b9bcdfdc96",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-006.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-007.json",
+      "expected_sha256": "2ddf3faeaafa8c880419ce36f62dcdd0544622df90a1b40642f9d96645e780fd",
+      "current_sha256": "2ddf3faeaafa8c880419ce36f62dcdd0544622df90a1b40642f9d96645e780fd",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-007.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-008.json",
+      "expected_sha256": "9cdc1260c2c2037d07f2f0c125b4d1c0222749c50bc4162f65341445445cbaef",
+      "current_sha256": "9cdc1260c2c2037d07f2f0c125b4d1c0222749c50bc4162f65341445445cbaef",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-008.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-009.json",
+      "expected_sha256": "9c2f2030a5b95496b764aee17c4eb6395549689fee53c34f0970a35b2b2bb586",
+      "current_sha256": "9c2f2030a5b95496b764aee17c4eb6395549689fee53c34f0970a35b2b2bb586",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-009.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-010.json",
+      "expected_sha256": "4a4247e10f282e9813f556ec1530a80c6602eb04191f27100c6177ebfb101f74",
+      "current_sha256": "4a4247e10f282e9813f556ec1530a80c6602eb04191f27100c6177ebfb101f74",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-010.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-011.json",
+      "expected_sha256": "039df25640d9dea6bc1a20000220d98c14c38b3a5aa17229877b94ba79ab063f",
+      "current_sha256": "039df25640d9dea6bc1a20000220d98c14c38b3a5aa17229877b94ba79ab063f",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-011.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-012.json",
+      "expected_sha256": "e6791b0aa59fb5a1dd9c1ef7ddd2681d50ebfb4282243ac145fec5b974d8eb40",
+      "current_sha256": "e6791b0aa59fb5a1dd9c1ef7ddd2681d50ebfb4282243ac145fec5b974d8eb40",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-012.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-013.json",
+      "expected_sha256": "3f4ed150b8be6304c5d8432f01361ec0f22a8b317fbc84f6c9f87f8370a1f874",
+      "current_sha256": "3f4ed150b8be6304c5d8432f01361ec0f22a8b317fbc84f6c9f87f8370a1f874",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-013.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-014.json",
+      "expected_sha256": "e758dfd1dd65ae542590b8e62339b4ab95bac990eba385fefdb6a38f264b853b",
+      "current_sha256": "e758dfd1dd65ae542590b8e62339b4ab95bac990eba385fefdb6a38f264b853b",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-014.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-015.json",
+      "expected_sha256": "f2f6c23d2d4100afcfd07b30dcb66f1dd7bbcbf90124cd4347b38f5b6d56b804",
+      "current_sha256": "f2f6c23d2d4100afcfd07b30dcb66f1dd7bbcbf90124cd4347b38f5b6d56b804",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-015.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-016.json",
+      "expected_sha256": "75b0638f4177676bc2cce635ed8e99510d1153f942b2602aeb58cff1cbbbb856",
+      "current_sha256": "75b0638f4177676bc2cce635ed8e99510d1153f942b2602aeb58cff1cbbbb856",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-016.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\reviewer-clarification-017.json",
+      "expected_sha256": "58d8905386d8879a351bfbef4529a46cbcaf8f74cb930a645caf2c7709302ba9",
+      "current_sha256": "58d8905386d8879a351bfbef4529a46cbcaf8f74cb930a645caf2c7709302ba9",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\reviewer-clarification-017.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\root-config-integration-red.json",
+      "expected_sha256": "aea90c77ff2acd5e5b56fa8ad9f641a1bbb2c7e55ed2d458406c8f773757fbff",
+      "current_sha256": "aea90c77ff2acd5e5b56fa8ad9f641a1bbb2c7e55ed2d458406c8f773757fbff",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\root-config-integration-red.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-001-CONTENT-LEDGER-V2.json",
+      "expected_sha256": "b6e068e9c6ed7c3bfd83a634eb4abf76669696531285c0243e4ea5a5ada4713b",
+      "current_sha256": "b6e068e9c6ed7c3bfd83a634eb4abf76669696531285c0243e4ea5a5ada4713b",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-001-CONTENT-LEDGER-V2.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-001-CONTENT-LEDGER.json",
+      "expected_sha256": "f5d95c5fd29215457ec7715af3889325f332f42dff2bbdedd56dc80191d76dec",
+      "current_sha256": "f5d95c5fd29215457ec7715af3889325f332f42dff2bbdedd56dc80191d76dec",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-001-CONTENT-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-005-015-LEDGER.json",
+      "expected_sha256": "619758138fe0018a2df233e55bc6c150f23cbd269b832f7554fcb954119bb1b1",
+      "current_sha256": "619758138fe0018a2df233e55bc6c150f23cbd269b832f7554fcb954119bb1b1",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-005-015-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-001-integrated-cli\\FINAL-LEDGER.json",
+      "expected_sha256": "b0cdb19a892028097cc1655c1704e1068d7a5346ae14a1db9a7df6fbebedc7ff",
+      "current_sha256": "b0cdb19a892028097cc1655c1704e1068d7a5346ae14a1db9a7df6fbebedc7ff",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-007-001-integrated-cli\\FINAL-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-causal-red.json",
+      "expected_sha256": "89fdf7092a9f308a88d3fdff24afc2bd5aa3159e29e9ceb4103fdd6375e96de1",
+      "current_sha256": "89fdf7092a9f308a88d3fdff24afc2bd5aa3159e29e9ceb4103fdd6375e96de1",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-007-journal-causal-red.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-causal-red.log",
+      "expected_sha256": "9e73aa52dcd4bc6808977cea0602af23c2d0eba4deff7191eafdf8cb0355a93d",
+      "current_sha256": "9e73aa52dcd4bc6808977cea0602af23c2d0eba4deff7191eafdf8cb0355a93d",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-007-journal-causal-red.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-restored.json",
+      "expected_sha256": "f9f21f88dcac55ca30bf0553f4913a812745ae88aef9841b10780c04b0b8fbc4",
+      "current_sha256": "f9f21f88dcac55ca30bf0553f4913a812745ae88aef9841b10780c04b0b8fbc4",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-007-journal-restored.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-007-journal-restored.log",
+      "expected_sha256": "404711fd235eba10531e40b75a515a77230328e3a44af9e9881e071598b968be",
+      "current_sha256": "404711fd235eba10531e40b75a515a77230328e3a44af9e9881e071598b968be",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-007-journal-restored.log",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-009-LEDGER.json",
+      "expected_sha256": "a239050838edf84014bcb278bf4e6edfd31430c98472f622087792fee1a408d3",
+      "current_sha256": "a239050838edf84014bcb278bf4e6edfd31430c98472f622087792fee1a408d3",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-009-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-010-012-LEDGER.json",
+      "expected_sha256": "ecba43fa6802898c251aa0795926abac137cd1a5fa47fc4b46cd0761727ee549",
+      "current_sha256": "ecba43fa6802898c251aa0795926abac137cd1a5fa47fc4b46cd0761727ee549",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-010-012-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-016-LEDGER-V2.json",
+      "expected_sha256": "001881b217826696d789ba99b13eab74565e335b35743371d3b449aa461d5d5c",
+      "current_sha256": "001881b217826696d789ba99b13eab74565e335b35743371d3b449aa461d5d5c",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-016-LEDGER-V2.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-016-LEDGER.json",
+      "expected_sha256": "fe694a810e6571671e844ff53e329b5c3db3f36c8a4fd1bd4c2f533cef262fe6",
+      "current_sha256": "fe694a810e6571671e844ff53e329b5c3db3f36c8a4fd1bd4c2f533cef262fe6",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-016-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-021-LEDGER.json",
+      "expected_sha256": "04603ba3526691e5999fb407cfa03cb89ca2d1d3685ed2649db57d9c2330c986",
+      "current_sha256": "04603ba3526691e5999fb407cfa03cb89ca2d1d3685ed2649db57d9c2330c986",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-021-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-022-LEDGER.json",
+      "expected_sha256": "152c7e6b514ea9a5f231e91615c15ac08898152c6a09d4885b5b3565862517e4",
+      "current_sha256": "152c7e6b514ea9a5f231e91615c15ac08898152c6a09d4885b5b3565862517e4",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-022-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-031-033-LEDGER.json",
+      "expected_sha256": "8000f6183cc097deefb926940a3227a3b61e8f30804d30c4e5ac45fa81d211e2",
+      "current_sha256": "8000f6183cc097deefb926940a3227a3b61e8f30804d30c4e5ac45fa81d211e2",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-031-033-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-032-LEDGER.json",
+      "expected_sha256": "b1e3e993dc16efe19fa8ae4c865f9af25c9713ffca9650626c538fe72738b9e2",
+      "current_sha256": "b1e3e993dc16efe19fa8ae4c865f9af25c9713ffca9650626c538fe72738b9e2",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-032-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-048-049-LEDGER.json",
+      "expected_sha256": "144eb1c49b0c375e5129135cade8197c917dbf52b11dab01c1fd77baedd8f88f",
+      "current_sha256": "144eb1c49b0c375e5129135cade8197c917dbf52b11dab01c1fd77baedd8f88f",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-048-049-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\S3-050-LEDGER.json",
+      "expected_sha256": "c48873e20134e7c23680985fd4fec88128df2c11a7c49efcc1d0340d03614735",
+      "current_sha256": "c48873e20134e7c23680985fd4fec88128df2c11a7c49efcc1d0340d03614735",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\S3-050-LEDGER.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-format.json",
+      "expected_sha256": "307e77e56f60155ae827c4c39d3ba3b40caef8e7c919b0c864b12dcd0b51dcd0",
+      "current_sha256": "307e77e56f60155ae827c4c39d3ba3b40caef8e7c919b0c864b12dcd0b51dcd0",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave1-format.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-imports.json",
+      "expected_sha256": "ce51b14fc64dab5038125f9e1231ca93ec8c9628baa0a9548e4453264e8cfc07",
+      "current_sha256": "ce51b14fc64dab5038125f9e1231ca93ec8c9628baa0a9548e4453264e8cfc07",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave1-imports.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-mypy.json",
+      "expected_sha256": "4120311d222c05f70b9e6f9ab428b86f61ec9435ff5f1c1c177e379643e676ec",
+      "current_sha256": "4120311d222c05f70b9e6f9ab428b86f61ec9435ff5f1c1c177e379643e676ec",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave1-mypy.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-regressions.json",
+      "expected_sha256": "cc0949d2deeafb7676d2c7bf74e3821ba73a303500413c2d84f854267dd9735b",
+      "current_sha256": "cc0949d2deeafb7676d2c7bf74e3821ba73a303500413c2d84f854267dd9735b",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave1-regressions.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave1-ruff.json",
+      "expected_sha256": "120b99a886cd12a1e747265f932c7e0ba676d04a39dd374d642c8b3a8c1648be",
+      "current_sha256": "120b99a886cd12a1e747265f932c7e0ba676d04a39dd374d642c8b3a8c1648be",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave1-ruff.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-format.json",
+      "expected_sha256": "0b5ab89a08bd8ba688c35d4cf6823e204baaf3cf4a702e4506528413b84b4a94",
+      "current_sha256": "0b5ab89a08bd8ba688c35d4cf6823e204baaf3cf4a702e4506528413b84b4a94",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave2-format.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-imports.json",
+      "expected_sha256": "fea29e8dc8e459b0d4d7342f99366ac940bffd05721c7dadfac2b5f787fa0546",
+      "current_sha256": "fea29e8dc8e459b0d4d7342f99366ac940bffd05721c7dadfac2b5f787fa0546",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave2-imports.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-mypy.json",
+      "expected_sha256": "44d0475a07ec77d3b4a9d43a4f10c0429a9efd1cae57a6d7db0a75b51ae72b29",
+      "current_sha256": "44d0475a07ec77d3b4a9d43a4f10c0429a9efd1cae57a6d7db0a75b51ae72b29",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave2-mypy.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-regressions.json",
+      "expected_sha256": "7f46eefef132b95b82505a967436274bbae85912c9082c2d67f0ea57074e1bad",
+      "current_sha256": "7f46eefef132b95b82505a967436274bbae85912c9082c2d67f0ea57074e1bad",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave2-regressions.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\astra-s3-20261009-01a11fac\\s3-integrated-wave2-ruff.json",
+      "expected_sha256": "9574ffcc0e1b5500641ee1b3356270e8f87090a70c869cd7293fa6b4130d4bef",
+      "current_sha256": "9574ffcc0e1b5500641ee1b3356270e8f87090a70c869cd7293fa6b4130d4bef",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\astra-evidence\\s3-integrated-wave2-ruff.json",
+      "mirror_hash_matches": true
+    },
+    {
+      "path": "C:\\Users\\pmitt\\AppData\\Local\\Temp\\sol-s3-reviewer-pause-20261009-01a11c92\\PAUSE-CHECKPOINT-01a120b5.json",
+      "expected_sha256": "2994b3ac923fd39d8110e59b4ba10298b53a79c411860fc05f57b5be254f3ebc",
+      "current_sha256": "2994b3ac923fd39d8110e59b4ba10298b53a79c411860fc05f57b5be254f3ebc",
+      "hash_matches": true,
+      "mirror": "C:\\claude_codex\\mutmut-win-handover\\2026-10-09-s3-glm53\\sol-pause\\PAUSE-CHECKPOINT-01a120b5.json",
+      "mirror_hash_matches": true
+    }
+  ]
+}
