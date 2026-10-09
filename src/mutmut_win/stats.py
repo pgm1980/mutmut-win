@@ -16,7 +16,6 @@ Ported from mutmut 3.5.0 ``__main__.py`` with the following adaptations:
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import importlib.metadata
 import json

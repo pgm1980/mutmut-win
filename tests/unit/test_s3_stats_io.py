@@ -1,11 +1,14 @@
 """S3-022: unreadable optional stats use existing diagnostic paths."""
 
-from pathlib import Path
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.cli import cli
 from mutmut_win.stats import (
@@ -15,6 +18,9 @@ from mutmut_win.stats import (
     save_stats,
 )
 from tests.unit.windows_fs_util import sharing_violation_holder
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_directory_collision_is_unusable_stats(tmp_path: Path) -> None:
@@ -82,7 +88,8 @@ def test_collection_diagnoses_directory_without_displacing_it(
     runner.run_stats.assert_not_called()
     assert path.is_dir()
     output = capsys.readouterr().out
-    assert "stats" in output and "full test suite" in output
+    assert "stats" in output
+    assert "full test suite" in output
 
 
 def test_missing_and_valid_stats_remain_distinct(tmp_path: Path) -> None:
