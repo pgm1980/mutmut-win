@@ -164,8 +164,9 @@ class TestGatherCoverage:
         assert gather_coverage(runner, ["src/mod.py"]) == {os.path.normcase(measured_path): {4}}
         assert calls == [("mutmut-win-coverage-output-", True)]
 
+    @pytest.mark.parametrize("multiprocessing_mode", [False, True])
     def test_measured_file_with_no_lines_is_handled_as_empty_coverage(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiprocessing_mode: bool
     ) -> None:
         """CoverageData.lines may return None and must not crash collection."""
         monkeypatch.chdir(tmp_path)
@@ -187,6 +188,7 @@ class TestGatherCoverage:
 
         monkeypatch.setattr(code_coverage_module.coverage, "CoverageData", FakeCoverageData)
         runner = _fake_coverage_runner(lambda data_file: data_file.write_bytes(b"coverage proof"))
+        runner.coverage_uses_multiprocessing = multiprocessing_mode
 
         with pytest.raises(CoverageCollectionError, match="measured no coverage"):
             gather_coverage(runner, ["src/mod.py"])
@@ -218,13 +220,15 @@ class TestGatherCoverage:
             "measure it."
         )
 
+    @pytest.mark.parametrize("multiprocessing_mode", [False, True])
     def test_missing_data_file_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiprocessing_mode: bool
     ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
         runner = MagicMock()
         runner.run_coverage_collection.return_value = 0  # but writes nothing
+        runner.coverage_uses_multiprocessing = multiprocessing_mode
         with pytest.raises(CoverageCollectionError) as exc_info:
             gather_coverage(runner, ["src/mod.py"])
 
@@ -256,8 +260,9 @@ class TestGatherCoverage:
             os.path.normcase(unmeasured_path): set(),
         }
 
+    @pytest.mark.parametrize("multiprocessing_mode", [False, True])
     def test_genuinely_empty_measurement_raises_with_subprocess_hint(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiprocessing_mode: bool
     ) -> None:
         # xdist / subprocess-spawning suites execute the code outside the
         # measured process: every source file would look uncovered and EVERY
@@ -267,6 +272,7 @@ class TestGatherCoverage:
         (tmp_path / "mutants").mkdir()
 
         runner = _fake_coverage_runner(lambda data_file: _write_lines_data(data_file, {}))
+        runner.coverage_uses_multiprocessing = multiprocessing_mode
 
         with pytest.raises(CoverageCollectionError) as exc_info:
             gather_coverage(runner, ["src/mod.py"])
@@ -521,8 +527,9 @@ class TestParallelDataParts:
         covered = gather_coverage(runner, ["src/mod.py"])
         assert covered == {os.path.normcase(measured_path): {1, 2, 3, 5}}
 
+    @pytest.mark.parametrize("multiprocessing_mode", [False, True])
     def test_unreadable_part_raises_naming_the_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, multiprocessing_mode: bool
     ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "mutants").mkdir()
@@ -533,6 +540,7 @@ class TestParallelDataParts:
             (data_file.parent / ".coverage.mutmut.broken").write_bytes(b"not a database")
 
         runner = _fake_coverage_runner(write_broken)
+        runner.coverage_uses_multiprocessing = multiprocessing_mode
 
         with pytest.raises(CoverageCollectionError, match=r"\.coverage\.mutmut\.broken"):
             gather_coverage(runner, ["src/mod.py"])
