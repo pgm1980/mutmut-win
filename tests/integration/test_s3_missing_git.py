@@ -50,7 +50,8 @@ def test_missing_git_uses_usage_error_channel(tmp_path: Path, output: str) -> No
     environment = os.environ.copy()
     environment["PATH"] = str(tmp_path)
     assert shutil.which("git", path=environment["PATH"]) is None
-    result = subprocess.run(
+    # Fixed interpreter and CLI arguments; only the test-owned PATH is changed.
+    result = subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-m",
@@ -101,7 +102,10 @@ def test_available_git_selects_only_changed_source(tmp_path: Path) -> None:
             "baseline",
         ],
     ]:
-        subprocess.run([git, *arguments], cwd=tmp_path, check=True, capture_output=True)
+        # Git is resolved by the host; all arguments are literal fixture setup.
+        subprocess.run(  # noqa: S603
+            [git, *arguments], cwd=tmp_path, check=True, capture_output=True
+        )
     (tmp_path / "src/pkg/changed.py").write_text("def value():\n    return 2\n", encoding="utf-8")
     result = subprocess.run(
         [
@@ -124,6 +128,15 @@ def test_available_git_selects_only_changed_source(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     report = _DryRunReport.model_validate_json(result.stdout)
-    assert report.total_mutants > 0
-    assert "src/pkg/changed.py" in result.stderr.replace("\\", "/")
-    assert "src/pkg/unchanged.py" not in result.stderr.replace("\\", "/")
+    assert report.total_mutants == 5
+    complete = subprocess.run(
+        [sys.executable, "-m", "mutmut_win", "run", "--dry-run", "--output", "json"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert complete.returncode == 0, complete.stdout + complete.stderr
+    assert _DryRunReport.model_validate_json(complete.stdout).total_mutants == 10
