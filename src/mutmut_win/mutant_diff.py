@@ -20,6 +20,7 @@ import libcst as cst
 
 from mutmut_win.atomic_file import (
     AtomicBackupPromotionError,
+    AtomicCleanupError,
     AtomicPreconditionError,
     AtomicPublicationRaceError,
     atomic_replace_if_unchanged,
@@ -761,6 +762,8 @@ def apply_mutant(mutant_name: str, config: MutmutConfig) -> None:
             mode=source_mode,
             backup_path=backup_path,
         )
+    except AtomicCleanupError as exc:
+        raise MutmutWinError(f"Could not finish applying mutant {mutant_name}; {exc}") from exc
     except AtomicPreconditionError as exc:
         msg = (
             f"source {source_path} changed while applying mutant {mutant_name}; "

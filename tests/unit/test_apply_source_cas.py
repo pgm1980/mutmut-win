@@ -715,7 +715,7 @@ class TestCasFailedInsertionCleanup:
 
             monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
             monkeypatch.setattr(atomic_module.time, "sleep", release_after_insertion_failed)
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(OSError, match="cannot insert replacement") as caught:
                 atomic_replace_if_unchanged(
                     source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
                 )
@@ -725,7 +725,11 @@ class TestCasFailedInsertionCleanup:
             assert f"restored to {source}" in diagnostic
             assert "cannot insert replacement" in diagnostic
             assert "WinError 32" in diagnostic
-            assert caught.value.__cause__ is not None
+            cause: BaseException = caught.value
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            assert isinstance(cause, PermissionError)
+            assert cause.winerror == 32
             assert calls.delays == ([0.01] if release else [0.01, 0.02, 0.05, 0.1])
             assert state.path is not None
             if release:
@@ -762,7 +766,7 @@ class TestCasFailedInsertionCleanup:
 
             monkeypatch.setattr(atomic_module, "_checked_temp", hold_temp)
             monkeypatch.setattr(atomic_module.time, "sleep", replace_with_foreign)
-            with pytest.raises(OSError):
+            with pytest.raises(OSError, match="cannot insert replacement"):
                 atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
         assert state.path is not None
         try:

@@ -45,6 +45,10 @@ class AtomicReplaceError(PermissionError):
     """The destination entry could not be replaced during atomic publication."""
 
 
+class AtomicCleanupError(UnsafeAtomicWriteError):
+    """A failed CAS left a verified owned temp or an unverifiable cleanup state."""
+
+
 class AtomicPublicationRaceError(UnsafeAtomicWriteError):
     """A competing publisher replaced the destination before post-validation."""
 
@@ -528,6 +532,26 @@ def _cleanup_owned_temp(path: Path | None, identity: FileIdentity | None) -> Non
     except OSError:
         with contextlib.suppress(OSError):
             path.chmod(stat.S_IMODE(current.st_mode), follow_symlinks=False)
+
+
+def _cleanup_cas_temp(path: Path, identity: FileIdentity) -> str | None:
+    """Retry CAS cleanup within the replace budget and report an owned remainder."""
+    for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+        _cleanup_owned_temp(path, identity)
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return f"temporary cleanup could not be verified at {path}: {exc}"
+        if _identity(current) != identity or not stat.S_ISREG(current.st_mode):
+            return None
+        if _is_reparse_point(current):
+            return None
+        if attempt == len(_REPLACE_RETRY_DELAYS):
+            return f"owned temporary file remains at {path} after bounded cleanup retries"
+        time.sleep(_REPLACE_RETRY_DELAYS[attempt])
+    return None
 
 
 class _ProbeResult(enum.Enum):
@@ -1143,14 +1167,14 @@ def _promote_displaced_original(
             return
 
 
-def _recover_interrupted_cas(
+def _recover_displaced_cas(
     path: Path,
     displaced_path: Path,
     target_identity: FileIdentity,
     parent_identity: FileIdentity,
     backup_path: Path | None,
 ) -> str:
-    """Restore an interrupted displacement without overwriting an existing leaf.
+    """Restore a failed displacement without overwriting an existing leaf.
 
     Recovery follows the original inode, including writes made through a
     still-open handle.  Actual identities, rather than a flag assigned after
@@ -1159,12 +1183,12 @@ def _recover_interrupted_cas(
     try:
         _checked_parent(path, parent_identity)
         if _original_is_at(path, target_identity):
-            return f"Interrupted apply: the original is present at {path}"
+            return f"Apply recovery: the original is present at {path}"
         if not _original_is_at(displaced_path, target_identity):
             if backup_path is not None and _original_is_at(backup_path, target_identity):
-                return f"Interrupted apply: the original is preserved at {backup_path}"
+                return f"Apply recovery: the original is preserved at {backup_path}"
             return (
-                f"Interrupted apply: the original recovery location could not be verified; "
+                f"Apply recovery: the original recovery location could not be verified; "
                 f"inspect {path}, {displaced_path} and backup {backup_path}"
             )
 
@@ -1175,22 +1199,22 @@ def _recover_interrupted_cas(
         except OSError as restore_exc:
             if _original_is_at(displaced_path, target_identity):
                 return (
-                    f"Interrupted apply: restoration failed ({restore_exc}); "
+                    f"Apply recovery: restoration failed ({restore_exc}); "
                     f"the original is preserved at {displaced_path}"
                 )
             return (
-                f"Interrupted apply: restoration failed ({restore_exc}) and the recovery "
+                f"Apply recovery: restoration failed ({restore_exc}) and the recovery "
                 f"location could not be verified; inspect {path} and {displaced_path}"
             )
         if _original_is_at(path, target_identity):
-            return f"Interrupted apply: the original was restored to {path}"
+            return f"Apply recovery: the original was restored to {path}"
         return (
-            f"Interrupted apply: restoration identity could not be verified; "
+            f"Apply recovery: restoration identity could not be verified; "
             f"inspect {path} and {displaced_path}"
         )
     except OSError as recovery_exc:
         return (
-            f"Interrupted apply: recovery could not be verified ({recovery_exc}); "
+            f"Apply recovery: recovery could not be verified ({recovery_exc}); "
             f"inspect {path}, {displaced_path} and backup {backup_path}"
         )
 
@@ -1252,6 +1276,9 @@ def atomic_replace_if_unchanged(
             displaced original could not be promoted onto *backup_path*;
             the original is preserved at the displacement path named in
             the error message (never silently stranded).
+        AtomicCleanupError: A failed operation left a verified owned temporary
+            sibling after bounded cleanup retries, or cleanup could not be verified.
+            The original operation remains the cause and its diagnosis is preserved.
     """
     path = Path(path)
     parent_identity = _capture_parent_identity(path)
@@ -1284,6 +1311,7 @@ def atomic_replace_if_unchanged(
     fd, temp_path, temp_identity = _open_random_sibling(path)
     displaced_path: Path | None = None
     target_identity: FileIdentity | None = None
+    cleanup_finished = False
     try:
         try:
             if mode is not None:
@@ -1318,9 +1346,10 @@ def atomic_replace_if_unchanged(
         except OSError as exc:
             # The displacement succeeded but we cannot verify it — attempt
             # restoration, then fail closed.
-            with contextlib.suppress(OSError):
-                displaced_path.rename(path)
-            msg = f"cannot verify displaced file {displaced_path}: {exc}; restoration attempted"
+            recovery = _recover_displaced_cas(
+                path, displaced_path, target_identity, parent_identity, backup_path
+            )
+            msg = f"cannot verify displaced file {displaced_path}: {exc}; {recovery}"
             raise AtomicPreconditionError(msg) from exc
 
         if _identity(displaced_stat) != target_identity or displaced_content != expected:
@@ -1356,12 +1385,10 @@ def atomic_replace_if_unchanged(
             raise AtomicPreconditionError(msg) from None
         except OSError as exc:
             # Attempt restoration of the displaced file.
-            with contextlib.suppress(OSError):
-                displaced_path.rename(path)
-            msg = (
-                f"cannot insert replacement at {path}: {exc}; "
-                f"original content preserved at {displaced_path}"
+            recovery = _recover_displaced_cas(
+                path, displaced_path, target_identity, parent_identity, backup_path
             )
+            msg = f"cannot insert replacement at {path}: {exc}; {recovery}"
             raise AtomicPreconditionError(msg) from exc
 
         # Step 6: post-publication identity check.  The displaced original is
@@ -1420,10 +1447,16 @@ def atomic_replace_if_unchanged(
             and target_identity is not None
         ):
             exc.add_note(
-                _recover_interrupted_cas(
+                _recover_displaced_cas(
                     path, displaced_path, target_identity, parent_identity, backup_path
                 )
             )
+        cleanup_finished = True
+        cleanup_note = _cleanup_cas_temp(temp_path, temp_identity)
+        if cleanup_note is not None:
+            if isinstance(exc, Exception):
+                raise AtomicCleanupError(f"{exc}; {cleanup_note}") from exc
+            exc.add_note(cleanup_note)
         raise
     finally:
         # Identity-bound ownership guard (AR-07): after a successful
@@ -1431,4 +1464,5 @@ def atomic_replace_if_unchanged(
         # inode), so this is a no-op; on every failure path it releases the
         # still-owned private sibling.  Swallowed unlinks keep the original
         # error primary.
-        _cleanup_owned_temp(temp_path, temp_identity)
+        if not cleanup_finished:
+            _cleanup_owned_temp(temp_path, temp_identity)
