@@ -15,11 +15,13 @@ import os
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
+from mutmut_win.models import MutationTask
+from mutmut_win.orchestrator import _apply_timeouts
+from mutmut_win.trampoline import mangle_function_name
 from tests.unit.properties.strategies import (
     exit_codes,
     forensics_payloads,
     iso_timestamps,
-    mutant_names,
     node_ids,
     relative_paths,
     sha256_digests,
@@ -171,30 +173,41 @@ class TestVerdictProperties:
 class TestTimeoutModelProperties:
     @given(inputs=timeout_inputs)
     def test_timeout_at_least_fallback_floor(self, inputs: dict[str, float]) -> None:
-        """The timeout is always >= the fallback floor."""
-        timeout = max(
-            inputs["fallback_floor"],
-            inputs["clean_run_seconds"] * inputs["multiplier"],
-        )
-        assert timeout >= inputs["fallback_floor"]
+        """The production full-suite fallback retains its 60-second minimum."""
+        task = _apply_timeouts(
+            [MutationTask(mutant_name="module.x_target__mutmut_1")],
+            {},
+            inputs["multiplier"],
+            startup_floor=0.0,
+            clean_wall_seconds=inputs["clean_run_seconds"],
+        )[0]
+        assert task.timeout_seconds >= 60.0
 
     @given(inputs=timeout_inputs)
     def test_timeout_at_least_clean_times_multiplier(self, inputs: dict[str, float]) -> None:
-        """The timeout is always >= clean_run * multiplier."""
-        timeout = max(
-            inputs["fallback_floor"],
-            inputs["clean_run_seconds"] * inputs["multiplier"],
-        )
-        assert timeout >= inputs["clean_run_seconds"] * inputs["multiplier"]
+        """Measured clean duration bounds the actual full-suite task budget."""
+        task = _apply_timeouts(
+            [MutationTask(mutant_name="module.x_target__mutmut_1")],
+            {},
+            inputs["multiplier"],
+            startup_floor=0.0,
+            clean_wall_seconds=inputs["clean_run_seconds"],
+        )[0]
+        assert task.timeout_seconds >= inputs["clean_run_seconds"] * inputs["multiplier"]
 
     @given(inputs=timeout_inputs)
     def test_timeout_is_positive(self, inputs: dict[str, float]) -> None:
-        """The timeout is always positive."""
-        timeout = max(
-            inputs["fallback_floor"],
-            inputs["clean_run_seconds"] * inputs["multiplier"],
-        )
-        assert timeout > 0
+        """Production timeout assignment preserves the task and grants a budget."""
+        original = MutationTask(mutant_name="module.x_target__mutmut_1")
+        task = _apply_timeouts(
+            [original],
+            {},
+            inputs["multiplier"],
+            startup_floor=0.0,
+            clean_wall_seconds=inputs["clean_run_seconds"],
+        )[0]
+        assert task.mutant_name == original.mutant_name
+        assert task.timeout_seconds > 0
 
 
 # =========================================================================
@@ -226,16 +239,21 @@ class TestTimestampProperties:
 
 
 class TestMutantNameProperties:
-    @given(name=mutant_names)
-    def test_mutant_name_contains_separator(self, name: str) -> None:
-        """Every mutant name contains the __mutmut_ separator."""
-        assert "__mutmut_" in name
+    @given(name=st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=1, max_size=25))
+    def test_mangled_name_preserves_prefix_and_source_identity(self, name: str) -> None:
+        """Ordinary function identities use the runtime's documented x_ prefix."""
+        actual = mangle_function_name(name=name, class_name=None)
+        assert actual.startswith("x_")
+        assert actual.removeprefix("x_") == name
 
-    @given(name=mutant_names)
-    def test_mutant_name_is_deterministic_hash(self, name: str) -> None:
-        """The same mutant name hashes to the same digest."""
-        assert (
-            hashlib.sha256(name.encode()).hexdigest() == hashlib.sha256(name.encode()).hexdigest()
+    @given(name=st.text(alphabet="abcdefghijklmnopqrstuvwxyz", min_size=1, max_size=25))
+    def test_mangled_name_is_deterministic_and_distinct(self, name: str) -> None:
+        """Repeated production mangling retains the original function identity."""
+        assert mangle_function_name(name=name, class_name=None) == mangle_function_name(
+            name=name, class_name=None
+        )
+        assert mangle_function_name(name=name, class_name=None) != mangle_function_name(
+            name=name + "z", class_name=None
         )
 
 
