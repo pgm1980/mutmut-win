@@ -532,6 +532,18 @@ def test_extra_args_always_appended_to_command(extra_args: list[str]) -> None:
 
 
 class TestRunCoverageCollection:
+    def test_child_environment_uses_the_same_data_target_as_parent(self, tmp_path: Path) -> None:
+        """S3-002: inspect the actual process boundary after phase isolation."""
+        target = tmp_path / "coverage-output" / ".coverage.mutmut"
+        target.parent.mkdir()
+        runner = PytestRunner(_config())
+        with _phase_popen(0) as start:
+            assert runner.run_coverage_collection(target) == 0
+        command = start.call_args.args[0]
+        environment = start.call_args.kwargs["env"]
+        assert f"--data-file={target}" in command
+        assert environment["COVERAGE_FILE"] == str(target)
+
     def test_timeout_returns_36_and_reaps_the_tree(self, tmp_path: Path) -> None:
         import subprocess
 

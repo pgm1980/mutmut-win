@@ -312,6 +312,7 @@ class PytestRunner:
         timeout: int | None = None,
         timeout_hint: str = "clean_run_timeout",
         shared_pycache: Path | None = None,
+        coverage_data_file: Path | None = None,
     ) -> int:
         """Run one pytest phase with a fresh process-local cache directory.
 
@@ -336,7 +337,10 @@ class PytestRunner:
                 isolated_env[_PYTEST_HANG_DUMP_ENV] = str(max(1, timeout - margin))
             effective_pycache = shared_pycache or self.shared_pycache
             cache_dir = configure_ephemeral_pytest_environment(
-                isolated_env, runtime_dir, shared_pycache=effective_pycache
+                isolated_env,
+                runtime_dir,
+                shared_pycache=effective_pycache,
+                coverage_data_file=coverage_data_file,
             )
             isolated_cmd = redirect_pytest_output_args(cmd, runtime_dir)
             isolated_cmd = _with_isolated_pytest_cache(isolated_cmd, str(cache_dir))
@@ -701,7 +705,7 @@ class PytestRunner:
         cmd.extend(self._pytest_target_args())
         env = self._mutants_env()
         env[MUTANT_ENV_VAR] = ""
-        return self._run_phase("coverage collection", cmd, env)
+        return self._run_phase("coverage collection", cmd, env, coverage_data_file=data_file)
 
     def run_forced_fail(
         self,
