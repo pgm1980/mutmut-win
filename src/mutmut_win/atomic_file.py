@@ -1096,6 +1096,71 @@ def _displacement_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{suffix}.mutmut-displaced")
 
 
+def _original_is_at(path: Path, identity: FileIdentity) -> bool:
+    """Check a recovery leaf without following a foreign link or reparse point."""
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(current.st_mode)
+        and not _is_reparse_point(current)
+        and _identity(current) == identity
+    )
+
+
+def _recover_interrupted_cas(
+    path: Path,
+    displaced_path: Path,
+    target_identity: FileIdentity,
+    parent_identity: FileIdentity,
+    backup_path: Path | None,
+) -> str:
+    """Restore an interrupted displacement without overwriting an existing leaf.
+
+    Recovery follows the original inode, including writes made through a
+    still-open handle.  Actual identities, rather than a flag assigned after
+    rename, also cover cancellation immediately after a rename took effect.
+    """
+    try:
+        _checked_parent(path, parent_identity)
+        if _original_is_at(path, target_identity):
+            return f"Interrupted apply: the original is present at {path}"
+        if not _original_is_at(displaced_path, target_identity):
+            if backup_path is not None and _original_is_at(backup_path, target_identity):
+                return f"Interrupted apply: the original is preserved at {backup_path}"
+            return (
+                f"Interrupted apply: the original recovery location could not be verified; "
+                f"inspect {path}, {displaced_path} and backup {backup_path}"
+            )
+
+        try:
+            # Windows rename refuses to overwrite either a published replacement
+            # or a foreign recreate.  Never restore bytes from the stale backup.
+            displaced_path.rename(path)
+        except OSError as restore_exc:
+            if _original_is_at(displaced_path, target_identity):
+                return (
+                    f"Interrupted apply: restoration failed ({restore_exc}); "
+                    f"the original is preserved at {displaced_path}"
+                )
+            return (
+                f"Interrupted apply: restoration failed ({restore_exc}) and the recovery "
+                f"location could not be verified; inspect {path} and {displaced_path}"
+            )
+        if _original_is_at(path, target_identity):
+            return f"Interrupted apply: the original was restored to {path}"
+        return (
+            f"Interrupted apply: restoration identity could not be verified; "
+            f"inspect {path} and {displaced_path}"
+        )
+    except OSError as recovery_exc:
+        return (
+            f"Interrupted apply: recovery could not be verified ({recovery_exc}); "
+            f"inspect {path}, {displaced_path} and backup {backup_path}"
+        )
+
+
 def atomic_replace_if_unchanged(
     path: Path,
     payload: bytes,
@@ -1131,6 +1196,11 @@ def atomic_replace_if_unchanged(
        promoted inode into the named backup (AR-06 / C-002).  Without a
        backup path the displaced file stays at the displacement path — it
        is NEVER deleted.
+
+    Cancellation restores the displaced inode with a non-overwriting rename
+    when possible.  If publication already occurred or restoration is blocked,
+    an exception note identifies the verified original location.  Unverifiable
+    recovery state is reported explicitly; the original cancellation propagates.
 
     Returns:
         ``True`` on success, ``False`` if the current bytes already equal
@@ -1178,6 +1248,8 @@ def atomic_replace_if_unchanged(
     # survives, and the displaced original / promoted backup live at
     # different paths, so the recovery side is never touched.
     fd, temp_path, temp_identity = _open_random_sibling(path)
+    displaced_path: Path | None = None
+    target_identity: FileIdentity | None = None
     try:
         try:
             if mode is not None:
@@ -1309,6 +1381,20 @@ def atomic_replace_if_unchanged(
 
         _fsync_parent(path, parent_identity)
         return True
+    except BaseException as exc:
+        # Cancellation must retain its identity and exit semantics.  Ordinary
+        # publication errors keep their existing, phase-specific handling.
+        if (
+            not isinstance(exc, Exception)
+            and displaced_path is not None
+            and target_identity is not None
+        ):
+            exc.add_note(
+                _recover_interrupted_cas(
+                    path, displaced_path, target_identity, parent_identity, backup_path
+                )
+            )
+        raise
     finally:
         # Identity-bound ownership guard (AR-07): after a successful
         # insertion the temp entry no longer exists (or holds a foreign

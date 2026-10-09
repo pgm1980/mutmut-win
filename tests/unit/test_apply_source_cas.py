@@ -341,7 +341,134 @@ class TestCasInterruptRecovery:
         assert source.exists(), "CLI cancellation left the source absent"
         assert source.read_bytes() == before
         assert "restored" in outcome.stderr
-        assert "src" in outcome.stderr and "mod.py" in outcome.stderr
+        assert "src" in outcome.stderr
+        assert "mod.py" in outcome.stderr
+
+    @pytest.mark.parametrize("phase", ["displacement", "insertion", "promotion"])
+    @pytest.mark.parametrize("late_write", [False, True])
+    def test_interrupt_after_rename_effect_preserves_original_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, late_write: bool
+    ) -> None:
+        """Real rename effects and retained-handle writes determine recovery state."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        original_identity = (source.stat().st_dev, source.stat().st_ino)
+        handle = _open_share_delete_writer(source)
+        interrupted = KeyboardInterrupt("cancel after actual rename")
+        real_rename = Path.rename
+        real_replace = Path.replace
+
+        def cancel_after_effect() -> None:
+            if late_write:
+                _write_via_handle(handle, b"LATE-WRITER")
+            raise interrupted
+
+        def rename_then_interrupt(path: Path, destination: Path) -> Path:
+            result = real_rename(path, destination)
+            if (phase == "displacement" and destination.name.endswith(".mutmut-displaced")) or (
+                phase == "insertion" and ".mutmut-atomic-" in path.name and destination == source
+            ):
+                cancel_after_effect()
+            return result
+
+        def promote_then_interrupt(path: Path, destination: Path) -> Path:
+            result = real_replace(path, destination)
+            if phase == "promotion" and path.name.endswith(".mutmut-displaced"):
+                cancel_after_effect()
+            return result
+
+        try:
+            with monkeypatch.context() as patcher:
+                patcher.setattr(Path, "rename", rename_then_interrupt)
+                patcher.setattr(Path, "replace", promote_then_interrupt)
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    atomic_replace_if_unchanged(
+                        source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                    )
+        finally:
+            _KERNEL32.CloseHandle(handle)
+
+        assert caught.value is interrupted
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        if phase == "displacement":
+            recovery = source
+            assert displaced == []
+        elif phase == "insertion":
+            assert len(displaced) == 1
+            recovery = displaced[0]
+            assert source.read_bytes() == b"MUTATED"
+        else:
+            recovery = backup
+            assert displaced == []
+            assert source.read_bytes() == b"MUTATED"
+        assert recovery.read_bytes() == (b"LATE-WRITER" if late_write else b"ORIGINAL")
+        assert (recovery.stat().st_dev, recovery.stat().st_ino) == original_identity
+        assert str(recovery) in " ".join(getattr(interrupted, "__notes__", []))
+        assert set(tmp_path.iterdir()) == {source, backup, *displaced}
+
+    def test_interrupt_does_not_restore_foreign_displacement_leaf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real displaced-name replacement is not granted original ownership."""
+        source = tmp_path / "source.py"
+        backup = tmp_path / "source.py.bak"
+        saved = tmp_path / "saved-original"
+        source.write_bytes(b"ORIGINAL")
+        backup.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+
+        def swap_then_interrupt(path: Path) -> bytes:
+            if path.name.endswith(".mutmut-displaced"):
+                path.rename(saved)
+                path.write_bytes(b"FOREIGN")
+                raise KeyboardInterrupt("cancel after foreign replacement")
+            return real_read(path)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(Path, "read_bytes", swap_then_interrupt)
+            with pytest.raises(KeyboardInterrupt) as caught:
+                atomic_replace_if_unchanged(
+                    source, b"MUTATED", expected=b"ORIGINAL", backup_path=backup
+                )
+
+        displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+        assert len(displaced) == 1
+        assert displaced[0].read_bytes() == b"FOREIGN"
+        assert not source.exists()
+        assert saved.read_bytes() == backup.read_bytes() == b"ORIGINAL"
+        assert "could not be verified" in " ".join(getattr(caught.value, "__notes__", []))
+        assert set(tmp_path.iterdir()) == {backup, saved, *displaced}
+
+    def test_real_nonsharing_handle_blocks_restore_and_keeps_recovery_visible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real open CRT handle denies rename until after the cancellation returns."""
+        from contextlib import ExitStack
+
+        source = tmp_path / "source.py"
+        source.write_bytes(b"ORIGINAL")
+        real_read = Path.read_bytes
+        with ExitStack() as held_files:
+
+            def hold_then_interrupt(path: Path) -> bytes:
+                if path.name.endswith(".mutmut-displaced"):
+                    held_files.enter_context(path.open("rb"))
+                    raise KeyboardInterrupt("cancel with retained nonsharing handle")
+                return real_read(path)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(Path, "read_bytes", hold_then_interrupt)
+                with pytest.raises(KeyboardInterrupt) as caught:
+                    atomic_replace_if_unchanged(source, b"MUTATED", expected=b"ORIGINAL")
+
+            displaced = list(tmp_path.glob(".*.mutmut-displaced"))
+            assert len(displaced) == 1
+            assert not source.exists()
+            assert displaced[0].read_bytes() == b"ORIGINAL"
+            assert str(displaced[0]) in " ".join(getattr(caught.value, "__notes__", []))
+            assert set(tmp_path.iterdir()) == {*displaced}
 
 
 class TestDisplacementRaceWindow:

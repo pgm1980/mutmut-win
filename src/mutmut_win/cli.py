@@ -1513,6 +1513,12 @@ def apply(mutant_name: str) -> None:
                 click.echo(f"Applied mutant '{resolved_name}' (matched '{mutant_name}').")
             else:
                 click.echo(f"Applied mutant '{resolved_name}'.")
+    except (KeyboardInterrupt, SystemExit) as exc:
+        # Click turns cancellation into a short abort message.  Keep the atomic
+        # recovery location visible before propagating the original cancellation.
+        for note in getattr(exc, "__notes__", ()):
+            click.echo(note, err=True)
+        raise
     except (FileNotFoundError, MutmutWinError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
