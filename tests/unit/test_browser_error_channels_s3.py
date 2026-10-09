@@ -35,7 +35,8 @@ async def shutdown(pilot):
     pilot.app.exit(return_code=int(os.environ["S3_BROWSER_EXIT"]))
 
 def headless(self):
-    value = original_run(self, headless=True, auto_pilot=shutdown)
+    pilot = None if os.environ["S3_BROWSER_EXIT"] == "None" else shutdown
+    value = original_run(self, headless=True, auto_pilot=pilot)
     print("S3_TEXTUAL_CODE=" + str(self.return_code))
     return value
 
@@ -53,7 +54,7 @@ class _BrowserReceipt(BaseModel):
     stderr: str
 
 
-def _browse_process(workspace: Path, *, requested_exit: int = 0) -> _BrowserReceipt:
+def _browse_process(workspace: Path, *, requested_exit: int | None = 0) -> _BrowserReceipt:
     environment = os.environ.copy()
     environment["PYTHONIOENCODING"] = "utf-8"
     environment["S3_BROWSER_EXIT"] = str(requested_exit)
@@ -102,7 +103,7 @@ def test_browse_propagates_real_junction_load_failure(
     _winapi.CreateJunction(str(target), str(junction))
     assert junction.is_junction()
 
-    receipt = _browse_process(tmp_path)
+    receipt = _browse_process(tmp_path, requested_exit=None)
     results = CliRunner().invoke(cli, ["results"])
 
     assert receipt.textual_code == 1
