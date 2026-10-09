@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class HitObservation(BaseModel):
@@ -20,9 +23,7 @@ class HitObservation(BaseModel):
 
 @pytest.mark.parametrize("directory", ["service", "pytest", "_pytest", "unittest"])
 @pytest.mark.parametrize("depth", [4, -1], ids=["bounded", "unlimited"])
-def test_native_hits_do_not_depend_on_directory(
-    tmp_path: Path, directory: str, depth: int
-) -> None:
+def test_native_hits_do_not_depend_on_directory(tmp_path: Path, directory: str, depth: int) -> None:
     """The same standalone source cannot acquire a runner frame from its path."""
     source = (
         "import os, sys\n"
@@ -42,7 +43,8 @@ def test_native_hits_do_not_depend_on_directory(
     path = tmp_path / directory / "probe.py"
     path.parent.mkdir()
     path.write_text(source, encoding="utf-8")
-    result = subprocess.run(
+    # Execute only the current interpreter and the exact fixture written above.
+    result = subprocess.run(  # noqa: S603
         [sys.executable, "-I", str(path), str(depth)],
         cwd=path.parent,
         capture_output=True,

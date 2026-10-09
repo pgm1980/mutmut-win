@@ -6,7 +6,8 @@ import re
 
 import libcst as cst
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mutmut_win.node_mutation import operator_regex
 from mutmut_win.regex_mutation import mutate_regex_pattern

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import libcst as cst
 import pytest
@@ -12,6 +12,9 @@ from pydantic import BaseModel
 
 from mutmut_win.mutation import mutate_file_contents
 from mutmut_win.node_mutation import operator_return_value, operator_string
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TemplateObservation(BaseModel):
@@ -55,7 +58,8 @@ def test_exact_template_fixture_and_formatted_control(
         + "print(observed.model_dump_json())\n",
         encoding="utf-8",
     )
-    result = subprocess.run(
+    # Execute the current interpreter against code generated from this fixed fixture.
+    result = subprocess.run(  # noqa: S603
         [sys.executable, "-I", str(probe)],
         capture_output=True,
         text=True,
