@@ -1029,6 +1029,13 @@ class MutationOrchestrator:
         # terminates before the prefix dispatch); the stats keys above are
         # the only runtime evidence for the actual mutant-name dispatch.
         _verify_runtime_mutant_names(all_generated_names, mutmut_stats)
+        clean_names = self._runner.clean_runtime_names
+        if clean_names is None:
+            raise MutantNameDispatchError(
+                "Missing or invalid clean runtime-name proof; cannot validate mutant dispatch. "
+                + (self._runner.clean_runtime_names_diagnostic or "")
+            )
+        _verify_runtime_mutant_names(all_generated_names, mutmut_stats, runtime_names=clean_names)
 
         # ------------------------------------------------------------------
         # Step 4: Verify trampoline with a forced-fail run.
@@ -1059,10 +1066,9 @@ class MutationOrchestrator:
             raise ForcedFailError(msg)
         if not self._runner.last_forced_fail_attributed:
             msg = (
-                f"Tests failed under the forced-fail run (exit {ff_exit}), but no "
-                "MutmutProgrammaticFailException appeared in the output — the "
-                "failure does not stem from the trampoline and cannot prove "
-                "the mutant switch works."
+                f"Tests failed under the forced-fail run (exit {ff_exit}), but the phase "
+                "was not fully attributable to "
+                "MutmutProgrammaticFailException — the mutant switch could not be verified."
             )
             tail = self._runner.last_diagnostic_output
             if tail:
@@ -2020,7 +2026,12 @@ def _assign_tests_to_tasks(
     return result
 
 
-def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutStats) -> None:
+def _verify_runtime_mutant_names(
+    all_generated_names: set[str],
+    stats: MutmutStats,
+    *,
+    runtime_names: frozenset[str] | None = None,
+) -> None:
     """Fail closed when a runtime function key cannot address any mutant.
 
     The stats run records trampoline hits under the RUNTIME name of each
@@ -2065,7 +2076,10 @@ def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutSta
             generated_keys.add(mangled_name_from_mutant_name(name))
         except ValueError:
             continue
-    if not generated_keys or not stats.tests_by_mangled_function_name:
+    runtime_keys = (
+        set(stats.tests_by_mangled_function_name) if runtime_names is None else set(runtime_names)
+    )
+    if not generated_keys or not runtime_keys:
         return
 
     # Index every dotted suffix of every generated key once, so the
@@ -2094,7 +2108,6 @@ def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutSta
             remainder = remainder[dot + 1 :]
         return found
 
-    runtime_keys = set(stats.tests_by_mangled_function_name)
     divergent: list[tuple[str, str]] = []
     for runtime_key in sorted(runtime_keys):
         if runtime_key in generated_keys:
@@ -2124,7 +2137,9 @@ def _verify_runtime_mutant_names(all_generated_names: set[str], stats: MutmutSta
     )
     more = f"\n  … and {len(divergent) - 5} more" if len(divergent) > 5 else ""
     raise MutantNameDispatchError(
-        "the runtime function names recorded by the stats run cannot address "
+        "the runtime function names recorded by the "
+        + ("stats run" if runtime_names is None else "clean run")
+        + " cannot address "
         "the generated mutants — the trampoline would silently run the "
         f"originals:\n{examples}{more}\n"
         "The mutated tree appears to be imported under a root (for example an "

@@ -234,6 +234,9 @@ def _runner() -> MagicMock:
     runner.collect_tests.return_value = []
     runner.run_forced_fail.return_value = 1
     runner.last_forced_fail_attributed = True
+    runner.last_diagnostic_output = None
+    runner.clean_runtime_names_diagnostic = None
+    runner.clean_runtime_names = frozenset()
     return runner
 
 
@@ -313,6 +316,19 @@ class TestPipelineFailsClosedBeforeDispatch:
         orch = self._orchestrate(tmp_path, executor)
         orch.run()
         assert executor.start.call_count == 1
+
+    def test_missing_clean_proof_blocks_even_empty_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_stats(monkeypatch, {})
+        executor = _killing_executor()
+        orch = self._orchestrate(tmp_path, executor)
+        orch._runner.clean_runtime_names = None
+        with pytest.raises(
+            MutantNameDispatchError, match="Missing or invalid clean runtime-name proof"
+        ):
+            orch.run()
+        assert executor.start.call_count == 0
 
     def test_gate_uses_the_unfiltered_generation_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

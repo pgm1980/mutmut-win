@@ -683,6 +683,16 @@ def _reconcile_staging_kind(
     staged_is_directory = stat.S_ISDIR(metadata.st_mode)
     if want_directory:
         if staged_is_directory:
+            if lexical.resolve().name != lexical.name:
+                # A case-only package rename changes Python module identity.
+                # Rebuild this contained subtree, including generation sidecars,
+                # instead of retaining code/metadata under the previous name.
+                try:
+                    _remove_staging_entry(lexical, metadata)
+                except OSError as exc:
+                    raise UnsafeStagingError(
+                        f"Cannot reconcile staging directory spelling {lexical}: {exc}"
+                    ) from exc
             return
     elif stat.S_ISREG(metadata.st_mode):
         return
@@ -1825,6 +1835,10 @@ def _refresh_staged_mirror(source: Path, target: Path) -> bool:
     meta_path = target.with_name(target.name + ".meta")
     live_meta = source.with_name(source.name + ".meta")
     owned_sidecar = read_owned_source_metadata(meta_path) is not None and not live_meta.exists()
+    if target.exists() and target.resolve().name != target.name:
+        # Replacing a Windows file can preserve its old directory-entry case.
+        # Remove that entry first so the fresh mirror has the live spelling.
+        _unlink_staging_file(target)
     _copy_with_retry(source, target)
     if owned_sidecar and meta_path.exists():
         _unlink_staging_file(meta_path)
@@ -1855,6 +1869,8 @@ def _mirror_is_stale(source: Path, target: Path, *, retain_generated: bool = Tru
     try:
         src_stat = source.stat()
         dst_stat = target.stat()
+        if target.resolve().name != target.name:
+            return True
     except OSError:
         return True
     meta_path = target.with_name(target.name + ".meta")
@@ -2971,6 +2987,7 @@ def create_mutants_for_file(
             # S3-005: old sidecars can contain a silently reduced population.
             # Recheck every source under the blocking namespace policy once.
             "namespace_collision_policy": "reject-v1",
+            "runtime_name_proof_policy": "clean-called-v3",
             "profile": active_profile.to_name(),
             "do_not_mutate_patterns": sorted(do_not_mutate_patterns),
             "covered_lines": sorted(covered_lines) if covered_lines is not None else None,
