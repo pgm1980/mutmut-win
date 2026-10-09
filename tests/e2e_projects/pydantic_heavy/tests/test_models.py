@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import ValidationError
-
 from pydantic_heavy.models import DiscountedOrder, LineItem, Order
 
 

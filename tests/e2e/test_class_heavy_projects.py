@@ -65,7 +65,8 @@ def test_pydantic_heavy_full_engine_run_completes(tmp_path: Path) -> None:
     assert state is not None
     expected = {f"pydantic_heavy.models.{name}" for name in names}
     assert set(state.planned_names) == expected
-    assert state.status == "completed" and state.is_full_run
+    assert state.status == "completed"
+    assert state.is_full_run
     assert not state.pending_names
     assert known_run_basis_incompleteness(state) is None
     assert {verdict.mutant_name for verdict in verdicts} == expected
