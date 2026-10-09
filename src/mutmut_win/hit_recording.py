@@ -21,10 +21,11 @@ v2.11.0.
 from __future__ import annotations
 
 
-def _is_test_runner_filename(filename: str) -> bool:
-    """Return whether *filename* belongs to a pytest/unittest package frame."""
-    components = filename.replace("\\", "/").split("/")
-    return any(component in {"pytest", "_pytest", "unittest"} for component in components)
+def _is_test_runner_module(module_name: object) -> bool:
+    """Return whether a frame identifies a pytest/unittest package module."""
+    if not isinstance(module_name, str):
+        return False
+    return module_name.partition(".")[0] in {"pytest", "_pytest", "unittest"}
 
 
 def _get_max_stack_depth() -> int:
@@ -61,7 +62,7 @@ def record_trampoline_hit(name: str) -> None:
     The budget includes this recorder's own frame and the trampoline chain
     (M-072 / BC-083): ``record_trampoline_hit`` (frame 0),
     ``_mutmut_trampoline`` (1) and the generated wrapper (2) can never
-    match a pytest/unittest filename, so depths 1..3 unconditionally
+    identify a pytest/unittest module, so depths 1..3 unconditionally
     discard every hit — the config validator rejects them, and with a
     direct call from a test file the first pytest frame sits at index 4.
 
@@ -77,8 +78,7 @@ def record_trampoline_hit(name: str) -> None:
         found_test_frame = False
         try:
             while remaining and frame:
-                filename = frame.f_code.co_filename
-                if _is_test_runner_filename(filename):
+                if _is_test_runner_module(frame.f_globals.get("__name__")):
                     found_test_frame = True
                     break
                 frame = frame.f_back
