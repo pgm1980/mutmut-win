@@ -226,6 +226,24 @@ def _gate_runner(ff_exit: int, attributed: bool | None) -> MagicMock:
 
 
 class TestOrchestratorForcedFailGate:
+    def test_partial_attribution_message_describes_the_complete_phase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject partial proof without denying the genuine error shown in the tail."""
+        monkeypatch.chdir(tmp_path)
+        runner = _gate_runner(ff_exit=1, attributed=False)
+        runner.last_diagnostic_output = (
+            "ERROR first: MutmutProgrammaticFailException\nERROR second: ValueError"
+        )
+        orch = _orchestrator_with(tmp_path, runner)
+        with pytest.raises(ForcedFailError) as raised:
+            orch.run()
+        message = str(raised.value)
+        assert "the phase was not fully attributable to MutmutProgrammaticFailException" in message
+        assert "no failed pytest report" not in message
+        assert "exit 1" in message
+        assert runner.last_diagnostic_output in message
+
     def test_timeout_fails_the_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         orch = _orchestrator_with(tmp_path, _gate_runner(ff_exit=36, attributed=None))

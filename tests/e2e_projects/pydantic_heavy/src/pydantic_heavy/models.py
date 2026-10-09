@@ -1,9 +1,4 @@
-"""Class-heavy model surface for the TM-11 trampoline-boundary fixture.
-
-Mirrors the constructs of ``mutmut_win.models`` that surfaced the engine's
-trampoline boundary (pydantic ``BaseModel`` subclasses, ``@computed_field``,
-``@field_validator``, nested models) at project level.
-"""
+"""Pydantic inheritance, validators and computed fields behind a class trampoline."""
 
 from __future__ import annotations
 
@@ -58,6 +53,10 @@ class DiscountedOrder(Order):
     """Inheritance plus cross-field validation."""
 
     discount_percent: int = Field(ge=0, le=100)
+
+    def requires_payment(self) -> bool:
+        """Evaluate the nested, validated and discounted computed total."""
+        return self.payable > 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

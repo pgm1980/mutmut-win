@@ -1131,7 +1131,7 @@ def run(
 
     # --- Output ---
     if output == "json":
-        click.echo(result.model_dump_json(indent=2))
+        click.echo(result.model_dump_json(indent=2, ensure_ascii=True))
 
     # --- Interrupt honesty (issue #94 / A3-OS-005) ---
     if result.was_interrupted:
