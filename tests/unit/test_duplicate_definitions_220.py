@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 from mutmut_win.config import MutmutConfig
 from mutmut_win.constants import Profile
 from mutmut_win.db import load_results, save_results
+from mutmut_win.exceptions import MutationError
 from mutmut_win.file_setup import get_mutant_name
 from mutmut_win.models import SourceFileMutationData
 from mutmut_win.mutant_diff import (
@@ -274,7 +275,7 @@ def test_ordinal_names_remain_visible_to_the_typecheck_filter() -> None:
     assert is_typecheck_mutant_name(f"x{_SEP}C{_SEP}m{_SEP}3__mutmut_1")
 
 
-def test_user_symbol_collision_skips_only_the_conflicting_duplicate() -> None:
+def test_user_symbol_collision_blocks_partial_duplicate_generation() -> None:
     source = f"""\
 x_f{_SEP}2__mutmut_orig = object()
 def f():
@@ -283,14 +284,17 @@ first_f = f
 def f():
     return 2
 """
-    with pytest.warns(SyntaxWarning, match="internal trampoline namespace"):
-        generated, names = mutate_file_contents(
+    # S3-005: a duplicate's collision blocks authority for the entire generation.
+    with pytest.raises(MutationError, match="internal trampoline namespace"):
+        mutate_file_contents(
             "src/mod.py",
             source,
             active_profile=Profile.BASIC,
         )
 
-    assert tuple(names) == ("x_f__mutmut_1",)
+    healthy = source.replace(f"x_f{_SEP}2__mutmut_orig", "ordinary_global")
+    generated, names = mutate_file_contents("src/mod.py", healthy, active_profile=Profile.BASIC)
+    assert tuple(names) == ("x_f__mutmut_1", f"x_f{_SEP}2__mutmut_1")
     namespace: dict[str, object] = {"__name__": "collision_runtime"}
     exec(compile(generated, "src/mod.py", "exec"), namespace)  # noqa: S102  # nosemgrep
     assert cast("object", namespace["first_f"])() == 1  # type: ignore[operator]
@@ -553,9 +557,13 @@ def test_nfkc_colliding_source_identifier_fails_closed() -> None:
     # compiler still binds it as exactly that name, so it would silently
     # overwrite the trampoline namespace of "K" in the clean module.
     source = f"def K():\n    return 1\nx_{_FULLWIDTH_K}__mutmut_orig = 0\n"
-    with pytest.warns(SyntaxWarning, match="internal trampoline namespace"):
-        generated, names = mutate_file_contents("src/mod.py", source, active_profile=Profile.BASIC)
-    assert not names
+    # S3-005 retains the normalized collision guard with blocking authority.
+    with pytest.raises(MutationError, match="internal trampoline namespace"):
+        mutate_file_contents("src/mod.py", source, active_profile=Profile.BASIC)
+
+    healthy = source.replace(f"x_{_FULLWIDTH_K}__mutmut_orig", "ordinary_global")
+    generated, names = mutate_file_contents("src/mod.py", healthy, active_profile=Profile.BASIC)
+    assert tuple(names) == ("x_K__mutmut_1",)
 
     namespace: dict[str, object] = {"__name__": "nfkc_collision"}
     exec(compile(generated, "src/mod.py", "exec"), namespace)  # noqa: S102  # nosemgrep

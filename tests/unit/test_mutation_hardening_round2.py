@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from mutmut_win.exceptions import MutationError
 from mutmut_win.mutation import mutate_file_contents
 
 
@@ -143,7 +144,7 @@ class C:
         with patch.dict(os.environ, {"MUTANT_UNDER_TEST": f"m.{target}"}):
             assert saved_class.add(None, 2) != 3
 
-    def test_static_private_namespace_collision_skips_only_that_function(self) -> None:
+    def test_static_private_namespace_collision_blocks_partial_generation(self) -> None:
         source = """\
 def f():
     return 1 + 1
@@ -151,12 +152,15 @@ def f():
 
 x_f__mutmut_orig = "user-owned"
 """
-        with pytest.warns(SyntaxWarning, match="internal trampoline namespace"):
-            _generated, names, namespace = _exec_generated(source)
+        # S3-005 supersedes the old function-skip policy: partial scores are unsafe.
+        with pytest.raises(MutationError, match="internal trampoline namespace"):
+            _exec_generated(source)
 
-        assert not any("x_f__mutmut" in name for name in names)
+        healthy = source.replace("x_f__mutmut_orig", "ordinary_global")
+        _generated, names, namespace = _exec_generated(healthy)
+        assert any("x_f__mutmut" in name for name in names)
         assert namespace["f"]() == 2
-        assert namespace["x_f__mutmut_orig"] == "user-owned"
+        assert namespace["ordinary_global"] == "user-owned"
 
 
 class TestWrapperDocstringSemantics:
