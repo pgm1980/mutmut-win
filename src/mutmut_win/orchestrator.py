@@ -682,7 +682,7 @@ class MutationOrchestrator:
                 # tests_fingerprint and silently regain authority in a later,
                 # stable run.  Revoke both the current-run and historical
                 # fingerprints atomically before publishing the terminal state.
-                if basis_changed or not basis_evidence.complete:
+                if result.no_tests or basis_changed or not basis_evidence.complete:
                     try:
                         deauthorize_active_run_evidence(
                             self._db_path,
@@ -690,7 +690,9 @@ class MutationOrchestrator:
                         )
                     except Exception as exc:
                         reason = (
-                            "ambient execution inputs changed"
+                            "unresolved no_tests evidence remains"
+                            if result.no_tests
+                            else "ambient execution inputs changed"
                             if basis_changed
                             else "the initial execution basis was diagnostic-only"
                         )
@@ -699,7 +701,13 @@ class MutationOrchestrator:
                             "the run remains running for revoke-first recovery"
                         ) from exc
                     execution_basis_deauthorized = True
-                    if basis_changed:
+                    if result.no_tests:
+                        print(
+                            f"{result.no_tests} no_tests verdict(s) leave test evidence incomplete. "
+                            "The score is diagnostic only; current and historical verdict "
+                            "reuse, --min-score, and CI/CD export are disabled."
+                        )
+                    elif basis_changed:
                         print(
                             "The ambient interpreter, dependency, or environment basis "
                             "changed during this run. Diagnostic results were preserved, "
