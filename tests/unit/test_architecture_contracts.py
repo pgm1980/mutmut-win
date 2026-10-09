@@ -8,10 +8,14 @@ exports schema-valid, no raw open() in engine modules.
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+from pydantic import BaseModel, ConfigDict
+
+from mutmut_win.stats import CicdStats, compute_cicd_stats, save_cicd_stats
 
 SRC_ROOT = Path(__file__).parent.parent.parent / "src" / "mutmut_win"
 
@@ -62,21 +66,88 @@ class TestExitCodeContract:
 # =========================================================================
 
 
+class _CicdExport(BaseModel):
+    """Required persisted CI/CD fields, without defaults hiding missing output."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    killed: int
+    survived: int
+    total: int
+    no_tests: int
+    skipped: int
+    suspicious: int
+    timeout: int
+    check_was_interrupted_by_user: int
+    segfault: int
+    caught_by_type_check: int
+    killed_by_infinite_loop: int
+    score: float
+
+
 class TestJsonExportContract:
     """The CI/CD JSON export has a stable, machine-checkable shape."""
 
-    def test_cicd_export_has_required_fields(self) -> None:
-        """The export payload must contain the core gate fields."""
-        # Verify against the module's actual export function signature
-        from mutmut_win.stats import compute_cicd_stats
+    def test_cicd_export_has_required_fields(self, tmp_path: Path) -> None:
+        """Observe the real complete payload for mixed production verdicts."""
+        statuses = [
+            "killed",
+            "killed",
+            "survived",
+            "no tests",
+            "skipped",
+            "suspicious",
+            "timeout",
+            "check was interrupted by user",
+            "segfault",
+            "caught by type check",
+            "killed_by_infinite_loop",
+            None,
+        ]
+        results = [
+            (f"café.x_work__mutmut_{index}", status) for index, status in enumerate(statuses)
+        ]
+        computed = compute_cicd_stats(results)
+        assert isinstance(computed, CicdStats)
+        persisted = save_cicd_stats(results, tmp_path)
+        assert persisted == computed
+        payload = _CicdExport.model_validate_json(
+            (tmp_path / "mutmut-cicd-stats.json").read_bytes()
+        )
+        assert payload == _CicdExport(
+            killed=2,
+            survived=1,
+            total=12,
+            no_tests=1,
+            skipped=1,
+            suspicious=1,
+            timeout=2,
+            check_was_interrupted_by_user=1,
+            segfault=1,
+            caught_by_type_check=1,
+            killed_by_infinite_loop=1,
+            score=40.0,
+        )
+        assert computed.effective_killed == 4
+        assert computed.scoreable == 10
 
-        assert callable(compute_cicd_stats), "compute_cicd_stats must be callable"
+    def test_json_export_is_ascii_safe(self, tmp_path: Path) -> None:
+        """The actual numeric export remains ASCII with Unicode mutant names."""
+        save_cicd_stats([("café.x_work__mutmut_1", "killed")], tmp_path)
+        encoded = (tmp_path / "mutmut-cicd-stats.json").read_bytes()
+        encoded.decode("ascii")
+        assert _CicdExport.model_validate_json(encoded).score == 100.0
 
-    def test_json_export_is_ascii_safe(self) -> None:
-        """JSON export with ensure_ascii=True produces pure-ASCII output."""
-        test_payload = {"name": "café", "status": "killed", "score": 0.85}
-        encoded = json.dumps(test_payload, ensure_ascii=True)
-        encoded.encode("ascii")  # must not raise
+    @given(killed=st.integers(0, 30), survived=st.integers(0, 30))
+    def test_real_counts_follow_input_population(self, killed: int, survived: int) -> None:
+        """Generated populations constrain the actual aggregation result."""
+        results = [(f"k{index}", "killed") for index in range(killed)]
+        results.extend((f"s{index}", "survived") for index in range(survived))
+        stats = compute_cicd_stats(results)
+        assert isinstance(stats, CicdStats)
+        assert (stats.killed, stats.survived, stats.total) == (killed, survived, killed + survived)
+        expected = 100.0 * killed / (killed + survived) if killed + survived else 0.0
+        assert stats.score == pytest.approx(expected)
 
 
 # =========================================================================
