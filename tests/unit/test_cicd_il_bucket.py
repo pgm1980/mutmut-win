@@ -32,6 +32,14 @@ _RESULTS: list[tuple[str, str | None]] = [
 
 
 class TestCicdIlBucket:
+    def test_s3_legacy_loop_result_is_a_conservative_timeout(self) -> None:
+        """S3-003: old heuristic kills remain visible without inflating the score."""
+        stats = compute_cicd_stats([("a", "killed"), ("b", "killed_by_infinite_loop")])
+        assert stats.killed == 1
+        assert stats.timeout == 1
+        assert stats.killed_by_infinite_loop == 1
+        assert stats.score == 50.0
+
     def test_il_kills_count_as_killed(self) -> None:
         stats = compute_cicd_stats(_RESULTS)
         assert stats.killed == 2  # was 1 before #86

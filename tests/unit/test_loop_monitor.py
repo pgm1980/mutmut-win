@@ -58,6 +58,15 @@ def _make_samples(
     ]
 
 
+@given(cpu=st.floats(min_value=70, max_value=400, allow_nan=False))
+def test_s3_finite_busy_window_is_not_a_nontermination_proof(cpu: float) -> None:
+    """S3-003: no finite measurement window establishes infinite execution."""
+    samples = _make_samples(20, cpu=cpu)
+    classification = classify_samples(samples, IlThresholds(), status_signal_available=False)
+    assert classification.verdict == "timeout"
+    assert classification.forensics.samples_collected == 20
+
+
 def test_classify_hypothesis_infinite_loop_is_killed_with_high_confidence() -> None:
     """CPU pegged + no output + running for full window → killed_by_infinite_loop, high conf."""
     samples = _make_samples(n=20, cpu=99.0, output_growth_per_sample=0, status="running")

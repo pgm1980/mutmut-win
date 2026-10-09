@@ -23,6 +23,7 @@ from mutmut_win.exceptions import (
     PytestBoundaryError,
 )
 from mutmut_win.models import MutationTask, TaskCompleted, TaskStarted
+from mutmut_win.process.loop_monitor import IlSample
 from mutmut_win.process.worker import MUTANT_ENV_VAR, _kill_proc_tree, worker_main
 
 
@@ -163,6 +164,37 @@ def _simple_task(**overrides: Any) -> dict[str, Any]:
     data = task.model_dump()
     data.update(overrides)
     return data
+
+
+def test_s3_timeout_cpu_evidence_never_authorizes_a_kill() -> None:
+    """S3-003: sampled busy work cannot prove that the program never terminates."""
+    proc = _make_popen_mock()
+    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=60)
+    monitor = MagicMock()
+    monitor.sampler_errors = 0
+    monitor.take_samples_snapshot.return_value = [
+        IlSample(timestamp=index * 0.5, cpu_pct=99.0, output_bytes=0, status="running", io_ops=0)
+        for index in range(20)
+    ]
+    tasks: Queue[object] = Queue()
+    events: Queue[object] = Queue()
+    tasks.put(_simple_task(timeout_seconds=60.0))
+    tasks.put(None)
+    with (
+        patch("mutmut_win.process.worker.subprocess.Popen", return_value=proc),
+        patch.object(worker_module, "_kill_proc_tree") as kill_tree,
+        patch.object(worker_module, "_maybe_start_loop_monitor", return_value=monitor),
+    ):
+        worker_main(tasks, events, _make_config(infinite_loop_detection=True))
+    started = TaskStarted.model_validate(events.get_nowait())
+    completed = TaskCompleted.model_validate(events.get_nowait())
+    assert completed.mutant_name == started.mutant_name
+    assert completed.exit_code == 36
+    assert completed.forensics is not None
+    assert completed.forensics["samples_collected"] == 20
+    assert completed.forensics["cpu_pct_mean"] == 99.0
+    kill_tree.assert_called_once()
+    monitor.shutdown.assert_called_once()
 
 
 class _SimpleQueue:

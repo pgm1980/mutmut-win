@@ -36,6 +36,14 @@ _FORENSICS: dict[str, object] = {
 
 
 class TestFormatForensicsPanel:
+    def test_s3_timeout_keeps_diagnostic_evidence_visible(self) -> None:
+        """S3-003: conservative classification must not hide collected diagnostics."""
+        panel = _format_forensics_panel("timeout", _FORENSICS)
+        assert panel is not None
+        assert "Timeout" in panel
+        assert "96.5" in panel
+        assert "19" in panel
+
     def test_non_il_status_renders_nothing(self) -> None:
         assert _format_forensics_panel("killed", None) is None
         assert _format_forensics_panel("survived", _FORENSICS) is None

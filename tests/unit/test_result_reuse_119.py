@@ -135,6 +135,12 @@ def _row(name: str, status: str, fingerprint: str | None) -> None:
 
 
 class TestSplitReusableTasks:
+    def test_s3_legacy_loop_classification_is_reexecuted(self) -> None:
+        """S3-003: an old sampling classification is not reusable kill evidence."""
+        reused, remaining = self._split(status="killed_by_infinite_loop")
+        assert reused == []
+        assert [task.mutant_name for task in remaining] == ["m1"]
+
     @pytest.fixture(autouse=True)
     def _cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
