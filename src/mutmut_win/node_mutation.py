@@ -208,6 +208,10 @@ def operator_string(
     ``FormattedStringExpression`` nodes and are provably untouched
     (issue #121 / external QA MUT-001: upstream 3.5.0 mutates only
     ``SimpleString``, leaving f-strings outside the mutation surface).
+
+    Template strings have no dedicated text operator yet: their static text
+    and interpolation metadata are exposed before rendering. Their child
+    expressions remain available to the other registered operators.
     """
     if isinstance(node, cst.FormattedString):
         for index, part in enumerate(node.parts):
@@ -865,6 +869,10 @@ def operator_return_value(node: cst.Return) -> Iterable[cst.Return]:
     ``operator_string``, and skipping them made f-string-only functions
     vanish from the mutation surface entirely (issue #121 / external QA
     MUT-001: no trampoline, no mutants, invisible in every report).
+
+    Template strings remain an explicit operator boundary: neither this
+    operator nor ``operator_string`` changes the whole template value or its
+    literal text. Operators inside interpolation expressions still apply.
     """
     if node.value is None:
         return  # bare return
