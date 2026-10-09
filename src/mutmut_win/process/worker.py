@@ -591,14 +591,13 @@ _FORCED_FAIL_PROOF_PATH_ENV = "MUTMUT_FORCED_FAIL_PROOF_PATH"
 _FORCED_FAIL_PROOF_TOKEN_ENV = "MUTMUT_FORCED_FAIL_PROOF_TOKEN"
 
 
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
-def pytest_runtest_makereport(item, call):
-    """Publish the structured trampoline proof once (M-130).
+def _publish_forced_fail_proof(
+    call: pytest.CallInfo[object], report: pytest.CollectReport | pytest.TestReport
+) -> None:
+    """Publish proof only for a failed report with the real trampoline exception.
 
-    tryfirst makes this the outermost makereport wrapper, so the post-yield
-    part observes the FINAL report — after the skipping plugin converted an
-    xfail into skipped/wasxfail. The proof is published only when the final
-    report failed AND the underlying exception is the trampoline's
+    The proof is published only when the final report failed AND the exception is
+    the trampoline's
     MutmutProgrammaticFailException (checked on the call's excinfo, any
     phase: setup, call, teardown — fixtures throw too). Without both env
     variables this hook is a strict no-op, so every other phase and worker
@@ -606,14 +605,12 @@ def pytest_runtest_makereport(item, call):
     forced-fail phase must not turn a diagnostics problem into a pytest
     INTERNALERROR; the gate then fails closed on the missing proof.
     """
-    outcome = yield
     proof_path = os.environ.get(_FORCED_FAIL_PROOF_PATH_ENV)
     proof_token = os.environ.get(_FORCED_FAIL_PROOF_TOKEN_ENV)
     if not (proof_path and proof_token):
         return
     try:
-        rep = outcome.get_result()
-        if not rep.failed:
+        if not report.failed or hasattr(report, "wasxfail"):
             return
         excinfo = call.excinfo
         if excinfo is None:
@@ -631,6 +628,30 @@ def pytest_runtest_makereport(item, call):
             proof_handle.write(proof_token.encode("utf-8"))
     except Exception:
         pass
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Observe the final test report after pytest's skip/xfail conversion."""
+    outcome = yield
+    try:
+        _publish_forced_fail_proof(call, outcome.get_result())
+    except Exception:
+        pass
+
+
+def pytest_exception_interact(
+    call: pytest.CallInfo[object], report: pytest.CollectReport | pytest.TestReport
+) -> None:
+    """Attribute collection failures using pytest's actual exception object.
+
+    Collection never passes through runtest_makereport. This public hook
+    receives the final collection report and its CallInfo without parsing
+    diagnostic text or depending on pytest's private report.call attribute.
+    Runtime reports remain owned by the outermost makereport wrapper.
+    """
+    if call.when == "collect":
+        _publish_forced_fail_proof(call, report)
 
 
 @pytest.hookimpl(trylast=True)
@@ -1112,7 +1133,7 @@ def prepare_forced_fail_proof(env: dict[str, str], runtime_dir: Path) -> tuple[P
 
     The generated phase-guard plugin publishes an unpredictable token to a
     parent-owned runtime path exactly once, when a final test report
-    *failed* and the underlying exception is the trampoline's
+    *failed* during collection or a test phase and the exception is the trampoline's
     ``MutmutProgrammaticFailException`` (any phase: setup, call, teardown —
     fixtures throw too). Without the env variables the hook is a strict
     no-op, so every other phase and worker stays unaffected.
