@@ -60,7 +60,15 @@ def test_entry_roundtrip_preserves_exact_unicode_name(value: str) -> None:
 
 @given(st.integers(min_value=1, max_value=2**31 - 1), st.binary(min_size=16, max_size=16))
 def test_ticket_roundtrip_preserves_identity(pid: int, identifier: bytes) -> None:
-    ticket = names._Ticket(participant_id=identifier.hex(), issuer_pid=pid, token="a" * 64)
+    ticket = names._Ticket(
+        schema_version=3,
+        phase="clean",
+        generation_policy="clean-called-v3",
+        participant_id=identifier.hex(),
+        parent_participant_id=None,
+        issuer_pid=pid,
+        token="a" * 64,
+    )
     assert names._Ticket.model_validate_json(ticket.model_dump_json()) == ticket
 
 

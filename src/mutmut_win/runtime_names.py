@@ -37,11 +37,11 @@ _exit_code: int | None = None
 class _Ticket(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    schema_version: Literal[3] = 3
-    phase: Literal["clean"] = "clean"
-    generation_policy: Literal["clean-called-v3"] = "clean-called-v3"
+    schema_version: Literal[3]
+    phase: Literal["clean"]
+    generation_policy: Literal["clean-called-v3"]
     participant_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    parent_participant_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    parent_participant_id: str | None = Field(pattern=r"^[0-9a-f]{32}$")
     issuer_pid: int = Field(gt=0)
     token: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -84,6 +84,9 @@ def _directory() -> Path:
 
 def _create_ticket(directory: Path, parent: _Ticket | None) -> _Ticket:
     ticket = _Ticket(
+        schema_version=3,
+        phase="clean",
+        generation_policy="clean-called-v3",
         participant_id=secrets.token_hex(16),
         parent_participant_id=parent.participant_id if parent else None,
         issuer_pid=os.getpid(),
@@ -149,8 +152,17 @@ def _invalidate(recorder: _Recorder) -> None:
     try:
         recorder.control[0] = _INVALID
     except ValueError, OSError:
-        # Independent file evidence also covers a prematurely closed view.
-        _path(recorder.directory, recorder.ticket, "invalid").touch(exist_ok=True)
+        # A closed view does not revoke the already published READY state.
+        # Reopen the preallocated control file before falling back to a new
+        # artifact, whose creation can independently fail.
+        try:
+            with (
+                _path(recorder.directory, recorder.ticket, "control").open("r+b") as stream,
+                mmap.mmap(stream.fileno(), _CONTROL_BYTES, access=mmap.ACCESS_WRITE) as control,
+            ):
+                control[0] = _INVALID
+        except ValueError, OSError:
+            _path(recorder.directory, recorder.ticket, "invalid").touch(exist_ok=True)
 
 
 def _begin(recorder: _Recorder) -> None:
@@ -301,11 +313,26 @@ def install_spawn_observer() -> None:
 
     def start(child: process.BaseProcess) -> None:
         with _start_ticket.set(None):
-            original_start(child)
-            ticket = _start_ticket.get()
-            if ticket is None:
-                raise RuntimeError("clean child started without a runtime-name ticket")
-            _wait_bootstrap(ticket)
+            try:
+                original_start(child)
+                ticket = _start_ticket.get()
+                if ticket is None:
+                    raise RuntimeError("clean child started without a runtime-name ticket")
+                _wait_bootstrap(ticket)
+            except BaseException:
+                # Pool has not added this worker to its list until start()
+                # returns. Reap an already started child here, even when the
+                # caller catches the bootstrap error and continues testing.
+                try:
+                    if child.pid is not None:
+                        child.terminate()
+                        child.join(5)
+                        if child.is_alive():
+                            raise RuntimeError("clean bootstrap child could not be reaped")
+                finally:
+                    with _LOCK:
+                        _invalidate(_ensure_recorder())
+                raise
 
     spawn.get_preparation_data = prepare
     # Install the CPython method hook dynamically; preserve its ordinary API.
@@ -328,13 +355,16 @@ def _read_part(directory: Path, ticket: _Ticket) -> tuple[int, list[_Entry]]:
             raise ValueError("runtime-name participant is incomplete")
         if ticket.parent_participant_id is None and state != _CLOSED:
             raise ValueError("runtime-name root completion missing")
+        if ticket.parent_participant_id is None and process_id != ticket.issuer_pid:
+            raise ValueError("runtime-name root owner mismatch")
         if used > _MAX_BYTES:
             raise ValueError("runtime-name part exceeds limit")
     with _path(directory, ticket, "events").open("rb") as stream:
         raw = stream.read(_MAX_BYTES + 1)
     if len(raw) != used or (raw and not raw.endswith(b"\n")):
         raise ValueError("runtime-name partial event publication")
-    return process_id, [_Entry.model_validate_json(line) for line in raw.split(b"\n") if line]
+    lines = raw[:-1].split(b"\n") if raw else []
+    return process_id, [_Entry.model_validate_json(line) for line in lines]
 
 
 def collect_runtime_names(directory: Path, token: str) -> frozenset[str]:
@@ -381,6 +411,9 @@ def collect_runtime_names(directory: Path, token: str) -> frozenset[str]:
             else:
                 # Model validation precedes using the supplied identity in a path.
                 child = _Ticket(
+                    schema_version=3,
+                    phase="clean",
+                    generation_policy="clean-called-v3",
                     participant_id=entry.value,
                     parent_participant_id=ticket.participant_id,
                     issuer_pid=pid,
