@@ -12,6 +12,7 @@ from __future__ import annotations
 import textwrap
 from typing import TYPE_CHECKING
 
+import coverage
 import pytest
 
 from mutmut_win.code_coverage import gather_coverage, get_covered_lines_for_file
@@ -136,8 +137,10 @@ class TestCoverageGatingEndToEnd:
         assert 6 not in file_covered  # body of never_called() was never run
 
     @pytest.mark.parametrize("relative_files", [False, True])
+    @pytest.mark.parametrize("drop_child_part", [False, True])
     def test_spawn_child_lines_remain_in_the_mutation_universe(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_files: bool
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_files: bool,
+        drop_child_part: bool
     ) -> None:
         """S3-002: real spawn children contribute their executed source lines."""
         monkeypatch.chdir(tmp_path)
@@ -178,16 +181,30 @@ class TestCoverageGatingEndToEnd:
         )
         runner = PytestRunner(MutmutConfig(tests_dir=["tests"]))
 
-        covered_map = gather_coverage(runner, ["src/pkg/mod.py"])
-        lines = get_covered_lines_for_file("src/pkg/mod.py", covered_map)
+        collect = runner.run_coverage_collection
+        observed_parts: list[set[int]] = []
 
-        assert lines is not None
-        assert {2, 5, 6} <= lines, "Parent and spawn-child bodies must both be measured"
-        assert 9 not in lines, "The never-called body must remain excluded"
-        _, names = mutate_file_contents("src/pkg/mod.py", source, covered_lines=lines)
-        assert len(names) == 14
-        assert any("only_in_child" in name for name in names)
-        assert all("never_called" not in name for name in names)
+        def observe_collection(data_file: Path) -> int:
+            result = collect(data_file)
+            for part in data_file.parent.iterdir():
+                if not part.name.startswith(".coverage.mutmut"):
+                    continue
+                data = coverage.CoverageData(basename=str(part))
+                data.read()
+                for filename in data.measured_files():
+                    if filename.replace("\\", "/").endswith("/pkg/mod.py"):
+                        body = set(data.lines(filename) or [])
+                        observed_parts.append(body)
+                        if drop_child_part and {5, 6} <= body:
+                            part.unlink()
+            return result
+
+        monkeypatch.setattr(runner, "run_coverage_collection", observe_collection)
+        covered_map = gather_coverage(runner, ["src/pkg/mod.py"])
+
+        assert any(2 in lines and 5 not in lines for lines in observed_parts)
+        assert any({5, 6} <= lines and 2 not in lines for lines in observed_parts)
+        assert covered_map is None, "Multiprocessing cannot authorize line exclusion"
 
     def test_followup_run_measures_original_lines_not_generator_lines(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
